@@ -1,0 +1,10 @@
+.env
+__pycache__/
+*.pyc
+venv/
+logs/
+.pytest_cache/
+.coverage
+htmlcov/
+neuromule_base.db
+*.db-journal
