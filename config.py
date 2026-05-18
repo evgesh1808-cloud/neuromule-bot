@@ -125,10 +125,7 @@ class Settings(BaseSettings):
         enable_decoding=False,
     )
 
-    tg_token: str = Field(
-        default="",
-        validation_alias=AliasChoices("TG_TOKEN", "TOKEN_BOT", "TELEGRAM_BOT_TOKEN"),
-    )
+    tg_token: str = Field(default="", validation_alias="TG_TOKEN")
     payment_token: str = Field(
         default="",
         validation_alias=AliasChoices("PAYMENT_TOKEN", "UKASSA_PROVIDER_TOKEN"),
@@ -172,6 +169,8 @@ class Settings(BaseSettings):
     cost_video: Annotated[int, _coerce_int(20)] = 20
     cost_animate: Annotated[int, _coerce_int(20)] = 20
     cost_hd: Annotated[int, _coerce_int(70)] = 70
+    cost_match: Annotated[int, _coerce_int(50)] = 50
+    cost_upscale: Annotated[int, _coerce_int(1)] = 1
     referral_bonus_energy: Annotated[int, _coerce_int(50)] = 50
 
     service_offer_url: str = (

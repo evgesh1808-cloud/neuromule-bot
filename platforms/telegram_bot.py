@@ -5,6 +5,7 @@ import asyncio
 import html
 import logging
 import random
+import re
 import time
 from collections.abc import Awaitable, Callable
 from io import BytesIO
@@ -36,9 +37,6 @@ from services import hd_service
 from services import payments_catalog as paycat
 from services.dialog_write_worker import start_dialog_write_worker
 from services.hd_logic import (
-    HD_REPORT_COST,
-    MATCH_REPORT_COST,
-    PRICE_UPSCALE,
     birth_data_minimum_for_advice,
     daily_advice_user_profile_from_repo_user,
     change_user_crystals,
@@ -46,6 +44,7 @@ from services.hd_logic import (
     format_premium_report,
     generate_daily_forecast,
     generate_premium_report,
+    get_dynamic_cta_for_today,
     get_calculated_gates,
     get_user,
     parse_birth_for_daily_advice,
@@ -120,6 +119,13 @@ class UserFlow(StatesGroup):
 class AdminStates(StatesGroup):
     waiting_for_crystals = State()
     waiting_for_broadcast = State()
+
+
+class FeedbackStates(StatesGroup):
+    waiting_for_user_question = State()
+
+
+_TICKET_USER_ID_RE = re.compile(r"ID:\s*(?:<code>|`)(\d+)(?:</code>|`)", re.IGNORECASE)
 
 
 logger = logging.getLogger(__name__)
@@ -276,7 +282,12 @@ def photo_tools_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="🎨 Сгенерировать фото", callback_data=msg.CB_CREATE_IMAGE)],
-            [InlineKeyboardButton(text="🔍 UPSCALE фото — 1 💎", callback_data=msg.CB_UPSCALE_START)],
+            [
+                InlineKeyboardButton(
+                    text=f"🔍 UPSCALE фото — {settings.cost_upscale} 💎",
+                    callback_data=msg.CB_UPSCALE_START,
+                )
+            ],
         ]
     )
 
@@ -324,48 +335,38 @@ def invite_limit_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def _admin_telegram_url() -> str:
-    """Ссылка на личный чат администратора (ADMIN_USERNAME в .env)."""
-    admin = (settings.admin_username or "mulendeeva_ai").lstrip("@").strip()
-    return f"https://t.me/{admin}"
-
-
 def support_faq_keyboard() -> InlineKeyboardMarkup:
-    """FAQ: быстрый переход к администратору."""
+    """FAQ: встроенная обратная связь (без внешних ботов)."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text=msg.TXT_FAQ_ADMIN_CONTACT,
-                    url=_admin_telegram_url(),
+                    text=msg.TXT_FAQ_WRITE_QUESTION_BTN,
+                    callback_data=msg.CB_SUPPORT_WRITE_QUESTION,
                 )
             ],
         ]
     )
 
 
-def support_menu() -> InlineKeyboardMarkup:
-    admin = settings.admin_username.lstrip("@").strip()
-    support = settings.support_bot_username.lstrip("@")
-    rows: list[list[InlineKeyboardButton]] = [
-        [InlineKeyboardButton(text="💬 Написать в поддержку", url=f"https://t.me/{support}")],
-    ]
-    if admin:
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text=msg.TXT_FAQ_ADMIN_CONTACT,
-                    url=f"https://t.me/{admin}",
-                )
-            ]
-        )
-    rows.extend(
-        [
-            [InlineKeyboardButton(text="📜 Правила сервиса", callback_data=msg.CB_SERVICE_RULES)],
-            [InlineKeyboardButton(text="⬅️ Назад в главное меню", callback_data=msg.CB_BACK_MAIN)],
-        ]
+def _feedback_ticket_header(uid: int, username: str | None) -> str:
+    uname = f"@{username}" if username else "без юзернейма"
+    return msg.TXT_FEEDBACK_TICKET_HEADER.format(
+        username=html.escape(uname),
+        user_id=uid,
     )
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _extract_ticket_user_id(text: str | None) -> int | None:
+    if not text:
+        return None
+    match = _TICKET_USER_ID_RE.search(text)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
 
 
 def channel_subscribe_markup() -> InlineKeyboardMarkup:
@@ -432,7 +433,7 @@ def hd_menu(has_pro: bool = False) -> InlineKeyboardMarkup:
         rows.append(
             [
                 InlineKeyboardButton(
-                    text=msg.TXT_HD_INLINE_FULL_REPORT.format(cost=HD_REPORT_COST),
+                    text=msg.TXT_HD_INLINE_FULL_REPORT.format(cost=settings.cost_hd),
                     callback_data=msg.CB_HD_PREMIUM_BUY,
                 ),
             ]
@@ -602,13 +603,19 @@ def build_dispatcher() -> tuple[Bot, Dispatcher]:
             await target.answer(msg.TXT_MATCH_LOCKED, reply_markup=hd_menu(False))
             return
         crystals = int(user["crystals"] or 0)
-        if crystals < MATCH_REPORT_COST:
-            await target.answer(msg.TXT_MATCH_INSUFFICIENT_CRYSTALS, reply_markup=paycat.shop_packages_keyboard())
+        if crystals < settings.cost_match:
+            await target.answer(
+                msg.format_match_insufficient_crystals(settings),
+                reply_markup=paycat.shop_packages_keyboard(),
+            )
             return
         own_birth_data = (user["hd_birth_data"] or "").strip() if "hd_birth_data" in user.keys() else ""
         await state.update_data(match_own_birth_data=own_birth_data or None)
         await state.set_state(UserFlow.WAITING_PARTNER_DATA)
-        await target.answer(msg.TXT_MATCH_ASK_SECOND if own_birth_data else msg.TXT_MATCH_ASK_BOTH)
+        if own_birth_data:
+            await target.answer(msg.format_match_ask_second(settings))
+        else:
+            await target.answer(msg.format_match_ask_both(settings))
 
     @dp.message(Command("match"))
     async def cmd_match(message: Message, state: FSMContext) -> None:
@@ -858,11 +865,98 @@ def build_dispatcher() -> tuple[Bot, Dispatcher]:
     @dp.message(F.text.in_({msg.BTN_SUPPORT, msg.BTN_SUPPORT_LEGACY}))
     async def show_support_and_faq(message: Message) -> None:
         await message.answer(
-            msg.TXT_FAQ_SUPPORT,
+            msg.format_faq_support_text(settings),
             parse_mode=ParseMode.HTML,
             reply_markup=support_faq_keyboard(),
             link_preview_options=types.LinkPreviewOptions(is_disabled=True),
         )
+
+    @dp.callback_query(F.data == msg.CB_SUPPORT_WRITE_QUESTION)
+    async def support_write_question_start(callback: CallbackQuery, state: FSMContext) -> None:
+        await state.set_state(FeedbackStates.waiting_for_user_question)
+        await callback.message.answer(msg.TXT_FEEDBACK_ASK)
+        await callback.answer()
+
+    @dp.message(FeedbackStates.waiting_for_user_question, Command("cancel"))
+    async def support_question_cancel(message: Message, state: FSMContext) -> None:
+        await state.clear()
+        await message.answer(msg.TXT_FEEDBACK_CANCELLED, reply_markup=main_menu(message.from_user.id))
+
+    @dp.message(FeedbackStates.waiting_for_user_question)
+    async def process_user_question_delivery(message: Message, state: FSMContext) -> None:
+        uid = message.from_user.id
+        raw = (message.text or "").strip()
+        if raw in _reply_menu_button_texts():
+            await state.clear()
+            await message.answer(msg.TXT_FEEDBACK_CANCELLED, reply_markup=main_menu(uid))
+            return
+        if not message.photo and not raw:
+            await message.answer(msg.TXT_FEEDBACK_EMPTY)
+            return
+
+        admin_ids = list(settings.admin_ids)
+        if not admin_ids:
+            await state.clear()
+            await message.answer(msg.TXT_FEEDBACK_NO_ADMINS)
+            return
+
+        username = message.from_user.username
+        ticket_header = _feedback_ticket_header(uid, username)
+        delivered = 0
+        for admin_id in admin_ids:
+            try:
+                if message.photo:
+                    body = (message.caption or "").strip()
+                    caption = f"{ticket_header}{html.escape(body)}" if body else ticket_header.rstrip()
+                    await message.bot.send_photo(
+                        chat_id=admin_id,
+                        photo=message.photo[-1].file_id,
+                        caption=caption,
+                        parse_mode=ParseMode.HTML,
+                    )
+                else:
+                    await message.bot.send_message(
+                        chat_id=admin_id,
+                        text=f"{ticket_header}{html.escape(raw)}",
+                        parse_mode=ParseMode.HTML,
+                    )
+                delivered += 1
+            except Exception:
+                logger.exception("feedback_forward_failed admin_id=%s user_id=%s", admin_id, uid)
+
+        await state.clear()
+        if delivered:
+            await message.answer(msg.TXT_FEEDBACK_DELIVERED)
+        else:
+            await message.answer(msg.TXT_FEEDBACK_NO_ADMINS)
+
+    @dp.message(F.reply_to_message, F.text)
+    async def admin_reply_to_user_process(message: Message) -> None:
+        if not _is_admin(message.from_user.id):
+            return
+        reply_to = message.reply_to_message
+        if reply_to is None:
+            return
+        text_to_search = reply_to.text or reply_to.caption
+        target_uid = _extract_ticket_user_id(text_to_search)
+        if target_uid is None:
+            return
+        reply_body = html.escape((message.text or "").strip())
+        if not reply_body:
+            return
+        try:
+            await message.bot.send_message(
+                chat_id=target_uid,
+                text=msg.TXT_FEEDBACK_REPLY_USER.format(body=reply_body),
+                parse_mode=ParseMode.HTML,
+            )
+            await message.reply(
+                msg.TXT_FEEDBACK_REPLY_SENT.format(user_id=target_uid),
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception as exc:
+            logger.exception("feedback_admin_reply_failed target_uid=%s", target_uid)
+            await message.reply(msg.TXT_FEEDBACK_REPLY_FAILED.format(error=html.escape(str(exc))))
 
     @dp.callback_query(F.data == msg.CB_BACK_CREATE)
     async def back_create(callback: CallbackQuery) -> None:
@@ -986,20 +1080,20 @@ def build_dispatcher() -> tuple[Bot, Dispatcher]:
             await callback.answer(msg.TXT_HD_NEED_CHANNEL_ALERT, show_alert=True)
             return
         crystals = int(user["crystals"] or 0)
-        if crystals < HD_REPORT_COST:
+        if crystals < settings.cost_hd:
             await callback.message.answer(
-                msg.TXT_HD_INSUFFICIENT_CRYSTALS.format(cost=HD_REPORT_COST),
+                msg.TXT_HD_INSUFFICIENT_CRYSTALS.format(cost=settings.cost_hd),
                 reply_markup=paycat.shop_packages_keyboard(),
                 parse_mode=ParseMode.HTML,
             )
             await callback.answer(
-                msg.TXT_HD_INSUFFICIENT_CRYSTALS_ALERT.format(cost=HD_REPORT_COST),
+                msg.TXT_HD_INSUFFICIENT_CRYSTALS_ALERT.format(cost=settings.cost_hd),
                 show_alert=True,
             )
             return
         await state.set_state(UserFlow.waiting_hd_birth_data)
         await callback.message.answer(
-            msg.TXT_HD_ASK_BIRTH_DATA.format(cost=HD_REPORT_COST),
+            msg.TXT_HD_ASK_BIRTH_DATA.format(cost=settings.cost_hd),
             parse_mode=ParseMode.HTML,
         )
         await callback.answer()
@@ -1048,7 +1142,7 @@ def build_dispatcher() -> tuple[Bot, Dispatcher]:
             async with chat_action_loop(bot, target.chat.id, "typing"):
                 async for chunk in generate_daily_forecast(
                     user_profile,
-                    current_cta_text=msg.TXT_HD_DAILY_ADVICE_CTA,
+                    current_cta_text=get_dynamic_cta_for_today(),
                 ):
                     if not full_text:
                         stop_animation.set()
@@ -1138,7 +1232,7 @@ def build_dispatcher() -> tuple[Bot, Dispatcher]:
                 parse_mode=ParseMode.HTML,
             )
             return
-        if not await check_and_spend(message, uid, HD_REPORT_COST):
+        if not await check_and_spend(message, uid, settings.cost_hd):
             await state.clear()
             return
 
@@ -1158,7 +1252,7 @@ def build_dispatcher() -> tuple[Bot, Dispatcher]:
             )
             row = await get_user_row(uid)
             await message.answer(
-                msg.TXT_HD_PAYMENT_OK.format(cost=HD_REPORT_COST, balance=row.crystals),
+                msg.TXT_HD_PAYMENT_OK.format(cost=settings.cost_hd, balance=row.crystals),
                 parse_mode=ParseMode.HTML,
             )
             await message.answer(
@@ -1173,7 +1267,7 @@ def build_dispatcher() -> tuple[Bot, Dispatcher]:
             )
         except Exception:
             logger.exception("hd_premium_failed user_id=%s", uid)
-            await change_user_crystals(uid, HD_REPORT_COST)
+            await change_user_crystals(uid, settings.cost_hd)
             await message.answer(
                 msg.TXT_HD_FAILED,
                 reply_markup=paycat.shop_packages_keyboard(),
@@ -1203,8 +1297,11 @@ def build_dispatcher() -> tuple[Bot, Dispatcher]:
             return
         user = await get_user(uid)
         await update_user(uid, match_partner_data=second_birth_data)
-        if not await try_consume_crystals(uid, MATCH_REPORT_COST):
-            await message.answer(msg.TXT_MATCH_INSUFFICIENT_CRYSTALS, reply_markup=paycat.shop_packages_keyboard())
+        if not await try_consume_crystals(uid, settings.cost_match):
+            await message.answer(
+                msg.format_match_insufficient_crystals(settings),
+                reply_markup=paycat.shop_packages_keyboard(),
+            )
             await state.clear()
             return
         await message.answer(msg.TXT_MATCH_PROCESSING)
@@ -1224,7 +1321,7 @@ def build_dispatcher() -> tuple[Bot, Dispatcher]:
             await answer_chat_text(message, report, settings)
         except Exception:
             logger.exception("match_failed user_id=%s", uid)
-            await change_user_crystals(uid, MATCH_REPORT_COST)
+            await change_user_crystals(uid, settings.cost_match)
             await message.answer(msg.TXT_MATCH_FAILED, reply_markup=paycat.shop_packages_keyboard())
         finally:
             await state.clear()
@@ -1448,7 +1545,7 @@ def build_dispatcher() -> tuple[Bot, Dispatcher]:
     @dp.message(UserFlow.waiting_for_upscale_photo, F.photo)
     async def upscale_process(message: Message, state: FSMContext) -> None:
         uid = message.from_user.id
-        if not await check_and_spend(message, uid, PRICE_UPSCALE):
+        if not await check_and_spend(message, uid, settings.cost_upscale):
             await state.clear()
             return
         await message.answer(msg.TXT_UPSCALE_PROCESSING)
@@ -1469,7 +1566,7 @@ def build_dispatcher() -> tuple[Bot, Dispatcher]:
                 )
         except Exception:
             logger.exception("upscale_failed user_id=%s", uid)
-            await update_balance(uid, "crystals", PRICE_UPSCALE)
+            await update_balance(uid, "crystals", settings.cost_upscale)
             await message.answer(msg.TXT_UPSCALE_FAILED)
         finally:
             await state.clear()

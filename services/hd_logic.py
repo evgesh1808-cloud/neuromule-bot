@@ -48,10 +48,22 @@ except Exception:  # pragma: no cover
 logger = logging.getLogger(__name__)
 
 DB_PATH = os.getenv("DB_PATH", REPOSITORY_DB_PATH)
-PRICE_PDF = 70
-PRICE_UPSCALE = 1
-HD_REPORT_COST = PRICE_PDF
-MATCH_REPORT_COST = 50
+
+
+def get_hd_report_cost() -> int:
+    """Стоимость полного HD-разбора (env ``COST_HD`` → ``settings.cost_hd``)."""
+    return _app_settings.cost_hd
+
+
+def get_match_report_cost() -> int:
+    """Стоимость отчёта совместимости (env ``COST_MATCH``)."""
+    return _app_settings.cost_match
+
+
+# Обратная совместимость импортов (значения из .env при загрузке модуля).
+HD_REPORT_COST = get_hd_report_cost()
+MATCH_REPORT_COST = get_match_report_cost()
+PRICE_UPSCALE = _app_settings.cost_upscale
 
 # Канал B (Gemini): приоритет 2.0, затем линейка 1.5 / алиасы (устраняет 404 у устаревших имён).
 _GEMINI_MODEL_CHAIN: tuple[str, ...] = (
@@ -279,6 +291,41 @@ def daily_advice_user_profile_from_repo_user(user: object) -> DailyAdviceUserPro
         "birth_time": parsed["birth_time"],
         "birth_place": parsed["birth_place"],
     }
+
+
+def get_dynamic_cta_for_today(now: datetime | None = None) -> str:
+    """
+    Мягкий CTA для «Совета дня» по дню недели; цены из ``settings`` (COST_* в .env).
+    """
+    moment = now or datetime.now()
+    s = _app_settings
+    weekday = moment.weekday()
+    ctas: tuple[str, ...] = (
+        (
+            f"🎨 Понедельник — визуал: PRO-фото в «Создать» от {s.cost_image_pro} 💎, "
+            f"оживление кадра — {s.cost_animate} 💎."
+        ),
+        (
+            f"🎬 Вторник — движение: короткое видео по промпту в NeuroMul — {s.cost_video} 💎."
+        ),
+        (
+            f"🎸 Среда — звук: уникальный трек по описанию стиля — {s.cost_music} 💎."
+        ),
+        (
+            f"✨ Четверг — магия кадра: оживи фото и преврати его в ролик — {s.cost_animate} 💎."
+        ),
+        (
+            f"🖼️ Пятница — образ: серия PRO-изображений от {s.cost_image_pro} 💎 за кадр."
+        ),
+        (
+            f"🎬 Суббота — кино: сцена и атмосфера в видео-генерации — {s.cost_video} 💎."
+        ),
+        (
+            f"👑 Воскресенье — фундамент: полный разбор Дизайна Человека навсегда — "
+            f"{s.cost_hd} 💎; совместимость с партнёром — {s.cost_match} 💎."
+        ),
+    )
+    return ctas[weekday % len(ctas)]
 
 
 def build_daily_advice_prompt(

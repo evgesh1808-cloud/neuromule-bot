@@ -29,6 +29,7 @@ CB_RESULT_GALLERY = "res_gallery"
 CB_RESULT_MP3 = "res_mp3"
 CB_RESULT_EDIT_LYRICS = "res_edit_lyrics"
 CB_SERVICE_RULES = "service_rules"
+CB_SUPPORT_WRITE_QUESTION = "support_write_question"
 CB_BACK_MAIN = "back_main"
 CB_BACK_CREATE = "back_create"
 CB_IMG_PREFIX = "img:"
@@ -111,6 +112,10 @@ TXT_HD_PRO_UNLOCKED = (
 TXT_MATCH_LOCKED = (
     "👩‍❤️‍👨 Совместимость откроется после покупки 🗺️ полного разбора личности."
 )
+
+
+def format_match_cost_line(settings: object) -> str:
+    return f"👩‍❤️‍👨 Совместимость стоит {int(getattr(settings, 'cost_match', 50))} 💎."
 TXT_HD_ALREADY_PURCHASED = (
     "<b>Разбор уже у тебя есть.</b>\n\n"
     "Открой разделы отчёта или проверь совместимость с партнёром — кнопки ниже."
@@ -367,17 +372,31 @@ TXT_ADVICE_BIRTH_CANCELLED = "<b>Ввод данных отменён.</b>\nВы
 TXT_ADVICE_NEED_STATE = "<b>Сначала пришли дату, время и место рождения,</b>\nили снова нажми «🔮 Совет дня»."
 
 TXT_MATCH_ASK_SECOND = (
-    "👩‍❤️‍👨 Совместимость стоит 50 💎.\n\n"
+    "{cost_line}\n\n"
     "Пришли данные второго человека одним сообщением: дата рождения, точное время и город."
 )
 TXT_MATCH_ASK_BOTH = (
-    "👩‍❤️‍👨 Совместимость стоит 50 💎.\n\n"
+    "{cost_line}\n\n"
     "У меня ещё нет твоих данных Бодиграфа. Пришли данные обоих людей одним сообщением:\n"
     "Вы: дата рождения, точное время и город\n"
     "Партнер: дата рождения, точное время и город"
 )
 TXT_MATCH_PROCESSING = "Считаю наложение карт через эфемериды и готовлю анализ совместимости через Gemini."
-TXT_MATCH_INSUFFICIENT_CRYSTALS = "Для совместимости нужно 50 💎. Пополни кристаллы в «🚀 Тарифы»."
+TXT_MATCH_INSUFFICIENT_CRYSTALS = "Для совместимости нужно {cost_match} 💎. Пополни кристаллы в «🚀 Тарифы»."
+
+
+def format_match_ask_second(settings: object) -> str:
+    return TXT_MATCH_ASK_SECOND.format(cost_line=format_match_cost_line(settings))
+
+
+def format_match_ask_both(settings: object) -> str:
+    return TXT_MATCH_ASK_BOTH.format(cost_line=format_match_cost_line(settings))
+
+
+def format_match_insufficient_crystals(settings: object) -> str:
+    return TXT_MATCH_INSUFFICIENT_CRYSTALS.format(
+        cost_match=int(getattr(settings, "cost_match", 50)),
+    )
 TXT_MATCH_FAILED = "Не удалось подготовить совместимость. Списание возвращено, попробуй позже."
 TXT_MATCH_EMPTY_DATA = "Пришли данные второго человека текстом."
 TXT_PHOTO_PROCESS = (
@@ -473,7 +492,7 @@ TXT_ANIMATE_QUEUE_ACCEPTED = (
 
 TXT_BALANCE_LOW_FOOTER = "\n\n⚠️ Внимание: кристаллы заканчиваются! [Пополнить] — раздел «Тарифы»."
 
-TXT_FAQ_ADMIN_CONTACT = "👤 Связаться с администратором"
+TXT_FAQ_WRITE_QUESTION_BTN = "💬 Написать вопрос в поддержку"
 
 TXT_FAQ_SUPPORT = (
     "🙋‍♂️ <b>ЧАСТО ЗАДАВАЕМЫЕ ВОПРОСЫ И ПОДДЕРЖКА</b>\n\n"
@@ -481,19 +500,55 @@ TXT_FAQ_SUPPORT = (
     "🌌 <b>Бесплатный совет дня</b> — ваш ежедневный навигатор. NeuroMul рассчитывает его "
     "каждое утро и показывает короткий фокус энергии, актуальный именно сегодня. "
     "Завтра совет сменится новым.\n\n"
-    "👑 <b>Полный разбор HD Premium (70 💎)</b> — фундаментальная «книга» о вашей личности "
+    "👑 <b>Полный разбор HD Premium ({cost_hd} 💎)</b> — фундаментальная «книга» о вашей личности "
     "(до ~4000 токенов), которую покупают <b>один раз навсегда</b>. Бот рассчитывает карту "
     "планет по швейцарским эфемеридам, определяет открытые и закрытые центры бодиграфа "
     "и генерирует отчёт по 4 сферам: Деньги, Отношения, Энергия и стратегический план.\n\n"
     "Дополнительно — PDF для скачивания и навсегда разблокируется модуль "
-    "<b>Совместимости с партнёром</b> (50 💎). Повторно платить за чтение своих разделов "
+    "<b>Совместимости с партнёром</b> ({cost_match} 💎). Повторно платить за чтение своих разделов "
     "не нужно!\n\n"
     "────────────────────────\n"
-    "Остались технические вопросы, пожелания или проблемы с зачислением баланса? "
-    "Нажмите кнопку ниже, чтобы написать службе поддержки напрямую."
+    "Остались технические вопросы, замечания или проблемы с зачислением баланса? "
+    "Нажмите кнопку ниже и опишите ситуацию прямо здесь — команда NeuroMul получит "
+    "обращение и ответит вам в этот чат."
 )
 
 TXT_SUPPORT_FAQ = TXT_FAQ_SUPPORT
+
+
+def format_faq_support_text(settings: object) -> str:
+    """FAQ с актуальными ценами из ``config.settings`` (COST_HD, COST_MATCH в .env)."""
+    return TXT_FAQ_SUPPORT.format(
+        cost_hd=int(getattr(settings, "cost_hd", 70)),
+        cost_match=int(getattr(settings, "cost_match", 50)),
+    )
+
+TXT_FEEDBACK_ASK = (
+    "📝 Введите ваш вопрос или опишите проблему одним сообщением. "
+    "Можно прикрепить скриншот, если возникла техническая ошибка.\n\n"
+    "Отмена: /cancel"
+)
+TXT_FEEDBACK_DELIVERED = (
+    "✅ Ваше обращение успешно доставлено команде поддержки NeuroMul! "
+    "Мы изучим проблему и пришлём ответ прямо в этот чат в ближайшее время."
+)
+TXT_FEEDBACK_EMPTY = "Отправьте текст или фото с описанием проблемы."
+TXT_FEEDBACK_CANCELLED = "Обращение в поддержку отменено."
+TXT_FEEDBACK_TICKET_HEADER = (
+    "📩 <b>НОВОЕ ОБРАЩЕНИЕ В ПОДДЕРЖКУ</b>\n"
+    "👤 Отправитель: {username} (ID: <code>{user_id}</code>)\n"
+    "───\n"
+)
+TXT_FEEDBACK_REPLY_USER = (
+    "📩 <b>ОТВЕТ СЛУЖБЫ ПОДДЕРЖКИ NEUROMUL</b>\n"
+    "───\n"
+    "{body}"
+)
+TXT_FEEDBACK_REPLY_SENT = "🚀 Ответ успешно отправлен пользователю <code>{user_id}</code>!"
+TXT_FEEDBACK_REPLY_FAILED = "❌ Не удалось отправить ответ: {error}"
+TXT_FEEDBACK_NO_ADMINS = (
+    "⚠️ Служба поддержки временно недоступна. Попробуйте позже."
+)
 
 TXT_INSTRUCTION = (
     "📍 Инструкция: Как управлять Нейро-Мулом?\n\n"
