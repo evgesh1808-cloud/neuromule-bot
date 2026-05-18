@@ -12,7 +12,7 @@ def test_format_start_message_html_escapes_ampersand_in_url() -> None:
         "text_daily_limit": 30,
         "photo_daily_limit": 3,
     }
-    out = format_start_message_html(msg.TXT_START_FIRST_MEET_OK, kw)
+    out = format_start_message_html(msg.TXT_START_FIRST_MEET_NEED_CHANNEL_2, kw)
     assert "thread=1&amp;sort=2" in out
     assert "href=" in out
     assert "<script>" not in out

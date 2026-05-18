@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import time
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -26,90 +27,62 @@ def _resolve_db_path() -> str:
 
 
 DB_PATH = _resolve_db_path()
+DAILY_ENERGY_LIMIT = 30
 
 
 async def _migrate_users(db: aiosqlite.Connection) -> None:
     async with db.execute("PRAGMA table_info(users)") as cur:
         rows = await cur.fetchall()
     cols = {row[1] for row in rows}
+    added: set[str] = set()
     alters = [
         ("tariff", "ALTER TABLE users ADD COLUMN tariff TEXT DEFAULT 'Free'"),
         ("referred_by", "ALTER TABLE users ADD COLUMN referred_by INTEGER"),
         ("photo_daily_date", "ALTER TABLE users ADD COLUMN photo_daily_date TEXT"),
         ("photo_daily_count", "ALTER TABLE users ADD COLUMN photo_daily_count INTEGER DEFAULT 0"),
+        ("balance", "ALTER TABLE users ADD COLUMN balance INTEGER DEFAULT 0"),
+        ("crystals", "ALTER TABLE users ADD COLUMN crystals INTEGER DEFAULT 0"),
+        ("balance_crystals", "ALTER TABLE users ADD COLUMN balance_crystals INTEGER DEFAULT 0"),
+        ("balance_energy", "ALTER TABLE users ADD COLUMN balance_energy INTEGER DEFAULT 30"),
+        ("last_free_date", "ALTER TABLE users ADD COLUMN last_free_date TEXT"),
+        ("last_reset_date", "ALTER TABLE users ADD COLUMN last_reset_date TEXT"),
+        ("hd_report_json", "ALTER TABLE users ADD COLUMN hd_report_json TEXT"),
+        ("hd_type", "ALTER TABLE users ADD COLUMN hd_type TEXT"),
+        ("hd_birth_data", "ALTER TABLE users ADD COLUMN hd_birth_data TEXT"),
+        ("match_partner_data", "ALTER TABLE users ADD COLUMN match_partner_data TEXT"),
         ("username", "ALTER TABLE users ADD COLUMN username TEXT"),
         ("persistent_memory", "ALTER TABLE users ADD COLUMN persistent_memory TEXT"),
         ("text_daily_date", "ALTER TABLE users ADD COLUMN text_daily_date TEXT"),
         ("text_daily_count", "ALTER TABLE users ADD COLUMN text_daily_count INTEGER DEFAULT 0"),
         ("has_paid", "ALTER TABLE users ADD COLUMN has_paid INTEGER DEFAULT 0"),
+        ("has_pro_analysis", "ALTER TABLE users ADD COLUMN has_pro_analysis INTEGER DEFAULT 0"),
+        ("advice_birth_data", "ALTER TABLE users ADD COLUMN advice_birth_data TEXT"),
+        ("advice_user_role", "ALTER TABLE users ADD COLUMN advice_user_role TEXT"),
+        ("advice_pending_at", "ALTER TABLE users ADD COLUMN advice_pending_at REAL"),
     ]
     for name, ddl in alters:
         if name not in cols:
             await db.execute(ddl)
+            added.add(name)
+    if "balance" in added:
+        await db.execute("UPDATE users SET balance = 0")
+    if "crystals" in added and "balance" in cols:
+        await db.execute("UPDATE users SET crystals = COALESCE(balance, 0)")
+    if "balance_crystals" in added:
+        if "crystals" in cols:
+            await db.execute("UPDATE users SET balance_crystals = COALESCE(crystals, 0)")
+        elif "balance" in cols:
+            await db.execute("UPDATE users SET balance_crystals = COALESCE(balance, 0)")
+    if "balance_energy" in added:
+        if "energy" in cols:
+            await db.execute("UPDATE users SET balance_energy = COALESCE(energy, 30)")
+        else:
+            await db.execute("UPDATE users SET balance_energy = 30")
 
 
 async def _migrate_drop_users_crystals(db: aiosqlite.Connection) -> None:
-    """Удаляет устаревшую колонку ``crystals`` из ``users`` (SQLite ≥ 3.35) или копирует таблицу без неё."""
-    async with db.execute("PRAGMA table_info(users)") as cur:
-        rows = await cur.fetchall()
-    names = {str(r[1]) for r in rows}
-    if "crystals" not in names:
-        return
-    try:
-        await db.execute("ALTER TABLE users DROP COLUMN crystals")
-        return
-    except sqlite3.OperationalError:
-        pass
-
-    await db.execute(
-        """
-        CREATE TABLE users__no_crystals (
-            id INTEGER PRIMARY KEY,
-            energy INTEGER DEFAULT 20,
-            tariff TEXT DEFAULT 'Free',
-            referred_by INTEGER,
-            photo_daily_date TEXT,
-            photo_daily_count INTEGER DEFAULT 0,
-            username TEXT,
-            persistent_memory TEXT,
-            text_daily_date TEXT,
-            text_daily_count INTEGER DEFAULT 0,
-            has_paid INTEGER DEFAULT 0
-        )
-        """
-    )
-    await db.execute(
-        """
-        INSERT INTO users__no_crystals (
-            id,
-            energy,
-            tariff,
-            referred_by,
-            photo_daily_date,
-            photo_daily_count,
-            username,
-            persistent_memory,
-            text_daily_date,
-            text_daily_count,
-            has_paid
-        )
-        SELECT
-            id,
-            energy,
-            COALESCE(tariff, 'Free'),
-            referred_by,
-            photo_daily_date,
-            photo_daily_count,
-            username,
-            persistent_memory,
-            text_daily_date,
-            text_daily_count,
-            COALESCE(has_paid, 0)
-        FROM users
-        """
-    )
-    await db.execute("DROP TABLE users")
-    await db.execute("ALTER TABLE users__no_crystals RENAME TO users")
+    """Legacy no-op: ``crystals`` is now a persistent paid balance and must stay."""
+    return
 
 
 async def _migrate_rate_limit_hits(db: aiosqlite.Connection) -> None:
@@ -176,7 +149,17 @@ async def init_db(promo_seeds: str = "") -> None:
             """
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY,
-                energy INTEGER DEFAULT 20,
+                energy INTEGER DEFAULT 30,
+                crystals INTEGER DEFAULT 0,
+                balance INTEGER DEFAULT 0,
+                balance_crystals INTEGER DEFAULT 0,
+                balance_energy INTEGER DEFAULT 30,
+                last_free_date TEXT,
+                last_reset_date TEXT,
+                hd_report_json TEXT,
+                hd_type TEXT,
+                hd_birth_data TEXT,
+                match_partner_data TEXT,
                 tariff TEXT DEFAULT 'Free',
                 referred_by INTEGER,
                 photo_daily_date TEXT,
@@ -248,6 +231,10 @@ async def init_db(promo_seeds: str = "") -> None:
 class UserRow:
     id: int
     energy: int
+    crystals: int
+    balance_energy: int
+    balance_crystals: int
+    balance: int
     tariff: str
     referred_by: int | None
     photo_daily_date: str | None
@@ -255,19 +242,39 @@ class UserRow:
     text_daily_date: str | None
     text_daily_count: int
     has_paid: bool
+    last_free_date: str | None
+    last_reset_date: str | None
 
 
 async def ensure_user(user_id: int, username: str | None = None) -> None:
+    today = date.today().isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT id FROM users WHERE id = ?", (user_id,)) as cur:
+        async with db.execute("SELECT id, last_reset_date FROM users WHERE id = ?", (user_id,)) as cur:
             exists = await cur.fetchone()
         if not exists:
             await db.execute(
                 """
-                INSERT INTO users (id, energy, tariff, referred_by, photo_daily_date, photo_daily_count)
-                VALUES (?, 20, 'Free', NULL, NULL, 0)
+                INSERT INTO users (
+                    id,
+                    energy,
+                    crystals,
+                    balance_energy,
+                    balance_crystals,
+                    balance,
+                    last_reset_date,
+                    tariff,
+                    referred_by,
+                    photo_daily_date,
+                    photo_daily_count
+                )
+                VALUES (?, 30, 0, 30, 0, 0, ?, 'Free', NULL, NULL, 0)
                 """,
-                (user_id,),
+                (user_id, today),
+            )
+        elif (exists[1] or "") != today:
+            await db.execute(
+                "UPDATE users SET energy = ?, balance_energy = ?, last_reset_date = ? WHERE id = ?",
+                (DAILY_ENERGY_LIMIT, DAILY_ENERGY_LIMIT, today, user_id),
             )
         if username is not None:
             u = username.strip()[:255] if username else ""
@@ -283,13 +290,19 @@ async def get_user_row(user_id: int) -> UserRow:
             SELECT
                 id,
                 energy,
+                crystals,
+                balance_energy,
+                balance_crystals,
+                balance,
                 tariff,
                 referred_by,
                 photo_daily_date,
                 photo_daily_count,
                 text_daily_date,
                 text_daily_count,
-                has_paid
+                has_paid,
+                last_free_date,
+                last_reset_date
             FROM users WHERE id = ?
             """,
             (user_id,),
@@ -297,14 +310,20 @@ async def get_user_row(user_id: int) -> UserRow:
             row = await cur.fetchone()
     return UserRow(
         id=int(row[0]),
-        energy=int(row[1]),
-        tariff=str(row[2] or "Free"),
-        referred_by=int(row[3]) if row[3] is not None else None,
-        photo_daily_date=row[4],
-        photo_daily_count=int(row[5] or 0),
-        text_daily_date=row[6],
-        text_daily_count=int(row[7] or 0),
-        has_paid=bool(row[8] or 0),
+        energy=int(row[1] or 0),
+        crystals=int(row[2] or 0),
+        balance_energy=int(row[3] or 0),
+        balance_crystals=int(row[4] or 0),
+        balance=int(row[5] or 0),
+        tariff=str(row[6] or "Free"),
+        referred_by=int(row[7]) if row[7] is not None else None,
+        photo_daily_date=row[8],
+        photo_daily_count=int(row[9] or 0),
+        text_daily_date=row[10],
+        text_daily_count=int(row[11] or 0),
+        has_paid=bool(row[12] or 0),
+        last_free_date=row[13],
+        last_reset_date=row[14],
     )
 
 
@@ -336,11 +355,31 @@ async def referrals_count(inviter_id: int) -> int:
 
 
 async def update_balance(user_id: int, field: str, delta: int) -> None:
-    if field != "energy":
+    if field not in {"energy", "crystals", "balance", "balance_energy", "balance_crystals"}:
         raise ValueError("Invalid field")
     await ensure_user(user_id)
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(f"UPDATE users SET {field} = {field} + ? WHERE id = ?", (delta, user_id))
+        if field in {"crystals", "balance", "balance_crystals"}:
+            await db.execute(
+                """
+                UPDATE users
+                SET crystals = crystals + ?,
+                    balance = crystals + ?,
+                    balance_crystals = crystals + ?
+                WHERE id = ?
+                """,
+                (delta, delta, delta, user_id),
+            )
+        else:
+            await db.execute(
+                """
+                UPDATE users
+                SET energy = energy + ?,
+                    balance_energy = energy + ?
+                WHERE id = ?
+                """,
+                (delta, delta, user_id),
+            )
         await db.commit()
 
 
@@ -350,17 +389,87 @@ async def try_consume_energy(user_id: int, amount: int) -> bool:
     await ensure_user(user_id)
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute(
-            "UPDATE users SET energy = energy - ? WHERE id = ? AND energy >= ?",
-            (amount, user_id, amount),
+            """
+            UPDATE users
+            SET energy = energy - ?,
+                balance_energy = energy - ?
+            WHERE id = ? AND energy >= ?
+            """,
+            (amount, amount, user_id, amount),
         )
         await db.commit()
         return cur.rowcount == 1
 
 
+async def try_consume_crystals(user_id: int, amount: int) -> bool:
+    if amount <= 0:
+        return True
+    await ensure_user(user_id)
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            """
+            UPDATE users
+            SET crystals = crystals - ?,
+                balance = crystals - ?,
+                balance_crystals = crystals - ?
+            WHERE id = ? AND crystals >= ?
+            """,
+            (amount, amount, amount, user_id, amount),
+        )
+        await db.commit()
+        return cur.rowcount == 1
+
+
+async def check_and_spend(user_id: int, amount: int) -> bool:
+    """Проверить и списать 💎 с баланса пользователя."""
+    return await try_consume_crystals(user_id, amount)
+
+
+async def try_consume_chat_credit(user_id: int) -> str | None:
+    """Spend 1 free energy first, then 1 paid crystal. Returns spent column name."""
+    await ensure_user(user_id)
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            """
+            UPDATE users
+            SET energy = energy - 1,
+                balance_energy = energy - 1
+            WHERE id = ? AND energy >= 1
+            """,
+            (user_id,),
+        )
+        if cur.rowcount == 1:
+            await db.commit()
+            return "energy"
+        cur = await db.execute(
+            """
+            UPDATE users
+            SET crystals = crystals - 1,
+                balance = crystals - 1,
+                balance_crystals = crystals - 1
+            WHERE id = ? AND crystals >= 1
+            """,
+            (user_id,),
+        )
+        await db.commit()
+        if cur.rowcount == 1:
+            return "crystals"
+    return None
+
+
+async def reset_daily_energy(limit: int = DAILY_ENERGY_LIMIT) -> None:
+    today = date.today().isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE users SET energy = ?, balance_energy = ?, last_reset_date = ?", (limit, limit, today))
+        await db.commit()
+
+
 async def try_consume_daily_photo_slot(user_id: int, daily_limit: int) -> tuple[bool, int]:
+    """Атомарно резервирует слот free-фото (BEGIN IMMEDIATE — защита от гонок)."""
     await ensure_user(user_id)
     today = date.today().isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("BEGIN IMMEDIATE")
         async with db.execute(
             "SELECT photo_daily_date, photo_daily_count FROM users WHERE id = ?",
             (user_id,),
@@ -370,19 +479,82 @@ async def try_consume_daily_photo_slot(user_id: int, daily_limit: int) -> tuple[
         count = int(c or 0)
         if d != today:
             count = 0
-            await db.execute(
-                "UPDATE users SET photo_daily_date = ?, photo_daily_count = 0 WHERE id = ?",
-                (today, user_id),
-            )
         if count >= daily_limit:
             await db.commit()
             return False, count
+        new_count = count + 1
         await db.execute(
-            "UPDATE users SET photo_daily_date = ?, photo_daily_count = ? WHERE id = ?",
-            (today, count + 1, user_id),
+            """
+            UPDATE users
+            SET photo_daily_date = ?, photo_daily_count = ?
+            WHERE id = ?
+            """,
+            (today, new_count, user_id),
         )
         await db.commit()
-        return True, count + 1
+        return True, new_count
+
+
+_ADVICE_PENDING_STALE_SEC = 900.0
+
+
+async def try_begin_daily_advice(user_id: int) -> bool:
+    """
+    Резервирует генерацию совета дня (без фиксации last_free_date).
+
+    Блокирует повторный запуск, пока другой запрос в процессе; зависший lock
+  сбрасывается через ``_ADVICE_PENDING_STALE_SEC`` секунд.
+    """
+    await ensure_user(user_id)
+    today = date.today().isoformat()
+    now = time.time()
+    stale_before = now - _ADVICE_PENDING_STALE_SEC
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        async with db.execute(
+            "SELECT last_free_date, advice_pending_at FROM users WHERE id = ?",
+            (user_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        last_free = (row[0] or "") if row else ""
+        pending_at = float(row[1] or 0) if row and row[1] is not None else 0.0
+        if last_free == today:
+            await db.commit()
+            return False
+        if pending_at and pending_at > stale_before:
+            await db.commit()
+            return False
+        await db.execute(
+            "UPDATE users SET advice_pending_at = ? WHERE id = ?",
+            (now, user_id),
+        )
+        await db.commit()
+        return True
+
+
+async def commit_daily_advice(user_id: int) -> None:
+    """Фиксирует успешный совет дня (суточный лимит)."""
+    today = date.today().isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            UPDATE users
+            SET last_free_date = ?, advice_pending_at = NULL
+            WHERE id = ?
+            """,
+            (today, user_id),
+        )
+        await db.commit()
+
+
+async def rollback_daily_advice(user_id: int) -> None:
+    """Снимает резерв при ошибке Gemini (лимит не тратится)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE users SET advice_pending_at = NULL WHERE id = ?",
+            (user_id,),
+        )
+        await db.commit()
 
 
 async def rollback_daily_photo_slot(user_id: int) -> None:
@@ -655,6 +827,7 @@ async def insert_payment_event(
 @dataclass(frozen=True)
 class SalesStats:
     users_total: int
+    orders_total: int
     mini_today: int
     smart_today: int
     ultra_today: int
@@ -670,6 +843,9 @@ async def get_sales_stats() -> SalesStats:
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT COUNT(*) FROM users") as cur:
             users_total = int((await cur.fetchone())[0] or 0)
+
+        async with db.execute("SELECT COUNT(*) FROM payment_events") as cur:
+            orders_total = int((await cur.fetchone())[0] or 0)
 
         async with db.execute(
             "SELECT tariff, COUNT(*) FROM payment_events WHERE created_at = ? GROUP BY tariff",
@@ -690,6 +866,7 @@ async def get_sales_stats() -> SalesStats:
 
     return SalesStats(
         users_total=users_total,
+        orders_total=orders_total,
         mini_today=today_map.get("MINI", 0),
         smart_today=today_map.get("SMART", 0),
         ultra_today=today_map.get("ULTRA", 0),
@@ -699,6 +876,22 @@ async def get_sales_stats() -> SalesStats:
         revenue_rub_total=rev_map.get("RUB", 0),
         revenue_xtr_total=rev_map.get("XTR", 0),
     )
+
+
+def sales_stats_as_dict(stats: SalesStats) -> dict[str, int | float]:
+    """Сводка для админ-панели (ключи как в шаблоне process_admin_stats)."""
+    return {
+        "total_users": stats.users_total,
+        "total_orders": stats.orders_total,
+        "today_mini": stats.mini_today,
+        "today_smart": stats.smart_today,
+        "today_ultra": stats.ultra_today,
+        "all_mini": stats.mini_all,
+        "all_smart": stats.smart_all,
+        "all_ultra": stats.ultra_all,
+        "revenue_rub": stats.revenue_rub_total,
+        "revenue_stars": stats.revenue_xtr_total,
+    }
 
 
 async def add_promo_code(code: str, reward: int, uses: int) -> bool:

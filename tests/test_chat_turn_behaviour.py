@@ -44,7 +44,7 @@ async def test_run_chat_turn_openrouter_all_500(repo_module):
 
     assert r.outcome is ChatTurnOutcome.AI_FAILED
     row = await repo_module.get_user_row(uid)
-    assert row.energy == 20
+    assert row.energy == 30
 
 
 async def test_run_chat_turn_jailbreak_prompt_mocked(repo_module):

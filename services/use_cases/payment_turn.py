@@ -1,4 +1,4 @@
-"""Use-case: успешная оплата Telegram invoice — идемпотентное начисление энергии."""
+"""Use-case: успешная оплата Telegram invoice — идемпотентное начисление кристаллов."""
 
 from __future__ import annotations
 
@@ -29,6 +29,7 @@ class PaymentApplyResult:
 
     outcome: PaymentApplyOutcome
     energy_credited: int = 0
+    crystals_credited: int = 0
     tariff_activated: str = ""
 
 
@@ -41,7 +42,7 @@ async def run_successful_payment_apply(
     fallback_charge_id: str | None = None,
 ) -> PaymentApplyResult:
     """
-    Проверяет payload, charge id, начисляет энергию один раз на charge.
+    Проверяет payload, charge id, начисляет кристаллы один раз на charge.
 
     Вход:
         payer_telegram_id — ``message.from_user.id`` из Telegram.
@@ -61,27 +62,33 @@ async def run_successful_payment_apply(
 
     pack = paycat.PACKAGES[pkg_i]
     energy = pack.energy
+    crystals = pack.crystals
     charge_id = (telegram_charge_id or provider_charge_id or "").strip()
     if not charge_id:
         charge_id = (fallback_charge_id or "").strip()
     if not charge_id:
         return PaymentApplyResult(outcome=PaymentApplyOutcome.INVALID)
 
-    if not await claim_payment_charge(charge_id, uid, energy):
+    if not await claim_payment_charge(charge_id, uid, energy + crystals):
         return PaymentApplyResult(outcome=PaymentApplyOutcome.DUPLICATE)
 
     await ensure_user(uid)
-    await update_balance(uid, "energy", energy)
-    await set_user_tariff(uid, pack.tariff)
+    if energy:
+        await update_balance(uid, "energy", energy)
+    if crystals:
+        await update_balance(uid, "crystals", crystals)
+    if pack.is_tariff:
+        await set_user_tariff(uid, pack.tariff)
     amount = pack.rub_kopecks if _method == "r" else pack.stars
     currency = "RUB" if _method == "r" else "XTR"
     await insert_payment_event(uid, pack.tariff, _method, amount, currency)
     inviter_id = await mark_user_first_purchase_and_get_referrer(uid)
     if inviter_id is not None and inviter_id > 0:
         await ensure_user(inviter_id)
-        await update_balance(inviter_id, "energy", settings.referral_bonus_energy)
+        await update_balance(inviter_id, "crystals", settings.referral_bonus_energy)
     return PaymentApplyResult(
         outcome=PaymentApplyOutcome.SUCCESS,
         energy_credited=energy,
+        crystals_credited=crystals,
         tariff_activated=pack.tariff,
     )

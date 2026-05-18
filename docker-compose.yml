@@ -1,29 +1,24 @@
-# Рядом с этим файлом должен быть .env (переменные в контейнер; в образ не копируется).
-#
-# Пути внутри контейнера: /app/data (БД), /app/logs (ротационные логи).
-#
-# По умолчанию — именованные Docker-тома (удобно и на Windows, и наTimeweb).
-#
-# Если нужно хранить файлы прямо на хосте (например /opt/neuromule для бэкапа):
-# в .env задай две переменные (абсолютные пути), Перед первым запуском:
-#   sudo mkdir -p /opt/neuromule/data /opt/neuromule/logs
-#   NM_DATA_VOL=/opt/neuromule/data
-#   NM_LOGS_VOL=/opt/neuromule/logs
-
 services:
-  neuromule-bot:
+  neuromule:
     build: .
-    container_name: neuromule-bot
-    restart: always
-    working_dir: /app
+    image: neuromule:latest
+    container_name: neuromule
+    restart: unless-stopped
     env_file:
       - .env
     environment:
+      NEUROMULE_PLATFORM: telegram
       DB_PATH: /app/data/neuromule_base.db
-      LOG_DIR: logs
+      LOG_DIR: /app/logs
     volumes:
-      - ${NM_DATA_VOL:-neuromule_data}:/app/data
-      - ${NM_LOGS_VOL:-neuromule_logs}:/app/logs
+      - neuromule_data:/app/data
+      - neuromule_logs:/app/logs
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'python main.py' >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
 
 volumes:
   neuromule_data:

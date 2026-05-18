@@ -1,44 +1,133 @@
-"""Use-case: оживление фото — списание энергии и постановка ``fire_animate_job``."""
+"""Use-case: оживление фото — списание кристаллов и постановка ``fire_animate_job``."""
+
+
 
 from __future__ import annotations
 
+
+
 from dataclasses import dataclass
+
 from enum import Enum
+
 from typing import TYPE_CHECKING
 
-from config import Settings
-from services.generation_jobs import fire_animate_job
-from services.repository import get_user_row, try_consume_energy
+
+
+from config import Settings, settings as app_settings
+
+from content import messages as msg
+
+from services.generation_jobs import GenTask, fire_animate_job, make_animate_task_id
+
+from services.repository import get_user_row, try_consume_crystals
+
 from services.tariffs import can_use_animate, normalize_tariff
 
+
+
 if TYPE_CHECKING:
+
     from aiogram import Bot
 
 
+
+
+
 class AnimateGenOutcome(str, Enum):
+
+    NEED_PHOTO = "need_photo"
+
     FORBIDDEN_BY_TARIFF = "forbidden_by_tariff"
+
     INSUFFICIENT_BALANCE = "insufficient_balance"
+
     SUCCESS = "success"
 
 
+
+
+
 @dataclass(frozen=True)
+
 class AnimateGenResult:
+
     outcome: AnimateGenOutcome
+
     upgrade_to: str | None = None
 
 
+
+
+
 async def run_animate_generation_turn(
-    settings: Settings, bot: "Bot", chat_id: int, user_id: int
+
+    *,
+
+    uid: int,
+
+    telegram_file_id: str,
+
+    bot: "Bot",
+
+    chat_id: int | None = None,
+
+    settings: Settings | None = None,
+
 ) -> AnimateGenResult:
+
     """
-    Вход: settings, bot, chat_id, user_id (фото уже принято хендлером).
-    Возвращает: ``AnimateGenResult``; при SUCCESS задача поставлена.
+
+    1. Валидация file_id, тарифа (``can_use_animate``) и баланса.
+
+    2. ``GenTask`` с ``file_id`` (паспорт фото в Telegram).
+
+    3. ``fire_animate_job`` → фоновая очередь.
+
+    4. Уведомление в чат.
+
     """
-    row = await get_user_row(user_id)
+
+    cfg = settings or app_settings
+
+    cid = chat_id if chat_id is not None else uid
+
+    photo_id = (telegram_file_id or "").strip()
+
+    if not photo_id:
+
+        return AnimateGenResult(outcome=AnimateGenOutcome.NEED_PHOTO)
+
+
+
+    row = await get_user_row(uid)
+
     tariff = normalize_tariff(row.tariff)
+
     if not can_use_animate(tariff):
+
         return AnimateGenResult(outcome=AnimateGenOutcome.FORBIDDEN_BY_TARIFF, upgrade_to="ultra")
-    if not await try_consume_energy(user_id, settings.cost_animate):
+
+    cost = cfg.cost_animate
+    if not await try_consume_crystals(uid, cost):
         return AnimateGenResult(outcome=AnimateGenOutcome.INSUFFICIENT_BALANCE)
-    fire_animate_job(bot, chat_id, user_id)
+
+    new_task = GenTask(
+        task_id=make_animate_task_id(uid),
+        bot=bot,
+        chat_id=cid,
+        user_id=uid,
+        task_type="animate",
+        status="pending",
+        file_id=photo_id,
+        charged_crystals=cost,
+    )
+
+    fire_animate_job(new_task)
+
+    await bot.send_message(cid, msg.TXT_ANIMATE_QUEUE_ACCEPTED)
+
+
+
     return AnimateGenResult(outcome=AnimateGenOutcome.SUCCESS)
+

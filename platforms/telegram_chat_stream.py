@@ -13,6 +13,7 @@ from aiogram.exceptions import TelegramBadRequest
 
 from config import Settings
 from services.ai_text import StreamCallback
+from services.telegram_safe_text import sanitize_telegram_plain_text
 
 if TYPE_CHECKING:
     from aiogram import Bot
@@ -32,7 +33,7 @@ def create_throttled_stream_reply(message: "Message", bot: "Bot", settings: Sett
 
     async def on_stream(full_text: str, done: bool) -> None:
         """Вызывается из слоя AI на каждую дельту и один раз в конце (``done=True``)."""
-        capped = (full_text or "")[:4090]
+        capped = sanitize_telegram_plain_text(full_text or "")
         now = time.monotonic()
         if state["sent_msg"] is None:
             if not capped:

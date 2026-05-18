@@ -1,4 +1,4 @@
-"""Пакеты тарифов для Telegram Payments (ЮKassa / Stars)."""
+"""Пакеты магазина для Telegram Payments (ЮKassa / Stars)."""
 from __future__ import annotations
 
 import re
@@ -14,21 +14,26 @@ class EnergyPack:
     index: int
     tariff: str
     energy: int
+    crystals: int
     rub_kopecks: int
     stars: int
+    is_tariff: bool = True
 
     @property
     def button_label(self) -> str:
         rub = self.rub_kopecks // 100
-        return f"{self.tariff} — {self.energy} ⚡️ • {rub}₽ / {self.stars} ⭐"
+        if self.energy > 0:
+            return f"{self.tariff} — {self.energy} ⚡️ + {self.crystals} 💎 • {rub}₽ / {self.stars} ⭐"
+        return f"{self.tariff} — {self.crystals} 💎 • {rub}₽ / {self.stars} ⭐"
 
 
-def load_energy_packages() -> tuple[EnergyPack, EnergyPack, EnergyPack]:
+def load_energy_packages() -> tuple[EnergyPack, ...]:
     return (
         EnergyPack(
             0,
             "MINI",
             settings.mini_energy,
+            settings.mini_crystals,
             settings.mini_rub_kopecks,
             settings.mini_stars,
         ),
@@ -36,6 +41,7 @@ def load_energy_packages() -> tuple[EnergyPack, EnergyPack, EnergyPack]:
             1,
             "SMART",
             settings.smart_energy,
+            settings.smart_crystals,
             settings.smart_rub_kopecks,
             settings.smart_stars,
         ),
@@ -43,8 +49,36 @@ def load_energy_packages() -> tuple[EnergyPack, EnergyPack, EnergyPack]:
             2,
             "ULTRA",
             settings.ultra_energy,
+            settings.ultra_crystals,
             settings.ultra_rub_kopecks,
             settings.ultra_stars,
+        ),
+        EnergyPack(
+            3,
+            "10 💎",
+            0,
+            settings.crystals_10_amount,
+            settings.crystals_10_rub_kopecks,
+            settings.crystals_10_stars,
+            False,
+        ),
+        EnergyPack(
+            4,
+            "40 💎",
+            0,
+            settings.crystals_40_amount,
+            settings.crystals_40_rub_kopecks,
+            settings.crystals_40_stars,
+            False,
+        ),
+        EnergyPack(
+            5,
+            "100 💎",
+            0,
+            settings.crystals_100_amount,
+            settings.crystals_100_rub_kopecks,
+            settings.crystals_100_stars,
+            False,
         ),
     )
 
@@ -54,8 +88,8 @@ PACKAGES = load_energy_packages()
 CB_PAY_PKG_PREFIX = "pk:"
 CB_PAY_METHOD_PREFIX = "pm:"
 
-_RE_PKG = re.compile(r"^pk:([0-2]|back)$")
-_RE_METHOD = re.compile(r"^pm:([0-2]):([rx])$")
+_RE_PKG = re.compile(r"^pk:(\d+|back)$")
+_RE_METHOD = re.compile(r"^pm:(\d+):([rx])$")
 
 
 def shop_packages_keyboard() -> InlineKeyboardMarkup:
@@ -85,14 +119,20 @@ def parse_pkg_callback(data: str) -> int | str | None:
     g = m.group(1)
     if g == "back":
         return "back"
-    return int(g)
+    idx = int(g)
+    if idx < 0 or idx >= len(PACKAGES):
+        return None
+    return idx
 
 
 def parse_method_callback(data: str) -> tuple[int, str] | None:
     m = _RE_METHOD.match(data or "")
     if not m:
         return None
-    return int(m.group(1)), m.group(2)
+    idx = int(m.group(1))
+    if idx < 0 or idx >= len(PACKAGES):
+        return None
+    return idx, m.group(2)
 
 
 def build_invoice_payload(user_id: int, pkg_index: int, method: str) -> str:
@@ -112,15 +152,16 @@ def parse_invoice_payload(payload: str) -> tuple[int, int, str] | None:
         method = parts[3]
     except ValueError:
         return None
-    if method not in ("r", "x") or pkg not in (0, 1, 2):
+    if method not in ("r", "x") or pkg < 0 or pkg >= len(PACKAGES):
         return None
     return uid, pkg, method
 
 
 def labeled_prices_for(pack: EnergyPack, method: str) -> list[LabeledPrice]:
+    label = f"{pack.energy} ⚡️ + {pack.crystals} 💎" if pack.energy > 0 else f"{pack.crystals} 💎 кристаллов"
     if method == "r":
-        return [LabeledPrice(label=f"{pack.energy} ⚡ энергии", amount=pack.rub_kopecks)]
-    return [LabeledPrice(label=f"{pack.energy} ⚡ энергии", amount=pack.stars)]
+        return [LabeledPrice(label=label, amount=pack.rub_kopecks)]
+    return [LabeledPrice(label=label, amount=pack.stars)]
 
 
 def invoice_currency(method: str) -> str:

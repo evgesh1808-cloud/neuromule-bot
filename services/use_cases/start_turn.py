@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from config import Settings
-from services.repository import ensure_user, try_set_referrer
+from services.repository import ensure_user, get_user_row, try_set_referrer
 
 
 class StartFlowOutcome(str, Enum):
@@ -69,10 +69,13 @@ async def run_start_turn(
         ``StartTurnResult`` с исходом и ``template_kwargs`` для ``.format`` текстов приветствия.
     """
     await ensure_user(user_id, username)
+    row = await get_user_row(user_id)
     template_kwargs: dict[str, object] = dict(
         channel_url=settings.channel_url,
         text_daily_limit=settings.free_daily_chat_limit,
         photo_daily_limit=settings.free_daily_photo_limit,
+        energy=row.energy,
+        crystals=row.crystals,
     )
     if not await is_subscribed(user_id):
         return StartTurnResult(StartFlowOutcome.NEED_CHANNEL, template_kwargs)

@@ -35,7 +35,7 @@ def resolve_tariff_shop_callback(callback_data: str) -> TariffShopNavView:
     По ``callback_data`` (префикс ``pk:`` из ``payments_catalog``) определяет следующий экран.
 
     Возвращает:
-        ``TariffShopNavView`` — при ``INVALID`` текст пустой; при ``CHOOSE_METHOD`` задан ``pkg_index`` 0..2.
+        ``TariffShopNavView`` — при ``INVALID`` текст пустой; при ``CHOOSE_METHOD`` задан ``pkg_index``.
     """
     parsed = paycat.parse_pkg_callback(callback_data or "")
     if parsed is None:

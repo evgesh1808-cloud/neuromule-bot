@@ -11,7 +11,7 @@ from content import messages as msg
 
 def build_payment_shop_intro_text() -> str:
     """Собирает текст экрана «Тарифы / пакеты энергии» с подставленным списком планов из конфигурации копирайта."""
-    plans = "\n".join(msg.TARIFF_PLANS)
+    plans = "\n\n".join(msg.TARIFF_PLANS)
     return msg.TXT_PAY_SHOP_INTRO.format(plans=plans)
 
 

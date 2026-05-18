@@ -68,6 +68,10 @@ async def test_build_cabinet_view_contains_user_and_ref(repo_module) -> None:
     s = Settings().model_copy(update={"telegram_bot_username": "CabinetTestBot"})
     view = await build_cabinet_view(s, uid)
     assert str(uid) in view.text
+    assert "👤 Мой профиль" in view.text
+    assert "Твой ID:" in view.text
+    assert "Текущий тариф: FREE" in view.text
+    assert "Баланс: ⚡️ 37 | 💎 0" in view.text
     assert "CabinetTestBot" in view.text
     assert "ref_" in view.text
 

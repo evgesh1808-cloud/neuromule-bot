@@ -1,11 +1,11 @@
-"""Загрузка настроек из переменных окружения и файла ``.env`` (pydantic-settings)."""
+"""Чтение настроек из переменных окружения и файла ``.env`` (pydantic-settings)."""
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Annotated, Any
 
-from pydantic import BeforeValidator, Field
+from pydantic import AliasChoices, BeforeValidator, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _ENV_FILE = Path(__file__).resolve().with_name(".env")
@@ -122,13 +122,31 @@ class Settings(BaseSettings):
         extra="ignore",
         frozen=True,
         populate_by_name=True,
+        enable_decoding=False,
     )
 
-    tg_token: str = ""
-    payment_token: str = ""
+    tg_token: str = Field(
+        default="",
+        validation_alias=AliasChoices("TG_TOKEN", "TOKEN_BOT", "TELEGRAM_BOT_TOKEN"),
+    )
+    payment_token: str = Field(
+        default="",
+        validation_alias=AliasChoices("PAYMENT_TOKEN", "UKASSA_PROVIDER_TOKEN"),
+    )
     shop_payment_title: Annotated[str, _nonempty_str("NeuroMule")] = "NeuroMule"
     openrouter_key: str = Field(default="", alias="OPENROUTER_API_KEY")
     openrouter_chat_url: str = "https://openrouter.ai/api/v1/chat/completions"
+    gemini_api_key: str = Field(default="", alias="GEMINI_API_KEY")
+    replicate_api_token: str = Field(default="", alias="REPLICATE_API_TOKEN")
+    replicate_video_model: Annotated[str, _nonempty_str("luma/ray-flash")] = "luma/ray-flash"
+    replicate_animate_model: Annotated[str, _nonempty_str("luma/ray-flash")] = "luma/ray-flash"
+    replicate_poll_interval_sec: Annotated[float, _coerce_float(3.0)] = 3.0
+    replicate_poll_timeout_sec: Annotated[float, _coerce_float(600.0)] = 600.0
+    suno_api_token: str = Field(default="", alias="SUNO_API_TOKEN")
+    suno_api_url: Annotated[str, _nonempty_str("https://suno.ai")] = "https://suno.ai"
+    suno_make_instrumental: bool = False
+    suno_wait_audio: bool = True
+    suno_request_timeout_sec: Annotated[float, _coerce_float(300.0)] = 300.0
     bot_name: str = "NeuroMule"
     channel_id: str = "@mulendeeva_ai"
     channel_url: Annotated[str, _nonempty_str("https://t.me/mulendeeva_ai")] = "https://t.me/mulendeeva_ai"
@@ -146,14 +164,14 @@ class Settings(BaseSettings):
     free_daily_photo_limit: Annotated[int, _coerce_int(3)] = 3
     free_daily_chat_limit: Annotated[int, _coerce_int(30)] = 30
     energy_low_threshold: Annotated[int, _coerce_int(50)] = 50
-    cost_animate_video_suggest: Annotated[int, _coerce_int(80)] = 80
+    cost_animate_video_suggest: Annotated[int, _coerce_int(20)] = 20
 
     cost_text_pro: Annotated[int, _coerce_int(10)] = 10
-    cost_image_pro: Annotated[int, _coerce_int(50)] = 50
-    cost_music: Annotated[int, _coerce_int(150)] = 150
-    cost_video: Annotated[int, _coerce_int(350)] = 350
-    cost_animate: Annotated[int, _coerce_int(350)] = 350
-    cost_hd: Annotated[int, _coerce_int(100)] = 100
+    cost_image_pro: Annotated[int, _coerce_int(2)] = 2
+    cost_music: Annotated[int, _coerce_int(5)] = 5
+    cost_video: Annotated[int, _coerce_int(20)] = 20
+    cost_animate: Annotated[int, _coerce_int(20)] = 20
+    cost_hd: Annotated[int, _coerce_int(70)] = 70
     referral_bonus_energy: Annotated[int, _coerce_int(50)] = 50
 
     service_offer_url: str = (
@@ -180,16 +198,31 @@ class Settings(BaseSettings):
     free_daily_text_limit: Annotated[int, _coerce_int(30)] = 30
 
     mini_energy: Annotated[int, _coerce_int(500)] = 500
-    mini_rub_kopecks: Annotated[int, _coerce_int(24900)] = 24900
-    mini_stars: Annotated[int, _coerce_int(180)] = 180
+    mini_crystals: Annotated[int, _coerce_int(10)] = 10
+    mini_rub_kopecks: Annotated[int, _coerce_int(29000)] = 29000
+    mini_stars: Annotated[int, _coerce_int(210)] = 210
 
     smart_energy: Annotated[int, _coerce_int(1500)] = 1500
-    smart_rub_kopecks: Annotated[int, _coerce_int(54900)] = 54900
-    smart_stars: Annotated[int, _coerce_int(400)] = 400
+    smart_crystals: Annotated[int, _coerce_int(35)] = 35
+    smart_rub_kopecks: Annotated[int, _coerce_int(69000)] = 69000
+    smart_stars: Annotated[int, _coerce_int(490)] = 490
 
-    ultra_energy: Annotated[int, _coerce_int(6000)] = 6000
+    ultra_energy: Annotated[int, _coerce_int(7000)] = 7000
+    ultra_crystals: Annotated[int, _coerce_int(120)] = 120
     ultra_rub_kopecks: Annotated[int, _coerce_int(199000)] = 199000
     ultra_stars: Annotated[int, _coerce_int(1450)] = 1450
+
+    crystals_10_amount: Annotated[int, _coerce_int(10)] = 10
+    crystals_10_rub_kopecks: Annotated[int, _coerce_int(19900)] = 19900
+    crystals_10_stars: Annotated[int, _coerce_int(145)] = 145
+
+    crystals_40_amount: Annotated[int, _coerce_int(40)] = 40
+    crystals_40_rub_kopecks: Annotated[int, _coerce_int(49000)] = 49000
+    crystals_40_stars: Annotated[int, _coerce_int(355)] = 355
+
+    crystals_100_amount: Annotated[int, _coerce_int(100)] = 100
+    crystals_100_rub_kopecks: Annotated[int, _coerce_int(99000)] = 99000
+    crystals_100_stars: Annotated[int, _coerce_int(720)] = 720
 
     chat_history_limit: Annotated[int, _coerce_int(10)] = 10
     chat_max_message_chars: Annotated[int, _coerce_int(8000)] = 8000

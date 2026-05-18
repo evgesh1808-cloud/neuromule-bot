@@ -11,8 +11,8 @@ async def test_try_consume_energy_success_and_balance(repo_module):
     ok = await repo_module.try_consume_energy(uid, 30)
     assert ok is True
     row = await repo_module.get_user_row(uid)
-    # ensure_user: 20, +100, −30
-    assert row.energy == 90
+    # ensure_user: 30, +100, −30
+    assert row.energy == 100
 
 
 async def test_try_consume_energy_insufficient(repo_module):

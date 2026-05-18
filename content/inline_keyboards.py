@@ -17,7 +17,7 @@ def result_photo_keyboard() -> InlineKeyboardMarkup:
 def result_video_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🚀 Улучшить тариф", callback_data=msg.CB_RESULT_PREMIUM)],
+            [InlineKeyboardButton(text="🚀 Тарифы", callback_data=msg.CB_RESULT_PREMIUM)],
             [InlineKeyboardButton(text="📂 В мою галерею", callback_data=msg.CB_RESULT_GALLERY)],
         ]
     )

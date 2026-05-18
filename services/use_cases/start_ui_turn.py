@@ -25,6 +25,8 @@ def format_start_message_html(template: str, template_kwargs: Mapping[str, objec
     не должны ломать разметку и парсер Telegram.
     """
     data = dict(template_kwargs)
+    data.setdefault("energy", 30)
+    data.setdefault("crystals", 0)
     url = data.get("channel_url")
     if url is not None:
         data["channel_url"] = escape(str(url).strip(), quote=False)

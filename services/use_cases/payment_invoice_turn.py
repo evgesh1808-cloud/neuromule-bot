@@ -59,13 +59,13 @@ def build_payment_invoice_draft(
     Вход:
         settings — конфиг (название магазина, токен ЮKassa).
         user_id — покупатель (Telegram id).
-        pkg_index — индекс пакета ``0..2``.
+        pkg_index — индекс пакета из ``payments_catalog.PACKAGES``.
         method — ``r`` (карта/RUB) или ``x`` (Stars).
 
     Возвращает:
         ``BuildPaymentInvoiceResult``; при ``OK`` заполнен ``draft``.
     """
-    if method not in ("r", "x") or pkg_index not in (0, 1, 2):
+    if method not in ("r", "x") or pkg_index < 0 or pkg_index >= len(paycat.PACKAGES):
         return BuildPaymentInvoiceResult(outcome=InvoiceBuildOutcome.INVALID)
     if method == "r" and not settings.payment_token.strip():
         return BuildPaymentInvoiceResult(outcome=InvoiceBuildOutcome.NO_YOOKASSA)
@@ -75,7 +75,11 @@ def build_payment_invoice_draft(
     currency = paycat.invoice_currency(method)
     ptoken = paycat.provider_token_for(method, settings.payment_token.strip())
     title = f"{pack.tariff} · {settings.shop_payment_title}"[:32]
-    description = f"Тариф {pack.tariff}: +{pack.energy} ⚡"
+    description = (
+        f"Тариф {pack.tariff}: +{pack.energy} ⚡️ и +{pack.crystals} 💎"
+        if pack.energy > 0
+        else f"Кристаллы: +{pack.crystals} 💎"
+    )
     raw_prices = paycat.labeled_prices_for(pack, method)
     prices = tuple(InvoicePriceLine(label=lp.label, amount=lp.amount) for lp in raw_prices)
     draft = PaymentInvoiceDraft(

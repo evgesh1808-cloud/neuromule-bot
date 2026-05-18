@@ -16,7 +16,11 @@ from services import repository as repo
 logger = logging.getLogger(__name__)
 
 
-async def build_openrouter_messages(settings: Settings, user_id: int) -> list[dict[str, str]]:
+async def build_openrouter_messages(
+    settings: Settings,
+    user_id: int,
+    text_role: str = "standard",
+) -> list[dict[str, str]]:
     """
     Формирует список сообщений в формате OpenAI Chat для OpenRouter.
 
@@ -32,7 +36,7 @@ async def build_openrouter_messages(settings: Settings, user_id: int) -> list[di
         Список словарей ``{"role": "...", "content": "..."}``.
     """
     mem = await repo.get_persistent_memory(user_id)
-    system = build_system_prompt(settings, mem)
+    system = build_system_prompt(settings, mem, text_role)
     rows = await repo.dialog_fetch_last(user_id, settings.chat_history_limit)
     out: list[dict[str, str]] = [{"role": "system", "content": system}]
     for role, content in rows:

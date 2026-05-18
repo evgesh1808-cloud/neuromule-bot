@@ -20,13 +20,11 @@ from services.rate_limit_service import allow_request, rollback_last
 from services.repository import (
     dialog_append,
     dialog_pop_last_for_user,
-    dialog_prune_keep_last,
     get_user_row,
-    try_consume_daily_text_slot,
-    try_consume_energy,
+    try_consume_chat_credit,
     update_balance,
 )
-from services.tariffs import TariffName, normalize_tariff, text_models_for_tariff
+from services.tariffs import normalize_tariff, text_models_for_tariff
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +63,7 @@ async def run_chat_turn(
     send_typing: Callable[[], Awaitable[None]] | None = None,
     http_client: object | None = None,
     stream_callback: StreamCallback | None = None,
+    text_role: str = "standard",
 ) -> ChatTurnResult:
     """
     Выполняет один «ход» чата с нейросетью (без отправки сообщений в Telegram).
@@ -92,23 +91,18 @@ async def run_chat_turn(
 
     row = await get_user_row(user_id)
     tariff = normalize_tariff(row.tariff)
-    if tariff is TariffName.FREE:
-        ok, _ = await try_consume_daily_text_slot(user_id, settings.free_daily_text_limit)
-        if not ok:
-            await rollback_last(settings, user_id)
-            return ChatTurnResult(outcome=ChatTurnOutcome.DAILY_LIMIT_EXCEEDED)
-
-    if not await try_consume_energy(user_id, settings.cost_text_pro):
+    spent_field = await try_consume_chat_credit(user_id)
+    if spent_field is None:
         await rollback_last(settings, user_id)
         return ChatTurnResult(outcome=ChatTurnOutcome.INSUFFICIENT_BALANCE)
 
     await dialog_append(user_id, "user", raw_user_text)
-    payload = await conv.build_openrouter_messages(settings, user_id)
+    payload = await conv.build_openrouter_messages(settings, user_id, text_role)
 
     est_tokens = estimate_messages_prompt_tokens(payload, settings=settings)
     if est_tokens > settings.chat_max_context_tokens_est:
         await dialog_pop_last_for_user(user_id)
-        await update_balance(user_id, "energy", settings.cost_text_pro)
+        await update_balance(user_id, spent_field, 1)
         await rollback_last(settings, user_id)
         return ChatTurnResult(outcome=ChatTurnOutcome.CONTEXT_TOO_LARGE)
 
@@ -132,11 +126,15 @@ async def run_chat_turn(
     except Exception:
         logger.exception("run_chat_turn: OpenRouter failed user_id=%s", user_id)
         await dialog_pop_last_for_user(user_id)
-        await update_balance(user_id, "energy", settings.cost_text_pro)
+        await update_balance(user_id, spent_field, 1)
         await rollback_last(settings, user_id)
         return ChatTurnResult(outcome=ChatTurnOutcome.AI_FAILED)
 
     ans_trim = ans[: min(settings.chat_max_message_chars, 4090)]
+    if text_role == "standard" and tariff.value == "free" and len(ans_trim) > 700:
+        motivation = "\n\nНужен глубокий анализ или другой стиль? Загляни в «🚀 Тарифы» в меню бота."
+        if motivation not in ans_trim and len(ans_trim) + len(motivation) <= 4090:
+            ans_trim = f"{ans_trim}{motivation}"
     await commit_assistant_turn_queued(user_id, ans_trim, settings.dialog_prune_keep)
     conv.schedule_memory_refresh(settings, user_id)
     return ChatTurnResult(outcome=ChatTurnOutcome.SUCCESS, assistant_message=ans_trim)

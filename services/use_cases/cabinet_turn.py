@@ -1,5 +1,5 @@
 """
-Use-case: экран «Личный кабинет» — текст со статистикой и реферальной ссылкой.
+Use-case: экран «👤 Мой профиль» — текст со статистикой и реферальной ссылкой.
 """
 
 from __future__ import annotations
@@ -32,10 +32,12 @@ async def build_cabinet_view(settings: Settings, user_id: int) -> CabinetView:
     row = await get_user_row(user_id)
     invites = await referrals_count(user_id)
     ref_link = f"https://t.me/{settings.telegram_bot_username.lstrip('@')}?start=ref_{user_id}"
+    tariff_label = (row.tariff or "FREE").strip().upper() or "FREE"
     text = msg.TXT_CABINET_TEMPLATE.format(
         user_id=user_id,
         energy=row.energy,
-        tariff=row.tariff,
+        crystals=row.crystals,
+        tariff=tariff_label,
         invites=invites,
         ref_link=ref_link,
     )
