@@ -1,0 +1,38 @@
+name: Deploy NeuroMul to Timeweb
+
+on:
+  push:
+    branches:
+      - main  # Автоматический запуск при пуше в ветку main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Deploy to Server via SSH
+      uses: appleboy/ssh-action@v0.1.10
+      with:
+        host: ${{ secrets.SSH_HOST }}
+        username: ${{ secrets.SSH_USER }}
+        key: ${{ secrets.SSH_KEY }}
+        script: |
+          mkdir -p /app/neuromul
+          cd /app/neuromul
+          
+          # Скачиваем свежий код из вашего репозитория
+          if [ ! -d ".git" ]; then
+            git clone https://github.com .
+          else
+            git pull origin main
+          fi
+          
+          # Перезапускаем контейнеры в Docker
+          docker compose down
+          docker compose up --build -d
+          
+          # Чистим кэш сервера, чтобы не забивать диск Timeweb
+          docker system prune -f
