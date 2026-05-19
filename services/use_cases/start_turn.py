@@ -11,12 +11,18 @@ from dataclasses import dataclass
 from enum import Enum
 
 from config import Settings
-from services.repository import ensure_user, get_user_row, try_set_referrer
+from services.repository import (
+    ensure_user,
+    get_user_row,
+    try_set_referrer,
+    user_has_accepted_terms,
+)
 
 
 class StartFlowOutcome(str, Enum):
     """Какой сценарий показать после ``/start``."""
 
+    NEED_TERMS = "need_terms"
     NEED_CHANNEL = "need_channel"
     WELCOME_MAIN_MENU = "welcome_main_menu"
 
@@ -69,6 +75,9 @@ async def run_start_turn(
         ``StartTurnResult`` с исходом и ``template_kwargs`` для ``.format`` текстов приветствия.
     """
     await ensure_user(user_id, username)
+    if not await user_has_accepted_terms(user_id):
+        return StartTurnResult(StartFlowOutcome.NEED_TERMS, {})
+
     row = await get_user_row(user_id)
     template_kwargs: dict[str, object] = dict(
         channel_url=settings.channel_url,

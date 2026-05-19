@@ -1,4 +1,4 @@
-"""Use-case: успешная оплата Telegram invoice — идемпотентное начисление кристаллов."""
+"""Use-case: успешная оплата Telegram invoice — идемпотентное начисление через BillingManager."""
 
 from __future__ import annotations
 
@@ -6,15 +6,9 @@ from dataclasses import dataclass
 from enum import Enum
 
 from services import payments_catalog as paycat
-from config import settings
-from services.repository import (
-    claim_payment_charge,
-    ensure_user,
-    insert_payment_event,
-    mark_user_first_purchase_and_get_referrer,
-    set_user_tariff,
-    update_balance,
-)
+from services.billing import billing
+from services.billing.shop import pack_name_from_catalog_index
+from services.repository import claim_payment_charge, ensure_user, insert_payment_event
 
 
 class PaymentApplyOutcome(str, Enum):
@@ -41,18 +35,6 @@ async def run_successful_payment_apply(
     *,
     fallback_charge_id: str | None = None,
 ) -> PaymentApplyResult:
-    """
-    Проверяет payload, charge id, начисляет кристаллы один раз на charge.
-
-    Вход:
-        payer_telegram_id — ``message.from_user.id`` из Telegram.
-        invoice_payload — ``successful_payment.invoice_payload``.
-        telegram_charge_id / provider_charge_id — идентификаторы платежа.
-        fallback_charge_id — если оба id пусты (редко), уникальная строка снаружи, например ``msg:chat:id``.
-
-    Возвращает:
-        ``PaymentApplyResult`` с исходом и объёмом начисления при успехе.
-    """
     parsed = paycat.parse_invoice_payload(invoice_payload or "")
     if not parsed:
         return PaymentApplyResult(outcome=PaymentApplyOutcome.INVALID)
@@ -60,35 +42,35 @@ async def run_successful_payment_apply(
     if uid != payer_telegram_id:
         return PaymentApplyResult(outcome=PaymentApplyOutcome.INVALID)
 
+    pack_name = pack_name_from_catalog_index(pkg_i)
+    if not pack_name:
+        return PaymentApplyResult(outcome=PaymentApplyOutcome.INVALID)
+
     pack = paycat.PACKAGES[pkg_i]
-    energy = pack.energy
-    crystals = pack.crystals
     charge_id = (telegram_charge_id or provider_charge_id or "").strip()
     if not charge_id:
         charge_id = (fallback_charge_id or "").strip()
     if not charge_id:
         return PaymentApplyResult(outcome=PaymentApplyOutcome.INVALID)
 
+    energy = int(pack.energy)
+    crystals = int(pack.crystals)
     if not await claim_payment_charge(charge_id, uid, energy + crystals):
         return PaymentApplyResult(outcome=PaymentApplyOutcome.DUPLICATE)
 
     await ensure_user(uid)
-    if energy:
-        await update_balance(uid, "energy", energy)
-    if crystals:
-        await update_balance(uid, "crystals", crystals)
-    if pack.is_tariff:
-        await set_user_tariff(uid, pack.tariff)
+    purchase = await billing.process_purchase(uid, pack_name)
+    if not purchase.ok:
+        return PaymentApplyResult(outcome=PaymentApplyOutcome.INVALID)
+
     amount = pack.rub_kopecks if _method == "r" else pack.stars
     currency = "RUB" if _method == "r" else "XTR"
     await insert_payment_event(uid, pack.tariff, _method, amount, currency)
-    inviter_id = await mark_user_first_purchase_and_get_referrer(uid)
-    if inviter_id is not None and inviter_id > 0:
-        await ensure_user(inviter_id)
-        await update_balance(inviter_id, "crystals", settings.referral_bonus_energy)
+
+    tariff_label = purchase.tariff_updated.value if purchase.tariff_updated else pack.tariff
     return PaymentApplyResult(
         outcome=PaymentApplyOutcome.SUCCESS,
-        energy_credited=energy,
-        crystals_credited=crystals,
-        tariff_activated=pack.tariff,
+        energy_credited=purchase.energy_paid_added,
+        crystals_credited=purchase.crystals_added,
+        tariff_activated=tariff_label,
     )

@@ -165,22 +165,44 @@ class Settings(BaseSettings):
 
     cost_text_pro: Annotated[int, _coerce_int(10)] = 10
     cost_image_pro: Annotated[int, _coerce_int(2)] = 2
-    cost_music: Annotated[int, _coerce_int(5)] = 5
+    cost_music: Annotated[int, _coerce_int(15)] = 15
     cost_video: Annotated[int, _coerce_int(20)] = 20
     cost_animate: Annotated[int, _coerce_int(20)] = 20
     cost_hd: Annotated[int, _coerce_int(70)] = 70
     cost_match: Annotated[int, _coerce_int(50)] = 50
     cost_upscale: Annotated[int, _coerce_int(1)] = 1
-    referral_bonus_energy: Annotated[int, _coerce_int(50)] = 50
+    referral_bonus_energy: Annotated[int, _coerce_int(5)] = 5
+
+    # --- Чат (⚡ / 💎) ---
+    cost_chat_standard_energy: Annotated[int, _coerce_int(1)] = 1
+    cost_chat_standard_crystals: Annotated[int, _coerce_int(1)] = 1
+    cost_chat_expert_energy: Annotated[int, _coerce_int(5)] = 5
+    cost_chat_expert_crystals: Annotated[int, _coerce_int(3)] = 3
+    daily_free_energy: Annotated[int, _coerce_int(30)] = 30
+
+    # --- Видео-сценарии (💎) ---
+    cost_video_pro_5sec: Annotated[int, _coerce_int(35)] = 35
+    cost_video_extend: Annotated[int, _coerce_int(30)] = 30
+    cost_video_long: Annotated[int, _coerce_int(100)] = 100
+    cost_video_tier_50: Annotated[int, _coerce_int(50)] = 50
+    cost_video_tier_70: Annotated[int, _coerce_int(70)] = 70
+    cost_video_tier_80: Annotated[int, _coerce_int(80)] = 80
+    cost_video_tier_100: Annotated[int, _coerce_int(100)] = 100
+    cost_video_custom_text: Annotated[int, _coerce_int(40)] = 40
+    cost_video_custom_photo: Annotated[int, _coerce_int(50)] = 50
+    cost_video_custom_video: Annotated[int, _coerce_int(80)] = 80
+
+    # --- Фото (платные модели) ---
+    cost_image_dalle_crystals: Annotated[int, _coerce_int(5)] = 5
 
     service_offer_url: str = (
-        "https://telegra.ph/Polzovatelskoe-soglashenie-i-Oferta-04-30"
+        "https://telegra.ph/Publichnaya-oferta-NeuroMule-05-19"
     )
     privacy_policy_url: str = (
-        "https://telegra.ph/Politika-konfidencialnosti-Obrabotka-personalnyh-dannyh-04-30-2"
+        "https://telegra.ph/POLITIKA-KONFIDENCIALNOSTI-05-19-35"
     )
     subscription_terms_url: str = (
-        "https://telegra.ph/Soglashenie-o-rekurrentnyh-platezhah-Podpiska-04-30-2"
+        "https://telegra.ph/Usloviya-regulyarnyh-platezhej-i-podpiski-NeuroMule-05-19"
     )
 
     free_models: Annotated[list[str], _coerce_str_list(_DEFAULT_FREE_MODELS)] = Field(
@@ -193,7 +215,7 @@ class Settings(BaseSettings):
         str,
         _nonempty_str("google/gemini-2.0-flash-lite:free"),
     ] = "google/gemini-2.0-flash-lite:free"
-    free_image_model: Annotated[str, _nonempty_str("flux-schnell")] = "flux-schnell"
+    free_image_model: Annotated[str, _nonempty_str("imagen4")] = "imagen4"
     free_daily_text_limit: Annotated[int, _coerce_int(30)] = 30
 
     mini_energy: Annotated[int, _coerce_int(500)] = 500

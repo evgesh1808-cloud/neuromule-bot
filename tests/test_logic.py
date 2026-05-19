@@ -16,8 +16,9 @@ from services.use_cases.chat_turn import ChatTurnOutcome, run_chat_turn
 
 @pytest.mark.asyncio
 async def test_chat_consumes_energy_on_successful_completion(repo_module):
-    """После успешного ответа модели энергия пользователя уменьшается на ``cost_text_pro`` (чат)."""
+    """После успешного ответа модели списывается 1 ⚡ (стандартный чат)."""
     uid = 88001
+    await repo_module.ensure_user(uid)
     s = Settings().model_copy(
         update={
             "free_models": ["stub-model"],
@@ -40,7 +41,7 @@ async def test_chat_consumes_energy_on_successful_completion(repo_module):
         after = (await repo_module.get_user_row(uid)).energy
 
     assert result.outcome is ChatTurnOutcome.SUCCESS
-    assert after == before - s.cost_text_pro
+    assert after == before - 1
 
 
 @pytest.mark.asyncio

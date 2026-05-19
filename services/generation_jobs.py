@@ -6,34 +6,41 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import logging
 import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
+from aiogram.enums import ParseMode
 from aiogram.types import BufferedInputFile
 
 from config import settings
 from content import messages as msg
-from content.inline_keyboards import result_music_keyboard, result_photo_keyboard, result_video_keyboard
+from content.inline_keyboards import result_music_keyboard, result_photo_keyboard
+from content.video_menu import result_video_keyboard_pro
 from platforms.telegram_chat_action import chat_action_loop
+from services.gemini_image_client import (
+    GeminiImageResult,
+    generate_gemini_image_model,
+    generate_imagen_fast,
+)
 from services.replicate_client import (
     call_replicate_model,
     replicate_configured,
     telegram_photo_download_url,
 )
 from services.suno_client import generate_music_track, suno_configured
-from services.repository import get_user_row, rollback_daily_photo_slot, update_balance
+from business_catalog import catalog
+from config import settings as app_settings
+from services.api_resilience import ExternalApiError, fail_generation_task, wrap_http_error
+from services.billing.translator import translate_prompt_to_english
+from services.billing.video_pipeline import VIDEO_SCENARIOS
+from services.repository import get_user_row
 
 if TYPE_CHECKING:
     from aiogram import Bot
 
 logger = logging.getLogger(__name__)
-
-_MINI_PNG = base64.b64decode(
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
-)
 
 JobKind = Literal["photo", "video", "music", "animate"]
 TaskStatus = Literal["pending", "processing", "completed", "failed"]
@@ -51,9 +58,12 @@ class GenTask:
     status: str = "pending"
     prompt: str | None = None
     file_id: str | None = None
+    image_model_id: str = ""
     model_label: str = ""
+    scenario_id: str = ""
     used_daily_slot: bool = False
     charged_crystals: int = 0
+    billing_charge_id: str = ""
 
     @property
     def kind(self) -> JobKind:
@@ -92,103 +102,186 @@ def _balance_footer(crystals: int) -> str:
     return ""
 
 
+def _normalize_photo_model_id(model_id: str, model_label: str = "") -> str:
+    """ID модели из меню (imagen4, flux-schnell) + алиасы из ``business_catalog``."""
+    raw = (model_id or model_label or "").strip().lower().replace("-", "_")
+    aliases = {**catalog.image_aliases, "fluxschnell": "flux_schnell"}
+    return aliases.get(raw, raw)
+
+
+async def _generate_photo_result(model_key: str, prompt: str) -> GeminiImageResult | str:
+    """Возвращает GeminiImageResult (url/bytes) или прямой URL строки (Replicate)."""
+    try:
+        if model_key == "imagen4":
+            return await generate_imagen_fast(prompt)
+
+        if model_key == "flux_schnell":
+            if not replicate_configured():
+                raise ExternalApiError("Replicate", "REPLICATE_API_TOKEN не задан")
+            url = await call_replicate_model(
+                "black-forest-labs/flux-schnell",
+                {
+                    "prompt": prompt,
+                    "aspect_ratio": "1:1",
+                    "output_format": "webp",
+                    "output_quality": 90,
+                },
+            )
+            if not url:
+                raise ExternalApiError("Replicate", "Flux Schnell: пустой URL")
+            return url
+
+        if model_key == "gpt_image2":
+            if not replicate_configured():
+                raise ExternalApiError("Replicate", "REPLICATE_API_TOKEN не задан")
+            url = await call_replicate_model(
+                "openai/dall-e-3",
+                {"prompt": prompt, "size": "1024x1024", "quality": "standard", "n": 1},
+            )
+            if not url:
+                raise ExternalApiError("Replicate", "DALL-E 3: пустой URL")
+            return url
+
+        if model_key == "nano_banana2":
+            return await generate_gemini_image_model(prompt, "gemini-3.1-flash-image-preview")
+
+        if model_key == "nano_banana_pro":
+            return await generate_gemini_image_model(prompt, "gemini-3-pro-image-preview")
+
+        raise RuntimeError(f"Неизвестная модель изображения: {model_key}")
+    except ExternalApiError:
+        raise
+    except Exception as exc:
+        provider = "Gemini" if model_key in ("imagen4", "nano_banana2", "nano_banana_pro") else "Replicate"
+        raise wrap_http_error(provider, exc) from exc
+
+
+async def _send_generated_photo(
+    task: GenTask,
+    *,
+    photo_url: str | None,
+    photo_bytes: bytes | None,
+) -> None:
+    bot, chat_id = task.bot, task.chat_id
+    display = task.model_label or task.image_model_id or "модель"
+    caption = (
+        f"🎨 **Ваше изображение успешно сгенерировано!**\n"
+        f"🤖 Модель: {display}\n"
+        f"💎 Стоимость: {task.charged_crystals} 💎"
+    )
+    markup = result_photo_keyboard()
+    if photo_url:
+        await bot.send_photo(
+            chat_id,
+            photo=photo_url,
+            caption=caption,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=markup,
+        )
+    elif photo_bytes:
+        await bot.send_photo(
+            chat_id,
+            photo=BufferedInputFile(photo_bytes, filename="neuromule_generated.jpg"),
+            caption=caption,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=markup,
+        )
+    else:
+        raise RuntimeError("Нет URL и байтов изображения")
+
+
 async def _photo_stub_worker(task: GenTask) -> None:
     task.status = "processing"
     bot, chat_id, user_id = task.bot, task.chat_id, task.user_id
     user_prompt = (task.prompt or "").strip()
+    if not user_prompt:
+        task.status = "failed"
+        return
+
+    model_key = _normalize_photo_model_id(task.image_model_id, task.model_label)
+
     try:
         logger.info(
-            "photo job %s user_id=%s model=%s prompt_len=%s",
+            "photo job %s user_id=%s model_id=%s model_key=%s prompt_len=%s",
             task.task_id,
             user_id,
-            task.model_label,
+            task.image_model_id,
+            model_key,
             len(user_prompt),
         )
         async with chat_action_loop(bot, chat_id, "upload_photo"):
-            await asyncio.sleep(2.0)
-            row = await get_user_row(user_id)
-            cap = msg.TXT_RESULT_PHOTO_CAPTION.format(
-                cost=task.charged_crystals,
-                balance=row.crystals,
-                animate_cost=settings.cost_animate_video_suggest,
-            )
-            cap += _balance_footer(row.crystals)
-            photo = BufferedInputFile(_MINI_PNG, filename="neuromule_preview.png")
-            await bot.send_document(
-                chat_id,
-                document=photo,
-                caption=cap,
-                reply_markup=result_photo_keyboard(),
-            )
+            raw = await _generate_photo_result(model_key, user_prompt)
+            photo_url: str | None = None
+            photo_bytes: bytes | None = None
+            if isinstance(raw, str):
+                photo_url = raw
+            elif isinstance(raw, GeminiImageResult):
+                photo_url = raw.url
+                photo_bytes = raw.data
+            await _send_generated_photo(task, photo_url=photo_url, photo_bytes=photo_bytes)
         task.status = "completed"
-    except Exception:
-        task.status = "failed"
-        logger.exception("photo job failed task_id=%s", task.task_id)
-        if task.charged_crystals:
-            await update_balance(user_id, "crystals", task.charged_crystals)
-        if task.used_daily_slot:
-            await rollback_daily_photo_slot(user_id)
-        try:
-            await bot.send_message(chat_id, msg.TXT_GEN_JOB_FAILED)
-        except Exception:
-            pass
+    except Exception as exc:
+        logger.exception("photo job failed task_id=%s model_key=%s", task.task_id, model_key)
+        await fail_generation_task(
+            task,
+            user_message=msg.TXT_GEN_JOB_FAILED,
+            log_msg=f"photo: {exc}",
+        )
 
 
 async def _video_stub_worker(task: GenTask) -> None:
-    """Видео по тексту: Replicate (модель из REPLICATE_VIDEO_MODEL) или заглушка без токена."""
+    """PRO-видео: Replicate + перевод промпта; refund через billing_charges."""
     task.status = "processing"
     bot, chat_id, user_id = task.bot, task.chat_id, task.user_id
-    prompt = (task.prompt or "").strip()
-    if not prompt:
-        prompt = "Кинематографичная сцена, мягкий свет"
-
-    charged = task.charged_crystals or settings.cost_video
-
-    async def _fail() -> None:
-        task.status = "failed"
-        if charged:
-            await update_balance(user_id, "crystals", charged)
-        try:
-            await bot.send_message(chat_id, msg.TXT_VIDEO_REPLICATE_FAILED)
-        except Exception:
-            pass
+    prompt_ru = (task.prompt or "").strip() or "Кинематографичная сцена, мягкий свет"
+    scenario_id = (task.scenario_id or "video_pro_5sec").strip()
+    spec = VIDEO_SCENARIOS.get(scenario_id)
 
     try:
-        logger.info("video job %s user_id=%s replicate=%s", task.task_id, user_id, replicate_configured())
+        logger.info(
+            "video job %s user_id=%s scenario=%s replicate=%s",
+            task.task_id,
+            user_id,
+            scenario_id,
+            replicate_configured(),
+        )
         async with chat_action_loop(bot, chat_id, "upload_video"):
             row = await get_user_row(user_id)
             video_url: str | None = None
             if replicate_configured():
-                inputs = {
-                    "prompt": prompt,
-                    "aspect_ratio": "16:9",
-                }
-                video_url = await call_replicate_model(settings.replicate_video_model, inputs)
+                prompt_en = await translate_prompt_to_english(app_settings, prompt_ru)
+                model = (spec.replicate_model if spec else None) or settings.replicate_video_model
+                inputs: dict = {"prompt": prompt_en, "aspect_ratio": "16:9"}
+                if task.file_id and spec and spec.needs_face:
+                    image_url = await telegram_photo_download_url(bot, task.file_id)
+                    inputs["start_image_url"] = image_url
+                video_url = await call_replicate_model(model, inputs)
 
+            title = spec.title_ru if spec else "PRO-видео"
             if video_url:
-                caption = f"🎬 Ваше видео по запросу:\n«{prompt[:500]}» успешно готово!"
+                caption = f"🎬 {title}\n💎 Списано: {task.charged_crystals} 💎\n🔋 Остаток: {row.crystals} 💎"
                 caption += _balance_footer(row.crystals)
                 await bot.send_video(
                     chat_id,
                     video=video_url,
                     caption=caption,
-                    reply_markup=result_video_keyboard(),
+                    reply_markup=result_video_keyboard_pro(),
                 )
             elif not replicate_configured():
                 await asyncio.sleep(4.0)
-                cap = (
-                    f"🎬 Ваше видео по запросу:\n«{prompt[:500]}» "
-                    "(демо: задайте REPLICATE_API_TOKEN для реальной генерации)"
-                )
+                cap = f"🎬 {title} (демо: задайте REPLICATE_API_TOKEN)"
                 cap += _balance_footer(row.crystals)
-                await bot.send_message(chat_id, cap, reply_markup=result_video_keyboard())
+                await bot.send_message(chat_id, cap, reply_markup=result_video_keyboard_pro())
             else:
                 raise RuntimeError("Replicate returned empty video URL")
 
         task.status = "completed"
     except Exception as exc:
-        logger.error("video job %s failed: %s", task.task_id, exc)
-        await _fail()
+        await fail_generation_task(
+            task,
+            user_message=msg.TXT_VIDEO_REPLICATE_FAILED,
+            log_msg=f"video: {exc}",
+        )
 
 
 async def _music_stub_worker(task: GenTask) -> None:
@@ -196,17 +289,6 @@ async def _music_stub_worker(task: GenTask) -> None:
     task.status = "processing"
     bot, chat_id, user_id = task.bot, task.chat_id, task.user_id
     style = (task.prompt or "").strip()[:500] or "по запросу"
-
-    charged = task.charged_crystals or settings.cost_music
-
-    async def _fail_music() -> None:
-        task.status = "failed"
-        if charged:
-            await update_balance(user_id, "crystals", charged)
-        try:
-            await bot.send_message(chat_id, msg.TXT_MUSIC_SUNO_FAILED)
-        except Exception:
-            pass
 
     try:
         logger.info(
@@ -248,8 +330,11 @@ async def _music_stub_worker(task: GenTask) -> None:
 
         task.status = "completed"
     except Exception as exc:
-        logger.error("music job %s failed: %s", task.task_id, exc)
-        await _fail_music()
+        await fail_generation_task(
+            task,
+            user_message=msg.TXT_MUSIC_SUNO_FAILED,
+            log_msg=f"music: {exc}",
+        )
 
 
 async def _animate_stub_worker(task: GenTask) -> None:
@@ -260,26 +345,14 @@ async def _animate_stub_worker(task: GenTask) -> None:
     task.status = "processing"
     bot, chat_id, user_id = task.bot, task.chat_id, task.user_id
     file_id = (task.file_id or "").strip()
-    charged = task.charged_crystals or settings.cost_animate
     if not file_id:
-        task.status = "failed"
         logger.error("animate job %s: missing file_id user_id=%s", task.task_id, user_id)
-        if charged:
-            await update_balance(user_id, "crystals", charged)
-        try:
-            await bot.send_message(chat_id, msg.TXT_ANIMATE_FAILED)
-        except Exception:
-            pass
+        await fail_generation_task(
+            task,
+            user_message=msg.TXT_ANIMATE_FAILED,
+            log_msg="animate: missing file_id",
+        )
         return
-
-    async def _fail_animate() -> None:
-        task.status = "failed"
-        if charged:
-            await update_balance(user_id, "crystals", charged)
-        try:
-            await bot.send_message(chat_id, msg.TXT_ANIMATE_REPLICATE_FAILED)
-        except Exception:
-            pass
 
     try:
         logger.info(
@@ -325,8 +398,11 @@ async def _animate_stub_worker(task: GenTask) -> None:
 
         task.status = "completed"
     except Exception as exc:
-        logger.error("animate job %s failed: %s", task.task_id, exc)
-        await _fail_animate()
+        await fail_generation_task(
+            task,
+            user_message=msg.TXT_ANIMATE_REPLICATE_FAILED,
+            log_msg=f"animate: {exc}",
+        )
 
 
 async def _queue_worker() -> None:
@@ -364,11 +440,13 @@ def fire_photo_job(
     bot: "Bot",
     chat_id: int,
     user_id: int,
+    image_model_id: str,
     model_label: str,
     user_prompt: str,
     used_daily_slot: bool,
     charged_crystals: int,
     priority: int = 2,
+    billing_charge_id: str = "",
 ) -> None:
     _enqueue(
         priority,
@@ -379,9 +457,11 @@ def fire_photo_job(
             user_id=user_id,
             task_type="photo",
             prompt=user_prompt,
+            image_model_id=image_model_id,
             model_label=model_label,
             used_daily_slot=used_daily_slot,
             charged_crystals=charged_crystals,
+            billing_charge_id=billing_charge_id,
         ),
     )
 

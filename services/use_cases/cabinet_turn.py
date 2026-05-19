@@ -40,5 +40,6 @@ async def build_cabinet_view(settings: Settings, user_id: int) -> CabinetView:
         tariff=tariff_label,
         invites=invites,
         ref_link=ref_link,
+        referral_bonus=settings.referral_bonus_energy,
     )
     return CabinetView(text=text)

@@ -8,8 +8,25 @@ from config import Settings
 from services import payments_catalog as paycat
 from services.use_cases.cabinet_turn import build_cabinet_view
 from services.use_cases.payment_invoice_turn import InvoiceBuildOutcome, build_payment_invoice_draft
-from services.use_cases.start_turn import parse_telegram_start_ref
+from services.use_cases.start_turn import StartFlowOutcome, parse_telegram_start_ref, run_start_turn
 from services.use_cases.tariff_shop_nav_turn import TariffShopNavOutcome, resolve_tariff_shop_callback
+
+
+@pytest.mark.asyncio
+async def test_new_user_must_accept_terms_before_start_menu(repo_module) -> None:
+    uid = 99112
+    await repo_module.ensure_user(uid)
+    assert not await repo_module.user_has_accepted_terms(uid)
+    s = Settings()
+
+    async def _subscribed(_: int) -> bool:
+        return True
+
+    r = await run_start_turn(s, uid, None, "/start", is_subscribed=_subscribed)
+    assert r.outcome is StartFlowOutcome.NEED_TERMS
+    await repo_module.set_user_accepted_terms(uid)
+    r2 = await run_start_turn(s, uid, None, "/start", is_subscribed=_subscribed)
+    assert r2.outcome is StartFlowOutcome.WELCOME_MAIN_MENU
 
 
 def test_parse_telegram_start_ref_none_and_empty() -> None:

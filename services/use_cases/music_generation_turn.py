@@ -20,7 +20,8 @@ from content import messages as msg
 
 from services.generation_jobs import GenTask, fire_music_job, make_music_task_id
 
-from services.repository import get_user_row, try_consume_crystals
+from services.billing import billing
+from services.repository import get_user_row
 
 from services.tariffs import can_use_music, normalize_tariff
 
@@ -98,10 +99,13 @@ async def run_music_generation_turn(
 
         return MusicGenResult(outcome=MusicGenOutcome.FORBIDDEN_BY_TARIFF, upgrade_to="smart")
 
-    cost = cfg.cost_music
-    if not await try_consume_crystals(uid, cost):
+    _ = cfg
+    spend = await billing.spend_music(uid)
+    if not spend.ok:
         return MusicGenResult(outcome=MusicGenOutcome.INSUFFICIENT_BALANCE)
 
+    charge = spend.charge
+    assert charge is not None
     new_task = GenTask(
         task_id=make_music_task_id(uid),
         bot=bot,
@@ -110,7 +114,8 @@ async def run_music_generation_turn(
         task_type="music",
         status="pending",
         prompt=prompt[:500],
-        charged_crystals=cost,
+        charged_crystals=charge.crystals,
+        billing_charge_id=charge.charge_id,
     )
 
     fire_music_job(new_task)

@@ -4,7 +4,18 @@ from config import Settings
 from services.hd_logic import get_dynamic_cta_for_today
 
 
-def test_cost_defaults_match_pricelist() -> None:
+def test_cost_defaults_match_pricelist(monkeypatch) -> None:
+    """Дефолты из config.py (без переопределения из локального .env)."""
+    for key in (
+        "COST_HD",
+        "COST_IMAGE_PRO",
+        "COST_ANIMATE",
+        "COST_VIDEO",
+        "COST_MUSIC",
+        "REFERRAL_BONUS_ENERGY",
+        "FREE_IMAGE_MODEL",
+    ):
+        monkeypatch.delenv(key, raising=False)
     s = Settings(
         tg_token="x",
         openrouter_key="y",
@@ -14,7 +25,9 @@ def test_cost_defaults_match_pricelist() -> None:
     assert s.cost_image_pro == 2
     assert s.cost_animate == 20
     assert s.cost_video == 20
-    assert s.cost_music == 5
+    assert s.cost_music == 15
+    assert s.referral_bonus_energy == 5
+    assert s.free_image_model == "imagen4"
 
 
 def test_dynamic_cta_uses_settings_costs() -> None:
@@ -23,7 +36,7 @@ def test_dynamic_cta_uses_settings_costs() -> None:
         openrouter_key="y",
         gemini_api_key="z",
         cost_video=20,
-        cost_music=5,
+        cost_music=15,
         cost_animate=20,
         cost_hd=70,
         cost_match=50,

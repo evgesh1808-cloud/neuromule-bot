@@ -59,11 +59,14 @@ async def _migrate_users(db: aiosqlite.Connection) -> None:
         ("advice_birth_data", "ALTER TABLE users ADD COLUMN advice_birth_data TEXT"),
         ("advice_user_role", "ALTER TABLE users ADD COLUMN advice_user_role TEXT"),
         ("advice_pending_at", "ALTER TABLE users ADD COLUMN advice_pending_at REAL"),
+        ("accepted_terms", "ALTER TABLE users ADD COLUMN accepted_terms INTEGER DEFAULT 0"),
     ]
     for name, ddl in alters:
         if name not in cols:
             await db.execute(ddl)
             added.add(name)
+    if "accepted_terms" in added:
+        await db.execute("UPDATE users SET accepted_terms = 1")
     if "balance" in added:
         await db.execute("UPDATE users SET balance = 0")
     if "crystals" in added and "balance" in cols:
@@ -224,6 +227,9 @@ async def init_db(promo_seeds: str = "") -> None:
             """
         )
         await _seed_promos(db, promo_seeds)
+        from services.billing.store import _migrate_billing_columns
+
+        await _migrate_billing_columns(db)
         await db.commit()
 
 
@@ -261,24 +267,51 @@ async def ensure_user(user_id: int, username: str | None = None) -> None:
                     balance_energy,
                     balance_crystals,
                     balance,
+                    energy_free,
+                    energy_paid,
                     last_reset_date,
                     tariff,
                     referred_by,
                     photo_daily_date,
-                    photo_daily_count
+                    photo_daily_count,
+                    accepted_terms
                 )
-                VALUES (?, 30, 0, 30, 0, 0, ?, 'Free', NULL, NULL, 0)
+                VALUES (?, 30, 0, 30, 0, 0, 30, 0, ?, 'Free', NULL, NULL, 0, 0)
                 """,
                 (user_id, today),
             )
         elif (exists[1] or "") != today:
-            await db.execute(
-                "UPDATE users SET energy = ?, balance_energy = ?, last_reset_date = ? WHERE id = ?",
-                (DAILY_ENERGY_LIMIT, DAILY_ENERGY_LIMIT, today, user_id),
-            )
+            from services.billing.store import _migrate_billing_columns, _apply_daily_reset_if_needed
+
+            await _migrate_billing_columns(db)
+            await _apply_daily_reset_if_needed(db, user_id, today)
         if username is not None:
             u = username.strip()[:255] if username else ""
             await db.execute("UPDATE users SET username = ? WHERE id = ?", (u or None, user_id))
+        await db.commit()
+
+
+async def user_has_accepted_terms(user_id: int) -> bool:
+    """Принял ли пользователь оферту и политику (``accepted_terms = 1``)."""
+    await ensure_user(user_id)
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT accepted_terms FROM users WHERE id = ?",
+            (user_id,),
+        ) as cur:
+            row = await cur.fetchone()
+    if not row:
+        return False
+    return bool(row[0])
+
+
+async def set_user_accepted_terms(user_id: int, *, accepted: bool = True) -> None:
+    await ensure_user(user_id)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE users SET accepted_terms = ? WHERE id = ?",
+            (1 if accepted else 0, user_id),
+        )
         await db.commit()
 
 

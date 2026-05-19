@@ -17,14 +17,10 @@ from services import conversation as conv
 from services.ai_text import StreamCallback, ask_ai_messages, estimate_messages_prompt_tokens
 from services.dialog_write_worker import commit_assistant_turn_queued
 from services.rate_limit_service import allow_request, rollback_last
-from services.repository import (
-    dialog_append,
-    dialog_pop_last_for_user,
-    get_user_row,
-    try_consume_chat_credit,
-    update_balance,
-)
-from services.tariffs import normalize_tariff, text_models_for_tariff
+from services.billing import billing
+from services.billing.store import refund_charge
+from services.billing.types import TariffTier
+from services.repository import dialog_append, dialog_pop_last_for_user
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +32,7 @@ class ChatTurnOutcome(str, Enum):
     EMPTY_INPUT = "empty_input"
     RATE_LIMITED = "rate_limited"
     INSUFFICIENT_BALANCE = "insufficient_balance"
+    ROLE_NOT_ALLOWED = "role_not_allowed"
     DAILY_LIMIT_EXCEEDED = "daily_limit_exceeded"
     CONTEXT_TOO_LARGE = "context_too_large"
     AI_FAILED = "ai_failed"
@@ -89,11 +86,11 @@ async def run_chat_turn(
     if not await allow_request(settings, user_id, settings.chat_rate_limit_per_minute):
         return ChatTurnResult(outcome=ChatTurnOutcome.RATE_LIMITED)
 
-    row = await get_user_row(user_id)
-    tariff = normalize_tariff(row.tariff)
-    spent_field = await try_consume_chat_credit(user_id)
-    if spent_field is None:
+    plan, charge_id = await billing.handle_text_chat(user_id, text_role)
+    if plan.blocked:
         await rollback_last(settings, user_id)
+        if plan.block_reason == "expert_role_requires_paid_tariff":
+            return ChatTurnResult(outcome=ChatTurnOutcome.ROLE_NOT_ALLOWED)
         return ChatTurnResult(outcome=ChatTurnOutcome.INSUFFICIENT_BALANCE)
 
     await dialog_append(user_id, "user", raw_user_text)
@@ -102,7 +99,8 @@ async def run_chat_turn(
     est_tokens = estimate_messages_prompt_tokens(payload, settings=settings)
     if est_tokens > settings.chat_max_context_tokens_est:
         await dialog_pop_last_for_user(user_id)
-        await update_balance(user_id, spent_field, 1)
+        if charge_id:
+            await refund_charge(charge_id)
         await rollback_last(settings, user_id)
         return ChatTurnResult(outcome=ChatTurnOutcome.CONTEXT_TOO_LARGE)
 
@@ -121,17 +119,19 @@ async def run_chat_turn(
             char_per_token=settings.chat_char_per_token_est,
             http_client=http_client,
             stream_callback=stream_callback,
-            models=text_models_for_tariff(settings, tariff),
+            models=[plan.model_id],
         )
     except Exception:
         logger.exception("run_chat_turn: OpenRouter failed user_id=%s", user_id)
         await dialog_pop_last_for_user(user_id)
-        await update_balance(user_id, spent_field, 1)
+        if charge_id:
+            await refund_charge(charge_id)
         await rollback_last(settings, user_id)
         return ChatTurnResult(outcome=ChatTurnOutcome.AI_FAILED)
 
     ans_trim = ans[: min(settings.chat_max_message_chars, 4090)]
-    if text_role == "standard" and tariff.value == "free" and len(ans_trim) > 700:
+    user = await billing.load_user(user_id)
+    if text_role == "standard" and user.current_tariff is TariffTier.FREE and len(ans_trim) > 700:
         motivation = "\n\nНужен глубокий анализ или другой стиль? Загляни в «🚀 Тарифы» в меню бота."
         if motivation not in ans_trim and len(ans_trim) + len(motivation) <= 4090:
             ans_trim = f"{ans_trim}{motivation}"
