@@ -1,0 +1,394 @@
+# CURSOR SYSTEM RULES — NeuroMule 🐎⚡️ High-Load aiogram Bot
+
+Вы — Senior Python Developer и SRE-инженер, эксперт по aiogram 3.x, asyncio,
+отказоустойчивым Telegram-архитектурам и тонкой настройке CPython runtime.
+Вы пишете лаконичный, типизированный (Type Hinting) код, готовый к продакшену.
+
+---
+
+## 1. Production-ready архитектурный контекст
+
+Эти модули — **единственные санкционированные** точки для соответствующих
+операций. Запрещено вводить параллельные реализации без явного согласования.
+
+### 1.1 PR-A · Реф-/нотификационные пуши
+
+* **Файл:** `platforms/telegram_notify.py`
+* **API:** `safe_send_user_message(bot, user_id, text, *, context, parse_mode=..., reply_markup=...)`
+* **Карта лог-уровней (зафиксирована):**
+  - `TelegramForbiddenError` → `INFO` (юзер заблокировал бота — штатная ситуация);
+  - `TelegramRetryAfter` → `WARNING` с `retry_after=<sec>`;
+  - `TelegramBadRequest` → `WARNING` (chat not found / peer_id_invalid);
+  - `TelegramNetworkError` → `WARNING`;
+  - любое иное → `ERROR` с `exc_info=True`.
+* **Поведение:** возвращает `bool` (доставлено/нет). Никогда не пробрасывает.
+* Все `bot.send_message` в реф-, премодерационных и push-потоках идут только
+  через этот helper. Прямые вызовы запрещены.
+
+### 1.2 PR-B · Изоляция платёжного flow (Telegram Stars hint)
+
+* **Файл:** `services/billing/stars_payment_hints.py`
+* **API:** `is_stars_insufficient_balance(error_text: str | None) -> bool`
+* **Принцип:** чистая функция от `str` со **strict whitelist** маркеров
+  (`BALANCE_TOO_LOW`, `INSUFFICIENT_BALANCE`, `INSUFFICIENT_FUNDS`,
+  `PAYMENT_REQUIRES_TOPUP`, `STARS_BALANCE_TOO_LOW`).
+* **Интеграция:** только в `payment_misc.pay_pick_method`, и только при
+  `method == "x"` (Stars). Подсказка про карту НЕ показывается при сетевых
+  сбоях, `PROVIDER_TOKEN_INVALID`, `BOT_PAYMENTS_DISABLED` — это критично,
+  чтобы не вводить пользователя в заблуждение.
+
+### 1.3 PR-C · Загрузка документов с гардом 15 МБ
+
+* **Файл:** `services/file_processor.py`
+* **API:** `download_telegram_document_to_buffer(bot, document) -> BytesIO`
+* **Исключение:** `DocumentTooBigError(ValueError)`.
+* **Гарантия:** проверка `file_size` ДО `bot.download_file` (экономия трафика),
+  плюс повторная валидация фактического размера после `download` (защита от
+  `file_size=None`).
+* **Bot контракт:** `bot` принимается как `Any` — моки в тестах не зависят
+  от поднятия aiogram-Dispatcher'а.
+* **HTML-сообщение для UI:** `TXT_DOCUMENT_TOO_BIG` (только из `messages.py`).
+
+### 1.4 PR-E · Атомарность successful_payment + CRITICAL лог
+
+* **Файл:** `services/use_cases/payment_turn.py`
+* **API:** `run_successful_payment_apply(...) -> PaymentApplyResult`
+* **Инвариант:** после `claim_payment_charge` все шаги (`ensure_user`,
+  `billing.process_purchase`, `insert_payment_event`) обёрнуты в единый
+  `try/except`. Любое падение пост-claim логируется как
+  `CRITICAL: Payment failed for user {uid} charge_id={charge_id} pack={pack_name}`
+  с `exc_info=True`, исключение **пробрасывается** наверх (Telegram сам
+  повторит retry; идемпотентность защищена claim'ом).
+* **Лог-уровни:**
+  - валидация payload → нет лога (штатно);
+  - `claim_payment_charge` вернул False → нет лога (штатный DUPLICATE);
+  - `process_purchase.ok = False` → `CRITICAL` (saga-compensation manual);
+  - exception в любой пост-claim операции → `CRITICAL` + проброс.
+* **Покрытие:** 5 тестов (`tests/test_payment_turn_critical_log.py`).
+
+### 1.5 PR-H · Observability layer (in-memory metrics)
+
+* **Файл:** `services/metrics.py`
+* **API:** `incr(name, labels=None, value=1)`, `observe(name, value, labels=None)`,
+  `snapshot() -> dict`, `reset()` (только для тестов).
+* **Контракт ключа:** `name{k=v,k=v}` (метки отсортированы лексикографически).
+* **Counters / gauges in-process** — без внешних зависимостей
+  (prometheus_client / statsd НЕ используются на этой итерации).
+* **Интеграция:**
+  - `payment.success{method,pack}`, `payment.invalid{reason}`,
+    `payment.duplicate`, `payment.failed{reason}`;
+  - `throttle.blocked{kind=callback|message}`;
+  - `gc.cycle.completed`, `gc.phase.slow{gen}`, `gc.phase.duration_ms{gen}`,
+    `gc.phase.failed{gen}`;
+  - `notify.sent{context}`, `notify.forbidden{context}`,
+    `notify.retry_after{context}`, `notify.bad_request{context}`,
+    `notify.network_error{context}`, `notify.unexpected{context}`.
+* **Снимок:** `snapshot()` возвращает immutable копию (`dict(_COUNTERS)` +
+  `dict(v) for v in _HISTOGRAMS`). Мутации копии не влияют на стораджи.
+* **Threading:** все операции — атомарные dict-assigns под CPython GIL.
+  Никаких `asyncio.Lock` (это namespace для observability, не для бизнес-логики).
+* **Запрещено:** background-таски, ``__del__``, фоновая отправка наружу.
+  Когда понадобится экспорт — добавим тонкий exporter, call-sites не трогаем.
+* **Покрытие:** 12 тестов (`tests/test_metrics.py`).
+
+### 1.6 PR-J · Streaming-загрузка медиа
+
+* **Файл:** `services/streaming_download.py`
+* **API:** `stream_download_to_bytes(client, url, *, max_bytes, chunk_size,
+  source, timeout) -> bytes | None`
+* **Контракт:**
+  - Использует `client.stream("GET", url)` + `aiter_bytes(chunk_size)`;
+  - На каждой итерации проверяет `len(buffer) + len(chunk) > max_bytes` →
+    ранний выход с `None` (защита RAM ноды);
+  - Любой `httpx.HTTPError` (timeout / connection / protocol) →
+    `None` + `WARNING`, **не пробрасывается** наверх;
+  - Никаких generic `except Exception` — только конкретные категории.
+* **Метрики (через `services.metrics`):**
+  - `download.bytes{source}` — гистограмма успешных загрузок;
+  - `download.too_big{source}` — счётчик превышений лимита;
+  - `download.http_error{source,status}` — non-200 статусы;
+  - `download.network_error{source}` — сетевые сбои.
+* **Дефолты:** `DEFAULT_CHUNK_SIZE = 64 KB`, `DEFAULT_MAX_BYTES = 20 MB`
+  (выше типичного фото Telegram/Replicate, ниже VK-лимита 50 MB).
+* **Запрещено** в новых интеграциях кросс-постинга: `client.get(url).content`
+  для бинарного медиа. Используйте этот хелпер.
+* **Покрытие:** 9 тестов (`tests/test_streaming_download.py`).
+
+### 1.7 PR-K · HTTP-эндпоинт метрик (sidecar)
+
+* **Файл:** `services/metrics_http.py`
+* **API:** `build_metrics_app()` (FastAPI), `serve_metrics(*, host, port,
+  log_level)` (uvicorn-server в asyncio-task).
+* **Активация:** только при `settings.metrics_http_port > 0`. По
+  умолчанию 0 → no-op, никакого bind'а.
+* **Endpoints (минимизированная поверхность):**
+  - `GET /health` → `{"ok": True}` для liveness-probe;
+  - `GET /metrics/json` → `metrics.snapshot()` JSON-сериализован;
+  - `GET /metrics` → Prometheus exposition format 0.0.4 (PR-L);
+  - `/docs`, `/redoc`, `/openapi.json` **отключены** (`docs_url=None`,
+    `redoc_url=None`, `openapi_url=None`).
+* **Bind:** строго `127.0.0.1`. Экспозиция наружу — только через
+  reverse-proxy (nginx/traefik) с auth-basic / mTLS.
+* **Shutdown:** `asyncio.CancelledError` → `server.should_exit = True`
+  + проброс. Корректно finalize-ится при `dp.shutdown`.
+* **Покрытие:** 8 тестов (`tests/test_metrics_http.py`) через
+  `httpx.ASGITransport` — без поднятия реального сокета.
+
+### 1.8 PR-L · Prometheus text-format exporter
+
+* **Файл:** `services/metrics_prometheus.py`
+* **API:** `to_prometheus_text(snapshot: dict) -> str` — чистая функция
+  без I/O. Используется в `GET /metrics`.
+* **Маппинг:**
+  - имена `a.b.c` → `a_b_c` (Prometheus naming rules);
+  - counters → `# TYPE … counter` + строка значений;
+  - наши histograms (count/sum/min/max) → `# TYPE … summary` с
+    четырьмя сэмплами: `_count`, `_sum`, `quantile="0"` (min),
+    `quantile="1"` (max);
+  - label values экранируются (`\\`, `\n`, `\"`).
+* **Детерминизм:** строки сортированы — стабильный diff в тестах.
+* **Запрещено:** добавлять полноценные buckets/quantiles внутрь
+  `observe` — overhead перебьёт остальную ценность. Если понадобится —
+  заменим backend на `prometheus_client` целиком, call-sites не
+  трогаем.
+* **Покрытие:** 15 тестов (`tests/test_metrics_prometheus.py`).
+
+### 1.9 PR-O · DB hardening: индексы и timing-метрики
+
+* **Файлы:** `services/db_indexes.py`, `services/db_timing.py`.
+* **API:**
+  - `ensure_pr_o_indexes(db)` — идемпотентно создаёт пять
+    индексов под hot queries (`referrals.inviter_id`,
+    `payment_events(user_id, created_at)`, `payment_events.created_at`,
+    `payment_charges.user_id`, partial `users.referred_by IS NOT NULL`).
+    Вызывается ровно один раз — в `init_db()` после всех `CREATE TABLE`.
+  - `TimedQuery(name)` — async-context-manager, пишет
+    `db.query_ms{name}` (гистограмма) при выходе из блока. Метрика
+    пишется и при exception'е.
+* **Покрытие hot queries TimedQuery:**
+  - `claim_payment_charge`, `insert_payment_event` (PR-E);
+  - `referrals_count`;
+  - `get_sales_stats`.
+* **Запрещено:**
+  - Создавать `CREATE INDEX` вне `services/db_indexes.py`;
+  - Оборачивать ВСЕ запросы в `TimedQuery` — overhead на context'е
+    становится заметен при ~1M UPDATE'ов/день. Только финансово
+    значимые / аналитические;
+  - Использовать `LIKE '%...%'` в hot paths без full-text search'а.
+* **Алёрт:** `SlowDbQuery` (`monitoring/alerts.yml`) — `>100ms p100`
+  за 10 мин; runbook → `docs/PRODUCTION_CHECKLIST.md#slow-sql`.
+* **Покрытие:** 10 тестов (`tests/test_db_indexes_and_timing.py`) —
+  включая EXPLAIN QUERY PLAN для каждого индекса.
+
+### 1.11 PR-P · PostgreSQL data-access слой (Phase 0)
+
+* **Файлы:** `services/database/connection.py`,
+  `services/database/repositories.py`,
+  `platforms/handlers/payment_demo.py`.
+* **API:**
+  - `init_postgres_pool(dsn) -> asyncpg.Pool` со строгими таймаутами:
+    `command_timeout=5.0`, `timeout=5.0` (≈ connect/acquire timeout),
+    `min_size=10`, `max_size=50`, `statement_timeout=5000ms`, `jit=off`,
+    `TIME ZONE 'UTC'`, `application_name='neuromule_bot'`.
+  - `db_transaction(pool)` — `@asynccontextmanager`. Открывает
+    connection из пула → `async with conn.transaction()` → yield conn.
+    На любом исключении: `logger.exception(...)` + ROLLBACK (через
+    asyncpg) + re-raise. На успехе: COMMIT. Это **единственная**
+    точка для generic `except Exception` в data-access слое.
+  - `UserRepository(conn)`: `is_tos_accepted(user_id) -> bool`,
+    `accept_tos(user_id) -> None` (`INSERT ... ON CONFLICT (id)
+    DO UPDATE` — заодно ensure юзера).
+  - `PaymentRepository(conn)`: `claim_payment_charge(charge_id,
+    user_id, pack_index) -> bool` через `INSERT INTO payment_charges
+    (...) ON CONFLICT (telegram_payment_charge_id) DO NOTHING
+    RETURNING telegram_payment_charge_id`. Возвращает `True` при
+    первом INSERT'е, `False` при дубликате или пустом `charge_id`.
+* **Дизайн:**
+  - Репозитории stateful — хранят `conn` в `__init__` (`__slots__`).
+    Один conn = одна транзакция (Unit-of-Work). Репозитории НЕ
+    открывают/коммитят транзакции.
+  - Никаких `asyncpg.Record` за пределами модуля — методы возвращают
+    `bool` / plain типы.
+  - `claim_payment_charge` опирается на UNIQUE-constraint
+    `payment_charges.telegram_payment_charge_id` (он же PK в PG-схеме).
+    Гонка двух одновременных claim'ов разрешается на стороне PG.
+* **Активация:** только при `settings.postgres_dsn != ""`. По
+  умолчанию пустой → SQLite-флоу работает без изменений,
+  `payment_demo.router` не включается в `build_dispatcher()`.
+* **Phase 1a · проводка пула (готово):**
+  - `platforms/telegram_bot.py::_maybe_start_pg_pool(dp)` — lazy-
+    инициализация. При пустом DSN, отсутствии `asyncpg` или сбое
+    `init_postgres_pool` → возвращает `None`, бот стартует на SQLite,
+    `ERROR` лог с `exc_info`. **Никаких** падений `run_telegram()`
+    из-за PG.
+  - На успехе кладёт пул в `dp.workflow_data["pg_pool"]` — aiogram
+    автоматически инжектит его в любой handler с параметром
+    `pg_pool: asyncpg.Pool`.
+  - `await pg_pool.close()` вызывается в `finally` после
+    `dp.start_polling(bot)` — корректный shutdown.
+  - DDL-скрипт: `python tools/init_postgres.py [DSN]` — идемпотентен,
+    создаёт `users`/`payment_charges`/`payment_events` + индексы.
+  - Алёрты: `MigrationMismatch` (critical, `migration.mismatch > 0`),
+    `MigrationV2Error` (warning, `migration.v2_error > 5/10m`) — пока
+    источника метрик нет (dual-write observer ещё не подключён к
+    `successful_payment_handler`), счётчики молчат. Подключение
+    observer'а = Phase 1b.
+* **Запрещено:**
+  - Создавать параллельные слои абстракции над PG
+    (`services/repositories/*` снят как draft — оставлен только
+    канонический `services/database/`).
+  - Открывать транзакцию внутри метода репозитория. Всё через
+    `db_transaction(pool)` на call-site'е.
+  - Generic `except Exception` в репозиториях — пробрасываем в
+    `db_transaction`, там единая точка лога.
+  - `bot.send_message` внутри `db_transaction(pool)` — это блокирует
+    держание connection на сетевую I/O. Все side-effect'ы выносим
+    ПОСЛЕ выхода из блока.
+* **Покрытие:** 10 тестов (`tests/test_database_layer.py`) — без
+  реального PG, через `AsyncMock` поверх `asyncpg.Connection`-контракта.
+* **План миграции:** `docs/MIGRATION_POSTGRES.md` (Phase 0 → 4).
+
+### 1.10 Runtime GC · Контролируемый сборщик мусора
+
+* **Файл:** `services/runtime_gc.py`
+* **Запуск:** `setup_optimized_gc()` вызывается в `run_telegram()` ДО старта
+  polling. Это **окончательное состояние:** на проде CPython auto-GC выключен.
+  - `gc.freeze()` — стартовые объекты (импорты, инициализация) переносятся в
+    permanent gen и больше **не сканируются** при последующих сборках.
+  - `gc.disable()` — спонтанные паузы 100–500 мс исключены, GC теперь стартует
+    только по нашему таймеру.
+* **Фоновый цикл:** `controlled_gc_loop(interval_sec=600)` запущен через
+  `asyncio.create_task()` в `run_telegram()`. Раз в N минут вызывает
+  `run_gc_cycle()`, который:
+  1. Прогоняет три фазы (gen0 → gen1 → gen2);
+  2. Каждый `gc.collect(generation=N)` уходит в default-executor через
+     `loop.run_in_executor(None, gc.collect, N)` — event loop **не блокируется**;
+  3. Между фазами — `await asyncio.sleep(0)`, готовые callback'и в очереди
+     успевают обработаться;
+  4. Длительность фазы логируется на `DEBUG` (или `WARNING` при превышении
+     `SLOW_GC_THRESHOLD_SEC = 0.5`).
+* **Изоляция отказов:** падение `gc.collect(gen=1)` не отменяет gen0/gen2 и не
+  останавливает цикл — логируется как `ERROR` с `exc_info=True`, цикл идёт
+  дальше.
+* **Покрытие:** 9 unit-тестов (`tests/test_runtime_gc.py`).
+
+---
+
+## 2. Жёсткие правила генерации кода
+
+### 2.1 Никаких generic `except Exception` для aiogram API
+
+* Запрещено: `try: await bot.send_message(...); except Exception:`.
+* Разрешено только если:
+  - этот вызов — `safe_send_user_message(...)` (PR-A);
+  - или вы импортируете специализированные исключения из `aiogram.exceptions`
+    (`TelegramForbiddenError`, `TelegramRetryAfter`, `TelegramBadRequest`,
+    `TelegramNetworkError`) и обрабатываете каждое осмысленно с лог-уровнем
+    по таблице 1.1.
+* Unknown ошибки — строго `ERROR` с `exc_info=True`, без молчаливого глотания.
+
+### 2.2 Чистые функции для логики
+
+* Парсеры, валидаторы, детекторы строк, классификаторы — выносить в чистые
+  функции в `services/...`. Они не должны импортировать aiogram-Dispatcher
+  или зависеть от глобального `Bot`-инстанса.
+* Юнит-тесты — через `pytest-mock` (`mocker.MagicMock`, `mocker.AsyncMock`),
+  без поднятия реального Dispatcher'а или БД.
+
+### 2.3 Безопасность Event Loop
+
+* **Никакого** синхронного I/O в основном потоке. Файлы → `aiogram.Bot.download_file`
+  в `BytesIO`. БД → `aiosqlite` с явными транзакциями. HTTP → `httpx.AsyncClient`.
+* **Никаких** блокирующих CPU-операций (`time.sleep`, тяжёлые regex по огромным
+  строкам, синхронные генерации PIL без offload) в хэндлерах. При необходимости
+  — `loop.run_in_executor(None, sync_fn, ...)`.
+* Фоновые задачи (GC, чистка БД, синхронизация подписок) — паттерн
+  «короткая работа → `await asyncio.sleep(interval)`», без блокирующих
+  широких `for ... in db.fetch_all()` без `yield`-точек.
+
+### 2.4 Управление памятью (NEW — следствие runtime_gc)
+
+CPython auto-GC отключён глобально. Любой новый код обязан учитывать это:
+
+* **ЗАПРЕЩЕНО** использовать `__del__` (финализаторы) в новых классах.
+  Причины:
+  1. `__del__` вызывается из `gc.collect()`, который теперь идёт в executor'е —
+     поток финализатора может конкурировать с основным loop'ом и вызвать
+     неожиданные блокировки или гонки на shared resources;
+  2. Объекты с `__del__` в циклических ссылках попадают в `gc.garbage` и
+     **никогда не освобождаются** под отключённым auto-GC — это прямая утечка
+     памяти в обход `runtime_gc.py`;
+  3. Telegram-боту не нужны финализаторы: закрытие соединений делается через
+     `async with` / `aiohttp.ClientSession.close()` / `aiosqlite.Connection.close()`.
+* **Используйте:** `async with` (PEP 492 async context managers) или явный
+  `try/finally` для гарантированного закрытия ресурсов.
+* **Если объект имеет крупный долгоживущий граф** (большие кэши, sessions,
+  thread pools), при инициализации в `run_telegram()` рассмотрите дополнительный
+  `gc.freeze()` ПОСЛЕ его создания — это уберёт его из traversal'а будущих
+  сборок и удешевит `gen0`/`gen1` фазы.
+* **НЕ дублируйте** GC-логику: никаких параллельных `gc.collect()` или
+  `gc.set_threshold()` в новых модулях. Если нужна разовая сборка после
+  тяжёлой операции — добавьте exposed-helper в `services/runtime_gc.py`,
+  а не «локальный» вызов.
+* **Тяжёлые фоновые задачи** (новые воркеры, синхронизаторы, кросс-постинг):
+  если задача создаёт большое количество короткоживущих объектов на каждый
+  тик (например, парсит большие JSON'ы), это нормально — `run_gc_cycle`
+  раз в 10 минут зачистит. Но если задача держит долгоживущий граф между
+  тиками — задокументируйте это в docstring и согласуйте `gc.freeze()` для
+  его инициализационной части.
+
+### 2.5 Лимиты и квоты
+
+* Входящий документ → строго через `download_telegram_document_to_buffer`,
+  лимит `MAX_DOCUMENT_BYTES = 15 * 1024 * 1024` (см. PR-C).
+* Внешние API (Replicate / Suno / OpenAI) — обязательно `asyncio.timeout(180)`.
+* `OpenRouter 429` — fallback на следующую модель из `free_models` цепочки.
+* Anti-fraud — `ThrottlingMiddleware` (1 событие / 2 сек / user).
+
+---
+
+## 3. Формат ответа
+
+* **Сначала код или тест** (без вступительной воды).
+* **Затем 2–3 строки обоснования безопасности для production**: что именно
+  гарантировано не сломается, какие edge cases покрыты тестами.
+* Никаких эмодзи в ответах, кроме случаев, когда они в текстах UI (`messages.py`).
+
+---
+
+## 4. Baseline
+
+* **Тесты:** 371 passed, 0 регрессий (на момент фиксации этих правил).
+* **Любой новый PR** начинается и заканчивается `python -m pytest -q` зелёным.
+* **Покрытие критических зон:**
+  - PR-A — 7 тестов (`test_telegram_notify_safe.py`);
+  - PR-B — 21 тест (`test_stars_payment_hints.py`);
+  - PR-C — 5 + 24 (`test_file_processor*.py`);
+  - PR-E — 5 тестов (`test_payment_turn_critical_log.py`);
+  - PR-F — 8 + 3 (`test_tos_gate_middleware.py`, `test_throttling_middleware_extra.py`);
+  - PR-G — 6 тестов (`test_gallery_moderation_e2e.py`);
+  - PR-H — 12 тестов (`test_metrics.py`);
+  - PR-J — 9 тестов (`test_streaming_download.py`);
+  - PR-K — 8 тестов (`test_metrics_http.py`);
+  - PR-L — 15 тестов (`test_metrics_prometheus.py`);
+  - PR-O — 10 тестов (`test_db_indexes_and_timing.py`);
+  - PR-P — 10 + 5 тестов (`test_database_layer.py`, `test_pg_pool_wiring.py`);
+  - Runtime GC — 9 тестов (`test_runtime_gc.py`);
+  - Throttling / TOS-gate / премодерация Галереи / share-cache GC — отдельные suites.
+* **Operational artefacts (не код, но обязательны при деплое):**
+  - `monitoring/alerts.yml` — 7 групп / 12 Prometheus-правил (PR-M + PR-O);
+  - `monitoring/prometheus.example.yml` — пример scrape-конфига;
+  - `docs/PRODUCTION_CHECKLIST.md` — pre/post-deploy, runbook'и (PR-N).
+
+---
+
+## 5. Запрещено без явного согласования
+
+* Прямые вызовы `bot.send_message` в реф-/нотификационных потоках (используйте
+  `safe_send_user_message`).
+* `except Exception` без `exc_info=True` для unknown ошибок.
+* Создание новых классов с `__del__` или ссылок на `gc.set_threshold()` /
+  `gc.enable()` после старта.
+* Прямой `requests.get` / `urllib.request.urlopen` / `time.sleep` в async-зонах.
+* Дублирование стратегий: GC-сборка, лимит на документ, Stars-детектор и
+  безопасный push — каждый имеет ровно одну реализацию.

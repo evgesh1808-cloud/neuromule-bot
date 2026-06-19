@@ -10,15 +10,18 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _ENV_FILE = Path(__file__).resolve().with_name(".env")
 
+# OpenRouter: суффикс ``:free`` у ряда моделей снят (404 No endpoints). Основная + резерв.
+_DEFAULT_GEMINI_FLASH = "google/gemini-2.5-flash"
+_DEFAULT_GEMINI_FLASH_LITE = "google/gemini-2.5-flash-lite"
+# Имя поля сохранено для обратной совместимости импортов/тестов.
+_DEFAULT_GEMINI_FLASH_FREE = _DEFAULT_GEMINI_FLASH
 _DEFAULT_FREE_MODELS: list[str] = [
-    "google/gemini-2.0-flash-lite-preview-02-05:free",
-    "google/gemini-2.0-pro-exp-02-05:free",
-    "mistralai/mistral-7b-instruct:free",
-    "openrouter/auto",
+    _DEFAULT_GEMINI_FLASH,
+    _DEFAULT_GEMINI_FLASH_LITE,
 ]
 
 _DEFAULT_SMART_MODELS: list[str] = [
-    "openrouter/auto",
+    _DEFAULT_GEMINI_FLASH,
 ]
 
 
@@ -54,6 +57,24 @@ def _coerce_float(default: float) -> BeforeValidator:
             return float(s)
         except ValueError:
             return default
+
+    return BeforeValidator(_parse)
+
+
+def _coerce_bool(default: bool) -> BeforeValidator:
+    def _parse(v: Any) -> bool:
+        if v is None:
+            return default
+        if isinstance(v, bool):
+            return v
+        s = str(v).strip().lower()
+        if not s:
+            return default
+        if s in ("1", "true", "yes", "on"):
+            return True
+        if s in ("0", "false", "no", "off"):
+            return False
+        return default
 
     return BeforeValidator(_parse)
 
@@ -126,10 +147,26 @@ class Settings(BaseSettings):
     )
 
     tg_token: str = Field(default="", validation_alias="TG_TOKEN")
+    # Опциональный HTTP/SOCKS5-прокси для aiogram (если api.telegram.org недоступен напрямую).
+    telegram_proxy_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("TELEGRAM_PROXY_URL", "telegram_proxy_url"),
+    )
     payment_token: str = Field(
         default="",
         validation_alias=AliasChoices("PAYMENT_TOKEN", "UKASSA_PROVIDER_TOKEN"),
     )
+    yookassa_shop_id: str = Field(
+        default="",
+        validation_alias=AliasChoices("YOOKASSA_SHOP_ID", "yookassa_shop_id"),
+    )
+    yookassa_secret_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("YOOKASSA_SECRET_KEY", "yookassa_secret_key"),
+    )
+    yookassa_return_url: Annotated[
+        str, _nonempty_str("https://t.me/NeuroMule_bot")
+    ] = "https://t.me/NeuroMule_bot"
     shop_payment_title: Annotated[str, _nonempty_str("NeuroMule")] = "NeuroMule"
     openrouter_key: str = Field(default="", alias="OPENROUTER_API_KEY")
     openrouter_chat_url: str = "https://openrouter.ai/api/v1/chat/completions"
@@ -151,8 +188,98 @@ class Settings(BaseSettings):
     support_bot_username: Annotated[str, _nonempty_str("MuleHelp_bot")] = "MuleHelp_bot"
     admin_username: Annotated[str, _nonempty_str("")] = ""
     admin_ids: Annotated[list[int], _coerce_int_list([])] = Field(default_factory=list)
+    god_mode_enabled: Annotated[bool, _coerce_bool(False)] = Field(
+        default=False,
+        validation_alias=AliasChoices("GOD_MODE_ENABLED", "god_mode_enabled"),
+    )
+    admin_chat_id: Annotated[int, _coerce_int(0)] = Field(
+        default=0,
+        validation_alias=AliasChoices("ADMIN_CHAT_ID", "admin_chat_id"),
+    )
     vk_token: str = ""
     max_token: str = ""
+
+    # ── Reviews & Gallery cross-posting (NeuroMule 🐎⚡️ • Виральный конвейер) ──
+    # Чат-админка модерации отзывов: пересылка от пользователя на оценку модератору.
+    reviews_admin_chat_id: Annotated[int, _coerce_int(0)] = Field(
+        default=0,
+        validation_alias=AliasChoices("REVIEWS_ADMIN_CHAT_ID", "reviews_admin_chat_id"),
+    )
+    # Публичный канал «Галерея шедевров» для одобренных результатов и отзывов.
+    gallery_channel_id: str = ""
+    # VK группа для кросс-постинга (album_id Photo/Video и group_id паблика).
+    vk_group_id: Annotated[int, _coerce_int(0)] = Field(
+        default=0,
+        validation_alias=AliasChoices("VK_GROUP_ID", "vk_group_id"),
+    )
+    vk_group_token: str = ""
+    vk_photo_album_id: Annotated[int, _coerce_int(0)] = Field(
+        default=0,
+        validation_alias=AliasChoices("VK_PHOTO_ALBUM_ID", "vk_photo_album_id"),
+    )
+    vk_video_album_id: Annotated[int, _coerce_int(0)] = Field(
+        default=0,
+        validation_alias=AliasChoices("VK_VIDEO_ALBUM_ID", "vk_video_album_id"),
+    )
+    vk_share_short_url: Annotated[
+        str, _nonempty_str("https://vk.cc/neuromule_bot")
+    ] = "https://vk.cc/neuromule_bot"
+    # MAX App (видео-поток коротких роликов): bearer-токен и endpoint.
+    max_api_token: str = ""
+    max_api_url: Annotated[
+        str, _nonempty_str("https://maxapp.ru/api/v1/feed/upload")
+    ] = "https://maxapp.ru/api/v1/feed/upload"
+    # Бонус Энергии за оставленный отзыв.
+    review_energy_bonus: Annotated[int, _coerce_int(5)] = 5
+
+    # ── Премодерация Галереи WebApp / TG-канала ────────────────────────
+    # Отдельный чат-админка для PRE-публикационной модерации (NSFW и
+    # вообще «спорный» контент). Если пуст — система деградирует в
+    # авто-публикацию (как раньше) и пишет WARNING в лог.
+    gallery_moderation_chat_id: Annotated[int, _coerce_int(0)] = Field(
+        default=0,
+        validation_alias=AliasChoices(
+            "GALLERY_MODERATION_CHAT_ID", "gallery_moderation_chat_id"
+        ),
+    )
+
+    # PR-K: HTTP-эндпоинт метрик. 0 = выключен (по умолчанию). При значении
+    # > 0 в run_telegram() поднимается лёгкий FastAPI-sidecar, который
+    # отвечает по http://127.0.0.1:{port}/metrics/json текущим snapshot'ом
+    # из services.metrics. Bind строго на loopback — наружу выставляется
+    # только через reverse-proxy (nginx/traefik) с авторизацией.
+    metrics_http_port: Annotated[int, _coerce_int(0)] = Field(
+        default=0,
+        validation_alias=AliasChoices("METRICS_HTTP_PORT", "metrics_http_port"),
+    )
+
+    # PR-P: PostgreSQL pool (DRAFT). Пустой DSN = legacy SQLite-флоу
+    # (текущая прод-конфигурация). На фазе 1 миграции выставляется DSN
+    # тестового PG-инстанса, на фазе 3 — production PG.
+    # Формат: postgresql://user:pass@host:5432/dbname (можно с ?sslmode=require).
+    postgres_dsn: str = Field(
+        default="",
+        validation_alias=AliasChoices("POSTGRES_DSN", "postgres_dsn"),
+    )
+    postgres_pool_min_size: Annotated[int, _coerce_int(2)] = Field(
+        default=2,
+        validation_alias=AliasChoices(
+            "POSTGRES_POOL_MIN_SIZE", "postgres_pool_min_size"
+        ),
+    )
+    postgres_pool_max_size: Annotated[int, _coerce_int(10)] = Field(
+        default=10,
+        validation_alias=AliasChoices(
+            "POSTGRES_POOL_MAX_SIZE", "postgres_pool_max_size"
+        ),
+    )
+    # Жёсткий таймаут на любой запрос. См. .cursorrules §1.9 / PR-P.
+    postgres_command_timeout_sec: Annotated[float, _coerce_float(5.0)] = Field(
+        default=5.0,
+        validation_alias=AliasChoices(
+            "POSTGRES_COMMAND_TIMEOUT_SEC", "postgres_command_timeout_sec"
+        ),
+    )
     gen_wait_note: Annotated[
         str,
         _nonempty_str("Подождите 1–3 минуты — генерация занимает время."),
@@ -164,7 +291,16 @@ class Settings(BaseSettings):
     cost_animate_video_suggest: Annotated[int, _coerce_int(20)] = 20
 
     cost_text_pro: Annotated[int, _coerce_int(10)] = 10
-    cost_image_pro: Annotated[int, _coerce_int(2)] = 2
+    cost_image_pro: Annotated[int, _coerce_int(3)] = 3
+    free_imagen_overlimit_cost: Annotated[int, _coerce_int(2)] = 2
+    paid_imagen_energy_cost: Annotated[int, _coerce_int(10)] = 10
+    paid_imagen_crystal_cost: Annotated[int, _coerce_int(2)] = 2
+    paid_flux_energy_cost: Annotated[int, _coerce_int(30)] = 30
+    paid_flux_crystal_cost: Annotated[int, _coerce_int(3)] = 3
+    paid_banana2_energy_cost: Annotated[int, _coerce_int(15)] = 15
+    paid_banana2_crystal_cost: Annotated[int, _coerce_int(2)] = 2
+    paid_banana_pro_energy_cost: Annotated[int, _coerce_int(35)] = 35
+    paid_banana_pro_crystal_cost: Annotated[int, _coerce_int(3)] = 3
     cost_music: Annotated[int, _coerce_int(15)] = 15
     cost_video: Annotated[int, _coerce_int(20)] = 20
     cost_animate: Annotated[int, _coerce_int(20)] = 20
@@ -172,6 +308,7 @@ class Settings(BaseSettings):
     cost_match: Annotated[int, _coerce_int(50)] = 50
     cost_upscale: Annotated[int, _coerce_int(1)] = 1
     referral_bonus_energy: Annotated[int, _coerce_int(5)] = 5
+    referral_channel_crystals: Annotated[int, _coerce_int(2)] = 2
 
     # --- Чат (⚡ / 💎) ---
     cost_chat_standard_energy: Annotated[int, _coerce_int(1)] = 1
@@ -196,14 +333,39 @@ class Settings(BaseSettings):
     cost_image_dalle_crystals: Annotated[int, _coerce_int(5)] = 5
 
     service_offer_url: str = (
-        "https://telegra.ph/Publichnaya-oferta-NeuroMule-05-19"
+        "https://telegra.ph/Publichnaya-oferta-servisa-NeuroMule-05-20"
     )
     privacy_policy_url: str = (
-        "https://telegra.ph/POLITIKA-KONFIDENCIALNOSTI-05-19-35"
+        "https://telegra.ph/Politika-konfidencialnosti-servisa-NeuroMule-05-20"
     )
     subscription_terms_url: str = (
-        "https://telegra.ph/Usloviya-regulyarnyh-platezhej-i-podpiski-NeuroMule-05-19"
+        "https://telegra.ph/Usloviya-regulyarnyh-platezhej-i-podpiski-NeuroMule-05-20"
     )
+    support_instruction_url: str = (
+        "https://telegra.ph/NeuroMule---Rukovodstvo-polzovatelya-05-20"
+    )
+
+    # WebApp Mini-App (Telegram / VK / MAX) — единый хостинг фронтенда магазина
+    # тарифов и витрины «Галерея NeuroMule 2026».
+    #
+    # Гибкая конфигурация:
+    #   * ``is_webapp_enabled=False`` (по умолчанию) → бот живёт в текстовом
+    #     режиме: все «WebApp-точки входа» деградируют в обычные callback'и.
+    #     Это безопасный rollout для prod без готового фронта.
+    #   * ``is_webapp_enabled=True`` И ``webapp_shop_url`` задан →
+    #     активируются WebApp-кнопки: одна большая «🚀 ОТКРЫТЬ ИИ-ПАНЕЛЬ»
+    #     вместо create-menu и WebApp-кнопка «🚀 Пополнить баланс / Тарифы»
+    #     в личном кабинете. Если ``is_webapp_enabled=True``, но URL пуст —
+    #     бот не падает, а откатывается в текстовый режим (см. тесты).
+    is_webapp_enabled: bool = False
+    webapp_shop_url: str | None = None
+    webapp_gallery_url: str | None = None
+    # Базовый URL фронта таблиц (GitHub Pages). Плейсхолдер {report_id} или query report_id=.
+    webapp_table_reports_url: str = (
+        "https://your-user.github.io/neuromule-table/?report_id={report_id}"
+    )
+    # CORS для Mini App API (``api/mini_app.py``). ``*`` или список через запятую.
+    mini_app_cors_origins: str = "*"
 
     free_models: Annotated[list[str], _coerce_str_list(_DEFAULT_FREE_MODELS)] = Field(
         default_factory=lambda: list(_DEFAULT_FREE_MODELS)
@@ -213,37 +375,63 @@ class Settings(BaseSettings):
     )
     free_text_model: Annotated[
         str,
-        _nonempty_str("google/gemini-2.0-flash-lite:free"),
-    ] = "google/gemini-2.0-flash-lite:free"
+        _nonempty_str(_DEFAULT_GEMINI_FLASH),
+    ] = _DEFAULT_GEMINI_FLASH
+    paid_text_model: Annotated[
+        str,
+        _nonempty_str(_DEFAULT_GEMINI_FLASH),
+    ] = _DEFAULT_GEMINI_FLASH
     free_image_model: Annotated[str, _nonempty_str("imagen4")] = "imagen4"
     free_daily_text_limit: Annotated[int, _coerce_int(30)] = 30
 
+    # --- Магазин: пакеты (дефолты = утверждённая сетка 2026) ---
     mini_energy: Annotated[int, _coerce_int(500)] = 500
     mini_crystals: Annotated[int, _coerce_int(10)] = 10
-    mini_rub_kopecks: Annotated[int, _coerce_int(29000)] = 29000
-    mini_stars: Annotated[int, _coerce_int(210)] = 210
+    mini_rub_kopecks: Annotated[int, _coerce_int(34900)] = 34900
+    mini_stars: Annotated[int, _coerce_int(250)] = 250
+    mini_days: Annotated[int, _coerce_int(30)] = 30
 
     smart_energy: Annotated[int, _coerce_int(1500)] = 1500
     smart_crystals: Annotated[int, _coerce_int(35)] = 35
-    smart_rub_kopecks: Annotated[int, _coerce_int(69000)] = 69000
-    smart_stars: Annotated[int, _coerce_int(490)] = 490
+    smart_rub_kopecks: Annotated[int, _coerce_int(79000)] = 79000
+    smart_stars: Annotated[int, _coerce_int(570)] = 570
+    smart_days: Annotated[int, _coerce_int(30)] = 30
 
+    ultra_3d_energy: Annotated[int, _coerce_int(500)] = 500
+    ultra_3d_crystals: Annotated[int, _coerce_int(10)] = 10
+    ultra_3d_rub_kopecks: Annotated[int, _coerce_int(29000)] = 29000
+    ultra_3d_stars: Annotated[int, _coerce_int(210)] = 210
+    ultra_3d_days: Annotated[int, _coerce_int(3)] = 3
+
+    ultra_1w_energy: Annotated[int, _coerce_int(1800)] = 1800
+    ultra_1w_crystals: Annotated[int, _coerce_int(35)] = 35
+    ultra_1w_rub_kopecks: Annotated[int, _coerce_int(69000)] = 69000
+    ultra_1w_stars: Annotated[int, _coerce_int(500)] = 500
+    ultra_1w_days: Annotated[int, _coerce_int(7)] = 7
+
+    ultra_1m_energy: Annotated[int, _coerce_int(7000)] = 7000
+    ultra_1m_crystals: Annotated[int, _coerce_int(120)] = 120
+    ultra_1m_rub_kopecks: Annotated[int, _coerce_int(249000)] = 249000
+    ultra_1m_stars: Annotated[int, _coerce_int(1800)] = 1800
+    ultra_1m_days: Annotated[int, _coerce_int(30)] = 30
+
+    # Legacy aliases (старые импорты)
     ultra_energy: Annotated[int, _coerce_int(7000)] = 7000
     ultra_crystals: Annotated[int, _coerce_int(120)] = 120
-    ultra_rub_kopecks: Annotated[int, _coerce_int(199000)] = 199000
-    ultra_stars: Annotated[int, _coerce_int(1450)] = 1450
+    ultra_rub_kopecks: Annotated[int, _coerce_int(249000)] = 249000
+    ultra_stars: Annotated[int, _coerce_int(1800)] = 1800
 
     crystals_10_amount: Annotated[int, _coerce_int(10)] = 10
-    crystals_10_rub_kopecks: Annotated[int, _coerce_int(19900)] = 19900
-    crystals_10_stars: Annotated[int, _coerce_int(145)] = 145
+    crystals_10_rub_kopecks: Annotated[int, _coerce_int(24900)] = 24900
+    crystals_10_stars: Annotated[int, _coerce_int(180)] = 180
 
     crystals_40_amount: Annotated[int, _coerce_int(40)] = 40
-    crystals_40_rub_kopecks: Annotated[int, _coerce_int(49000)] = 49000
-    crystals_40_stars: Annotated[int, _coerce_int(355)] = 355
+    crystals_40_rub_kopecks: Annotated[int, _coerce_int(69000)] = 69000
+    crystals_40_stars: Annotated[int, _coerce_int(500)] = 500
 
     crystals_100_amount: Annotated[int, _coerce_int(100)] = 100
-    crystals_100_rub_kopecks: Annotated[int, _coerce_int(99000)] = 99000
-    crystals_100_stars: Annotated[int, _coerce_int(720)] = 720
+    crystals_100_rub_kopecks: Annotated[int, _coerce_int(149000)] = 149000
+    crystals_100_stars: Annotated[int, _coerce_int(1080)] = 1080
 
     chat_history_limit: Annotated[int, _coerce_int(10)] = 10
     chat_max_message_chars: Annotated[int, _coerce_int(8000)] = 8000
@@ -263,8 +451,12 @@ class Settings(BaseSettings):
     # Оценка «входных токенов» для чата (грубо: сумма len(content)//char_per_token_est).
     chat_char_per_token_est: Annotated[int, _coerce_int(3)] = 3
     chat_max_context_tokens_est: Annotated[int, _coerce_int(24_000)] = 24_000
-    # Лимит ответа модели (выходные токены) — защита бюджета OpenRouter; 500–800 — разумный дефолт.
+    # Лимит ответа модели (выходные токены) — FREE / базовый чат; 500–800 — разумный дефолт.
     openrouter_max_output_tokens: Annotated[int, _coerce_int(640)] = 640
+    # Лимит ответа для платных тарифов и экспертных ролей за 💎.
+    openrouter_premium_max_output_tokens: Annotated[int, _coerce_int(2500)] = 2500
+    # Роль table_generator: компактный JSON вместо Markdown-таблицы.
+    openrouter_table_max_output_tokens: Annotated[int, _coerce_int(1024)] = 1024
 
     # Стриминг в Telegram: минимальный интервал между edit_message_text (антифлуд API).
     telegram_chat_streaming: bool = True
@@ -283,3 +475,17 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+# God Mode: Telegram ID супер-админов задаются в .env как ADMIN_IDS=123456789,987654321
+# Включение обхода биллинга: GOD_MODE_ENABLED=1 (по умолчанию выключено на проде).
+# Runtime: settings.admin_ids, settings.god_mode_enabled  |  billing_bypass(user_id)
+ADMIN_IDS: list[int] = settings.admin_ids
+
+
+# Короткие module-level алиасы юридических ссылок (Telegra.ph). Удобно
+# импортировать в handler'ах без обращения к settings.* — это стабильные
+# константы, идентичные содержимому соответствующих полей Settings.
+URL_PUBLIC_OFFER: str = settings.service_offer_url
+URL_PRIVACY_POLICY: str = settings.privacy_policy_url
+URL_SUBSCRIPTION_TERMS: str = settings.subscription_terms_url

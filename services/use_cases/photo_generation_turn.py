@@ -22,6 +22,7 @@ class PhotoGenOutcome(str, Enum):
     NEED_PROMPT = "need_prompt"
     INSUFFICIENT_BALANCE = "insufficient_balance"
     DAILY_LIMIT_EXCEEDED = "daily_limit_exceeded"
+    FREE_IMAGE_MODEL_BLOCKED = "free_image_model_blocked"
     SUCCESS = "success"
 
 
@@ -49,6 +50,8 @@ async def run_photo_generation_turn(
     if not spend.ok:
         if spend.error == "daily_limit_exceeded":
             return PhotoGenResult(outcome=PhotoGenOutcome.DAILY_LIMIT_EXCEEDED)
+        if spend.error in ("free_image_model_blocked",):
+            return PhotoGenResult(outcome=PhotoGenOutcome.FREE_IMAGE_MODEL_BLOCKED)
         return PhotoGenResult(outcome=PhotoGenOutcome.INSUFFICIENT_BALANCE)
 
     charge = spend.charge

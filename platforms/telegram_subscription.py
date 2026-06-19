@@ -8,6 +8,7 @@ from collections.abc import Awaitable, Callable
 from aiogram import Bot
 
 from config import settings
+from services.god_mode import billing_bypass
 
 
 class ChannelSubscription:
@@ -17,6 +18,8 @@ class ChannelSubscription:
         self._cache: dict[int, float] = {}
 
     async def is_subscribed(self, user_id: int) -> bool:
+        if billing_bypass(user_id):
+            return True
         try:
             member = await self._bot.get_chat_member(chat_id=settings.channel_id, user_id=user_id)
             return member.status not in ("left", "kicked")
@@ -24,6 +27,8 @@ class ChannelSubscription:
             return True
 
     async def is_subscribed_cached(self, user_id: int) -> bool:
+        if billing_bypass(user_id):
+            return True
         now = time.monotonic()
         cached_at = self._cache.get(user_id)
         if cached_at is not None and (now - cached_at) < self._ttl:

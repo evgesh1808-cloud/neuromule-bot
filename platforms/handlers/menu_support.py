@@ -37,6 +37,8 @@ from content.video_menu import (
     video_root_menu,
 )
 from platforms.handlers import deps
+from platforms.handlers.hd import _send_daily_advice
+from content.video_menu import video_root_menu
 from platforms.telegram_keyboards import (
     cabinet_keyboard,
     channel_gate_markup,
@@ -52,18 +54,32 @@ from platforms.telegram_keyboards import (
     service_rules_menu,
     support_faq_keyboard,
     terms_accept_keyboard,
-    text_role_menu,
 )
 from platforms.telegram_states import AdminStates, FeedbackStates, UserFlow
 from platforms.telegram_utils import (
     HelpInstructionWordFilter,
     _extract_ticket_user_id,
-    _feedback_ticket_header,
     _reply_menu_button_texts,
     _reply_video_gen_result,
     is_admin_user,
     notify_admins_about_payment,
+    guard_free_premium_create,
     send_same_as_instruction_button,
+    can_reply_to_support_ticket,
+    format_support_ticket_admin,
+    support_admin_chat_targets,
+)
+from platforms.support_center import (
+    FAQ_ANSWER_BY_CALLBACK,
+    edit_support_screen,
+    support_back_main_keyboard,
+    support_faq_back_keyboard,
+    support_faq_menu_keyboard,
+    support_guides_text,
+    support_main_keyboard,
+    support_main_text,
+    support_manage_subscription_text,
+    support_payment_keyboard,
 )
 from services import hd_service
 from services import payments_catalog as paycat
@@ -112,10 +128,12 @@ from services.use_cases.chat_turn import ChatTurnOutcome, run_chat_turn
 from services.use_cases.music_generation_turn import MusicGenOutcome, run_music_generation_turn
 from services.use_cases.cabinet_turn import build_cabinet_view
 from services.use_cases.payment_invoice_turn import InvoiceBuildOutcome, build_payment_invoice_draft
+from platforms.neurotext_flow import send_neurotext_role_menu
+from platforms.tariffs_center import send_tariffs_screen
 from services.use_cases.payment_shop_turn import build_tariffs_entry_text
 from services.use_cases.payment_turn import PaymentApplyOutcome, run_successful_payment_apply
 from services.use_cases.photo_generation_turn import PhotoGenOutcome, run_photo_generation_turn
-from services.use_cases.promo_turn import PromoOutcome, run_promo_redeem
+from platforms.handlers.promo_input import handle_promo_code_message
 from services.use_cases.start_turn import StartFlowOutcome, run_start_turn
 from services.use_cases.tariff_shop_nav_turn import TariffShopNavOutcome, resolve_tariff_shop_callback
 from services.use_cases.video_generation_turn import (
@@ -145,12 +163,21 @@ async def daily_advice_from_menu(message: Message, state: FSMContext) -> None:
     await _send_daily_advice(message, message.from_user.id, state)
 
 @router.message(F.text == msg.BTN_CREATE)
-async def open_create_menu(message: Message) -> None:
+async def open_create_inline_menu(message: Message) -> None:
+    """Главная кнопка «🎨 Создать» → inline-сетка 2×3 (``create_menu``).
+
+    Раньше здесь открывалось вертикальное Reply-подменю ``create_reply_menu`` —
+    из-за этого новая симметричная inline-сетка не была видна при обычном
+    сценарии из главного меню.
+    """
     await message.answer(msg.TXT_SELECT_TOOL, reply_markup=create_menu())
 
-@router.message(F.text == msg.BTN_HD_SECTION)
-async def open_hd_from_main_menu(message: Message) -> None:
-    user = await get_user(message.from_user.id)
+
+async def _open_hd_section(message: Message) -> None:
+    uid = message.from_user.id
+    if await guard_free_premium_create(message, uid):
+        return
+    user = await get_user(uid)
     has_pro = bool(user["has_pro_analysis"]) if "has_pro_analysis" in user.keys() else False
     await message.answer(
         msg.TXT_HD_SECTION_INTRO,
@@ -158,38 +185,227 @@ async def open_hd_from_main_menu(message: Message) -> None:
         parse_mode=ParseMode.HTML,
     )
 
-@router.message(F.text == msg.BTN_PROFILE)
+
+@router.message(F.text == msg.BTN_REPLY_HD)
+async def open_hd_from_create_menu(message: Message) -> None:
+    await _open_hd_section(message)
+
+
+@router.message(F.text == msg.BTN_HD_SECTION)
+async def open_hd_legacy_label(message: Message) -> None:
+    await _open_hd_section(message)
+
+
+@router.message(F.text == msg.BTN_REPLY_NEUROTEXT)
+async def reply_create_neurotext(message: Message, state: FSMContext) -> None:
+    await send_neurotext_role_menu(message, state)
+
+
+@router.message(F.text == msg.BTN_REPLY_IMAGE)
+async def reply_create_image(message: Message) -> None:
+    from services.billing.types import TariffTier
+    from services.repository import get_user_row
+
+    row = await get_user_row(message.from_user.id)
+    tariff = TariffTier.from_db(row.tariff)
+    text = msg.get_text_image_models(tariff)
+    await message.answer(
+        text,
+        reply_markup=image_model_menu(
+            tariff,
+            photo_daily_count=row.photo_daily_count,
+            photo_daily_date=row.photo_daily_date,
+        ),
+        parse_mode=ParseMode.HTML,
+    )
+
+
+@router.message(F.text == msg.BTN_REPLY_ANIMATE)
+async def reply_create_animate(message: Message, state: FSMContext) -> None:
+    if await guard_free_premium_create(message, message.from_user.id):
+        return
+    await message.answer(msg.TXT_CREATE_ANIMATE_HINT)
+    await state.set_state(UserFlow.waiting_for_animate)
+
+
+@router.message(F.text == msg.BTN_REPLY_VIDEO)
+async def reply_create_video(message: Message, state: FSMContext) -> None:
+    if await guard_free_premium_create(message, message.from_user.id):
+        return
+    await state.clear()
+    await message.answer(
+        msg.TXT_CREATE_VIDEO_HINT,
+        reply_markup=video_root_menu(),
+        parse_mode=ParseMode.HTML,
+    )
+
+async def _is_duo_owner_user(user_id: int) -> bool:
+    """True для владельца DUO (ULTRA 1 месяц) — кнопка «Управление DUO-доступом»."""
+    from services.family_sharing import is_duo_owner_eligible
+
+    try:
+        return await is_duo_owner_eligible(user_id)
+    except Exception:
+        logger.exception("is_duo_owner_user: failed uid=%s", user_id)
+        return False
+
+
+async def _send_profile_screen(target: Message, user_id: int) -> None:
+    view = await build_cabinet_view(settings, user_id)
+    is_duo = await _is_duo_owner_user(user_id)
+    await target.answer(
+        view.text,
+        reply_markup=cabinet_keyboard(is_duo_owner=is_duo),
+        parse_mode=ParseMode.HTML,
+    )
+
+
+@router.message(F.text.in_(msg.PROFILE_MENU_BUTTONS))
 async def show_profile_from_short_menu(message: Message) -> None:
-    await message.answer(msg.TXT_SECTION_INTRO)
-    view = await build_cabinet_view(settings, message.from_user.id)
-    await message.answer(view.text, reply_markup=cabinet_keyboard())
+    await _send_profile_screen(message, message.from_user.id)
+
+
+@router.callback_query(F.data == msg.CB_REFRESH_PROFILE)
+async def refresh_profile_balance(callback: CallbackQuery) -> None:
+    if not callback.message:
+        await callback.answer()
+        return
+    view = await build_cabinet_view(settings, callback.from_user.id)
+    is_duo = await _is_duo_owner_user(callback.from_user.id)
+    try:
+        await callback.message.edit_text(
+            view.text,
+            reply_markup=cabinet_keyboard(is_duo_owner=is_duo),
+            parse_mode=ParseMode.HTML,
+        )
+    except TelegramBadRequest as exc:
+        if "message is not modified" in str(exc).lower():
+            await callback.answer(msg.TXT_PROFILE_ALREADY_FRESH, show_alert=False)
+            return
+        await callback.message.answer(
+            view.text,
+            reply_markup=cabinet_keyboard(is_duo_owner=is_duo),
+            parse_mode=ParseMode.HTML,
+        )
+    await callback.answer(msg.TXT_PROFILE_REFRESH_OK)
+
+
+@router.callback_query(F.data.in_({msg.CB_ENTER_PROMOCODE, msg.CB_CABINET_PROMO}))
+async def profile_enter_promocode(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(UserFlow.waiting_promo_code)
+    if callback.message:
+        await callback.message.answer(msg.TXT_PROMO_ASK)
+    await callback.answer()
 
 @router.message(F.text == msg.BTN_TARIFFS)
 async def show_tariffs_from_short_menu(message: Message) -> None:
-    await message.answer(msg.TXT_SECTION_INTRO)
-    await message.answer(build_tariffs_entry_text(), reply_markup=paycat.shop_packages_keyboard())
+    await send_tariffs_screen(message, build_tariffs_entry_text())
 
-@router.message(F.text.in_({msg.BTN_SUPPORT, msg.BTN_SUPPORT_LEGACY}))
+
+@router.message(UserFlow.waiting_promo_code, F.text)
+async def promo_redeem(message: Message, state: FSMContext) -> None:
+    await handle_promo_code_message(message, state)
+
+@router.message(
+    F.text.in_({msg.BTN_SUPPORT, msg.BTN_SUPPORT_LEGACY, msg.BTN_SUPPORT_LEGACY2})
+)
 async def show_support_and_faq(message: Message) -> None:
     await message.answer(
-        msg.format_faq_support_text(settings),
+        msg.format_support_text(settings),
         parse_mode=ParseMode.HTML,
         reply_markup=support_faq_keyboard(),
         link_preview_options=types.LinkPreviewOptions(is_disabled=True),
     )
 
-@router.callback_query(F.data == msg.CB_SUPPORT_WRITE_QUESTION)
-async def support_write_question_start(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.set_state(FeedbackStates.waiting_for_user_question)
-    await callback.message.answer(msg.TXT_FEEDBACK_ASK)
+@router.callback_query(F.data == msg.CB_BACK_TO_SUPP_MAIN)
+async def support_back_to_main(callback: CallbackQuery) -> None:
+    await edit_support_screen(callback, support_main_text(), support_main_keyboard())
+
+
+@router.callback_query(F.data == msg.CB_SUPP_FAQ)
+async def support_show_faq_menu(callback: CallbackQuery) -> None:
+    await edit_support_screen(
+        callback,
+        msg.TXT_SUPPORT_FAQ_MENU,
+        support_faq_menu_keyboard(),
+    )
+
+
+@router.callback_query(F.data.in_(set(FAQ_ANSWER_BY_CALLBACK.keys())))
+async def support_show_faq_answer(callback: CallbackQuery) -> None:
+    text = FAQ_ANSWER_BY_CALLBACK.get(callback.data or "")
+    if not text:
+        await callback.answer()
+        return
+    await edit_support_screen(callback, text, support_faq_back_keyboard())
+
+
+@router.callback_query(F.data == msg.CB_SUPP_GUIDES)
+async def support_show_guides(callback: CallbackQuery) -> None:
+    await edit_support_screen(
+        callback,
+        support_guides_text(),
+        support_back_main_keyboard(),
+    )
+
+
+@router.callback_query(F.data == msg.CB_SUPP_PAYMENT_ISSUE)
+async def support_payment_issue(callback: CallbackQuery) -> None:
+    await edit_support_screen(
+        callback,
+        msg.TXT_SUPPORT_PAYMENT_ISSUE,
+        support_payment_keyboard(),
+    )
+
+
+@router.callback_query(F.data == msg.CB_CHECK_PENDING_PAYMENT)
+async def support_check_pending_payment(callback: CallbackQuery) -> None:
+    uid = callback.from_user.id
+    row = await get_user_row(uid)
+    await callback.answer(
+        f"⚡️ {row.energy} | 💎 {row.crystals_balance} | тариф: {row.tariff}",
+        show_alert=True,
+    )
+
+
+@router.callback_query(F.data == msg.CB_MANAGE_SUBSCRIPTION)
+async def support_manage_subscription(callback: CallbackQuery) -> None:
+    await edit_support_screen(
+        callback,
+        support_manage_subscription_text(),
+        support_back_main_keyboard(),
+    )
+
+
+@router.callback_query(F.data == msg.CB_CLOSE_SUPPORT)
+async def support_close(callback: CallbackQuery) -> None:
+    if callback.message:
+        try:
+            await callback.message.delete()
+        except TelegramBadRequest:
+            pass
     await callback.answer()
 
-@router.message(FeedbackStates.waiting_for_user_question, Command("cancel"))
+
+@router.callback_query(
+    F.data.in_({msg.CB_WRITE_TO_MANAGER, msg.CB_SUPPORT_WRITE_QUESTION})
+)
+async def support_write_to_manager(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(FeedbackStates.waiting_support_message)
+    if callback.message:
+        await callback.message.answer(
+            msg.TXT_SUPPORT_WRITE_ASK,
+            parse_mode=ParseMode.HTML,
+        )
+    await callback.answer()
+
+
+@router.message(FeedbackStates.waiting_support_message, Command("cancel"))
 async def support_question_cancel(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(msg.TXT_FEEDBACK_CANCELLED, reply_markup=main_menu(message.from_user.id))
 
-@router.message(FeedbackStates.waiting_for_user_question)
+@router.message(FeedbackStates.waiting_support_message)
 async def process_user_question_delivery(message: Message, state: FSMContext) -> None:
     uid = message.from_user.id
     raw = (message.text or "").strip()
@@ -201,45 +417,47 @@ async def process_user_question_delivery(message: Message, state: FSMContext) ->
         await message.answer(msg.TXT_FEEDBACK_EMPTY)
         return
 
-    admin_ids = list(settings.admin_ids)
-    if not admin_ids:
+    targets = support_admin_chat_targets()
+    if not targets:
         await state.clear()
         await message.answer(msg.TXT_FEEDBACK_NO_ADMINS)
         return
 
-    username = message.from_user.username
-    ticket_header = _feedback_ticket_header(uid, username)
+    body_text = raw or (message.caption or "").strip() or "— (без текста, только вложение)"
+    ticket_text = format_support_ticket_admin(uid, message.from_user, body_text)
     delivered = 0
-    for admin_id in admin_ids:
+    for chat_id in targets:
         try:
             if message.photo:
-                body = (message.caption or "").strip()
-                caption = f"{ticket_header}{html.escape(body)}" if body else ticket_header.rstrip()
                 await message.bot.send_photo(
-                    chat_id=admin_id,
+                    chat_id=chat_id,
                     photo=message.photo[-1].file_id,
-                    caption=caption,
+                    caption=ticket_text,
                     parse_mode=ParseMode.HTML,
                 )
             else:
                 await message.bot.send_message(
-                    chat_id=admin_id,
-                    text=f"{ticket_header}{html.escape(raw)}",
+                    chat_id=chat_id,
+                    text=ticket_text,
                     parse_mode=ParseMode.HTML,
                 )
             delivered += 1
         except Exception:
-            logger.exception("feedback_forward_failed admin_id=%s user_id=%s", admin_id, uid)
+            logger.exception(
+                "support_ticket_forward_failed chat_id=%s user_id=%s", chat_id, uid
+            )
 
     await state.clear()
     if delivered:
-        await message.answer(msg.TXT_FEEDBACK_DELIVERED)
+        await message.answer(msg.TXT_SUPPORT_TICKET_OK, parse_mode=ParseMode.HTML)
     else:
         await message.answer(msg.TXT_FEEDBACK_NO_ADMINS)
 
-@router.message(F.reply_to_message, F.text)
+@router.message(F.reply_to_message, F.text, F.from_user.id.in_(settings.admin_ids))
 async def admin_reply_to_user_process(message: Message) -> None:
-    if not _is_admin(message.from_user.id):
+    if not can_reply_to_support_ticket(
+        message, is_admin=_is_admin(message.from_user.id)
+    ):
         return
     reply_to = message.reply_to_message
     if reply_to is None:
@@ -254,7 +472,7 @@ async def admin_reply_to_user_process(message: Message) -> None:
     try:
         await message.bot.send_message(
             chat_id=target_uid,
-            text=msg.TXT_FEEDBACK_REPLY_USER.format(body=reply_body),
+            text=msg.TXT_SUPPORT_REPLY_USER.format(body=reply_body),
             parse_mode=ParseMode.HTML,
         )
         await message.reply(

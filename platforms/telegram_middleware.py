@@ -9,9 +9,8 @@ from aiogram.types import TelegramObject
 
 from config import settings
 from content import messages as msg
-from platforms.telegram_keyboards import channel_gate_markup, terms_accept_keyboard
 from platforms.telegram_subscription import ChannelSubscription
-from platforms.telegram_utils import is_admin_user
+from platforms.telegram_utils import send_start_paywall_screen, send_terms_required_reminder
 from services.repository import ensure_user, user_has_accepted_terms
 
 class DailyResetMiddleware(BaseMiddleware):
@@ -39,14 +38,22 @@ class TermsGateMiddleware(BaseMiddleware):
         user = data.get("event_from_user")
         if user is None:
             return await handler(event, data)
-        if is_admin_user(user.id):
-            return await handler(event, data)
         if isinstance(event, types.Message):
             text = (event.text or "").strip()
             if text.startswith("/start"):
                 return await handler(event, data)
         elif isinstance(event, types.CallbackQuery):
-            if (event.data or "") == msg.CB_ACCEPT_RULES:
+            # CB_ACCEPT_LEGAL_TOS (новый TOS-gate, PR-G) ОБЯЗАТЕЛЬНО в
+            # whitelist'е — иначе юзер не сможет принять условия, ведь
+            # на момент клика ``accepted_terms`` ещё False. Без этого
+            # callback режется middleware'ом → handler не выполняется →
+            # юзер видит paywall reminder вместо подтверждения.
+            if (event.data or "") in (
+                msg.CB_ACCEPT_RULES,
+                msg.CB_CHECK_SUBSCRIPTION,
+                msg.CB_RECHECK_SUBSCRIPTION,
+                msg.CB_ACCEPT_LEGAL_TOS,
+            ):
                 return await handler(event, data)
         else:
             return await handler(event, data)
@@ -54,11 +61,10 @@ class TermsGateMiddleware(BaseMiddleware):
         if await user_has_accepted_terms(user.id):
             return await handler(event, data)
 
-        markup = terms_accept_keyboard()
         if isinstance(event, types.Message):
-            await event.answer(msg.TXT_TERMS_REQUIRED, reply_markup=markup)
-        elif isinstance(event, types.CallbackQuery):
-            await event.message.answer(msg.TXT_TERMS_REQUIRED, reply_markup=markup)
+            await send_terms_required_reminder(event)
+        elif isinstance(event, types.CallbackQuery) and event.message is not None:
+            await send_terms_required_reminder(event.message)
             await event.answer()
         return None
 
@@ -80,7 +86,15 @@ class ChannelGateMiddleware(BaseMiddleware):
             if text.startswith("/start"):
                 return await handler(event, data)
         elif isinstance(event, types.CallbackQuery):
-            if (event.data or "") in (msg.CB_CHECK_SUBSCRIPTION, msg.CB_ACCEPT_RULES):
+            # CB_ACCEPT_LEGAL_TOS (новый TOS-gate, PR-G) ОБЯЗАТЕЛЬНО в
+            # whitelist'е — иначе юзер не сможет принять условия и
+            # навсегда застрянет на TOS-карточке (см. TermsGate выше).
+            if (event.data or "") in (
+                msg.CB_CHECK_SUBSCRIPTION,
+                msg.CB_RECHECK_SUBSCRIPTION,
+                msg.CB_ACCEPT_RULES,
+                msg.CB_ACCEPT_LEGAL_TOS,
+            ):
                 return await handler(event, data)
         else:
             return await handler(event, data)
@@ -88,13 +102,14 @@ class ChannelGateMiddleware(BaseMiddleware):
         user = data.get("event_from_user")
         if user is None:
             return await handler(event, data)
-        if await self._channel_sub.is_subscribed_cached(user.id):
+        if await user_has_accepted_terms(user.id) and await self._channel_sub.is_subscribed_cached(
+            user.id
+        ):
             return await handler(event, data)
 
-        markup = channel_gate_markup()
         if isinstance(event, types.Message):
-            await event.answer(msg.TXT_CHANNEL_GATE, reply_markup=markup)
-        elif isinstance(event, types.CallbackQuery):
-            await event.message.answer(msg.TXT_CHANNEL_GATE, reply_markup=markup)
+            await send_start_paywall_screen(event)
+        elif isinstance(event, types.CallbackQuery) and event.message is not None:
+            await send_start_paywall_screen(event.message)
             await event.answer()
         return None

@@ -15,6 +15,7 @@ from services.billing.video_pipeline import (
     scenario_requires_user_text,
 )
 from services.generation_jobs import GenTask, fire_video_job, make_video_task_id
+from services.last_video_request import remember as remember_last_video
 from services.repository import get_user_row
 from services.tariffs import TariffName, normalize_tariff, queue_priority_for_tariff
 
@@ -26,6 +27,7 @@ class VideoGenOutcome(str, Enum):
     NEED_PROMPT = "need_prompt"
     NEED_PHOTO = "need_photo"
     FORBIDDEN_BY_TARIFF = "forbidden_by_tariff"
+    FREE_PREMIUM_BLOCKED = "free_premium_blocked"
     INSUFFICIENT_BALANCE = "insufficient_balance"
     UNKNOWN_SCENARIO = "unknown_scenario"
     SUCCESS = "success"
@@ -57,6 +59,8 @@ async def run_video_scenario_turn(
 
     spend = await billing.spend_video_scenario(user_id, sid)
     if not spend.ok:
+        if spend.error == "free_premium_create_blocked":
+            return VideoGenResult(outcome=VideoGenOutcome.FREE_PREMIUM_BLOCKED)
         if spend.error == "ultra_required":
             row = await get_user_row(user_id)
             tariff = normalize_tariff(row.tariff)
@@ -90,7 +94,15 @@ async def run_video_scenario_turn(
         billing_charge_id=charge.charge_id,
     )
     fire_video_job(task, priority=priority)
-    await bot.send_message(chat_id, msg.TXT_VIDEO_QUEUE_ACCEPTED)
+    remember_last_video(
+        user_id,
+        scenario_id=sid,
+        prompt=user_prompt,
+        file_id=telegram_file_id,
+    )
+    from aiogram.enums import ParseMode
+
+    await bot.send_message(chat_id, msg.TXT_VIDEO_QUEUE_ACCEPTED, parse_mode=ParseMode.HTML)
     return VideoGenResult(
         outcome=VideoGenOutcome.SUCCESS,
         vip_priority=(tariff is TariffName.ULTRA),

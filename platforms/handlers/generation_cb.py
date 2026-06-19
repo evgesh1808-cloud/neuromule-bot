@@ -33,6 +33,8 @@ from content.video_menu import (
     CB_VIDEO_EXTEND,
     CB_VIDEO_LONG,
     CB_VIDEO_PREFIX,
+    CB_VIDEO_REGENERATE,
+    CB_VIDEO_UPSCALE,
     video_category_menu,
     video_root_menu,
 )
@@ -52,7 +54,6 @@ from platforms.telegram_keyboards import (
     service_rules_menu,
     support_faq_keyboard,
     terms_accept_keyboard,
-    text_role_menu,
 )
 from platforms.telegram_states import AdminStates, FeedbackStates, UserFlow
 from platforms.telegram_utils import (
@@ -141,6 +142,12 @@ def _is_admin(user_id: int) -> bool:
 
 
 from platforms.handlers.start_admin import start_match_flow
+from platforms.neurotext_flow import (
+    handle_clear_context,
+    handle_neurotext_role_pick,
+    open_neurotext_from_callback,
+    send_neurotext_role_menu,
+)
 
 @router.callback_query(F.data == msg.CB_BACK_CREATE)
 async def back_create(callback: CallbackQuery) -> None:
@@ -174,31 +181,40 @@ async def open_existing_hd_report(callback: CallbackQuery) -> None:
     await callback.answer()
 
 @router.callback_query(F.data == msg.CB_CREATE_TEXT)
-async def create_text_hint(callback: CallbackQuery) -> None:
-    await callback.message.answer(msg.TXT_CREATE_TEXT_HINT, reply_markup=text_role_menu())
-    await callback.answer()
+async def create_text_hint(callback: CallbackQuery, state: FSMContext) -> None:
+    await open_neurotext_from_callback(callback, state)
+
 
 @router.callback_query(F.data.startswith(msg.CB_TEXT_ROLE_PREFIX))
 async def pick_text_role(callback: CallbackQuery, state: FSMContext) -> None:
-    role_id = (callback.data or "").removeprefix(msg.CB_TEXT_ROLE_PREFIX)
-    role_map = {rid: label for label, rid in msg.TEXT_ROLES}
-    if role_id not in role_map:
-        await callback.answer("Неизвестный режим.", show_alert=True)
-        return
-    row = await get_user_row(callback.from_user.id)
-    has_premium_access = row.crystals > 0 or row.balance_crystals > 0 or row.tariff.strip().lower() != "free"
-    if role_id in msg.PREMIUM_TEXT_ROLE_IDS and not has_premium_access:
-        await callback.message.answer(msg.TXT_PREMIUM_ROLE_LOCKED, reply_markup=paycat.shop_packages_keyboard())
-        await callback.answer(msg.TXT_PREMIUM_ROLE_LOCKED, show_alert=True)
-        return
-    await state.update_data(text_role=role_id)
-    await state.set_state(UserFlow.waiting_for_text_prompt)
-    await callback.message.answer(msg.TXT_TEXT_ROLE_SELECTED.format(role=role_map[role_id]))
-    await callback.answer()
+    await handle_neurotext_role_pick(
+        callback,
+        state,
+        tariffs_keyboard=paycat.shop_packages_keyboard,
+    )
+
+
+@router.callback_query(F.data == msg.CB_CLEAR_CONTEXT)
+async def neurotext_clear_context(callback: CallbackQuery, state: FSMContext) -> None:
+    await handle_clear_context(callback, state)
 
 @router.callback_query(F.data == msg.CB_CREATE_IMAGE)
 async def create_image_menu(callback: CallbackQuery) -> None:
-    await callback.message.answer(msg.TXT_IMAGE_INTRO, reply_markup=image_model_menu())
+    from services.billing.types import TariffTier
+    from services.repository import get_user_row
+
+    row = await get_user_row(callback.from_user.id)
+    tariff = TariffTier.from_db(row.tariff)
+    text = msg.get_text_image_models(tariff)
+    await callback.message.answer(
+        text,
+        reply_markup=image_model_menu(
+            tariff,
+            photo_daily_count=row.photo_daily_count,
+            photo_daily_date=row.photo_daily_date,
+        ),
+        parse_mode=ParseMode.HTML,
+    )
     await callback.answer()
 
 @router.callback_query(F.data == msg.CB_UPSCALE_START)
@@ -209,7 +225,17 @@ async def upscale_start_callback(callback: CallbackQuery, state: FSMContext) -> 
 
 @router.callback_query(F.data.startswith(msg.CB_IMG_PREFIX))
 async def pick_image_model(callback: CallbackQuery, state: FSMContext) -> None:
+    from services.billing.free_tier_gates import free_allows_image_model, is_free_user
+
     mid = callback.data[len(msg.CB_IMG_PREFIX) :]
+    if await is_free_user(callback.from_user.id) and not free_allows_image_model(mid):
+        await callback.answer("Доступно только Imagen 4 и Flux", show_alert=True)
+        if callback.message:
+            await callback.message.answer(
+                msg.TXT_FREE_IMAGE_MODEL_BLOCKED,
+                parse_mode=ParseMode.HTML,
+            )
+        return
     if mid not in msg.IMAGE_MODEL_IDS:
         await callback.answer(msg.TXT_UNKNOWN_IMAGE_MODEL, show_alert=True)
         return
@@ -221,12 +247,22 @@ async def pick_image_model(callback: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data == msg.CB_CREATE_ANIMATE)
 async def create_animate_start(callback: CallbackQuery, state: FSMContext) -> None:
+    from platforms.telegram_utils import guard_free_premium_create
+
+    if callback.message and await guard_free_premium_create(callback.message, callback.from_user.id):
+        await callback.answer()
+        return
     await callback.message.answer(msg.TXT_CREATE_ANIMATE_HINT)
     await state.set_state(UserFlow.waiting_for_animate)
     await callback.answer()
 
 @router.callback_query(F.data == msg.CB_CREATE_VIDEO)
 async def create_video_start(callback: CallbackQuery, state: FSMContext) -> None:
+    from platforms.telegram_utils import guard_free_premium_create
+
+    if callback.message and await guard_free_premium_create(callback.message, callback.from_user.id):
+        await callback.answer()
+        return
     await state.clear()
     await callback.message.answer(
         msg.TXT_CREATE_VIDEO_HINT,
@@ -246,7 +282,7 @@ async def video_pick_category(callback: CallbackQuery) -> None:
 
 @router.callback_query(
     F.data.startswith(CB_VIDEO_PREFIX)
-    & ~F.data.in_({CB_VIDEO_EXTEND, CB_VIDEO_LONG})
+    & ~F.data.in_({CB_VIDEO_EXTEND, CB_VIDEO_LONG, CB_VIDEO_REGENERATE, CB_VIDEO_UPSCALE})
 )
 async def video_pick_scenario(callback: CallbackQuery, state: FSMContext) -> None:
     scenario_id = (callback.data or "")[len(CB_VIDEO_PREFIX) :]
@@ -290,14 +326,89 @@ async def video_long_callback(callback: CallbackQuery) -> None:
         show_alert=vr.outcome is not VideoGenOutcome.SUCCESS,
     )
 
-@router.callback_query(F.data == msg.CB_CREATE_MUSIC)
-async def create_music_start(callback: CallbackQuery, state: FSMContext) -> None:
-    await callback.message.answer(msg.TXT_CREATE_MUSIC_HINT)
-    await state.set_state(UserFlow.waiting_for_music)
+
+@router.callback_query(F.data == CB_VIDEO_REGENERATE)
+async def video_regenerate_callback(callback: CallbackQuery) -> None:
+    """Повторная генерация последнего видео-сценария пользователя."""
+    from services.last_video_request import get as get_last_video
+
+    uid = callback.from_user.id
     await callback.answer()
+    last = get_last_video(uid)
+    if not last:
+        await callback.answer(msg.TXT_VIDEO_REGENERATE_NO_HISTORY, show_alert=True)
+        return
+    vr = await run_video_scenario_turn(
+        settings,
+        bot,
+        callback.message.chat.id,
+        uid,
+        last.scenario_id,
+        user_prompt=last.prompt,
+        telegram_file_id=last.file_id or "",
+    )
+    if vr.outcome is not VideoGenOutcome.SUCCESS:
+        await callback.message.answer(
+            msg.TXT_VIDEO_REGENERATE_FAILED, parse_mode=ParseMode.HTML
+        )
+
+
+@router.callback_query(F.data == CB_VIDEO_UPSCALE)
+async def video_upscale_callback(callback: CallbackQuery) -> None:
+    """Видео-апскейл (5 💎). Пока — апсейл-плейсхолдер без списания."""
+    await callback.answer(msg.TXT_VIDEO_UPSCALE_SOON, show_alert=True)
 
 @router.callback_query(F.data == msg.CB_MATCH_START)
 async def match_start(callback: CallbackQuery, state: FSMContext) -> None:
     await start_match_flow(callback.message, callback.from_user.id, state)
     await callback.answer()
+
+
+@router.callback_query(F.data == msg.CB_HD_MATCH_MANUAL)
+async def match_manual_input(callback: CallbackQuery, state: FSMContext) -> None:
+    """Сброс на ручной ввод данных партнёра (FSM WAITING_PARTNER_DATA)."""
+    await callback.answer()
+    data = await state.get_data()
+    own = data.get("match_own_birth_data")
+    await state.set_state(UserFlow.WAITING_PARTNER_DATA)
+    if own:
+        await callback.message.answer(msg.format_match_ask_second(settings))
+    else:
+        await callback.message.answer(msg.format_match_ask_both(settings))
+
+
+@router.callback_query(F.data.startswith(msg.CB_HD_MATCH_FAMILY_PREFIX))
+async def match_pick_family(callback: CallbackQuery, state: FSMContext) -> None:
+    """Шорткат: берёт hd_birth_data выбранного member и переводит в FSM с готовым вводом."""
+    await callback.answer()
+    raw = (callback.data or "").removeprefix(msg.CB_HD_MATCH_FAMILY_PREFIX)
+    try:
+        member_id = int(raw)
+    except ValueError:
+        return
+    try:
+        member = await get_user(member_id)
+    except Exception:
+        logger.exception("match_pick_family: get_user failed member_id=%s", member_id)
+        member = None
+    member_birth = ""
+    if member is not None and "hd_birth_data" in member.keys():
+        member_birth = (member["hd_birth_data"] or "").strip()
+    if not member_birth:
+        await callback.answer(msg.TXT_HD_MATCH_FAMILY_MEMBER_NO_DATA, show_alert=True)
+        return
+    await state.set_state(UserFlow.WAITING_PARTNER_DATA)
+    # Симулируем «пользователь ввёл текст» — single-shot подача в существующий процесс.
+    fake_message = callback.message
+    fake_message_text = member_birth
+    # Эмулируем поток через прямой вызов: обработчик match_process читает .text,
+    # поэтому используем bot.send_message → handler.
+    # В простом виде — просто кладём данные в state и просим юзера подтвердить.
+    await state.update_data(match_partner_prefill=member_birth)
+    await fake_message.answer(
+        f"✅ Подтянул данные партнёра: <code>{member_birth}</code>\n"
+        f"Отправь любое сообщение, чтобы запустить расчёт совместимости 🐎⚡️.",
+        parse_mode=ParseMode.HTML,
+    )
+    _ = fake_message_text
 

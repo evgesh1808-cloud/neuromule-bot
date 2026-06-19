@@ -1,7 +1,8 @@
 """
 Use-case: параметры счёта Telegram (invoice) после выбора пакета и способа оплаты.
 
-Без вызова Bot API — только данные для ``answer_invoice``.
+Цены на тарифы и кристалл-пакеты — строго фиксированные. Подарочные коды
+не влияют на стоимость подписок.
 """
 
 from __future__ import annotations
@@ -47,7 +48,7 @@ class BuildPaymentInvoiceResult:
     draft: PaymentInvoiceDraft | None = None
 
 
-def build_payment_invoice_draft(
+async def build_payment_invoice_draft(
     settings: Settings,
     user_id: int,
     pkg_index: int,
@@ -58,7 +59,7 @@ def build_payment_invoice_draft(
 
     Вход:
         settings — конфиг (название магазина, токен ЮKassa).
-        user_id — покупатель (Telegram id).
+        user_id — покупатель (Telegram id), идёт в payload для идемпотентности.
         pkg_index — индекс пакета из ``payments_catalog.PACKAGES``.
         method — ``r`` (карта/RUB) или ``x`` (Stars).
 
@@ -81,7 +82,9 @@ def build_payment_invoice_draft(
         else f"Кристаллы: +{pack.crystals} 💎"
     )
     raw_prices = paycat.labeled_prices_for(pack, method)
-    prices = tuple(InvoicePriceLine(label=lp.label, amount=lp.amount) for lp in raw_prices)
+    prices = tuple(
+        InvoicePriceLine(label=lp.label, amount=lp.amount) for lp in raw_prices
+    )
     draft = PaymentInvoiceDraft(
         title=title,
         description=description[:255],

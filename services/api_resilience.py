@@ -46,10 +46,15 @@ async def refund_generation_task(task: GenTask) -> None:
 
 
 async def notify_user_safe(bot: Bot, chat_id: int, text: str) -> None:
+    from aiogram.enums import ParseMode
+
     try:
-        await bot.send_message(chat_id, text)
+        await bot.send_message(chat_id, text, parse_mode=ParseMode.HTML)
     except Exception:
-        logger.debug("notify_user_safe failed chat_id=%s", chat_id, exc_info=True)
+        try:
+            await bot.send_message(chat_id, text)
+        except Exception:
+            logger.debug("notify_user_safe failed chat_id=%s", chat_id, exc_info=True)
 
 
 async def fail_generation_task(

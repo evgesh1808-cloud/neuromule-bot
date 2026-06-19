@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 class AnimateGenOutcome(str, Enum):
     NEED_PHOTO = "need_photo"
     FORBIDDEN_BY_TARIFF = "forbidden_by_tariff"
+    FREE_PREMIUM_BLOCKED = "free_premium_blocked"
     INSUFFICIENT_BALANCE = "insufficient_balance"
     SUCCESS = "success"
 
@@ -51,6 +52,8 @@ async def run_animate_generation_turn(
 
     spend = await billing.spend_animate(uid)
     if not spend.ok:
+        if spend.error == "free_premium_create_blocked":
+            return AnimateGenResult(outcome=AnimateGenOutcome.FREE_PREMIUM_BLOCKED)
         return AnimateGenResult(outcome=AnimateGenOutcome.INSUFFICIENT_BALANCE)
 
     charge = spend.charge

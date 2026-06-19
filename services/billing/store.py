@@ -3,18 +3,34 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 import aiosqlite
 
+from services.billing.crystals_balance import migrate_crystal_split_columns
 from services.billing.pricing import DAILY_FREE_ENERGY
 from services.billing.types import ChargeBreakdown, TariffTier, UserBillingState
 from services import repository
+from services.god_mode import god_mode_charge, is_god_mode_charge, billing_bypass
 from services.repository import ensure_user
 
 
 def _db_path() -> str:
     return repository.DB_PATH
+
+
+async def _resolve_wallet_id(user_id: int) -> int:
+    """DUO-роутер кошелька.
+
+    Если ``user_id`` — приглашённый партнёр активной DUO-пары, возвращает
+    ``owner_id`` владельца ULTRA (1 месяц). Иначе — сам ``user_id``.
+    """
+    try:
+        from services.family_sharing import resolve_duo_owner
+
+        return await resolve_duo_owner(user_id)
+    except Exception:
+        return user_id
 
 
 async def _migrate_billing_columns(db: aiosqlite.Connection) -> None:
@@ -63,9 +79,184 @@ async def _migrate_billing_columns(db: aiosqlite.Connection) -> None:
     )
 
 
+async def _ensure_balance_packages_schema(db: aiosqlite.Connection) -> None:
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS balance_packages (
+            package_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            package_type TEXT NOT NULL,
+            paid_energy_left INTEGER NOT NULL DEFAULT 0,
+            crystals_left INTEGER NOT NULL DEFAULT 0,
+            expires_at TEXT,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_balance_packages_user "
+        "ON balance_packages (user_id)"
+    )
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+async def grant_balance_package(
+    user_id: int,
+    kind: str,
+    energy_amount: int,
+    crystals_amount: int,
+    expires_at: str | None,
+) -> int:
+    """
+    Централизованное начисление: строка в ``balance_packages`` + синхронизация
+    legacy-полей ``users`` (``energy_paid``, ``sub_crystals``, ``buy_crystals``).
+    """
+    await ensure_user(user_id)
+    if energy_amount <= 0 and crystals_amount <= 0:
+        return 0
+    async with aiosqlite.connect(_db_path()) as db:
+        await _ensure_balance_packages_schema(db)
+        await migrate_crystal_split_columns(db)
+        await db.execute("BEGIN IMMEDIATE")
+        cur = await db.execute(
+            """
+            INSERT INTO balance_packages
+                (user_id, package_type, paid_energy_left, crystals_left, expires_at, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                kind,
+                max(0, int(energy_amount)),
+                max(0, int(crystals_amount)),
+                expires_at,
+                _now_iso(),
+            ),
+        )
+        package_id = int(cur.lastrowid or 0)
+        async with db.execute(
+            """
+            SELECT COALESCE(energy_free, energy, 0), COALESCE(energy_paid, 0),
+                   COALESCE(sub_crystals, 0), COALESCE(buy_crystals, 0)
+            FROM users WHERE id = ?
+            """,
+            (user_id,),
+        ) as row_cur:
+            row = await row_cur.fetchone()
+        e_free = int(row[0] or 0) if row else 0
+        e_paid = int(row[1] or 0) if row else 0
+        sub_cr = int(row[2] or 0) if row else 0
+        buy_cr = int(row[3] or 0) if row else 0
+        if energy_amount > 0:
+            e_paid += energy_amount
+        if crystals_amount > 0:
+            if expires_at is None:
+                buy_cr += crystals_amount
+            else:
+                sub_cr += crystals_amount
+        total_e = e_free + e_paid
+        total_cr = sub_cr + buy_cr
+        await db.execute(
+            f"""
+            UPDATE users SET
+                energy_paid = ?,
+                sub_crystals = ?,
+                buy_crystals = ?,
+                crystals = ?,
+                balance = ?,
+                balance_crystals = ?,
+                {_set_energy_totals_sql()}
+            WHERE id = ?
+            """,
+            (
+                e_paid,
+                sub_cr,
+                buy_cr,
+                total_cr,
+                total_cr,
+                total_cr,
+                total_e,
+                total_e,
+                user_id,
+            ),
+        )
+        await db.commit()
+    return package_id
+
+
 async def init_billing_schema() -> None:
     async with aiosqlite.connect(_db_path()) as db:
         await _migrate_billing_columns(db)
+        await _ensure_balance_packages_schema(db)
+        await migrate_crystal_split_columns(db)
+        await db.commit()
+
+
+async def apply_tariff_period_renewal(
+    user_id: int,
+    *,
+    tariff: str,
+    energy_paid_grant: int,
+    sub_crystals_grant: int,
+    extend_days: int = 30,
+) -> None:
+    """
+    Продление/покупка тарифа: сброс подписочной энергии и ``sub_crystals``, затем новый пакет.
+    ``buy_crystals`` не трогаем.
+    """
+    await ensure_user(user_id)
+    ends = (date.today() + timedelta(days=extend_days)).isoformat()
+    async with aiosqlite.connect(_db_path()) as db:
+        await migrate_crystal_split_columns(db)
+        await db.execute("BEGIN IMMEDIATE")
+        await db.execute(
+            f"""
+            UPDATE users SET
+                sub_crystals = 0,
+                energy_paid = 0,
+                energy_free = 0,
+                energy = 0,
+                balance_energy = 0
+            WHERE id = ?
+            """,
+            (user_id,),
+        )
+        new_total = energy_paid_grant
+        await db.execute(
+            f"""
+            UPDATE users SET
+                tariff = ?,
+                has_paid = 1,
+                first_purchase_done = 1,
+                energy_paid = ?,
+                sub_crystals = ?,
+                subscription_ends_at = ?,
+                {_set_energy_totals_sql()}
+            WHERE id = ?
+            """,
+            (
+                tariff,
+                energy_paid_grant,
+                sub_crystals_grant,
+                ends,
+                new_total,
+                new_total,
+                user_id,
+            ),
+        )
+        await db.execute(
+            """
+            UPDATE users SET
+                crystals = COALESCE(sub_crystals, 0) + COALESCE(buy_crystals, 0),
+                balance = COALESCE(sub_crystals, 0) + COALESCE(buy_crystals, 0),
+                balance_crystals = COALESCE(sub_crystals, 0) + COALESCE(buy_crystals, 0)
+            WHERE id = ?
+            """,
+            (user_id,),
+        )
         await db.commit()
 
 
@@ -87,8 +278,10 @@ async def load_user_billing(user_id: int) -> UserBillingState:
     await ensure_user(user_id)
     await init_billing_schema()
     today = date.today().isoformat()
+    # Family Sharing: balance member'а ULTRA-семьи = balance кошелька owner.
+    wallet_id = await _resolve_wallet_id(user_id)
     async with aiosqlite.connect(_db_path()) as db:
-        await _apply_daily_reset_if_needed(db, user_id, today)
+        await _apply_daily_reset_if_needed(db, wallet_id, today)
         async with db.execute(
             """
             SELECT
@@ -103,7 +296,7 @@ async def load_user_billing(user_id: int) -> UserBillingState:
                 photo_daily_count
             FROM users WHERE id = ?
             """,
-            (user_id,),
+            (wallet_id,),
         ) as cur:
             row = await cur.fetchone()
     if not row:
@@ -182,14 +375,12 @@ async def apply_purchase_credits(
     tariff: str | None,
     energy_paid_delta: int,
     crystals_delta: int,
+    buy_crystals_delta: int = 0,
 ) -> None:
+    """Доп. начисление энергии/кристаллов без сброса тарифного периода (пакеты 💎, реф. бонус)."""
     async with aiosqlite.connect(_db_path()) as db:
+        await migrate_crystal_split_columns(db)
         await db.execute("BEGIN IMMEDIATE")
-        if tariff:
-            await db.execute(
-                "UPDATE users SET tariff = ?, has_paid = 1, first_purchase_done = 1 WHERE id = ?",
-                (tariff, user_id),
-            )
         if energy_paid_delta:
             async with db.execute(
                 "SELECT COALESCE(energy_free, energy, 0), COALESCE(energy_paid, 0) FROM users WHERE id = ?",
@@ -207,16 +398,23 @@ async def apply_purchase_credits(
                 """,
                 (new_paid, new_total, new_total, user_id),
             )
-        if crystals_delta:
+        delta_buy = buy_crystals_delta or crystals_delta
+        if delta_buy:
+            await db.execute(
+                """
+                UPDATE users SET buy_crystals = COALESCE(buy_crystals, 0) + ? WHERE id = ?
+                """,
+                (delta_buy, user_id),
+            )
             await db.execute(
                 """
                 UPDATE users SET
-                    crystals = crystals + ?,
-                    balance = crystals + ?,
-                    balance_crystals = crystals + ?
+                    crystals = COALESCE(sub_crystals, 0) + COALESCE(buy_crystals, 0),
+                    balance = COALESCE(sub_crystals, 0) + COALESCE(buy_crystals, 0),
+                    balance_crystals = COALESCE(sub_crystals, 0) + COALESCE(buy_crystals, 0)
                 WHERE id = ?
                 """,
-                (crystals_delta, crystals_delta, crystals_delta, user_id),
+                (user_id,),
             )
         await db.commit()
 
@@ -255,45 +453,57 @@ async def atomic_spend(
     reserve_photo_slot: bool,
     photo_daily_limit: int,
 ) -> ChargeBreakdown | None:
+    if billing_bypass(user_id):
+        return god_mode_charge()
     charge_id = uuid.uuid4().hex[:16]
     today = date.today().isoformat()
+    # Family Sharing: для members ULTRA-семьи кошелёк = owner_id, а user_id
+    # остаётся индивидуальным для рефанда / логов / cooldowns верхнего уровня.
+    wallet_id = await _resolve_wallet_id(user_id)
     async with aiosqlite.connect(_db_path()) as db:
-        await _apply_daily_reset_if_needed(db, user_id, today)
+        await _apply_daily_reset_if_needed(db, wallet_id, today)
         await db.execute("BEGIN IMMEDIATE")
+        await migrate_crystal_split_columns(db)
         async with db.execute(
             """
             SELECT
                 COALESCE(energy_free, energy, 0),
                 COALESCE(energy_paid, 0),
+                COALESCE(sub_crystals, 0),
+                COALESCE(buy_crystals, 0),
                 crystals,
                 photo_daily_date,
                 photo_daily_count,
                 UPPER(COALESCE(tariff, 'FREE'))
             FROM users WHERE id = ?
             """,
-            (user_id,),
+            (wallet_id,),
         ) as cur:
             row = await cur.fetchone()
         if not row:
             await db.execute("ROLLBACK")
             return None
-        e_free, e_paid, crystals = int(row[0]), int(row[1]), int(row[2])
-        p_date, p_count, _tariff = row[3], int(row[4] or 0), row[5]
+        e_free, e_paid = int(row[0]), int(row[1])
+        sub_cr, buy_cr = int(row[2]), int(row[3])
+        crystals = sub_cr + buy_cr if (row[2] is not None or row[3] is not None) else int(row[4] or 0)
+        p_date, p_count, _tariff = row[5], int(row[6] or 0), row[7]
         used_slot = False
         spend_free = spend_paid = spend_crystals = 0
 
         if reserve_photo_slot:
             if p_date != today:
                 p_count = 0
-            if p_count >= photo_daily_limit:
+            if p_count < photo_daily_limit:
+                used_slot = True
+                new_count = p_count + 1
+                await db.execute(
+                    "UPDATE users SET photo_daily_date = ?, photo_daily_count = ? WHERE id = ?",
+                    (today, new_count, wallet_id),
+                )
+            elif crystal_need < 1:
+                # Слоты Imagen 4 исчерпаны и нет оплаты кристаллами — отказ.
                 await db.execute("ROLLBACK")
                 return None
-            used_slot = True
-            new_count = p_count + 1
-            await db.execute(
-                "UPDATE users SET photo_daily_date = ?, photo_daily_count = ? WHERE id = ?",
-                (today, new_count, user_id),
-            )
 
         if crystal_need > 0:
             if crystals < crystal_need:
@@ -315,15 +525,25 @@ async def atomic_spend(
             return None
 
         if spend_crystals:
+            if sub_cr + buy_cr < spend_crystals:
+                await db.execute("ROLLBACK")
+                return None
+            from_sub = min(sub_cr, spend_crystals)
+            from_buy = spend_crystals - from_sub
+            new_sub = sub_cr - from_sub
+            new_buy = buy_cr - from_buy
+            new_total = new_sub + new_buy
             await db.execute(
                 """
                 UPDATE users SET
-                    crystals = crystals - ?,
-                    balance = crystals - ?,
-                    balance_crystals = crystals - ?
-                WHERE id = ? AND crystals >= ?
+                    sub_crystals = ?,
+                    buy_crystals = ?,
+                    crystals = ?,
+                    balance = ?,
+                    balance_crystals = ?
+                WHERE id = ?
                 """,
-                (spend_crystals, spend_crystals, spend_crystals, user_id, spend_crystals),
+                (new_sub, new_buy, new_total, new_total, new_total, wallet_id),
             )
         if spend_free or spend_paid:
             new_free = e_free - spend_free
@@ -339,12 +559,14 @@ async def atomic_spend(
                   AND COALESCE(energy_free, energy, 0) >= ?
                   AND COALESCE(energy_paid, 0) >= ?
                 """,
-                (new_free, new_paid, new_total, new_total, user_id, spend_free, spend_paid),
+                (new_free, new_paid, new_total, new_total, wallet_id, spend_free, spend_paid),
             )
             if cur.rowcount != 1:
                 await db.execute("ROLLBACK")
                 return None
 
+        # billing_charges.user_id ставим = wallet_id, чтобы refund_charge
+        # вернул ресурсы на тот же кошелёк (owner для members ULTRA-семьи).
         await db.execute(
             """
             INSERT INTO billing_charges
@@ -353,7 +575,7 @@ async def atomic_spend(
             """,
             (
                 charge_id,
-                user_id,
+                wallet_id,
                 feature,
                 spend_free,
                 spend_paid,
@@ -373,6 +595,8 @@ async def atomic_spend(
 
 
 async def refund_charge(charge_id: str) -> bool:
+    if is_god_mode_charge(charge_id):
+        return True
     async with aiosqlite.connect(_db_path()) as db:
         await db.execute("BEGIN IMMEDIATE")
         async with db.execute(
@@ -400,13 +624,21 @@ async def refund_charge(charge_id: str) -> bool:
             UPDATE users SET
                 energy_free = ?,
                 energy_paid = ?,
-                crystals = crystals + ?,
-                balance = crystals + ?,
-                balance_crystals = crystals + ?,
+                buy_crystals = COALESCE(buy_crystals, 0) + ?,
                 {_set_energy_totals_sql()}
             WHERE id = ?
             """,
-            (new_free, new_paid, cr, cr, cr, new_total, new_total, uid),
+            (new_free, new_paid, cr, new_total, new_total, uid),
+        )
+        await db.execute(
+            """
+            UPDATE users SET
+                crystals = COALESCE(sub_crystals, 0) + COALESCE(buy_crystals, 0),
+                balance = COALESCE(sub_crystals, 0) + COALESCE(buy_crystals, 0),
+                balance_crystals = COALESCE(sub_crystals, 0) + COALESCE(buy_crystals, 0)
+            WHERE id = ?
+            """,
+            (uid,),
         )
         if slot:
             await db.execute(

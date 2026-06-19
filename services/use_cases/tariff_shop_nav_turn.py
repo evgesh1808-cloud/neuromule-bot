@@ -10,7 +10,10 @@ from dataclasses import dataclass
 from enum import Enum
 
 from services import payments_catalog as paycat
-from services.use_cases.payment_shop_turn import build_payment_choose_method_caption, build_payment_shop_intro_text
+from services.use_cases.payment_shop_turn import (
+    build_payment_choose_method_caption,
+    build_tariffs_entry_text,
+)
 
 
 class TariffShopNavOutcome(str, Enum):
@@ -43,7 +46,7 @@ def resolve_tariff_shop_callback(callback_data: str) -> TariffShopNavView:
     if parsed == "back":
         return TariffShopNavView(
             outcome=TariffShopNavOutcome.SHOP_INTRO,
-            text=build_payment_shop_intro_text(),
+            text=build_tariffs_entry_text(),
         )
     if isinstance(parsed, int):
         return TariffShopNavView(

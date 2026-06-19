@@ -26,8 +26,33 @@ def _estimate_messages_chars(messages: list[dict[str, Any]]) -> int:
     """Суммирует длину полей content — грубая защита от гигантского JSON."""
     n = 0
     for m in messages:
-        n += len(str(m.get("content", "")))
+        content = m.get("content", "")
+        if isinstance(content, list):
+            for part in content:
+                if not isinstance(part, dict):
+                    n += len(str(part))
+                    continue
+                if part.get("type") == "text":
+                    n += len(str(part.get("text", "")))
+                elif part.get("type") == "image_url":
+                    url = (part.get("image_url") or {}).get("url", "")
+                    n += len(str(url))
+                else:
+                    n += len(str(part))
+        else:
+            n += len(str(content))
     return n
+
+
+def _messages_contain_image(messages: list[dict[str, Any]]) -> bool:
+    for m in messages:
+        content = m.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "image_url":
+                return True
+    return False
 
 
 def _estimate_messages_prompt_tokens_chars(messages: list[dict[str, Any]], char_per_token: int) -> int:
@@ -35,7 +60,7 @@ def _estimate_messages_prompt_tokens_chars(messages: list[dict[str, Any]], char_
         char_per_token = 3
     total = 0
     for m in messages:
-        total += len(str(m.get("content", ""))) // char_per_token
+        total += len(_message_content_as_text(m.get("content"))) // char_per_token
     return total
 
 
@@ -53,6 +78,8 @@ def _message_content_as_text(content: Any) -> str:
                 t = item.get("text")
                 if isinstance(t, str):
                     parts.append(t)
+                elif item.get("type") == "image_url":
+                    parts.append("[image]")
         return "".join(parts)
     return str(content)
 
@@ -122,19 +149,23 @@ def _chat_payload(
     messages: list[dict[str, Any]],
     *,
     stream: bool,
+    max_tokens: int | None = None,
+    response_format: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Собирает тело POST /chat/completions: модель, сообщения, ``max_tokens``, опционально ``stream``.
 
-    ``max_tokens`` всегда из настроек — единый рубильник расхода на ответ модели.
+    ``max_tokens`` из ``ChatRoutePlan``; fallback — ``settings.openrouter_max_output_tokens``.
     """
     body: dict[str, Any] = {
         "model": model,
         "messages": messages,
-        "max_tokens": settings.openrouter_max_output_tokens,
+        "max_tokens": max_tokens if max_tokens is not None else settings.openrouter_max_output_tokens,
     }
     if stream:
         body["stream"] = True
+    if response_format:
+        body["response_format"] = response_format
     return body
 
 
@@ -145,15 +176,33 @@ async def _post_chat_completion(
     messages: list[dict[str, Any]],
     *,
     timeout: float,
+    max_tokens: int | None = None,
+    response_format: dict[str, Any] | None = None,
 ) -> str | None:
     """Один нестриминговый запрос; при HTTP≠200 или пустом content возвращает ``None``."""
-    payload = _chat_payload(settings, model, messages, stream=False)
+    payload = _chat_payload(
+        settings,
+        model,
+        messages,
+        stream=False,
+        max_tokens=max_tokens,
+        response_format=response_format,
+    )
     response = await client.post(
         settings.openrouter_chat_url,
         headers=_chat_headers(settings),
         json=payload,
         timeout=timeout,
     )
+    if response.status_code == 429:
+        # Rate-limit на :free модели — поднимаем явный лог, чтобы было
+        # видно в графиках/алертах. Внешний цикл по `model_chain` сам
+        # переключится на следующую (резервную) модель.
+        logger.warning(
+            "OpenRouter model=%s rate_limited (429) — falling back to next model",
+            model,
+        )
+        return None
     if response.status_code != 200:
         logger.warning(
             "OpenRouter model=%s status=%s body=%s",
@@ -219,11 +268,20 @@ async def _post_chat_completion_stream(
     *,
     timeout: float,
     stream_callback: StreamCallback,
+    max_tokens: int | None = None,
+    response_format: dict[str, Any] | None = None,
 ) -> str | None:
     """
     Стриминговый запрос (SSE): ``data:`` по байтам, ``delta.content``, колбэк с частичным текстом.
     """
-    payload = _chat_payload(settings, model, messages, stream=True)
+    payload = _chat_payload(
+        settings,
+        model,
+        messages,
+        stream=True,
+        max_tokens=max_tokens,
+        response_format=response_format,
+    )
     acc = ""
     try:
         async with client.stream(
@@ -282,12 +340,19 @@ async def ask_ai_messages(
     http_client: httpx.AsyncClient | None = None,
     stream_callback: StreamCallback | None = None,
     models: list[str] | None = None,
+    max_tokens: int | None = None,
+    text_role: str | None = None,
+    response_format: dict[str, Any] | None = None,
 ) -> str:
     """
     Отправляет ``messages`` в OpenRouter; перебирает ``free_models`` до успеха.
 
     Если задан ``stream_callback``, сначала для каждой модели пробуется SSE; при неудаче — обычный POST.
+
+    ``text_role == "table_generator"`` включает JSON Mode: ``response_format: {type: json_object}``.
     """
+    if response_format is None and (text_role or "").strip().lower() == "table_generator":
+        response_format = {"type": "json_object"}
     if _estimate_messages_chars(messages) > max_context_chars:
         logger.warning("OpenRouter: context too long (%s chars), aborting", max_context_chars)
         raise RuntimeError("context_too_long")
@@ -309,16 +374,39 @@ async def ask_ai_messages(
     t = timeout if timeout is not None else settings.openrouter_timeout_sec
 
     model_chain = [m for m in (models or settings.free_models) if str(m).strip()]
+    use_stream = (
+        stream_callback is not None
+        and not _messages_contain_image(messages)
+        and response_format is None
+    )
+    if stream_callback is not None and not use_stream:
+        logger.debug("OpenRouter: multimodal request — streaming disabled")
+
     async with _http_client_scope(http_client) as client:
         for model in model_chain:
             try:
-                if stream_callback is not None:
+                if use_stream:
                     content = await _post_chat_completion_stream(
-                        client, settings, model, messages, timeout=t, stream_callback=stream_callback
+                        client,
+                        settings,
+                        model,
+                        messages,
+                        timeout=t,
+                        stream_callback=stream_callback,
+                        max_tokens=max_tokens,
+                        response_format=response_format,
                     )
                     if content:
                         return content
-                content = await _post_chat_completion(client, settings, model, messages, timeout=t)
+                content = await _post_chat_completion(
+                    client,
+                    settings,
+                    model,
+                    messages,
+                    timeout=t,
+                    max_tokens=max_tokens,
+                    response_format=response_format,
+                )
                 if content is not None:
                     if stream_callback is not None:
                         await stream_callback(content, True)

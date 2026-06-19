@@ -10,6 +10,8 @@ from pathlib import Path
 
 import aiosqlite
 
+from services.db_timing import TimedQuery
+
 
 def _resolve_db_path() -> str:
     project_root = Path(__file__).resolve().parent.parent
@@ -44,6 +46,9 @@ async def _migrate_users(db: aiosqlite.Connection) -> None:
         ("crystals", "ALTER TABLE users ADD COLUMN crystals INTEGER DEFAULT 0"),
         ("balance_crystals", "ALTER TABLE users ADD COLUMN balance_crystals INTEGER DEFAULT 0"),
         ("balance_energy", "ALTER TABLE users ADD COLUMN balance_energy INTEGER DEFAULT 30"),
+        # NOTE: last_free_date — историческое название поля. Хранит дату последнего успешного
+        # получения «Совета дня». К ежедневной энергии (⚡) отношения не имеет. Сброс лимита
+        # контролируется автономно через сравнение дат.
         ("last_free_date", "ALTER TABLE users ADD COLUMN last_free_date TEXT"),
         ("last_reset_date", "ALTER TABLE users ADD COLUMN last_reset_date TEXT"),
         ("hd_report_json", "ALTER TABLE users ADD COLUMN hd_report_json TEXT"),
@@ -103,6 +108,24 @@ async def _migrate_rate_limit_hits(db: aiosqlite.Connection) -> None:
     )
 
 
+async def _migrate_table_reports(db: aiosqlite.Connection) -> None:
+    """Таблицы table_generator для Mini App API (``/api/v1/reports/{id}``)."""
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS table_reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            table_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_table_reports_user_created "
+        "ON table_reports (user_id, created_at)"
+    )
+
+
 async def _migrate_dialog_messages(db: aiosqlite.Connection) -> None:
     await db.execute(
         """
@@ -119,6 +142,22 @@ async def _migrate_dialog_messages(db: aiosqlite.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_dialog_messages_user_created "
         "ON dialog_messages (user_id, created_at)"
     )
+
+
+async def _migrate_promo_codes(db: aiosqlite.Connection) -> None:
+    """Промокоды теперь подарочные: ⚡ и/или 💎 — без скидок на тариф."""
+    async with db.execute("PRAGMA table_info(promo_codes)") as cur:
+        rows = await cur.fetchall()
+    cols = {row[1] for row in rows}
+    if "allowed_tariffs" not in cols:
+        await db.execute(
+            "ALTER TABLE promo_codes ADD COLUMN allowed_tariffs TEXT "
+            "DEFAULT 'FREE,MINI,SMART,ULTRA'"
+        )
+    if "crystal_bonus" not in cols:
+        await db.execute(
+            "ALTER TABLE promo_codes ADD COLUMN crystal_bonus INTEGER NOT NULL DEFAULT 0"
+        )
 
 
 async def _seed_promos(db: aiosqlite.Connection, promo_seeds: str) -> None:
@@ -157,6 +196,7 @@ async def init_db(promo_seeds: str = "") -> None:
                 balance INTEGER DEFAULT 0,
                 balance_crystals INTEGER DEFAULT 0,
                 balance_energy INTEGER DEFAULT 30,
+                -- NOTE: last_free_date — дата последнего «Совета дня» (не связано с ⚡/last_reset_date)
                 last_free_date TEXT,
                 last_reset_date TEXT,
                 hd_report_json TEXT,
@@ -173,6 +213,7 @@ async def init_db(promo_seeds: str = "") -> None:
         await _migrate_users(db)
         await _migrate_drop_users_crystals(db)
         await _migrate_dialog_messages(db)
+        await _migrate_table_reports(db)
         await _migrate_rate_limit_hits(db)
         await db.execute(
             """
@@ -203,6 +244,7 @@ async def init_db(promo_seeds: str = "") -> None:
             )
             """
         )
+        await _migrate_promo_codes(db)
         await db.execute(
             """
             CREATE TABLE IF NOT EXISTS payment_charges (
@@ -227,9 +269,16 @@ async def init_db(promo_seeds: str = "") -> None:
             """
         )
         await _seed_promos(db, promo_seeds)
+        from services.billing.crystals_balance import migrate_crystal_split_columns
         from services.billing.store import _migrate_billing_columns
+        from services.db_indexes import ensure_pr_o_indexes
 
         await _migrate_billing_columns(db)
+        await migrate_crystal_split_columns(db)
+        # PR-O: индексы под hot queries (referrals/payment_events и т.п.).
+        # CREATE INDEX IF NOT EXISTS — идемпотентно, повторный запуск
+        # пропускает уже существующие.
+        await ensure_pr_o_indexes(db)
         await db.commit()
 
 
@@ -238,18 +287,30 @@ class UserRow:
     id: int
     energy: int
     crystals: int
+    sub_crystals: int
+    buy_crystals: int
     balance_energy: int
     balance_crystals: int
     balance: int
     tariff: str
+    subscription_ends_at: str | None
     referred_by: int | None
     photo_daily_date: str | None
     photo_daily_count: int
     text_daily_date: str | None
     text_daily_count: int
     has_paid: bool
+    has_pro_analysis: bool
+    hd_type: str | None
+    hd_birth_data: str | None
+    # NOTE: Историческое название поля. Хранит дату последнего успешного получения "Совета дня".
+    # К ежедневной энергии (⚡) отношения не имеет. Сброс лимита контролируется автономно через сравнение дат.
     last_free_date: str | None
     last_reset_date: str | None
+
+    @property
+    def crystals_balance(self) -> int:
+        return self.sub_crystals + self.buy_crystals
 
 
 async def ensure_user(user_id: int, username: str | None = None) -> None:
@@ -324,16 +385,22 @@ async def get_user_row(user_id: int) -> UserRow:
                 id,
                 energy,
                 crystals,
+                COALESCE(sub_crystals, 0),
+                COALESCE(buy_crystals, 0),
                 balance_energy,
                 balance_crystals,
                 balance,
                 tariff,
+                subscription_ends_at,
                 referred_by,
                 photo_daily_date,
                 photo_daily_count,
                 text_daily_date,
                 text_daily_count,
                 has_paid,
+                COALESCE(has_pro_analysis, 0),
+                hd_type,
+                hd_birth_data,
                 last_free_date,
                 last_reset_date
             FROM users WHERE id = ?
@@ -341,22 +408,30 @@ async def get_user_row(user_id: int) -> UserRow:
             (user_id,),
         ) as cur:
             row = await cur.fetchone()
+    sub = int(row[3] or 0)
+    buy = int(row[4] or 0)
     return UserRow(
         id=int(row[0]),
         energy=int(row[1] or 0),
-        crystals=int(row[2] or 0),
-        balance_energy=int(row[3] or 0),
-        balance_crystals=int(row[4] or 0),
-        balance=int(row[5] or 0),
-        tariff=str(row[6] or "Free"),
-        referred_by=int(row[7]) if row[7] is not None else None,
-        photo_daily_date=row[8],
-        photo_daily_count=int(row[9] or 0),
-        text_daily_date=row[10],
-        text_daily_count=int(row[11] or 0),
-        has_paid=bool(row[12] or 0),
-        last_free_date=row[13],
-        last_reset_date=row[14],
+        crystals=sub + buy if (row[3] is not None or row[4] is not None) else int(row[2] or 0),
+        sub_crystals=sub,
+        buy_crystals=buy,
+        balance_energy=int(row[5] or 0),
+        balance_crystals=int(row[6] or 0),
+        balance=int(row[7] or 0),
+        tariff=str(row[8] or "Free"),
+        subscription_ends_at=row[9],
+        referred_by=int(row[10]) if row[10] is not None else None,
+        photo_daily_date=row[11],
+        photo_daily_count=int(row[12] or 0),
+        text_daily_date=row[13],
+        text_daily_count=int(row[14] or 0),
+        has_paid=bool(row[15] or 0),
+        has_pro_analysis=bool(row[16] or 0),
+        hd_type=row[17],
+        hd_birth_data=row[18],
+        last_free_date=row[19],
+        last_reset_date=row[20],
     )
 
 
@@ -381,7 +456,7 @@ async def try_set_referrer(invited_id: int, inviter_id: int) -> bool:
 
 
 async def referrals_count(inviter_id: int) -> int:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with TimedQuery("referrals_count"), aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT COUNT(*) FROM referrals WHERE inviter_id = ?", (inviter_id,)) as cur:
             row = await cur.fetchone()
     return int(row[0])
@@ -391,28 +466,21 @@ async def update_balance(user_id: int, field: str, delta: int) -> None:
     if field not in {"energy", "crystals", "balance", "balance_energy", "balance_crystals"}:
         raise ValueError("Invalid field")
     await ensure_user(user_id)
+    if field in {"crystals", "balance", "balance_crystals"}:
+        from services.billing.crystals_balance import add_buy_crystals
+
+        await add_buy_crystals(user_id, delta)
+        return
     async with aiosqlite.connect(DB_PATH) as db:
-        if field in {"crystals", "balance", "balance_crystals"}:
-            await db.execute(
-                """
-                UPDATE users
-                SET crystals = crystals + ?,
-                    balance = crystals + ?,
-                    balance_crystals = crystals + ?
-                WHERE id = ?
-                """,
-                (delta, delta, delta, user_id),
-            )
-        else:
-            await db.execute(
-                """
-                UPDATE users
-                SET energy = energy + ?,
-                    balance_energy = energy + ?
-                WHERE id = ?
-                """,
-                (delta, delta, user_id),
-            )
+        await db.execute(
+            """
+            UPDATE users
+            SET energy = energy + ?,
+                balance_energy = energy + ?
+            WHERE id = ?
+            """,
+            (delta, delta, user_id),
+        )
         await db.commit()
 
 
@@ -435,22 +503,12 @@ async def try_consume_energy(user_id: int, amount: int) -> bool:
 
 
 async def try_consume_crystals(user_id: int, amount: int) -> bool:
-    if amount <= 0:
+    from services.billing.crystals_balance import spend_crystals_split
+    from services.god_mode import billing_bypass
+
+    if billing_bypass(user_id):
         return True
-    await ensure_user(user_id)
-    async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute(
-            """
-            UPDATE users
-            SET crystals = crystals - ?,
-                balance = crystals - ?,
-                balance_crystals = crystals - ?
-            WHERE id = ? AND crystals >= ?
-            """,
-            (amount, amount, amount, user_id, amount),
-        )
-        await db.commit()
-        return cur.rowcount == 1
+    return await spend_crystals_split(user_id, amount)
 
 
 async def check_and_spend(user_id: int, amount: int) -> bool:
@@ -460,6 +518,10 @@ async def check_and_spend(user_id: int, amount: int) -> bool:
 
 async def try_consume_chat_credit(user_id: int) -> str | None:
     """Spend 1 free energy first, then 1 paid crystal. Returns spent column name."""
+    from services.god_mode import billing_bypass
+
+    if billing_bypass(user_id):
+        return "god_mode"
     await ensure_user(user_id)
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute(
@@ -538,6 +600,10 @@ async def try_begin_daily_advice(user_id: int) -> bool:
     Блокирует повторный запуск, пока другой запрос в процессе; зависший lock
   сбрасывается через ``_ADVICE_PENDING_STALE_SEC`` секунд.
     """
+    from services.god_mode import billing_bypass
+
+    if billing_bypass(user_id):
+        return True
     await ensure_user(user_id)
     today = date.today().isoformat()
     now = time.time()
@@ -590,6 +656,24 @@ async def rollback_daily_advice(user_id: int) -> None:
         await db.commit()
 
 
+async def reset_admin_daily_advice_test_state(user_id: int) -> None:
+    """Сброс лимита и профиля совета дня для админ-тестов (/reset_me)."""
+    await ensure_user(user_id)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            UPDATE users SET
+                last_free_date = NULL,
+                advice_pending_at = NULL,
+                hd_type = NULL,
+                advice_birth_data = NULL
+            WHERE id = ?
+            """,
+            (user_id,),
+        )
+        await db.commit()
+
+
 async def rollback_daily_photo_slot(user_id: int) -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
@@ -600,34 +684,6 @@ async def rollback_daily_photo_slot(user_id: int) -> None:
             (user_id,),
         )
         await db.commit()
-
-
-async def try_consume_daily_text_slot(user_id: int, daily_limit: int) -> tuple[bool, int]:
-    await ensure_user(user_id)
-    today = date.today().isoformat()
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute(
-            "SELECT text_daily_date, text_daily_count FROM users WHERE id = ?",
-            (user_id,),
-        ) as cur:
-            row = await cur.fetchone()
-        d, c = row[0], row[1]
-        count = int(c or 0)
-        if d != today:
-            count = 0
-            await db.execute(
-                "UPDATE users SET text_daily_date = ?, text_daily_count = 0 WHERE id = ?",
-                (today, user_id),
-            )
-        if count >= daily_limit:
-            await db.commit()
-            return False, count
-        await db.execute(
-            "UPDATE users SET text_daily_date = ?, text_daily_count = ? WHERE id = ?",
-            (today, count + 1, user_id),
-        )
-        await db.commit()
-        return True, count + 1
 
 
 async def set_user_tariff(user_id: int, tariff: str) -> None:
@@ -651,36 +707,91 @@ async def mark_user_first_purchase_and_get_referrer(user_id: int) -> int | None:
         return referred_by
 
 
-async def try_redeem_promo(user_id: int, raw_code: str) -> tuple[bool, str, int]:
+async def try_redeem_promo(user_id: int, raw_code: str) -> tuple[bool, str, int, int]:
+    """
+    Активация подарочного промокода.
+
+    Промокоды дают единоразовое начисление ресурсов: энергия (paid) и/или
+    вечные кристаллы (``buy_crystals``). На стоимость подписок влияния НЕТ.
+
+    Возвращает ``(ok, key, energy_bonus, crystal_bonus)``.
+    ``key``: unknown | used | exhausted | tariff_blocked | redeemed.
+    """
+    from services.promo_discount import is_tariff_allowed
+
     await ensure_user(user_id)
     code = (raw_code or "").strip().upper()
     if not code:
-        return False, "unknown", 0
+        return False, "unknown", 0, 0
     async with aiosqlite.connect(DB_PATH) as db:
+        await _migrate_promo_codes(db)
         async with db.execute(
-            "SELECT energy_bonus, max_uses, uses_count FROM promo_codes WHERE code = ?",
+            """
+            SELECT energy_bonus, max_uses, uses_count, allowed_tariffs, crystal_bonus
+            FROM promo_codes WHERE code = ?
+            """,
             (code,),
         ) as cur:
             row = await cur.fetchone()
         if not row:
-            return False, "unknown", 0
-        bonus, max_uses, uses = int(row[0]), int(row[1]), int(row[2])
+            return False, "unknown", 0, 0
+        energy_bonus = int(row[0] or 0)
+        max_uses = int(row[1])
+        uses = int(row[2])
+        allowed_tariffs = row[3]
+        crystal_bonus = int(row[4] or 0)
+
         async with db.execute(
             "SELECT 1 FROM promo_redemptions WHERE user_id = ? AND code = ?",
             (user_id, code),
         ) as cur:
             if await cur.fetchone():
-                return False, "used", 0
+                return False, "used", 0, 0
         if uses >= max_uses:
-            return False, "exhausted", 0
+            return False, "exhausted", 0, 0
+
+        async with db.execute("SELECT tariff FROM users WHERE id = ?", (user_id,)) as cur:
+            user_row = await cur.fetchone()
+        user_tariff = str(user_row[0] if user_row else "FREE")
+        if not is_tariff_allowed(user_tariff, allowed_tariffs):
+            return False, "tariff_blocked", 0, 0
+
+        redeemed_at = date.today().isoformat()
         await db.execute(
             "INSERT INTO promo_redemptions (user_id, code, redeemed_at) VALUES (?, ?, ?)",
-            (user_id, code, date.today().isoformat()),
+            (user_id, code, redeemed_at),
         )
-        await db.execute("UPDATE promo_codes SET uses_count = uses_count + 1 WHERE code = ?", (code,))
-        await db.execute("UPDATE users SET energy = energy + ? WHERE id = ?", (bonus, user_id))
+        await db.execute(
+            "UPDATE promo_codes SET uses_count = uses_count + 1 WHERE code = ?",
+            (code,),
+        )
+
+        if energy_bonus > 0:
+            await db.execute(
+                """
+                UPDATE users SET
+                    energy_paid = COALESCE(energy_paid, 0) + ?,
+                    energy = COALESCE(energy_free, 0) + COALESCE(energy_paid, 0) + ?,
+                    balance_energy = COALESCE(energy_free, 0) + COALESCE(energy_paid, 0) + ?
+                WHERE id = ?
+                """,
+                (energy_bonus, energy_bonus, energy_bonus, user_id),
+            )
+        if crystal_bonus > 0:
+            await db.execute(
+                """
+                UPDATE users SET
+                    buy_crystals = COALESCE(buy_crystals, 0) + ?,
+                    crystals = COALESCE(sub_crystals, 0) + COALESCE(buy_crystals, 0) + ?,
+                    balance = COALESCE(sub_crystals, 0) + COALESCE(buy_crystals, 0) + ?,
+                    balance_crystals = COALESCE(sub_crystals, 0) + COALESCE(buy_crystals, 0) + ?
+                WHERE id = ?
+                """,
+                (crystal_bonus, crystal_bonus, crystal_bonus, crystal_bonus, user_id),
+            )
         await db.commit()
-    return True, "redeemed", bonus
+
+    return True, "redeemed", energy_bonus, crystal_bonus
 
 
 async def dialog_append(user_id: int, role: str, content: str) -> None:
@@ -777,9 +888,22 @@ async def set_persistent_memory(user_id: int, text: str | None) -> None:
 
 
 async def clear_user_dialog_and_memory(user_id: int) -> None:
+    """Полный reset: удаляет историю диалога и ИИ-Память.
+
+    Используется только админ-сбросом или удалением аккаунта.
+    Для пользовательской кнопки «🧹 Новый диалог» используй
+    :func:`clear_user_dialog` — она НЕ стирает ИИ-Память (по ТЗ).
+    """
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("DELETE FROM dialog_messages WHERE user_id = ?", (user_id,))
         await db.execute("UPDATE users SET persistent_memory = NULL WHERE id = ?", (user_id,))
+        await db.commit()
+
+
+async def clear_user_dialog(user_id: int) -> None:
+    """Очищает только историю диалога. ИИ-Память (persistent_memory) сохраняется."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM dialog_messages WHERE user_id = ?", (user_id,))
         await db.commit()
 
 
@@ -825,15 +949,16 @@ async def claim_payment_charge(charge_id: str, user_id: int, energy_added: int) 
     if not charge_id:
         return False
     try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute(
-                """
-                INSERT INTO payment_charges (charge_id, user_id, energy_added, created_at)
-                VALUES (?, ?, ?, ?)
-                """,
-                (charge_id, user_id, energy_added, date.today().isoformat()),
-            )
-            await db.commit()
+        async with TimedQuery("claim_payment_charge"):
+            async with aiosqlite.connect(DB_PATH) as db:
+                await db.execute(
+                    """
+                    INSERT INTO payment_charges (charge_id, user_id, energy_added, created_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (charge_id, user_id, energy_added, date.today().isoformat()),
+                )
+                await db.commit()
         return True
     except sqlite3.IntegrityError:
         return False
@@ -846,15 +971,16 @@ async def insert_payment_event(
     amount: int,
     currency: str,
 ) -> None:
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            """
-            INSERT INTO payment_events (user_id, tariff, method, amount, currency, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (user_id, tariff.upper(), method, amount, currency.upper(), date.today().isoformat()),
-        )
-        await db.commit()
+    async with TimedQuery("insert_payment_event"):
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                """
+                INSERT INTO payment_events (user_id, tariff, method, amount, currency, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (user_id, tariff.upper(), method, amount, currency.upper(), date.today().isoformat()),
+            )
+            await db.commit()
 
 
 @dataclass(frozen=True)
@@ -873,7 +999,7 @@ class SalesStats:
 
 async def get_sales_stats() -> SalesStats:
     today = date.today().isoformat()
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with TimedQuery("get_sales_stats"), aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT COUNT(*) FROM users") as cur:
             users_total = int((await cur.fetchone())[0] or 0)
 
@@ -927,17 +1053,31 @@ def sales_stats_as_dict(stats: SalesStats) -> dict[str, int | float]:
     }
 
 
-async def add_promo_code(code: str, reward: int, uses: int) -> bool:
+async def add_promo_code(
+    code: str,
+    reward: int,
+    uses: int,
+    *,
+    allowed_tariffs: str = "FREE,MINI,SMART,ULTRA",
+    crystal_bonus: int = 0,
+) -> bool:
+    """Создаёт подарочный промокод (⚡ и/или 💎). Скидки не поддерживаются."""
     c = (code or "").strip().upper()
-    if not c or reward <= 0 or uses <= 0:
+    if not c or uses <= 0:
+        return False
+    if reward <= 0 and crystal_bonus <= 0:
         return False
     async with aiosqlite.connect(DB_PATH) as db:
+        await _migrate_promo_codes(db)
         await db.execute(
             """
-            INSERT OR REPLACE INTO promo_codes (code, energy_bonus, max_uses, uses_count)
-            VALUES (?, ?, ?, 0)
+            INSERT OR REPLACE INTO promo_codes (
+                code, energy_bonus, max_uses, uses_count,
+                allowed_tariffs, crystal_bonus
+            )
+            VALUES (?, ?, ?, 0, ?, ?)
             """,
-            (c, reward, uses),
+            (c, max(0, reward), uses, allowed_tariffs.strip(), max(0, crystal_bonus)),
         )
         await db.commit()
     return True
@@ -948,3 +1088,49 @@ async def list_all_user_ids() -> list[int]:
         async with db.execute("SELECT id FROM users") as cur:
             rows = await cur.fetchall()
     return [int(r[0]) for r in rows]
+
+
+async def insert_table_report(user_id: int, table_json: str) -> int:
+    """Сохраняет канонический JSON таблицы; возвращает ``report_id`` для Mini App."""
+    await ensure_user(user_id)
+    ts = datetime.now(timezone.utc).isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """
+            INSERT INTO table_reports (user_id, table_json, created_at)
+            VALUES (?, ?, ?)
+            """,
+            (user_id, table_json, ts),
+        )
+        await db.commit()
+        return int(cursor.lastrowid)
+
+
+async def fetch_table_report_json(report_id: int) -> dict | None:
+    """
+    Загружает отчёт по ``table_reports.id``.
+
+    Возвращает распарсенный объект ``{title, headers, rows}`` или ``None``.
+    """
+    import json
+
+    from services.table_json import parse_table_json_response
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT table_json FROM table_reports WHERE id = ?",
+            (int(report_id),),
+        ) as cur:
+            row = await cur.fetchone()
+    if not row or not row[0]:
+        return None
+    payload = parse_table_json_response(str(row[0]))
+    if payload is None:
+        try:
+            data = json.loads(str(row[0]))
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(data, dict):
+            return None
+        return data
+    return json.loads(payload.raw_json)

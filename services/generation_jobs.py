@@ -12,13 +12,18 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from aiogram.enums import ParseMode
-from aiogram.types import BufferedInputFile
+from aiogram.types import BufferedInputFile, InputFile, URLInputFile
 
 from config import settings
 from content import messages as msg
-from content.inline_keyboards import result_music_keyboard, result_photo_keyboard
+from content.inline_keyboards import (
+    result_music_keyboard,
+    result_music_keyboard_pro,
+    result_photo_keyboard,
+)
 from content.video_menu import result_video_keyboard_pro
 from platforms.telegram_chat_action import chat_action_loop
+from services import last_music_request, last_share_media
 from services.gemini_image_client import (
     GeminiImageResult,
     generate_gemini_image_model,
@@ -29,11 +34,15 @@ from services.replicate_client import (
     replicate_configured,
     telegram_photo_download_url,
 )
-from services.suno_client import generate_music_track, suno_configured
+from services.suno_client import SunoTrack, generate_music_track, suno_configured
 from business_catalog import catalog
 from config import settings as app_settings
 from services.api_resilience import ExternalApiError, fail_generation_task, wrap_http_error
-from services.billing.translator import translate_prompt_to_english
+from services.billing.translator import (
+    enhance_music_style_prompt,
+    enhance_video_prompt_for_replicate,
+    translate_prompt_to_english,
+)
 from services.billing.video_pipeline import VIDEO_SCENARIOS
 from services.repository import get_user_row
 
@@ -44,6 +53,12 @@ logger = logging.getLogger(__name__)
 
 JobKind = Literal["photo", "video", "music", "animate"]
 TaskStatus = Literal["pending", "processing", "completed", "failed"]
+
+# Жёсткий потолок ожидания ответа от внешних API (Replicate / Suno / Gemini).
+# 180 секунд — это верхняя граница для длинного Replicate-видео (5-10 сек
+# конечного клипа рендерится 1-3 минуты). Дальше — таймаут и автоматический
+# refund списанных Кристаллов через ``fail_generation_task``.
+EXTERNAL_API_TIMEOUT_SEC: int = 180
 
 
 @dataclass
@@ -64,6 +79,9 @@ class GenTask:
     used_daily_slot: bool = False
     charged_crystals: int = 0
     billing_charge_id: str = ""
+    music_lyrics: str | None = None
+    music_instrumental: bool = False
+    music_continue_clip_id: str | None = None
 
     @property
     def kind(self) -> JobKind:
@@ -102,6 +120,37 @@ def _balance_footer(crystals: int) -> str:
     return ""
 
 
+def _remember_share(
+    task: GenTask,
+    *,
+    file_id: str | None = None,
+    media_url: str | None = None,
+) -> None:
+    """Кэш медиа-таска для кнопки ``📢 Поделиться в Галерее``.
+
+    Хранит ``file_id`` (нужен для отправки в TG-канал галереи без повторной
+    закачки с внешнего API) и ``media_url`` (нужен для VK / MAX App, которые
+    не понимают Telegram file_id). Принимает хотя бы один из аргументов.
+
+    Любые ошибки кэширования проглатываются: side-effect не должен уронить
+    основной воркер и сорвать ``fail_generation_task``/refund.
+    """
+
+    if not file_id and not media_url:
+        return
+    try:
+        last_share_media.remember(
+            user_id=task.user_id,
+            task_id=task.task_id,
+            task_type=task.task_type,  # type: ignore[arg-type]
+            prompt=(task.prompt or "").strip(),
+            file_id=file_id,
+            media_url=media_url,
+        )
+    except Exception:
+        logger.info("share cache: remember failed task=%s", task.task_id, exc_info=True)
+
+
 def _normalize_photo_model_id(model_id: str, model_label: str = "") -> str:
     """ID модели из меню (imagen4, flux-schnell) + алиасы из ``business_catalog``."""
     raw = (model_id or model_label or "").strip().lower().replace("-", "_")
@@ -118,10 +167,11 @@ async def _generate_photo_result(model_key: str, prompt: str) -> GeminiImageResu
         if model_key == "flux_schnell":
             if not replicate_configured():
                 raise ExternalApiError("Replicate", "REPLICATE_API_TOKEN не задан")
+            prompt_en = await enhance_video_prompt_for_replicate(app_settings, prompt)
             url = await call_replicate_model(
                 "black-forest-labs/flux-schnell",
                 {
-                    "prompt": prompt,
+                    "prompt": prompt_en,
                     "aspect_ratio": "1:1",
                     "output_format": "webp",
                     "output_quality": 90,
@@ -169,9 +219,9 @@ async def _send_generated_photo(
         f"🤖 Модель: {display}\n"
         f"💎 Стоимость: {task.charged_crystals} 💎"
     )
-    markup = result_photo_keyboard()
+    markup = result_photo_keyboard(task_id=task.task_id)
     if photo_url:
-        await bot.send_photo(
+        sent = await bot.send_photo(
             chat_id,
             photo=photo_url,
             caption=caption,
@@ -179,7 +229,7 @@ async def _send_generated_photo(
             reply_markup=markup,
         )
     elif photo_bytes:
-        await bot.send_photo(
+        sent = await bot.send_photo(
             chat_id,
             photo=BufferedInputFile(photo_bytes, filename="neuromule_generated.jpg"),
             caption=caption,
@@ -188,6 +238,11 @@ async def _send_generated_photo(
         )
     else:
         raise RuntimeError("Нет URL и байтов изображения")
+
+    # Кэшируем file_id наибольшего размера + оригинальный URL (если был):
+    # TG-канал отправим file_id'ом без скачивания, VK/MAX — оригинальный URL.
+    tg_file_id = sent.photo[-1].file_id if sent.photo else None
+    _remember_share(task, file_id=tg_file_id, media_url=photo_url)
 
 
 async def _photo_stub_worker(task: GenTask) -> None:
@@ -249,29 +304,51 @@ async def _video_stub_worker(task: GenTask) -> None:
             row = await get_user_row(user_id)
             video_url: str | None = None
             if replicate_configured():
-                prompt_en = await translate_prompt_to_english(app_settings, prompt_ru)
+                prompt_en = await enhance_video_prompt_for_replicate(
+                    app_settings, prompt_ru
+                )
+                logger.info(
+                    "video prompt enhanced task_id=%s len_ru=%s len_en=%s",
+                    task.task_id,
+                    len(prompt_ru),
+                    len(prompt_en),
+                )
                 model = (spec.replicate_model if spec else None) or settings.replicate_video_model
                 inputs: dict = {"prompt": prompt_en, "aspect_ratio": "16:9"}
                 if task.file_id and spec and spec.needs_face:
                     image_url = await telegram_photo_download_url(bot, task.file_id)
                     inputs["start_image_url"] = image_url
-                video_url = await call_replicate_model(model, inputs)
+                # Жёсткий таймаут на Replicate — иначе зависший прокси
+                # лочит воркер навсегда, кошелёк юзера в подвешенном виде.
+                async with asyncio.timeout(EXTERNAL_API_TIMEOUT_SEC):
+                    video_url = await call_replicate_model(model, inputs)
 
             title = spec.title_ru if spec else "PRO-видео"
             if video_url:
-                caption = f"🎬 {title}\n💎 Списано: {task.charged_crystals} 💎\n🔋 Остаток: {row.crystals} 💎"
+                caption = (
+                    f"🎬 <b>{title}</b>\n"
+                    "───────────────────\n"
+                    f"💎 Списано: <code>{task.charged_crystals} 💎</code>\n"
+                    f"🔋 Твой остаток: <code>{row.crystals} 💎</code>"
+                )
                 caption += _balance_footer(row.crystals)
-                await bot.send_video(
+                sent = await bot.send_video(
                     chat_id,
                     video=video_url,
                     caption=caption,
-                    reply_markup=result_video_keyboard_pro(),
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=result_video_keyboard_pro(task_id=task.task_id),
                 )
+                # Кэш для шеринга: file_id → TG-канал, media_url → VK/MAX App.
+                tg_file_id = sent.video.file_id if sent.video else None
+                _remember_share(task, file_id=tg_file_id, media_url=video_url)
             elif not replicate_configured():
                 await asyncio.sleep(4.0)
                 cap = f"🎬 {title} (демо: задайте REPLICATE_API_TOKEN)"
                 cap += _balance_footer(row.crystals)
-                await bot.send_message(chat_id, cap, reply_markup=result_video_keyboard_pro())
+                await bot.send_message(
+                    chat_id, cap, reply_markup=result_video_keyboard_pro(task_id=task.task_id)
+                )
             else:
                 raise RuntimeError("Replicate returned empty video URL")
 
@@ -284,47 +361,131 @@ async def _video_stub_worker(task: GenTask) -> None:
         )
 
 
+async def _build_music_cover(style_prompt: str) -> InputFile | None:
+    """Параллельно с Suno генерируем квадратную ИИ-обложку под трек.
+
+    Возвращает готовый ``InputFile`` для ``send_audio(thumbnail=...)`` или
+    ``None`` при любой ошибке — отсутствие обложки никогда не должно
+    ломать выдачу самого трека.
+    """
+
+    try:
+        cover_prompt = (
+            "Square album cover artwork for a song. Style and mood: "
+            f"{style_prompt}. Bold composition, premium high-fidelity studio "
+            "aesthetic, vibrant cinematic colors, no text, no watermark, "
+            "centered subject, vinyl-ready."
+        )
+        result = await generate_imagen_fast(cover_prompt)
+    except Exception:
+        logger.info("music cover: imagen failed, fallback to no-thumbnail", exc_info=True)
+        return None
+
+    if result.url:
+        return URLInputFile(result.url, filename="neuromule_cover.jpg")
+    if result.data:
+        return BufferedInputFile(result.data, filename="neuromule_cover.jpg")
+    return None
+
+
+def _format_music_caption(style: str, balance: int, cost: int) -> str:
+    caption = msg.TXT_RESULT_MUSIC_CAPTION.format(
+        style=style[:120],
+        balance=balance,
+        cost=cost,
+    )
+    caption += _balance_footer(balance)
+    return caption
+
+
 async def _music_stub_worker(task: GenTask) -> None:
-    """Музыка по описанию стиля: Suno API (прокси) или демо без токена."""
+    """Музыка Suno AI v4 + ИИ-обложка Imagen 4 + апсейл-клавиатура.
+
+    Поток:
+        1. ``record_voice`` chat-action 24/7 пока крутится рендер.
+        2. Prompt enhancer (RU → EN + ``cinematic mix, high fidelity,
+           tight production``) ради стабильного качества Suno.
+        3. Параллельно: ``generate_music_track`` + ``generate_imagen_fast``.
+        4. ``send_audio`` с ``performer="NeuroMule 🐎"`` и ``thumbnail``.
+        5. ``result_music_keyboard_pro`` для апсейла (клип/extend/clone/publish).
+        6. Запоминаем ``clip_id`` для будущего «Продлить трек».
+
+    При любой ошибке Suno (``None`` от ``generate_music_track``) — рефанд
+    15 💎 через ``fail_generation_task`` + ``TXT_MUSIC_SUNO_FAILED``.
+    """
+
     task.status = "processing"
     bot, chat_id, user_id = task.bot, task.chat_id, task.user_id
-    style = (task.prompt or "").strip()[:500] or "по запросу"
+    raw_style = (task.prompt or "").strip()[:500] or "по запросу"
 
     try:
         logger.info(
-            "music job %s prompt=%r suno=%s",
+            "music job %s style=%r lyrics=%s instrumental=%s suno=%s",
             task.task_id,
-            style[:120],
+            raw_style[:120],
+            bool(task.music_lyrics),
+            task.music_instrumental,
             suno_configured(),
         )
-        async with chat_action_loop(bot, chat_id, "upload_audio"):
+
+        async with chat_action_loop(bot, chat_id, "record_voice"):
             row = await get_user_row(user_id)
-            track: tuple[str, str] | None = None
+            cost = task.charged_crystals or settings.cost_music
+
+            enhanced_style = await enhance_music_style_prompt(app_settings, raw_style)
+
+            track: SunoTrack | None = None
+            cover: InputFile | None = None
+
             if suno_configured():
-                track = await generate_music_track(style)
+                track_coro = generate_music_track(
+                    enhanced_style,
+                    lyrics=task.music_lyrics,
+                    make_instrumental=task.music_instrumental,
+                    continue_clip_id=task.music_continue_clip_id,
+                )
+                cover_coro = _build_music_cover(raw_style)
+                # Suno иногда «зависает» на польном rendering 3+ минут.
+                # Жёстко закрываем по таймауту — иначе очередь стопорится.
+                async with asyncio.timeout(EXTERNAL_API_TIMEOUT_SEC):
+                    track, cover = await asyncio.gather(
+                        track_coro, cover_coro, return_exceptions=False
+                    )
+
+            caption = _format_music_caption(raw_style, row.crystals, cost)
 
             if track:
-                audio_url, title = track
-                caption = f"🎵 Ваш уникальный трек по запросу:\n«{style[:400]}» успешно записан!"
-                caption += "\n\n" + msg.TXT_RESULT_MUSIC_CAPTION.format(
-                    style=style[:120],
-                    balance=row.crystals,
+                last_music_request.remember(
+                    user_id,
+                    style=raw_style,
+                    lyrics=task.music_lyrics,
+                    make_instrumental=task.music_instrumental,
+                    clip_id=track.clip_id,
                 )
-                caption += _balance_footer(row.crystals)
-                await bot.send_audio(
-                    chat_id,
-                    audio=audio_url,
-                    title=title,
-                    performer="NeuroMul",
-                    caption=caption,
-                    reply_markup=result_music_keyboard(),
-                )
+                send_kwargs: dict = {
+                    "audio": track.audio_url,
+                    "title": track.title,
+                    "performer": "NeuroMule 🐎",
+                    "caption": caption,
+                    "parse_mode": ParseMode.HTML,
+                    "reply_markup": result_music_keyboard_pro(task_id=task.task_id),
+                }
+                if cover is not None:
+                    send_kwargs["thumbnail"] = cover
+                sent = await bot.send_audio(chat_id, **send_kwargs)
+                # Кэш для шеринга: file_id Telegram + audio_url Suno
+                # (audio_url нужен VK/MAX, file_id — TG-каналу Галереи).
+                tg_file_id = sent.audio.file_id if sent.audio else None
+                _remember_share(task, file_id=tg_file_id, media_url=track.audio_url)
             elif not suno_configured():
                 await asyncio.sleep(2.0)
-                cap = msg.TXT_RESULT_MUSIC_CAPTION.format(style=style[:120], balance=row.crystals)
-                cap += "\n\n(демо: задайте SUNO_API_TOKEN и URL прокси)"
-                cap += _balance_footer(row.crystals)
-                await bot.send_message(chat_id, cap, reply_markup=result_music_keyboard())
+                cap = caption + "\n\n<i>(демо: задайте SUNO_API_TOKEN и URL прокси)</i>"
+                await bot.send_message(
+                    chat_id,
+                    cap,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=result_music_keyboard_pro(task_id=task.task_id),
+                )
             else:
                 raise RuntimeError("Suno returned empty audio URL")
 
@@ -373,7 +534,10 @@ async def _animate_stub_worker(task: GenTask) -> None:
                     "start_image_url": image_url,
                     "aspect_ratio": "16:9",
                 }
-                animated_url = await call_replicate_model(settings.replicate_animate_model, inputs)
+                async with asyncio.timeout(EXTERNAL_API_TIMEOUT_SEC):
+                    animated_url = await call_replicate_model(
+                        settings.replicate_animate_model, inputs
+                    )
 
             if animated_url:
                 cap = msg.TXT_ANIMATE_SUCCESS
@@ -382,7 +546,10 @@ async def _animate_stub_worker(task: GenTask) -> None:
                     balance=row.crystals,
                 )
                 cap += _balance_footer(row.crystals)
-                await bot.send_video(chat_id, video=animated_url, caption=cap)
+                sent = await bot.send_video(chat_id, video=animated_url, caption=cap)
+                # Кэш для шеринга оживления (animate ~ video в VK/MAX).
+                tg_file_id = sent.video.file_id if sent.video else None
+                _remember_share(task, file_id=tg_file_id, media_url=animated_url)
             elif not replicate_configured():
                 await asyncio.sleep(4.0)
                 await bot.send_message(chat_id, msg.TXT_ANIMATE_SUCCESS)

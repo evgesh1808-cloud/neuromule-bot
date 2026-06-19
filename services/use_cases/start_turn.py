@@ -22,9 +22,11 @@ from services.repository import (
 class StartFlowOutcome(str, Enum):
     """Какой сценарий показать после ``/start``."""
 
-    NEED_TERMS = "need_terms"
-    NEED_CHANNEL = "need_channel"
+    NEED_PAYWALL = "need_paywall"
     WELCOME_MAIN_MENU = "welcome_main_menu"
+    # Обратная совместимость (старые тесты/импорты)
+    NEED_TERMS = NEED_PAYWALL
+    NEED_CHANNEL = NEED_PAYWALL
 
 
 @dataclass(frozen=True)
@@ -35,9 +37,9 @@ class StartTurnResult:
 
 def parse_telegram_start_ref(start_command_text: str | None) -> int | None:
     """
-    Извлекает inviter id из ``/start ref_<id>`` (Telegram deep-link).
+    Извлекает inviter id из ``/start ref<id>`` или ``/start ref_<id>``.
 
-    Возвращает ``None``, если аргумента нет или формат не ``ref_<int>``.
+    Возвращает ``None``, если аргумента нет или id не число.
     """
     if not start_command_text:
         return None
@@ -45,10 +47,15 @@ def parse_telegram_start_ref(start_command_text: str | None) -> int | None:
     if len(parts) < 2:
         return None
     arg = parts[1].strip()
-    if not arg.startswith("ref_"):
+    payload = ""
+    if arg.startswith("ref_"):
+        payload = arg[4:]
+    elif arg.startswith("ref"):
+        payload = arg[3:]
+    else:
         return None
     try:
-        return int(arg[4:])
+        return int(payload)
     except ValueError:
         return None
 
@@ -75,8 +82,10 @@ async def run_start_turn(
         ``StartTurnResult`` с исходом и ``template_kwargs`` для ``.format`` текстов приветствия.
     """
     await ensure_user(user_id, username)
-    if not await user_has_accepted_terms(user_id):
-        return StartTurnResult(StartFlowOutcome.NEED_TERMS, {})
+    subscribed = await is_subscribed(user_id)
+    accepted = await user_has_accepted_terms(user_id)
+    if not (subscribed and accepted):
+        return StartTurnResult(StartFlowOutcome.NEED_PAYWALL, {})
 
     row = await get_user_row(user_id)
     template_kwargs: dict[str, object] = dict(
@@ -86,8 +95,6 @@ async def run_start_turn(
         energy=row.energy,
         crystals=row.crystals,
     )
-    if not await is_subscribed(user_id):
-        return StartTurnResult(StartFlowOutcome.NEED_CHANNEL, template_kwargs)
 
     inviter_id = parse_telegram_start_ref(start_command_text)
     if inviter_id is not None:

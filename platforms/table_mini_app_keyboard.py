@@ -1,0 +1,79 @@
+"""Inline-клавиатура Telegram Web App для интерактивных отчётов table_generator."""
+
+from __future__ import annotations
+
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+
+from config import settings
+from content import messages as msg
+from services.table_chart_types import ChartType
+
+# Дефолт для dev; в проде задайте WEBAPP_TABLE_REPORTS_URL в .env (полный GitHub Pages URL).
+_DEFAULT_MINI_APP_TEMPLATE = (
+    "https://your-user.github.io/neuromule-table/?report_id={report_id}"
+)
+
+
+def build_table_mini_app_url(report_id: int | str) -> str:
+    """
+    URL Mini App с актуальным ``report_id`` из SQLite.
+
+    Формат в ``.env``:
+    ``https://<user>.github.io/<repo>/?report_id={report_id}``
+
+    Не используйте ``https://github.io{report_id}`` — нужен полный путь Pages.
+    """
+    template = (settings.webapp_table_reports_url or _DEFAULT_MINI_APP_TEMPLATE).strip()
+    rid = str(report_id).strip()
+    if not rid:
+        raise ValueError("report_id is required for mini app URL")
+    if "{report_id}" in template:
+        return template.format(report_id=rid)
+    if template.endswith(("=", "&")):
+        return f"{template}{rid}"
+    sep = "&" if "?" in template else "?"
+    return f"{template}{sep}report_id={rid}"
+
+
+def get_table_mini_app_keyboard(report_id: int | str | None) -> InlineKeyboardMarkup | None:
+    """Премиальная кнопка Web App «📊 Открыть интерактивный отчёт»."""
+    if report_id is None:
+        return None
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📊 Открыть интерактивный отчёт",
+                    web_app=WebAppInfo(url=build_table_mini_app_url(report_id)),
+                )
+            ]
+        ]
+    )
+
+
+def _chart_row(active: ChartType) -> list[InlineKeyboardButton]:
+    def _btn(label: str, chart: ChartType) -> InlineKeyboardButton:
+        suffix = " ✓" if active == chart else ""
+        return InlineKeyboardButton(
+            text=f"{label}{suffix}",
+            callback_data=f"{msg.CB_TABLE_CHART_PREFIX}{chart.value}",
+        )
+
+    return [
+        _btn(msg.BTN_TABLE_CHART_PIE, ChartType.PIE),
+        _btn(msg.BTN_TABLE_CHART_LINE, ChartType.LINE),
+        _btn(msg.BTN_TABLE_CHART_BAR, ChartType.BAR),
+    ]
+
+
+def table_delivery_keyboard(
+    chart_type: ChartType,
+    report_id: int | str | None = None,
+) -> InlineKeyboardMarkup:
+    """Mini App + переключатели типа графика (pie/line/bar)."""
+    rows: list[list[InlineKeyboardButton]] = []
+    mini_row = get_table_mini_app_keyboard(report_id)
+    if mini_row is not None:
+        rows.extend(mini_row.inline_keyboard)
+    rows.append(_chart_row(chart_type))
+    return InlineKeyboardMarkup(inline_keyboard=rows)

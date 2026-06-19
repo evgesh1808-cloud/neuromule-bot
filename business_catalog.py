@@ -20,8 +20,10 @@ if TYPE_CHECKING:
 
 
 # --- Текстовый чат (модели) ---
-FREE_CHAT_MODEL = "google/gemini-2.0-flash-lite:free"
-PAID_CHAT_MODEL = "openrouter/auto"
+# ``FREE_TEXT_MODEL`` / ``PAID_TEXT_MODEL`` в .env (без случайных openrouter/free|auto).
+_DEFAULT_FREE_CHAT_MODEL = "google/gemini-2.5-flash"
+FREE_CHAT_MODEL = (settings.free_text_model or "").strip() or _DEFAULT_FREE_CHAT_MODEL
+PAID_CHAT_MODEL = (settings.paid_text_model or "").strip() or FREE_CHAT_MODEL
 
 
 @dataclass(frozen=True)
@@ -64,7 +66,13 @@ class ImageModelPrice:
 
 @dataclass(frozen=True)
 class VideoScenarioEntry:
-    """Одна строка реестра — id, заголовок UI, ключ тарифа, категория."""
+    """Одна строка реестра — id, заголовок UI, ключ тарифа, категория.
+
+    ``inputs_needed`` — упорядоченный список ключей, которые FSM соберёт у
+    пользователя перед стартом Replicate-job (например ``("selfie_self",
+    "selfie_friend")`` для двойной замены лиц). Пустой кортеж = inputs не нужны
+    либо обрабатываются через ``needs_face`` / ``needs_translate``.
+    """
 
     scenario_id: str
     title_ru: str
@@ -72,6 +80,7 @@ class VideoScenarioEntry:
     category: str
     needs_face: bool = False
     needs_translate: bool = True
+    inputs_needed: tuple[str, ...] = ()
 
 
 def _tier_cost(tiers: VideoTierCosts, tier_key: str) -> int:
@@ -159,12 +168,14 @@ def build_video_scenario_entries() -> tuple[VideoScenarioEntry, ...]:
             "Фото + Сценарий пользователя",
             "custom_photo",
             "custom",
+            inputs_needed=("photo_self", "text_script"),
         ),
         VideoScenarioEntry(
             "custom_video_script",
             "Видео + Сценарий пользователя",
             "custom_video",
             "custom",
+            inputs_needed=("video_mp4", "text_script"),
         ),
         VideoScenarioEntry("video_pro_5sec", "PRO-видео 5 сек", "pro_5sec", "pro_base"),
         VideoScenarioEntry("video_extend_5sec", "Продлить видео (+5 сек)", "extend_5sec", "extend"),
@@ -173,6 +184,14 @@ def build_video_scenario_entries() -> tuple[VideoScenarioEntry, ...]:
             "Длинное PRO-видео (15–20 сек)",
             "long_15_20",
             "long",
+        ),
+        VideoScenarioEntry(
+            "face_double_prank",
+            "Пранк на двоих — замена двух лиц",
+            "tier_50",
+            "face_double",
+            needs_face=True,
+            inputs_needed=("selfie_self", "selfie_friend"),
         ),
     )
     return (
@@ -200,14 +219,19 @@ IMAGE_MODEL_ALIASES: dict[str, str] = {
     "nano_banana_pro": "nano_banana_pro",
 }
 
-# Платные модели: добавление = одна строка (ключ читается в image_pipeline)
-PAID_IMAGE_MODEL_ENTRIES: dict[str, ImageModelPrice] = {
-    "imagen4": ImageModelPrice(10, 2),
-    "flux_schnell": ImageModelPrice(30, 3),
-    "nano_banana2": ImageModelPrice(15, 2),
-    "nano_banana_pro": ImageModelPrice(35, 3),
-    "gpt_image2": ImageModelPrice(0, 5, crystals_only=True),
-}
+def build_paid_image_model_entries(cfg: "Settings") -> dict[str, ImageModelPrice]:
+    """Матрица PRO-фото из ``config`` (без хардкода в пайплайне)."""
+    return {
+        "imagen4": ImageModelPrice(cfg.paid_imagen_energy_cost, cfg.paid_imagen_crystal_cost),
+        "flux_schnell": ImageModelPrice(cfg.paid_flux_energy_cost, cfg.paid_flux_crystal_cost),
+        "nano_banana2": ImageModelPrice(cfg.paid_banana2_energy_cost, cfg.paid_banana2_crystal_cost),
+        "nano_banana_pro": ImageModelPrice(
+            cfg.paid_banana_pro_energy_cost, cfg.paid_banana_pro_crystal_cost
+        ),
+        "gpt_image2": ImageModelPrice(
+            0, cfg.cost_image_dalle_crystals, crystals_only=True
+        ),
+    }
 
 
 @dataclass(frozen=True)
@@ -217,6 +241,8 @@ class BusinessCatalog:
     legal: LegalUrls
     daily_free_energy: int
     free_imagen_daily_limit: int
+    free_imagen_overlimit_cost: int
+    free_pro_image_cost: int
     free_other_image_crystals: int
     hd_advice_cost: int
     hd_full_report_cost: int
@@ -225,7 +251,7 @@ class BusinessCatalog:
     animate_cost: int
     upscale_cost: int
     referral_first_purchase_crystals: int
-    shop_packs: dict[str, dict[str, int | str | None]]
+    shop_packs: dict[str, dict[str, int | str | bool | None]]
     video_entries: tuple[VideoScenarioEntry, ...]
     paid_image_models: dict[str, ImageModelPrice]
     image_aliases: dict[str, str]
@@ -235,6 +261,34 @@ class BusinessCatalog:
 
     def scenario_cost_map(self) -> dict[str, int]:
         return {e.scenario_id: self.video_crystal_cost(e.tier) for e in self.video_entries}
+
+
+def _shop_pack(
+    *,
+    name: str,
+    price_rub: int,
+    price_stars: int,
+    paid_energy: int,
+    crystals: int,
+    days: int | None,
+    duo_access: bool,
+    tariff: str | None,
+) -> dict[str, int | str | bool | None]:
+    """Единая запись каталога: новые поля + legacy-ключи для инвойсов."""
+    return {
+        "name": name,
+        "price_rub": price_rub,
+        "price_stars": price_stars,
+        "paid_energy": paid_energy,
+        "energy_paid": paid_energy,
+        "crystals": crystals,
+        "days": days,
+        "duo_access": duo_access,
+        "family_access": duo_access,  # deprecated alias
+        "tariff": tariff,
+        "rub_kopecks": price_rub * 100,
+        "stars": price_stars,
+    }
 
 
 def build_catalog(s: Settings | None = None) -> BusinessCatalog:
@@ -251,52 +305,99 @@ def build_catalog(s: Settings | None = None) -> BusinessCatalog:
         custom_photo=cfg.cost_video_custom_photo,
         custom_video=cfg.cost_video_custom_video,
     )
-    shop_packs: dict[str, dict[str, int | str | None]] = {
-        "MINI": {
-            "tariff": "MINI",
-            "energy_paid": cfg.mini_energy,
-            "crystals": cfg.mini_crystals,
-            "rub_kopecks": cfg.mini_rub_kopecks,
-            "stars": cfg.mini_stars,
-        },
-        "SMART": {
-            "tariff": "SMART",
-            "energy_paid": cfg.smart_energy,
-            "crystals": cfg.smart_crystals,
-            "rub_kopecks": cfg.smart_rub_kopecks,
-            "stars": cfg.smart_stars,
-        },
-        "ULTRA": {
-            "tariff": "ULTRA",
-            "energy_paid": cfg.ultra_energy,
-            "crystals": cfg.ultra_crystals,
-            "rub_kopecks": cfg.ultra_rub_kopecks,
-            "stars": cfg.ultra_stars,
-        },
-        "crystals_10": {
-            "tariff": None,
-            "energy_paid": 0,
-            "crystals": cfg.crystals_10_amount,
-            "rub_kopecks": cfg.crystals_10_rub_kopecks,
-            "stars": cfg.crystals_10_stars,
-        },
-        "crystals_40": {
-            "tariff": None,
-            "energy_paid": 0,
-            "crystals": cfg.crystals_40_amount,
-            "rub_kopecks": cfg.crystals_40_rub_kopecks,
-            "stars": cfg.crystals_40_stars,
-        },
-        "crystals_100": {
-            "tariff": None,
-            "energy_paid": 0,
-            "crystals": cfg.crystals_100_amount,
-            "rub_kopecks": cfg.crystals_100_rub_kopecks,
-            "stars": cfg.crystals_100_stars,
-        },
+    shop_packs: dict[str, dict[str, int | str | bool | None]] = {
+        "MINI": _shop_pack(
+            name="Пакет MINI",
+            price_rub=cfg.mini_rub_kopecks // 100,
+            price_stars=cfg.mini_stars,
+            paid_energy=cfg.mini_energy,
+            crystals=cfg.mini_crystals,
+            days=cfg.mini_days,
+            duo_access=False,
+            tariff="MINI",
+        ),
+        "SMART": _shop_pack(
+            name="Пакет SMART",
+            price_rub=cfg.smart_rub_kopecks // 100,
+            price_stars=cfg.smart_stars,
+            paid_energy=cfg.smart_energy,
+            crystals=cfg.smart_crystals,
+            days=cfg.smart_days,
+            duo_access=False,
+            tariff="SMART",
+        ),
+        "ULTRA_3DAYS": _shop_pack(
+            name="Пакет ULTRA (3 дня)",
+            price_rub=cfg.ultra_3d_rub_kopecks // 100,
+            price_stars=cfg.ultra_3d_stars,
+            paid_energy=cfg.ultra_3d_energy,
+            crystals=cfg.ultra_3d_crystals,
+            days=cfg.ultra_3d_days,
+            duo_access=False,
+            tariff="ULTRA",
+        ),
+        "ULTRA_1WEEK": _shop_pack(
+            name="Пакет ULTRA (1 неделя)",
+            price_rub=cfg.ultra_1w_rub_kopecks // 100,
+            price_stars=cfg.ultra_1w_stars,
+            paid_energy=cfg.ultra_1w_energy,
+            crystals=cfg.ultra_1w_crystals,
+            days=cfg.ultra_1w_days,
+            duo_access=False,
+            tariff="ULTRA",
+        ),
+        "ULTRA_1MONTH": _shop_pack(
+            name="Пакет ULTRA (1 месяц)",
+            price_rub=cfg.ultra_1m_rub_kopecks // 100,
+            price_stars=cfg.ultra_1m_stars,
+            paid_energy=cfg.ultra_1m_energy,
+            crystals=cfg.ultra_1m_crystals,
+            days=cfg.ultra_1m_days,
+            duo_access=True,
+            tariff="ULTRA",
+        ),
+        "ULTRA": _shop_pack(
+            name="Пакет ULTRA (1 месяц)",
+            price_rub=cfg.ultra_1m_rub_kopecks // 100,
+            price_stars=cfg.ultra_1m_stars,
+            paid_energy=cfg.ultra_1m_energy,
+            crystals=cfg.ultra_1m_crystals,
+            days=cfg.ultra_1m_days,
+            duo_access=True,
+            tariff="ULTRA",
+        ),
+        "crystals_10": _shop_pack(
+            name="10 Кристаллов",
+            price_rub=cfg.crystals_10_rub_kopecks // 100,
+            price_stars=cfg.crystals_10_stars,
+            paid_energy=0,
+            crystals=cfg.crystals_10_amount,
+            days=None,
+            duo_access=False,
+            tariff=None,
+        ),
+        "crystals_40": _shop_pack(
+            name="40 Кристаллов",
+            price_rub=cfg.crystals_40_rub_kopecks // 100,
+            price_stars=cfg.crystals_40_stars,
+            paid_energy=0,
+            crystals=cfg.crystals_40_amount,
+            days=None,
+            duo_access=False,
+            tariff=None,
+        ),
+        "crystals_100": _shop_pack(
+            name="100 Кристаллов",
+            price_rub=cfg.crystals_100_rub_kopecks // 100,
+            price_stars=cfg.crystals_100_stars,
+            paid_energy=0,
+            crystals=cfg.crystals_100_amount,
+            days=None,
+            duo_access=False,
+            tariff=None,
+        ),
     }
-    paid = dict(PAID_IMAGE_MODEL_ENTRIES)
-    paid["gpt_image2"] = ImageModelPrice(0, cfg.cost_image_dalle_crystals, crystals_only=True)
+    paid = build_paid_image_model_entries(cfg)
 
     return BusinessCatalog(
         chat=ChatCosts(
@@ -313,6 +414,8 @@ def build_catalog(s: Settings | None = None) -> BusinessCatalog:
         ),
         daily_free_energy=cfg.daily_free_energy,
         free_imagen_daily_limit=cfg.free_daily_photo_limit,
+        free_imagen_overlimit_cost=cfg.free_imagen_overlimit_cost,
+        free_pro_image_cost=cfg.cost_image_pro,
         free_other_image_crystals=cfg.cost_image_pro,
         hd_advice_cost=0,
         hd_full_report_cost=cfg.cost_hd,

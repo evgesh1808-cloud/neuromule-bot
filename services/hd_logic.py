@@ -4,10 +4,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import tempfile
 import re
-from collections.abc import AsyncIterator
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import aiosqlite
@@ -65,11 +65,12 @@ HD_REPORT_COST = get_hd_report_cost()
 MATCH_REPORT_COST = get_match_report_cost()
 PRICE_UPSCALE = _app_settings.cost_upscale
 
-# Канал B (Gemini): приоритет 2.0, затем линейка 1.5 / алиасы (устраняет 404 у устаревших имён).
+# Канал B (Gemini): 2.5 → 2.0 lite → алиасы (1.5-* сняты с v1beta, дают 404).
 _GEMINI_MODEL_CHAIN: tuple[str, ...] = (
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-2.0-flash-lite",
     "gemini-2.0-flash",
-    "gemini-1.5-flash",
-    "gemini-1.5-flash-8b",
     "gemini-flash-latest",
 )
 _PDF_FONT_NAME = "HDReportFont"
@@ -154,55 +155,52 @@ _WEEKDAY_RU = (
 
 DailyAdviceUserProfile = dict[str, str]
 
+# Сигнал для Gemini: тип нужно вычислить по дате/времени/месту рождения (нет платного разбора).
+_HD_TYPE_UNDETERMINED = "НЕ ОПРЕДЕЛЕН"
+_DEFAULT_ADVICE_USER_ROLE = "по умолчанию"
+
 _DAILY_FORECAST_PROMPT = (
-    "Ты — харизматичный цифровой коуч, официальный аватар системы NeuroMul и топ-эксперт "
-    "по Дизайну Человека (Human Design). Твоя задача — сгенерировать короткий, "
-    'вдохновляющий и строго персонализированный "Совет дня" от лица NeuroMul.\n\n'
-    "ВХОДНЫЕ ДАННЫЕ ПОЛЬЗОВАТЕЛЯ ДЛЯ АНАЛИЗА:\n"
-    "- Текущая дата генерации: {current_date}\n"
-    "- День недели: {day_of_week}\n"
-    "- Активный оффер дня: {current_cta_text}\n"
-    "- Тип личности пользователя: {hd_type}\n"
-    "- Роль/Сфера занятости в жизни: {user_role}\n"
-    "- Точные данные рождения юзера: {birth_date}, {birth_time}, город {birth_place}\n"
-    "- Статус подписки на канал @mulendeeva_ai: Активна (Проверено системой)\n\n"
-    "ЖЕСТКИЕ ТЕХНИЧЕСКИЕ ПРАВИЛА ДЛЯ СТРИМИНГА ТЕКСТА (СТРОГО):\n"
-    "1. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать любые HTML-теги (например, <b>, <i>, <a>). "
-    "При пошаговой отправке чанков текста (через editMessageText) это намертво ломает "
-    'парсинг Telegram и вызывает ошибку "Bad Request: can\'t parse entities".\n'
-    "2. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать Markdown-символы (*, **, _, `) внутри слов "
-    "или фраз. Они отображаются на экране как технический мусор во время потокового вывода.\n"
-    "3. Выделяй ключевые мысли исключительно заглавными буквами (CAPS LOCK) и функциональными "
-    "эмодзи в самом начале строк.\n"
-    "4. Разделяй смысловые блоки строго одной пустой строкой (\\n\\n).\n"
-    '5. ПОЛНОСТЬЮ ИСКЛЮЧИ аббревиатуру "ИИ" или словосочетание "Искусственный Интеллект" '
-    "из текста. Робот выдает информацию от лица бренда NeuroMul.\n\n"
-    "ИНСТРУКЦИЯ ПО КОНТЕНТУ И ТОНУ РЕЧИ:\n"
-    "1. Запусти внутренний анализ NeuroMul для планетарной погоды на {current_date}. "
-    "Свяжи текущие космические транзиты планет с индивидуальным Типом личности ({hd_type}), "
-    "жизненной ролью ({user_role}) и натальной картой рождения "
-    "({birth_date} {birth_time} {birth_place}).\n"
-    '2. Пиши на живом, простом и теплом языке без занудного эзотерического сленга '
-    '("вибрации", "нейтрино", "обуславливание") и без сухого бизнеса. Приводи понятные '
-    "бытовые примеры (быт, дети, текущие задачи, общение с близкими, забота о себе).\n"
-    "3. Общий объем основного текста — строго до 6-7 предложений. Будь краток, пиши емко и без воды.\n"
-    '4. В самом конце сообщения, после блока "⚠️ КУДА НЕ СЛИВАТЬ СИЛЫ", добавь пустую '
-    "строку (\\n\\n) и мягко выведи текст активного оффера дня: {current_cta_text}.\n\n"
-    "СТРОГО СЛЕДУЙ СЛЕДУЮЩЕЙ СТРУКТУРУ ОТВЕТА (заголовки копируй один в один):\n\n"
-    "🌌 ЗВЕЗДНЫЙ БАРОМЕТР NEUROMUL\n"
-    "(Опиши текущую планетарную энергию на {current_date} через призму роли {user_role} "
-    "и места рождения {birth_place}. Какое космическое давление сегодня на небе и в "
-    "атмосфере вокруг людей? 1-2 коротких предложения)\n\n"
-    "🔮 ТВОЙ НАВИГАТОР ({hd_type})\n"
-    "(Дай персональный совет от NeuroMul, как типу {hd_type} в его роли {user_role}, "
-    "рожденному в {birth_time}, правильно и бережно распределить силы именно сегодня. "
-    "2 коротких предложения)\n\n"
+    "Ты — харизматичный цифровой коуч NeuroMule 🐎⚡️, топ-эксперт по Дизайну Человека (Human Design). "
+    'Сгенерируй короткий, вдохновляющий и строго персонализированный "Совет дня" от лица NeuroMule.\n\n'
+    "ВХОДНЫЕ ДАННЫЕ:\n"
+    "- Дата: {current_date} ({day_of_week})\n"
+    "- Тип личности (из БД): {hd_type}\n"
+    "- Роль / сфера: {user_role}\n"
+    "- Рождение: {birth_date}, {birth_time}, город {birth_place}\n"
+    "- Оффер дня (вставить в конец дословно после пустой строки): {current_cta_text}\n"
+    "- Подписка на @mulendeeva_ai: Активна\n\n"
+    "ЛОГИКА ТИПА HUMAN DESIGN:\n"
+    "- Если в поле «Тип личности» передан конкретный тип (не «НЕ ОПРЕДЕЛЕН») — используй его "
+    "в заголовке блока «ТВОЙ НАВИГАТОР» КАПСОЛОМ (например, ГЕНЕРАТОР).\n"
+    "- Если передано «НЕ ОПРЕДЕЛЕН» — самостоятельно вычисли тип (Генератор, Манифестор, Проектор "
+    "или Рефлектор) по {birth_date}, {birth_time}, {birth_place}, используя знания астрономических "
+    "эфемерид Human Design. Выведи вычисленный тип КАПСОЛОМ в заголовок «ТВОЙ НАВИГАТОР» и строй "
+    "совет строго на основе его Стратегии. Категорически ЗАПРЕЩЕНО писать пользователю "
+    "«тип не определён» или «НЕ ОПРЕДЕЛЕН».\n"
+    "КОНТЕКСТ: Swiss Ephemeris и бодиграф в коде НЕ считаются — чистая LLM-интерпретация.\n\n"
+    "ЖЁСТКИЕ ПРАВИЛА TELEGRAM (СТРОГО):\n"
+    "1. КАТЕГОРИЧЕСКИ БЕЗ HTML-тегов (<b>, <i>, <a> и т.д.).\n"
+    "2. КАТЕГОРИЧЕСКИ БЕЗ Markdown: запрещены *, **, _, ` и любая разметка.\n"
+    "3. Акценты — только ЭМОДЗИ и фрагменты ВЕРХНИМ РЕГИСТРОМ (КАПСОМ).\n"
+    "4. Блоки разделяй ровно одной пустой строкой (\\n\\n).\n"
+    '5. ЗАПРЕЩЕНО писать: "ИИ", "Искусственный интеллект", "бот", "нейросеть", "модель".\n'
+    "6. Тон: тёплый, бытовой, поддерживающий; без эзотерического сленга "
+    '("вибрации", "нейтрино", "обуславливание").\n'
+    "7. Общий объём основного текста (до оффера) — до 6–7 предложений, лаконично.\n\n"
+    "СТРОГО СЛЕДУЙ СТРУКТУРЕ (заголовки копируй один в один):\n\n"
+    "🌌 ЗВЕЗДНЫЙ БАРОМЕТР NEUROMULE 🐎⚡️\n"
+    "(Напиши общую планетарную погоду и космические вибрации на сегодня для всех людей, "
+    "строго 1–2 предложения. Категорически ЗАПРЕЩЕНО упоминать город рождения {birth_place} "
+    "в тексте, так как пользователь может жить в другой стране или городе.)\n\n"
+    "🔮 ТВОЙ НАВИГАТОР (Сюда подставь рассчитанный или переданный ТИП ЛИЧНОСТИ КАПСОЛОМ)\n"
+    "(Дай совет типу личности в его текущей роли {user_role}, строго 2 предложения, "
+    "опираясь на механику Human Design)\n\n"
     "🎯 ПРОСТОЙ ШАГ В ПЛЮС\n"
-    "• (Одно конкретное, легкое практическое, физическое или бытовое действие на сегодня "
-    "в рамках контекста роли {user_role}, чтобы быстро войти в ресурс)\n\n"
+    "• (ровно одно легкое бытовое действие на 2–5 минут)\n\n"
     "⚠️ КУДА НЕ СЛИВАТЬ СИЛЫ\n"
-    "• (Предупреди, на какую мелкую суету, обиду, спешку или ошибку Ложного Я в роли "
-    "{user_role} юзер может зря слить всю свою энергию сегодня. 1-2 предложения)"
+    "• (чего именно избегать сегодня, ловушка ума)\n\n"
+    "[ровно одна пустая строка]\n"
+    "{current_cta_text}"
 )
 
 
@@ -217,7 +215,7 @@ def birth_context_lines_for_daily_advice(hd_line: str, advice_only_line: str) ->
 def parse_birth_for_daily_advice(raw: str) -> dict[str, str]:
     """Дата, время, место и опциональная роль из одной строки/блока рождения."""
     text = (raw or "").strip()
-    user_role = "предприниматель или эксперт"
+    user_role = _DEFAULT_ADVICE_USER_ROLE
     hd_type_inline = ""
     body_lines: list[str] = []
     for line in text.splitlines():
@@ -257,6 +255,15 @@ def parse_birth_for_daily_advice(raw: str) -> dict[str, str]:
     }
 
 
+def _resolve_hd_type_for_advice(hd_birth_data: str, db_hd_type: str) -> str:
+    """
+    Платный разбор (hd_birth_data + hd_type в БД) → готовый тип; иначе «НЕ ОПРЕДЕЛЕН» для Gemini.
+    """
+    if (hd_birth_data or "").strip() and (db_hd_type or "").strip():
+        return db_hd_type.strip()
+    return _HD_TYPE_UNDETERMINED
+
+
 def daily_advice_user_profile_from_repo_user(user: object) -> DailyAdviceUserProfile | None:
     """
     Собирает профиль для совета дня из строки users (get_user / aiosqlite.Row).
@@ -278,11 +285,9 @@ def daily_advice_user_profile_from_repo_user(user: object) -> DailyAdviceUserPro
         return None
 
     parsed = parse_birth_for_daily_advice(birth_notes)
-    hd_type = _col("hd_type") or parsed["hd_type_inline"]
-    if not hd_type:
-        hd_type = "уточни мягко по натальной карте рождения"
+    hd_type = _resolve_hd_type_for_advice(hd_bd, _col("hd_type"))
 
-    user_role = _col("advice_user_role") or parsed["user_role"]
+    user_role = _col("advice_user_role") or parsed.get("user_role") or _DEFAULT_ADVICE_USER_ROLE
 
     return {
         "hd_type": hd_type,
@@ -293,39 +298,77 @@ def daily_advice_user_profile_from_repo_user(user: object) -> DailyAdviceUserPro
     }
 
 
+_MSK_TZ = timezone(timedelta(hours=3))
+
+_CTA_MONDAY_PHOTO: tuple[str, ...] = (
+    "📷 Обнови аватар: ИИ проявит твою истинную ауру на фото — {photo} 💎",
+    "📸 Твой сильный визуальный образ: ИИ создаст портрет под твою роль — {photo} 💎",
+    "🖼️ Взгляни на себя со стороны: сгенерируй ИИ-аватар своего дизайна — {photo} 💎",
+    "✨ Прояви свою силу через визуал: ИИ-фотосет под твою энергетику — {photo} 💎",
+)
+_CTA_TUESDAY_VIDEO: tuple[str, ...] = (
+    "🎬 Увидь свой дизайн в движении: создай короткое ИИ-видео — {video} 💎",
+    "🎥 Перенеси свои смыслы на экран: ИИ сгенерирует ролик под твой день — {video} 💎",
+    "🎞️ Прояви внутреннюю силу в динамике: запусти ИИ-видеогенерацию — {video} 💎",
+    "📹 Твой потенциал на кинопленке: создай завораживающее ИИ-видео — {video} 💎",
+)
+_CTA_WEDNESDAY_AUDIO: tuple[str, ...] = (
+    "🎸 Сонастройся с космосом: ИИ создаст твой личный трек на сегодня — {audio} 💎",
+    "🎵 Послушай ритм своей ауры: разблокируй персональный ИИ-звук дня — {audio} 💎",
+    "🔊 Переведи механику дизайна в музыку: сгенерируй личную ИИ-мелодию — {audio} 💎",
+    "🎧 Поймай свою волну: включи индивидуальный ИИ-трек под твой дизайн — {audio} 💎",
+)
+_CTA_THURSDAY_ANIMATE: tuple[str, ...] = (
+    "✨ Оживи любимый снимок: ИИ вдохнет жизнь в застывший момент — {animate} 💎",
+    "💫 Магия в один клик: преврати статичное фото в живую ИИ-картину — {animate} 💎",
+    "🌌 Запусти движение: позволь нейросети оживить любую фотографию — {animate} 💎",
+    "🔮 Вдохни динамику в кадр: оживление любого фото силами ИИ — {animate} 💎",
+)
+_CTA_WEEKEND_FULL_REPORT: tuple[str, ...] = (
+    "🔮 Этот совет — лишь 1% твоей силы. Узнай про свои деньги и таланты в Полном Разборе",
+    "💎 Твоя карта сокровищ скрыта глубже. Разблокируй Полный Разбор Хьюман Дизайн",
+    "👑 Полноценный навигатор по твоей жизни: открой свой глубокий Полный Разбор",
+)
+
+
+def _cta_cost_from_env(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
 def get_dynamic_cta_for_today(now: datetime | None = None) -> str:
-    """
-    Мягкий CTA для «Совета дня» по дню недели; цены из ``settings`` (COST_* в .env).
-    """
-    moment = now or datetime.now()
-    s = _app_settings
+    """Короткий рандомный CTA для «Совета дня» по дню недели (МСК, цены из env)."""
+    if now is None:
+        moment = datetime.now(_MSK_TZ)
+    elif now.tzinfo is None:
+        moment = now.replace(tzinfo=_MSK_TZ)
+    else:
+        moment = now.astimezone(_MSK_TZ)
+
+    photo = _cta_cost_from_env("PHOTO_COST", 20)
+    video = _cta_cost_from_env("VIDEO_COST", 25)
+    audio = _cta_cost_from_env("AUDIO_COST", 15)
+    animate = _cta_cost_from_env("ANIMATE_COST", 20)
+
     weekday = moment.weekday()
-    ctas: tuple[str, ...] = (
-        (
-            f"🎨 Понедельник — визуал: PRO-фото в «Создать» от {s.cost_image_pro} 💎, "
-            f"оживление кадра — {s.cost_animate} 💎."
-        ),
-        (
-            f"🎬 Вторник — движение: короткое видео по промпту в NeuroMul — {s.cost_video} 💎."
-        ),
-        (
-            f"🎸 Среда — звук: уникальный трек по описанию стиля — {s.cost_music} 💎."
-        ),
-        (
-            f"✨ Четверг — магия кадра: оживи фото и преврати его в ролик — {s.cost_animate} 💎."
-        ),
-        (
-            f"🖼️ Пятница — образ: серия PRO-изображений от {s.cost_image_pro} 💎 за кадр."
-        ),
-        (
-            f"🎬 Суббота — кино: сцена и атмосфера в видео-генерации — {s.cost_video} 💎."
-        ),
-        (
-            f"👑 Воскресенье — фундамент: полный разбор Дизайна Человека навсегда — "
-            f"{s.cost_hd} 💎; совместимость с партнёром — {s.cost_match} 💎."
-        ),
-    )
-    return ctas[weekday % len(ctas)]
+    if weekday == 0:
+        template = random.choice(_CTA_MONDAY_PHOTO)
+        return template.format(photo=photo)
+    if weekday == 1:
+        template = random.choice(_CTA_TUESDAY_VIDEO)
+        return template.format(video=video)
+    if weekday == 2:
+        template = random.choice(_CTA_WEDNESDAY_AUDIO)
+        return template.format(audio=audio)
+    if weekday == 3:
+        template = random.choice(_CTA_THURSDAY_ANIMATE)
+        return template.format(animate=animate)
+    return random.choice(_CTA_WEEKEND_FULL_REPORT)
 
 
 def build_daily_advice_prompt(
@@ -513,38 +556,21 @@ async def update_user(user_id: int, **kwargs) -> None:
 
 
 async def change_user_crystals(user_id: int, delta: int) -> None:
-    await get_user(user_id)
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            """
-            UPDATE users
-            SET crystals = crystals + ?,
-                balance = crystals + ?,
-                balance_crystals = crystals + ?
-            WHERE id = ?
-            """,
-            (delta, delta, delta, user_id),
-        )
-        await db.commit()
+    from services.billing.crystals_balance import add_buy_crystals
+
+    if delta > 0:
+        await add_buy_crystals(user_id, delta)
+        return
+    if delta < 0:
+        from services.repository import try_consume_crystals
+
+        await try_consume_crystals(user_id, -delta)
 
 
 async def try_consume_crystals(user_id: int, amount: int) -> bool:
-    if amount <= 0:
-        return True
-    await get_user(user_id)
-    async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute(
-            """
-            UPDATE users
-            SET crystals = crystals - ?,
-                balance = crystals - ?,
-                balance_crystals = crystals - ?
-            WHERE id = ? AND crystals >= ?
-            """,
-            (amount, amount, amount, user_id, amount),
-        )
-        await db.commit()
-        return cur.rowcount == 1
+    from services.repository import try_consume_crystals as _repo_spend
+
+    return await _repo_spend(user_id, amount)
 
 
 async def generate_premium_report(hd_type: str, birth_data: str) -> dict[str, str]:
@@ -712,8 +738,8 @@ async def generate_daily_forecast(
     user_profile: DailyAdviceUserProfile,
     *,
     current_cta_text: str,
-) -> AsyncIterator[str]:
-    """Потоковый совет дня (канал B, только Gemini)."""
+) -> str:
+    """Совет дня целиком (Gemini SDK, stream=False, каскад моделей)."""
     prompt = build_daily_advice_prompt(user_profile, current_cta_text=current_cta_text)
     _configure_genai()
     assert genai is not None
@@ -721,14 +747,12 @@ async def generate_daily_forecast(
     for model_name in _GEMINI_MODEL_CHAIN:
         try:
             model = genai.GenerativeModel(model_name)
-            stream = await model.generate_content_async(prompt, stream=True)
-            async for chunk in stream:
-                text = getattr(chunk, "text", "") or ""
-                if text:
-                    yield text
-            return
+            response = await model.generate_content_async(prompt, stream=False)
+            text = (getattr(response, "text", "") or "").strip()
+            if text:
+                return text
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Gemini %s: поток совета дня недоступен: %s", model_name, exc)
+            logger.warning("Gemini %s: совет дня недоступен: %s", model_name, exc)
             errors.append(f"{model_name}: {exc!r}")
             continue
     raise RuntimeError("gemini_unavailable: " + "; ".join(errors))
@@ -739,9 +763,8 @@ async def generate_daily_advice(
     *,
     current_cta_text: str,
 ) -> str:
-    """Одиночный текст совета дня (без стрима)."""
-    prompt = build_daily_advice_prompt(user_profile, current_cta_text=current_cta_text)
-    return await gemini_generate_plain_text(prompt)
+    """Алиас для совместимости импортов."""
+    return await generate_daily_forecast(user_profile, current_cta_text=current_cta_text)
 
 
 def today_iso() -> str:

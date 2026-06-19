@@ -9,12 +9,11 @@ from aiogram.types import Message
 
 from config import settings
 from content import messages as msg
-from platforms.telegram_keyboards import main_menu
 from platforms.telegram_subscription import ChannelSubscription
 from services import payments_catalog as paycat
+from services.god_mode import billing_bypass
 from services.hd_logic import get_user
 from services.repository import check_and_spend as spend_crystals
-from services.use_cases.start_ui_turn import start_messages_link_preview_off
 
 _bot: Bot | None = None
 _channel_sub: ChannelSubscription | None = None
@@ -59,6 +58,8 @@ async def is_subscribed_cached(user_id: int) -> bool:
 
 
 async def check_and_spend(target: Message, user_id: int, amount: int) -> bool:
+    if billing_bypass(user_id):
+        return True
     user = await get_user(user_id)
     balance = int(user["crystals"] or 0)
     if balance < amount:
@@ -82,14 +83,12 @@ async def check_and_spend(target: Message, user_id: int, amount: int) -> bool:
     return ok
 
 
-async def send_start_main_welcome(target: Message, user_id: int) -> None:
-    no_preview = start_messages_link_preview_off()
-    await target.answer(
-        msg.TXT_START_WELCOME,
-        parse_mode=ParseMode.HTML,
-        link_preview_options=no_preview,
-    )
-    await target.answer(
-        msg.TXT_START_MAIN_MENU_PROMPT,
-        reply_markup=main_menu(user_id),
-    )
+async def send_start_main_welcome(
+    target: Message,
+    user_id: int,
+    *,
+    state: object | None = None,
+) -> None:
+    from platforms.telegram_utils import send_activation_success
+
+    await send_activation_success(target, user_id, state=state)

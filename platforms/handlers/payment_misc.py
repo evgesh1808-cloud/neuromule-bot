@@ -68,6 +68,7 @@ from platforms.telegram_utils import (
 from services import hd_service
 from services import payments_catalog as paycat
 from services.billing import billing
+from services.billing.stars_payment_hints import is_stars_insufficient_balance
 from services.billing.store import refund_charge
 from services.hd_logic import (
     birth_data_minimum_for_advice,
@@ -108,12 +109,26 @@ from services.use_cases.animate_generation_turn import AnimateGenOutcome, run_an
 from platforms.telegram_chat_action import chat_action_loop
 from platforms.telegram_chat_stream import create_throttled_stream_reply
 from platforms.telegram_chunks import answer_chat_text
+from platforms.telegram_quote import (
+    REPLY_TO_BOT_FILTER,
+    build_quoted_user_prompt,
+    has_neurotext_message_input,
+    is_reply_to_bot_message,
+    resolve_neurotext_quote_input,
+)
 from services.use_cases.chat_turn import ChatTurnOutcome, run_chat_turn
 from services.use_cases.music_generation_turn import MusicGenOutcome, run_music_generation_turn
 from services.use_cases.cabinet_turn import build_cabinet_view
-from services.use_cases.payment_invoice_turn import InvoiceBuildOutcome, build_payment_invoice_draft
+from services.billing import shop as payment_shop
+from services.billing.shop import InvoiceBuildOutcome, PaymentOutcome
+from platforms.tariffs_center import (
+    crystals_screen_for_tariff,
+    edit_tariffs_screen,
+    send_tariffs_screen,
+    tariffs_bundle_keyboard,
+    tariffs_main_keyboard,
+)
 from services.use_cases.payment_shop_turn import build_tariffs_entry_text
-from services.use_cases.payment_turn import PaymentApplyOutcome, run_successful_payment_apply
 from services.use_cases.photo_generation_turn import PhotoGenOutcome, run_photo_generation_turn
 from services.use_cases.promo_turn import PromoOutcome, run_promo_redeem
 from services.use_cases.start_turn import StartFlowOutcome, run_start_turn
@@ -147,11 +162,11 @@ async def pay_pick_package(callback: CallbackQuery) -> None:
         await callback.answer(msg.TXT_PAYMENT_INVALID, show_alert=True)
         return
     if nav.outcome is TariffShopNavOutcome.SHOP_INTRO:
-        try:
-            await callback.message.edit_text(nav.text, reply_markup=paycat.shop_packages_keyboard())
-        except TelegramBadRequest:
-            await callback.message.answer(nav.text, reply_markup=paycat.shop_packages_keyboard())
-        await callback.answer()
+        await edit_tariffs_screen(
+            callback,
+            build_tariffs_entry_text(),
+            tariffs_main_keyboard(),
+        )
         return
     if nav.pkg_index is None:
         await callback.answer(msg.TXT_PAYMENT_INVALID, show_alert=True)
@@ -170,7 +185,10 @@ async def pay_pick_method(callback: CallbackQuery) -> None:
         return
     pkg_index, method = parsed
     uid = callback.from_user.id
-    inv = build_payment_invoice_draft(settings, uid, pkg_index, method)
+    if method == "x":
+        inv = await payment_shop.create_telegram_stars_invoice(settings, uid, pkg_index)
+    else:
+        inv = await payment_shop.create_yookassa_invoice(settings, uid, pkg_index)
     if inv.outcome is InvoiceBuildOutcome.NO_YOOKASSA:
         await callback.answer(msg.TXT_PAY_NO_YOOKASSA, show_alert=True)
         return
@@ -178,6 +196,15 @@ async def pay_pick_method(callback: CallbackQuery) -> None:
         await callback.answer(msg.TXT_PAYMENT_INVALID, show_alert=True)
         return
     d = inv.draft
+    if d.confirmation_url:
+        await callback.message.answer(
+            f"💳 <b>Оплата картой</b>\n\n"
+            f"<a href=\"{html.escape(d.confirmation_url)}\">Перейти к оплате ЮKassa</a>",
+            parse_mode=ParseMode.HTML,
+            link_preview_options=types.LinkPreviewOptions(is_disabled=True),
+        )
+        await callback.answer()
+        return
     prices = [LabeledPrice(label=p.label, amount=p.amount) for p in d.prices]
     try:
         await callback.message.answer_invoice(
@@ -189,13 +216,40 @@ async def pay_pick_method(callback: CallbackQuery) -> None:
             provider_token=d.provider_token,
         )
     except TelegramBadRequest as e:
+        err_text = str(e)
         await callback.answer(f"Не удалось выставить счёт: {e}", show_alert=True)
+        # Точечный UX-хинт: ТОЛЬКО при Stars-инвойсе и ТОЛЬКО при
+        # whitelist-маркере «недостаточно Stars». Сетевые сбои /
+        # отключённый провайдер сюда не попадут — это критично, чтобы
+        # не показывать рекламу карты при обычных глитчах.
+        if method == "x" and is_stars_insufficient_balance(err_text):
+            logger.info(
+                "stars insufficient balance detected user_id=%s pkg=%s err=%s",
+                uid,
+                pkg_index,
+                err_text[:200],
+            )
+            try:
+                await callback.message.answer(
+                    msg.TXT_STARS_INSUFFICIENT_HINT,
+                    parse_mode=ParseMode.HTML,
+                )
+            except TelegramBadRequest:
+                logger.warning(
+                    "stars hint: failed to send user_id=%s",
+                    uid,
+                    exc_info=True,
+                )
         return
     await callback.answer()
 
 @router.pre_checkout_query()
 async def pre_checkout_accept(query: PreCheckoutQuery) -> None:
-    await query.answer(ok=True)
+    ok = payment_shop.validate_pre_checkout_payload(
+        query.invoice_payload or "",
+        query.from_user.id,
+    )
+    await query.answer(ok=ok)
 
 @router.message(F.successful_payment)
 async def successful_payment_handler(message: Message) -> None:
@@ -203,17 +257,17 @@ async def successful_payment_handler(message: Message) -> None:
     if not sp or not message.from_user:
         return
     fb = f"msg:{message.chat.id}:{message.message_id}"
-    pay = await run_successful_payment_apply(
+    pay = await payment_shop.handle_telegram_stars_payment(
         message.from_user.id,
         sp.invoice_payload or "",
         sp.telegram_payment_charge_id,
         sp.provider_payment_charge_id,
         fallback_charge_id=fb,
     )
-    if pay.outcome is PaymentApplyOutcome.INVALID:
+    if pay.outcome is PaymentOutcome.INVALID:
         await message.answer(msg.TXT_PAYMENT_INVALID)
         return
-    if pay.outcome is PaymentApplyOutcome.DUPLICATE:
+    if pay.outcome is PaymentOutcome.DUPLICATE:
         await message.answer(msg.TXT_PAYMENT_DUPLICATE)
         return
     credited_parts = []
@@ -231,16 +285,51 @@ async def successful_payment_handler(message: Message) -> None:
         pay.tariff_activated or "unknown",
     )
     await notify_admins_about_payment(
-        bot,
+        deps.bot(),
         message.from_user.id,
         pay.tariff_activated or "unknown",
         credited_text,
     )
 
+@router.callback_query(F.data == msg.CB_OPEN_TARIFFS)
+async def tariffs_open_main(callback: CallbackQuery) -> None:
+    await edit_tariffs_screen(
+        callback,
+        build_tariffs_entry_text(),
+        tariffs_main_keyboard(),
+    )
+
+
+@router.callback_query(F.data == msg.CB_BUY_BUNDLE_MENU)
+async def tariffs_open_bundle_menu(callback: CallbackQuery) -> None:
+    await edit_tariffs_screen(
+        callback,
+        msg.TXT_TARIFFS_BUNDLE_MENU,
+        tariffs_bundle_keyboard(),
+    )
+
+
+@router.callback_query(F.data == msg.CB_BUY_CRYSTALS_ONLY_MENU)
+async def tariffs_open_crystals_menu(callback: CallbackQuery) -> None:
+    user = await billing.load_user_billing(callback.from_user.id)
+    text, keyboard = crystals_screen_for_tariff(user.current_tariff)
+    await edit_tariffs_screen(callback, text, keyboard)
+
+
+@router.callback_query(F.data == msg.CB_CLOSE_TARIFFS)
+async def tariffs_close(callback: CallbackQuery) -> None:
+    if callback.message:
+        try:
+            await callback.message.delete()
+        except TelegramBadRequest:
+            pass
+    await callback.answer()
+
+
 @router.callback_query(F.data == msg.CB_RESULT_PREMIUM)
 async def open_tariffs_from_result_or_instruction(callback: CallbackQuery) -> None:
-    await callback.message.answer(msg.TXT_SECTION_INTRO)
-    await callback.message.answer(build_tariffs_entry_text(), reply_markup=paycat.shop_packages_keyboard())
+    if callback.message:
+        await send_tariffs_screen(callback.message, build_tariffs_entry_text())
     await callback.answer()
 
 result_cbs = (
@@ -283,20 +372,44 @@ async def help_instruction_keyword(message: Message) -> None:
 
 @router.message(
     StateFilter(None),
-    F.text,
-    ~F.text.startswith("/"),
-    ~F.text.in_(_reply_menu_button_texts()),
+    F.photo | F.document,
+)
+async def chat_media_neurotext(message: Message, state: FSMContext) -> None:
+    from platforms.neurotext_input import handle_neurotext_user_message
+
+    await handle_neurotext_user_message(message, state)
+
+
+@router.message(
+    StateFilter(None),
+    F.text | REPLY_TO_BOT_FILTER,
 )
 async def chat_handler(message: Message) -> None:
+    text = (message.text or "").strip()
+    if not has_neurotext_message_input(message):
+        return
+    if text.startswith("/") or (text in _reply_menu_button_texts() and not is_reply_to_bot_message(message)):
+        return
+
     uid = message.from_user.id
-    raw = (message.text or "")[: settings.chat_max_message_chars]
+    quoted_text, user_text = resolve_neurotext_quote_input(message)
+    user_prompt = build_quoted_user_prompt(user_text, quoted_text)
+    max_len = settings.chat_max_message_chars
+    raw = user_prompt[:max_len]
+    dialog_text: str | None = user_text[:max_len] if quoted_text else None
     stream_cb = (
         create_throttled_stream_reply(message, deps.bot(), settings)
         if settings.telegram_chat_streaming
         else None
     )
     async with chat_action_loop(deps.bot(), message.chat.id, "typing"):
-        result = await run_chat_turn(settings, uid, raw, stream_callback=stream_cb)
+        result = await run_chat_turn(
+            settings,
+            uid,
+            raw,
+            dialog_user_text=dialog_text,
+            stream_callback=stream_cb,
+        )
     if result.outcome is ChatTurnOutcome.SUCCESS:
         if stream_cb is None:
             await answer_chat_text(message, result.assistant_message or "", settings)

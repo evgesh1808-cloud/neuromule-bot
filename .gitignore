@@ -7,4 +7,5 @@ logs/
 .coverage
 htmlcov/
 neuromule_base.db
+data/telegram_bot.lock
 *.db-journal

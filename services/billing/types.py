@@ -36,6 +36,9 @@ class ShopPackName(str, Enum):
     MINI = "MINI"
     SMART = "SMART"
     ULTRA = "ULTRA"
+    ULTRA_3DAYS = "ULTRA_3DAYS"
+    ULTRA_1WEEK = "ULTRA_1WEEK"
+    ULTRA_1MONTH = "ULTRA_1MONTH"
     CRYSTALS_10 = "crystals_10"
     CRYSTALS_40 = "crystals_40"
     CRYSTALS_100 = "crystals_100"
@@ -94,6 +97,16 @@ class SpendResult:
 
 
 @dataclass(frozen=True)
+class TextChatBillingResult:
+    """Результат строгой проверки баланса и списания перед OpenRouter."""
+
+    effective_role_id: str
+    plan: "ChatRoutePlan"
+    charge_id: str | None = None
+    notice: str | None = None
+
+
+@dataclass(frozen=True)
 class ChatRoutePlan:
     """План маршрутизации текстового чата."""
 
@@ -102,6 +115,8 @@ class ChatRoutePlan:
     energy_cost: int
     crystal_cost: int
     is_expert_role: bool
+    max_tokens: int = 640
+    use_premium_prompt: bool = False
     blocked: bool = False
     block_reason: str = ""
 
@@ -113,6 +128,8 @@ class ImageSpendPlan:
     crystal_cost: int
     crystals_only: bool
     use_free_daily_slot: bool
+    blocked: bool = False
+    block_reason: str = ""
 
 
 @dataclass(frozen=True)

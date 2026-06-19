@@ -9,6 +9,7 @@ from services.billing.types import (
     ChatRoutePlan,
     PurchaseResult,
     SpendResult,
+    TextChatBillingResult,
     UserBillingState,
     VideoRoutePlan,
 )
@@ -32,6 +33,7 @@ class BillingManager:
     # Chat
     plan_text_chat = staticmethod(chat_pipeline.plan_text_chat)
     handle_text_chat = staticmethod(chat_pipeline.handle_text_chat)
+    resolve_and_charge_text_chat = staticmethod(chat_pipeline.resolve_and_charge_text_chat)
 
     # Images
     spend_image_resource = staticmethod(image_pipeline.spend_image_resource)

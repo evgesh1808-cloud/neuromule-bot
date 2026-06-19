@@ -28,6 +28,24 @@ def test_free_imagen_plan_uses_slot() -> None:
     assert plan.crystal_cost == 0
 
 
+def test_free_imagen_overlimit_charges_crystals() -> None:
+    from datetime import date
+
+    today = date.today().isoformat()
+    plan = build_image_spend_plan(TariffTier.FREE, "imagen4", daily_count=3, daily_date=today)
+    assert plan.use_free_daily_slot is False
+    assert plan.crystals_only is True
+    assert plan.crystal_cost == 2
+
+
+def test_free_flux_uses_pro_image_cost() -> None:
+    from services.billing.pricing import FREE_PRO_IMAGE_COST
+
+    plan = build_image_spend_plan(TariffTier.FREE, "flux_schnell", daily_count=0, daily_date=None)
+    assert plan.crystal_cost == FREE_PRO_IMAGE_COST
+    assert plan.crystals_only is True
+
+
 def test_paid_flux_energy_or_crystals() -> None:
     plan = build_image_spend_plan(TariffTier.SMART, "flux_schnell", daily_count=0, daily_date=None)
     assert plan.energy_cost == 30

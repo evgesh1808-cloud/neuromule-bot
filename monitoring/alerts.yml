@@ -1,0 +1,294 @@
+# NeuroMule 🐎⚡️ — Prometheus alerting rules
+#
+# Подключение:
+#   prometheus.yml →
+#     rule_files:
+#       - /etc/prometheus/rules/neuromule_alerts.yml
+#
+# Источник метрик: scrape_job на http://<bot-host>:<METRICS_HTTP_PORT>/metrics
+# (см. services/metrics_http.py — PR-K).
+#
+# Сериализация: counters → counter; observe() → summary с quantile=0|1
+# (см. services/metrics_prometheus.py — PR-L).
+#
+# Соглашения:
+# * severity: critical → деньги/безопасность, page-on-call немедленно;
+# * severity: warning → деградация UX, реакция в течение 30 минут;
+# * severity: info → информативно, без пэйджинга (для каналов в Slack).
+
+groups:
+
+  # ────────────────────────────────────────────────────────────────────────
+  # 1. Деньги: платежи, биллинг
+  # ────────────────────────────────────────────────────────────────────────
+  - name: neuromule_payments
+    interval: 30s
+    rules:
+
+      - alert: PaymentPipelineFailed
+        # Любой пост-claim сбой (CRITICAL лог в payment_turn.py — PR-E).
+        # У клиента списано, у нас не выдано — сага требует ручного разбора.
+        expr: increase(payment_failed[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          team: backend
+        annotations:
+          summary: "Post-claim payment failure (manual saga required)"
+          description: |
+            За последние 5 минут зафиксированы пост-claim сбои в payment_turn:
+              {{ $value }} событий с labels reason={{ $labels.reason }}.
+            Поднять CRITICAL-логи и сверить ручной saga compensation.
+          runbook: "docs/PRODUCTION_CHECKLIST.md#payment-failed"
+
+      - alert: PaymentDuplicateSpike
+        # Резкий рост идемпотентного «duplicate» — обычно retry-storm
+        # от Telegram'а из-за нашего slow-response или сетевой деградации.
+        expr: increase(payment_duplicate[10m]) > 20
+        for: 5m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "Высокий темп duplicate-платежей (≥20 за 10 мин)"
+          description: |
+            Telegram повторяет successful_payment чаще обычного — проверьте
+            время ответа successful_payment_handler и сетевые таймауты.
+
+  # ────────────────────────────────────────────────────────────────────────
+  # 2. Доступность Telegram API: уведомления и нотификации
+  # ────────────────────────────────────────────────────────────────────────
+  - name: neuromule_telegram_api
+    interval: 30s
+    rules:
+
+      - alert: NotifyUnexpectedError
+        # Generic-фолбэк в safe_send_user_message (PR-A) — это всегда баг,
+        # поскольку специализированные exceptions ловятся выше.
+        expr: increase(notify_unexpected[10m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          team: backend
+        annotations:
+          summary: "Неожиданная ошибка в safe_send_user_message"
+          description: |
+            Запасной except поймал unknown exception. Это всегда баг:
+            проверьте ERROR логи telegram_notify в последние 10 минут.
+
+      - alert: NotifyFloodLimitHigh
+        # TelegramRetryAfter — Telegram бьёт нас флуд-лимитом. Это значит,
+        # мы слишком быстро шлём push'ам (премодерация, реф-бонусы и т.п.).
+        expr: increase(notify_retry_after[10m]) > 5
+        for: 5m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "Telegram флуд-лимит >5 событий за 10 мин"
+          description: |
+            Уменьшите частоту push-уведомлений или добавьте backoff
+            в реф/премодерационные потоки.
+
+      - alert: NotifyForbiddenSurge
+        # Резкий рост блокировок бота — либо массовая отписка после плохого
+        # релиза, либо рассылка попала в спам-фильтр Telegram.
+        expr: increase(notify_forbidden[1h]) > 100
+        for: 15m
+        labels:
+          severity: warning
+          team: product
+        annotations:
+          summary: "Массовое блокирование бота (>100 forbidden/час)"
+          description: |
+            Резкий рост TelegramForbiddenError. Проверьте релиз/рассылку
+            последнего часа и тон сообщений.
+
+  # ────────────────────────────────────────────────────────────────────────
+  # 3. Throttling: anti-fraud защита
+  # ────────────────────────────────────────────────────────────────────────
+  - name: neuromule_throttling
+    interval: 1m
+    rules:
+
+      - alert: ThrottleBlockSpike
+        # Сильно увеличившийся throttle — либо боты, либо UI-баг
+        # (двойной клик на кнопке).
+        expr: increase(throttle_blocked[5m]) > 500
+        for: 5m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "Throttling блокирует >500 событий за 5 мин"
+          description: |
+            Возможно бот-атака на FREE-тариф или регрессия UX
+            (двойной клик, повторный submit). Проверьте логи INFO
+            throttle: blocked user_id=...
+
+  # ────────────────────────────────────────────────────────────────────────
+  # 4. Runtime: контролируемый GC
+  # ────────────────────────────────────────────────────────────────────────
+  - name: neuromule_runtime
+    interval: 1m
+    rules:
+
+      - alert: GCSlowPhase
+        # Фаза gc.collect(gen) заняла >0.5s — на проде это сигнал утечки
+        # или раздутого кэша. Под нагрузкой это блокирует executor-pool.
+        expr: increase(gc_phase_slow[10m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "Медленная фаза GC (gen={{ $labels.gen }})"
+          description: |
+            controlled_gc_loop фиксирует фазу длительностью >500ms.
+            Проверьте in-memory кэши: last_share_media, dialog_history.
+          runbook: "docs/PRODUCTION_CHECKLIST.md#slow-gc"
+
+      - alert: GCPhaseCrash
+        # Падение в gc.collect — крайне редкое событие, обычно следствие
+        # __del__ с исключениями. Не блокирует цикл, но требует разбора.
+        expr: increase(gc_phase_failed[1h]) > 0
+        for: 0m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "gc.collect(gen={{ $labels.gen }}) бросил исключение"
+          description: |
+            Видимо в коде появился __del__ с побочным эффектом —
+            см. правило 2.4 в .cursorrules. ERROR лог + stacktrace
+            в services/runtime_gc.py.
+
+  # ────────────────────────────────────────────────────────────────────────
+  # 5. Кросс-постинг: download throttling
+  # ────────────────────────────────────────────────────────────────────────
+  - name: neuromule_crosspost
+    interval: 1m
+    rules:
+
+      - alert: DownloadTooBigBurst
+        # Резкий рост превышений 20-МБ-лимита (PR-J). Скорее всего
+        # внешний API стал отдавать huge-файлы (видео-генерация
+        # без compression) — нужен апгрейд лимита или фильтр.
+        expr: increase(download_too_big[15m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "Streaming-download режет ≥10 файлов как too_big за 15 мин"
+          description: |
+            Источник {{ $labels.source }} стал отдавать тяжёлые медиа.
+            Поднять max_bytes или включить server-side компрессию.
+
+      - alert: DownloadNetworkErrors
+        # Сетевые таймауты при кросс-постинге — обычно проблема CDN
+        # внешнего источника (Replicate / Suno / Telegram CDN).
+        expr: increase(download_network_error[10m]) > 20
+        for: 5m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "Сетевые ошибки загрузки медиа (>20 за 10 мин)"
+          description: |
+            source={{ $labels.source }} — массовые httpx-ошибки.
+            Проверьте статус внешнего провайдера.
+
+  # ────────────────────────────────────────────────────────────────────────
+  # 6. БД (PR-O): индексы и тайминги hot queries
+  # ────────────────────────────────────────────────────────────────────────
+  - name: neuromule_database
+    interval: 1m
+    rules:
+
+      - alert: SlowDbQuery
+        # p99 ≥ 100ms на любой обёрнутый в TimedQuery запрос — сигнал
+        # о деградации (раздутая таблица, отсутствует индекс).
+        # У нас summary, max = «p100», что достаточно для алёрта.
+        expr: max_over_time(db_query_ms{quantile="1"}[10m]) > 100
+        for: 5m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "Медленный SQL: {{ $labels.name }} >100ms"
+          description: |
+            Запрос {{ $labels.name }} превысил 100ms.
+            Проверьте EXPLAIN QUERY PLAN, размер таблицы и индексы
+            (см. services/db_indexes.py).
+          runbook: "docs/PRODUCTION_CHECKLIST.md#slow-sql"
+
+  # ────────────────────────────────────────────────────────────────────────
+  # 7. PR-P · PostgreSQL миграция (Phase 1+: dual-write observability)
+  # ────────────────────────────────────────────────────────────────────────
+  # На phase 0 эти счётчики молчат (источник ещё не активирован).
+  # Алёрты заведены заранее, чтобы при включении dual-write observer'а
+  # в `successful_payment_handler` мониторинг сразу заработал.
+  - name: neuromule_migration
+    interval: 1m
+    rules:
+
+      - alert: MigrationMismatch
+        # v1 (SQLite) и v2 (PG) разошлись по результату начисления.
+        # Любое расхождение — повод остановить миграцию и разобраться.
+        # v1 — source of truth до конца phase-2, поэтому юзера это не
+        # затрагивает, но это **критическая** деградация целостности
+        # PG-копии, без которой phase-3 (cut-over) делать нельзя.
+        expr: increase(migration_mismatch[10m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          team: backend
+        annotations:
+          summary: "Dual-write mismatch: v1 (SQLite) ≠ v2 (PG)"
+          description: |
+            За последние 10 минут {{ $value }} расхождений v1/v2
+            на phase={{ $labels.phase }}.
+            CRITICAL логи `dual-write mismatch` содержат payload.
+            До устранения — не двигаемся к phase 2 (read-switch).
+          runbook: "docs/PRODUCTION_CHECKLIST.md#migration-mismatch"
+
+      - alert: MigrationV2Error
+        # PG-ветка dual-write упала с exception (network/pg_pool/SQL).
+        # Юзера это не блокирует (v1 уже отработал), но систематический
+        # рост = деградация PG-инстанса.
+        expr: increase(migration_v2_error[10m]) > 5
+        for: 5m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "Dual-write v2 (PG) сыпется (>5 ошибок / 10 мин)"
+          description: |
+            PG-ветка падает с исключениями. Проверьте:
+            1) `init_postgres_pool` — пул жив?
+            2) DSN валиден, sslmode совпадает с прод-нодой?
+            3) PG-нода под нагрузкой / `pg_stat_activity` забит?
+            Логи: `dual-write v2 failed` (ERROR + exc_info).
+          runbook: "docs/PRODUCTION_CHECKLIST.md#migration-v2-error"
+
+  # ────────────────────────────────────────────────────────────────────────
+  # 8. Liveness
+  # ────────────────────────────────────────────────────────────────────────
+  - name: neuromule_liveness
+    interval: 30s
+    rules:
+
+      - alert: BotMetricsDown
+        # /metrics не отвечает 2 минуты — бот мёртв или crash-loop.
+        expr: up{job="neuromule"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "NeuroMule bot is down"
+          description: |
+            /metrics эндпоинт не отвечает 2+ минуты.
+            Проверьте systemd-юнит и data/telegram_bot.lock.
+          runbook: "docs/PRODUCTION_CHECKLIST.md#bot-down"

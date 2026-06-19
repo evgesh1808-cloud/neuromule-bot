@@ -8,21 +8,57 @@ Use-case: один полный цикл «пользователь написа
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any
 
 from config import Settings
 from services import conversation as conv
 from services.ai_text import StreamCallback, ask_ai_messages, estimate_messages_prompt_tokens
 from services.dialog_write_worker import commit_assistant_turn_queued
+from services.neurotext_media import build_openrouter_user_content
 from services.rate_limit_service import allow_request, rollback_last
 from services.billing import billing
+from services.billing.chat_pipeline import prepare_openrouter_chat_messages
 from services.billing.store import refund_charge
-from services.billing.types import TariffTier
-from services.repository import dialog_append, dialog_pop_last_for_user
+from services.repository import dialog_append, dialog_pop_last_for_user, insert_table_report
+from services.table_json import canonicalize_table_json
+from services.telegram_safe_text import (
+    markdown_tables_to_telegram_html,
+    markdown_to_html,
+    normalize_telegram_list_markup,
+    repair_telegram_html,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def strip_redacted_thinking(text: str) -> str:
+    """Удаляет служебные блоки рассуждений модели перед показом пользователю."""
+    if not text:
+        return text
+    flags = re.IGNORECASE | re.DOTALL
+    text = re.sub(r"<think>.*?</think>", "", text, flags=flags)
+    text = re.sub(r"<think>.*\Z", "", text, flags=flags)
+    return text.strip()
+
+
+def clean_markdown_to_html(text: str) -> str:
+    """Обёртка для ответов чата: thinking → markdown → нормализация верстки → починка HTML."""
+    text = strip_redacted_thinking(text)
+    text = markdown_to_html(text)
+    return repair_telegram_html(normalize_telegram_list_markup(text))
+
+
+def format_assistant_for_role(text: str, text_role: str) -> str:
+    """Финальная вёрстка ответа с учётом роли Нейротекста."""
+    role_id = (text_role or "standard").strip().lower()
+    if role_id == "table_generator":
+        converted = markdown_tables_to_telegram_html(strip_redacted_thinking(text))
+        return repair_telegram_html(converted)
+    return clean_markdown_to_html(text)
 
 
 class ChatTurnOutcome(str, Enum):
@@ -46,10 +82,27 @@ class ChatTurnResult:
     Поля:
         outcome — итоговый статус (см. ``ChatTurnOutcome``).
         assistant_message — текст ответа модели; заполнено только при ``SUCCESS``.
+        table_raw_json — канонический JSON таблицы для Excel/Mini App API.
+        table_report_id — id в ``table_reports`` для ``GET /api/v1/reports/{id}``.
     """
 
     outcome: ChatTurnOutcome
     assistant_message: str | None = None
+    user_notice: str | None = None
+    effective_text_role: str | None = None
+    table_raw_json: str | None = None
+    table_report_id: int | None = None
+
+
+def _apply_user_content_override(
+    payload: list[dict[str, Any]],
+    content: str | list[dict[str, Any]],
+) -> None:
+    """Подменяет content последней user-реплики (текст или multimodal)."""
+    for i in range(len(payload) - 1, -1, -1):
+        if payload[i].get("role") == "user":
+            payload[i]["content"] = content
+            return
 
 
 async def run_chat_turn(
@@ -57,6 +110,8 @@ async def run_chat_turn(
     user_id: int,
     raw_user_text: str,
     *,
+    dialog_user_text: str | None = None,
+    user_image_data_url: str | None = None,
     send_typing: Callable[[], Awaitable[None]] | None = None,
     http_client: object | None = None,
     stream_callback: StreamCallback | None = None,
@@ -68,7 +123,8 @@ async def run_chat_turn(
     Вход:
         settings — конфиг приложения.
         user_id — Telegram user id.
-        raw_user_text — текст пользователя (обрезка по символам — на границе Telegram).
+        raw_user_text — текст для модели (может включать контекст цитаты).
+        dialog_user_text — если задан, в БД пишется он; иначе — ``raw_user_text``.
         send_typing — необязательный колбэк «показать typing» перед долгим запросом к API.
         http_client — опциональный ``httpx.AsyncClient`` (тесты).
         stream_callback — если задан, запрос к модели идёт в SSE-режиме (для live-редактирования в Telegram).
@@ -80,21 +136,47 @@ async def run_chat_turn(
         при SUCCESS — в БД добавлены user+assistant, обрезана история, запланировано обновление памяти;
         при INSUFFICIENT / RATE_LIMITED / AI_FAILED — энергия и история согласованы (откаты где нужно).
     """
-    if not (raw_user_text or "").strip():
+    if not (raw_user_text or "").strip() and not user_image_data_url:
         return ChatTurnResult(outcome=ChatTurnOutcome.EMPTY_INPUT)
+
+    history_text = dialog_user_text if dialog_user_text is not None else raw_user_text
+    if not (history_text or "").strip():
+        history_text = "[📷 Фото]"
 
     if not await allow_request(settings, user_id, settings.chat_rate_limit_per_minute):
         return ChatTurnResult(outcome=ChatTurnOutcome.RATE_LIMITED)
 
-    plan, charge_id = await billing.handle_text_chat(user_id, text_role)
+    billing_result = await billing.resolve_and_charge_text_chat(user_id, text_role)
+    plan = billing_result.plan
+    charge_id = billing_result.charge_id
+    effective_role = billing_result.effective_role_id
+
     if plan.blocked:
         await rollback_last(settings, user_id)
         if plan.block_reason == "expert_role_requires_paid_tariff":
             return ChatTurnResult(outcome=ChatTurnOutcome.ROLE_NOT_ALLOWED)
+        if plan.block_reason == "role_requires_smart_tariff":
+            return ChatTurnResult(outcome=ChatTurnOutcome.ROLE_NOT_ALLOWED)
         return ChatTurnResult(outcome=ChatTurnOutcome.INSUFFICIENT_BALANCE)
 
-    await dialog_append(user_id, "user", raw_user_text)
-    payload = await conv.build_openrouter_messages(settings, user_id, text_role)
+    await dialog_append(user_id, "user", history_text)
+    payload = await conv.build_openrouter_messages(
+        settings,
+        user_id,
+        effective_role,
+        premium=plan.use_premium_prompt,
+    )
+    user_content = build_openrouter_user_content(
+        raw_user_text,
+        image_data_url=user_image_data_url,
+    )
+    if user_image_data_url or (dialog_user_text is not None and history_text != raw_user_text):
+        _apply_user_content_override(payload, user_content)
+
+    prepare_openrouter_chat_messages(
+        payload,
+        use_premium_prompt=plan.use_premium_prompt,
+    )
 
     est_tokens = estimate_messages_prompt_tokens(payload, settings=settings)
     if est_tokens > settings.chat_max_context_tokens_est:
@@ -110,6 +192,24 @@ async def run_chat_turn(
         except Exception:
             logger.debug("send_typing failed", exc_info=True)
 
+    # Основная модель из биллинга + резерв из ``free_models``, если OpenRouter
+    # отклонит ID (смена каталога моделей на стороне провайдера).
+    model_chain: list[str] = []
+    for mid in (plan.model_id, *settings.free_models):
+        mid = str(mid).strip()
+        if mid and mid not in model_chain:
+            model_chain.append(mid)
+
+    safe_stream_callback: StreamCallback | None = None
+    if stream_callback is not None:
+        async def _safe_stream_callback(full_text: str, done: bool) -> None:
+            try:
+                await stream_callback(format_assistant_for_role(full_text, effective_role), done)
+            except Exception:
+                # Битый HTML в стриме не должен валить весь ход чата.
+                logger.debug("stream_callback failed (ignored)", exc_info=True)
+        safe_stream_callback = _safe_stream_callback
+
     try:
         ans = await ask_ai_messages(
             settings,
@@ -118,8 +218,10 @@ async def run_chat_turn(
             max_context_tokens=settings.chat_max_context_tokens_est,
             char_per_token=settings.chat_char_per_token_est,
             http_client=http_client,
-            stream_callback=stream_callback,
-            models=[plan.model_id],
+            stream_callback=safe_stream_callback,
+            models=model_chain,
+            max_tokens=plan.max_tokens,
+            text_role=effective_role,
         )
     except Exception:
         logger.exception("run_chat_turn: OpenRouter failed user_id=%s", user_id)
@@ -129,12 +231,45 @@ async def run_chat_turn(
         await rollback_last(settings, user_id)
         return ChatTurnResult(outcome=ChatTurnOutcome.AI_FAILED)
 
-    ans_trim = ans[: min(settings.chat_max_message_chars, 4090)]
-    user = await billing.load_user(user_id)
-    if text_role == "standard" and user.current_tariff is TariffTier.FREE and len(ans_trim) > 700:
-        motivation = "\n\nНужен глубокий анализ или другой стиль? Загляни в «🚀 Тарифы» в меню бота."
-        if motivation not in ans_trim and len(ans_trim) + len(motivation) <= 4090:
-            ans_trim = f"{ans_trim}{motivation}"
+    raw_answer = strip_redacted_thinking(ans)
+    is_table_role = (effective_role or "").strip().lower() == "table_generator"
+
+    if is_table_role:
+        table_json = canonicalize_table_json(raw_answer)
+        if not table_json:
+            logger.warning(
+                "run_chat_turn: invalid table JSON user_id=%s raw=%s",
+                user_id,
+                raw_answer[:500],
+            )
+            await dialog_pop_last_for_user(user_id)
+            if charge_id:
+                await refund_charge(charge_id)
+            await rollback_last(settings, user_id)
+            return ChatTurnResult(outcome=ChatTurnOutcome.AI_FAILED)
+
+        await commit_assistant_turn_queued(user_id, table_json, settings.dialog_prune_keep)
+        report_id = await insert_table_report(user_id, table_json)
+        conv.schedule_memory_refresh(settings, user_id)
+        return ChatTurnResult(
+            outcome=ChatTurnOutcome.SUCCESS,
+            assistant_message=None,
+            user_notice=billing_result.notice,
+            effective_text_role=effective_role,
+            table_raw_json=table_json,
+            table_report_id=report_id,
+        )
+
+    ans_trim = format_assistant_for_role(ans, effective_role)
+    if plan.max_tokens <= 1000:
+        ans_trim = ans_trim[: min(settings.chat_max_message_chars, 4090)]
+    else:
+        ans_trim = ans_trim[: settings.chat_max_message_chars]
     await commit_assistant_turn_queued(user_id, ans_trim, settings.dialog_prune_keep)
     conv.schedule_memory_refresh(settings, user_id)
-    return ChatTurnResult(outcome=ChatTurnOutcome.SUCCESS, assistant_message=ans_trim)
+    return ChatTurnResult(
+        outcome=ChatTurnOutcome.SUCCESS,
+        assistant_message=ans_trim,
+        user_notice=billing_result.notice,
+        effective_text_role=effective_role,
+    )

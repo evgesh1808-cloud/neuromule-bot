@@ -6,12 +6,25 @@ from dataclasses import dataclass
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
 
-from config import settings
+from business_catalog import catalog
+
+# Порядок индексов в invoice payload (nm:user:idx:method)
+PACK_CATALOG_ORDER: tuple[str, ...] = (
+    "MINI",
+    "SMART",
+    "ULTRA_3DAYS",
+    "ULTRA_1WEEK",
+    "ULTRA_1MONTH",
+    "crystals_10",
+    "crystals_40",
+    "crystals_100",
+)
 
 
 @dataclass(frozen=True)
 class EnergyPack:
     index: int
+    pack_id: str
     tariff: str
     energy: int
     crystals: int
@@ -28,59 +41,28 @@ class EnergyPack:
 
 
 def load_energy_packages() -> tuple[EnergyPack, ...]:
-    return (
-        EnergyPack(
-            0,
-            "MINI",
-            settings.mini_energy,
-            settings.mini_crystals,
-            settings.mini_rub_kopecks,
-            settings.mini_stars,
-        ),
-        EnergyPack(
-            1,
-            "SMART",
-            settings.smart_energy,
-            settings.smart_crystals,
-            settings.smart_rub_kopecks,
-            settings.smart_stars,
-        ),
-        EnergyPack(
-            2,
-            "ULTRA",
-            settings.ultra_energy,
-            settings.ultra_crystals,
-            settings.ultra_rub_kopecks,
-            settings.ultra_stars,
-        ),
-        EnergyPack(
-            3,
-            "10 💎",
-            0,
-            settings.crystals_10_amount,
-            settings.crystals_10_rub_kopecks,
-            settings.crystals_10_stars,
-            False,
-        ),
-        EnergyPack(
-            4,
-            "40 💎",
-            0,
-            settings.crystals_40_amount,
-            settings.crystals_40_rub_kopecks,
-            settings.crystals_40_stars,
-            False,
-        ),
-        EnergyPack(
-            5,
-            "100 💎",
-            0,
-            settings.crystals_100_amount,
-            settings.crystals_100_rub_kopecks,
-            settings.crystals_100_stars,
-            False,
-        ),
-    )
+    packs: list[EnergyPack] = []
+    for idx, pack_id in enumerate(PACK_CATALOG_ORDER):
+        spec = catalog.shop_packs[pack_id]
+        energy = int(spec.get("paid_energy") or spec.get("energy_paid") or 0)
+        crystals = int(spec["crystals"])
+        rub_kopecks = int(spec["rub_kopecks"])
+        stars = int(spec["stars"])
+        label = str(spec.get("name") or pack_id)
+        is_tariff = spec.get("tariff") is not None
+        packs.append(
+            EnergyPack(
+                idx,
+                pack_id,
+                label,
+                energy,
+                crystals,
+                rub_kopecks,
+                stars,
+                is_tariff,
+            )
+        )
+    return tuple(packs)
 
 
 PACKAGES = load_energy_packages()
@@ -93,11 +75,10 @@ _RE_METHOD = re.compile(r"^pm:(\d+):([rx])$")
 
 
 def shop_packages_keyboard() -> InlineKeyboardMarkup:
-    rows = [
-        [InlineKeyboardButton(text=p.button_label, callback_data=f"{CB_PAY_PKG_PREFIX}{p.index}")]
-        for p in PACKAGES
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+    """Главный экран тарифов (кнопки пакетов и кристаллов)."""
+    from platforms.tariffs_center import tariffs_main_keyboard
+
+    return tariffs_main_keyboard()
 
 
 def pay_method_keyboard(pkg_index: int) -> InlineKeyboardMarkup:

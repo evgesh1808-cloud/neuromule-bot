@@ -5,11 +5,14 @@ from __future__ import annotations
 from services.billing import store
 from services.billing.pricing import (
     FREE_IMAGEN_DAILY_LIMIT,
-    FREE_OTHER_IMAGE_CRYSTALS,
+    FREE_IMAGEN_OVERLIMIT_COST,
+    FREE_PRO_IMAGE_COST,
     IMAGE_MODEL_ALIASES,
     PAID_IMAGE_MATRIX,
 )
 from services.billing.types import ImageSpendPlan, SpendFeature, SpendResult, TariffTier
+
+FREE_TIER_IMAGE_MODELS = frozenset({"imagen4", "flux_schnell"})
 
 
 def normalize_image_model(model_name: str) -> str:
@@ -17,13 +20,29 @@ def normalize_image_model(model_name: str) -> str:
     return IMAGE_MODEL_ALIASES.get(raw, raw)
 
 
-def build_image_spend_plan(tariff: TariffTier, model_key: str, *, daily_count: int, daily_date: str | None) -> ImageSpendPlan:
+def build_image_spend_plan(
+    tariff: TariffTier,
+    model_key: str,
+    *,
+    daily_count: int,
+    daily_date: str | None,
+) -> ImageSpendPlan:
     from datetime import date
 
     today = date.today().isoformat()
     count = daily_count if daily_date == today else 0
 
     if tariff is TariffTier.FREE:
+        if model_key not in FREE_TIER_IMAGE_MODELS:
+            return ImageSpendPlan(
+                model_key=model_key,
+                energy_cost=0,
+                crystal_cost=0,
+                crystals_only=True,
+                use_free_daily_slot=False,
+                blocked=True,
+                block_reason="free_image_model_blocked",
+            )
         if model_key == "imagen4":
             if count < FREE_IMAGEN_DAILY_LIMIT:
                 return ImageSpendPlan(
@@ -36,14 +55,15 @@ def build_image_spend_plan(tariff: TariffTier, model_key: str, *, daily_count: i
             return ImageSpendPlan(
                 model_key=model_key,
                 energy_cost=0,
-                crystal_cost=FREE_OTHER_IMAGE_CRYSTALS,
+                crystal_cost=FREE_IMAGEN_OVERLIMIT_COST,
                 crystals_only=True,
                 use_free_daily_slot=False,
             )
+        # flux_schnell на FREE — только buy_crystals
         return ImageSpendPlan(
             model_key=model_key,
             energy_cost=0,
-            crystal_cost=FREE_OTHER_IMAGE_CRYSTALS,
+            crystal_cost=FREE_PRO_IMAGE_COST,
             crystals_only=True,
             use_free_daily_slot=False,
         )
@@ -53,7 +73,7 @@ def build_image_spend_plan(tariff: TariffTier, model_key: str, *, daily_count: i
         return ImageSpendPlan(
             model_key=model_key,
             energy_cost=0,
-            crystal_cost=FREE_OTHER_IMAGE_CRYSTALS,
+            crystal_cost=FREE_PRO_IMAGE_COST,
             crystals_only=True,
             use_free_daily_slot=False,
         )
@@ -78,6 +98,9 @@ async def spend_image_resource(user_id: int, model_name: str) -> SpendResult:
         daily_date=user.photo_daily_date,
     )
 
+    if plan.blocked:
+        return SpendResult(ok=False, error=plan.block_reason or "free_image_model_blocked")
+
     energy_need = 0
     crystal_need = plan.crystal_cost
     if plan.use_free_daily_slot:
@@ -92,6 +115,20 @@ async def spend_image_resource(user_id: int, model_name: str) -> SpendResult:
         )
         if charge:
             return SpendResult(ok=True, charge=charge)
+        # Слот занят (гонка или лимит) — докупка Imagen 4 за кристаллы на FREE.
+        if user.current_tariff is TariffTier.FREE and model_key == "imagen4":
+            charge = await store.atomic_spend(
+                user_id,
+                SpendFeature.IMAGE.value,
+                energy_need=0,
+                crystal_need=FREE_IMAGEN_OVERLIMIT_COST,
+                crystals_only=True,
+                reserve_photo_slot=False,
+                photo_daily_limit=FREE_IMAGEN_DAILY_LIMIT,
+            )
+            if charge:
+                return SpendResult(ok=True, charge=charge)
+            return SpendResult(ok=False, error="insufficient_balance")
         return SpendResult(ok=False, error="daily_limit_exceeded")
 
     if plan.crystals_only:

@@ -68,6 +68,9 @@ from platforms.telegram_utils import (
 from services import hd_service
 from services import payments_catalog as paycat
 from services.billing import billing
+from services.billing.hd_pipeline import spend_hd_advice
+from services.god_mode import billing_bypass
+from services.billing.pricing import HD_ADVICE_COST
 from services.billing.store import refund_charge
 from services.hd_logic import (
     birth_data_minimum_for_advice,
@@ -115,7 +118,6 @@ from services.use_cases.payment_invoice_turn import InvoiceBuildOutcome, build_p
 from services.use_cases.payment_shop_turn import build_tariffs_entry_text
 from services.use_cases.payment_turn import PaymentApplyOutcome, run_successful_payment_apply
 from services.use_cases.photo_generation_turn import PhotoGenOutcome, run_photo_generation_turn
-from services.use_cases.promo_turn import PromoOutcome, run_promo_redeem
 from services.use_cases.start_turn import StartFlowOutcome, run_start_turn
 from services.use_cases.tariff_shop_nav_turn import TariffShopNavOutcome, resolve_tariff_shop_callback
 from services.use_cases.video_generation_turn import (
@@ -180,84 +182,132 @@ async def hd_premium_buy(callback: CallbackQuery, state: FSMContext) -> None:
     )
     await callback.answer()
 
-async def _send_daily_advice(target: Message, uid: int, state: FSMContext | None = None) -> None:
+def _daily_advice_full_report_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=msg.TXT_HD_DAILY_ADVICE_FULL_REPORT_BTN,
+                    callback_data=msg.CB_HD_PREMIUM_BUY,
+                ),
+            ],
+        ]
+    )
+
+
+async def _background_advice_worker(
+    bot,
+    chat_id: int,
+    user_profile: dict[str, str],
+    *,
+    current_cta_text: str,
+) -> str:
+    """Генерация совета дня с удержанием chat action «typing» на всё время запроса к Gemini."""
+
+    async def _typing_hold_loop() -> None:
+        while True:
+            try:
+                await bot.send_chat_action(chat_id=chat_id, action="typing")
+            except Exception:
+                pass
+            await asyncio.sleep(4)
+
+    typing_task = asyncio.create_task(_typing_hold_loop())
+    try:
+        return await generate_daily_forecast(
+            user_profile,
+            current_cta_text=current_cta_text,
+        )
+    finally:
+        typing_task.cancel()
+        try:
+            await typing_task
+        except asyncio.CancelledError:
+            pass
+
+
+async def _send_daily_advice(
+    target: Message,
+    uid: int,
+    state: FSMContext | None = None,
+    *,
+    callback: CallbackQuery | None = None,
+) -> None:
+    """Пайплайн бесплатного «Совета дня»: лимит → биллинг → lock → Gemini → commit."""
     user = await get_user(uid)
     today = today_iso()
-    if (user["last_free_date"] or "") == today:
-        await target.answer(msg.TXT_HD_FREE_ADVICE_USED, parse_mode=ParseMode.HTML)
+
+    # Шаг 1: суточный лимит (God Mode — без ограничений)
+    if not billing_bypass(uid) and (user["last_free_date"] or "") == today:
+        await target.answer(msg.TXT_HD_DAILY_ADVICE_ALREADY_TODAY)
         return
+
+    # Шаг 2: архитектурный биллинг (HD_ADVICE_COST=0 → пропуск)
+    spend = await spend_hd_advice(uid)
+    if not spend.ok:
+        if spend.error == "insufficient_crystals":
+            await target.answer(
+                msg.TXT_HD_INSUFFICIENT_CRYSTALS.format(cost=HD_ADVICE_COST),
+                reply_markup=paycat.shop_packages_keyboard(),
+                parse_mode=ParseMode.HTML,
+            )
+        else:
+            await target.answer(msg.TXT_HD_DAILY_ADVICE_GENERATION_FAILED)
+        return
+    charge_id = spend.charge.charge_id if spend.charge else ""
+
+    # Шаг 3: антиспам-lock
     if not await try_begin_daily_advice(uid):
-        await target.answer(msg.TXT_HD_FREE_ADVICE_USED, parse_mode=ParseMode.HTML)
+        if charge_id:
+            await refund_charge(charge_id)
+        await target.answer(msg.TXT_HD_DAILY_ADVICE_BUSY)
         return
+
+    # Шаг 4: профиль / дата рождения (hd_birth_data → advice_birth_data)
     user_profile = daily_advice_user_profile_from_repo_user(user)
     if user_profile is None:
-        await rollback_daily_advice(uid)
         if state is not None:
             await state.set_state(UserFlow.waiting_advice_birth)
             await target.answer(msg.TXT_ADVICE_BIRTH_ASK, parse_mode=ParseMode.HTML)
-            return
-        await target.answer(msg.TXT_ADVICE_NEED_STATE, parse_mode=ParseMode.HTML)
-        return
-    animation_texts = (msg.TXT_HD_DAILY_ANIM_1, msg.TXT_HD_DAILY_ANIM_2, msg.TXT_HD_DAILY_ANIM_3)
-    forecast_message = await target.answer(animation_texts[0])
-    stop_animation = asyncio.Event()
-
-    async def animate_waiting() -> None:
-        idx = 1
-        while not stop_animation.is_set():
-            try:
-                await asyncio.wait_for(stop_animation.wait(), timeout=0.5)
-                break
-            except TimeoutError:
-                pass
-            try:
-                await forecast_message.edit_text(animation_texts[idx % len(animation_texts)])
-            except TelegramBadRequest:
-                pass
-            idx += 1
-
-    animation_task = asyncio.create_task(animate_waiting())
-    full_text = ""
-    last_sent_text = ""
-    edit_count = 0
-    try:
-        async with chat_action_loop(bot, target.chat.id, "typing"):
-            async for chunk in generate_daily_forecast(
-                user_profile,
-                current_cta_text=get_dynamic_cta_for_today(),
-            ):
-                if not full_text:
-                    stop_animation.set()
-                    await animation_task
-                full_text += chunk
-                safe_text = sanitize_telegram_plain_text(full_text)
-                if safe_text != last_sent_text:
-                    try:
-                        await forecast_message.edit_text(safe_text or "…")
-                    except TelegramBadRequest:
-                        pass
-                    last_sent_text = safe_text
-                    edit_count += 1
-                    if edit_count % 3 == 0:
-                        await asyncio.sleep(0.3)
-            stop_animation.set()
-            await animation_task
-            final_text = sanitize_telegram_plain_text(full_text.strip())
-            if not final_text:
-                raise RuntimeError("Gemini returned empty daily advice")
-            if final_text != last_sent_text:
-                try:
-                    await forecast_message.edit_text(final_text)
-                except TelegramBadRequest:
-                    pass
-            await commit_daily_advice(uid)
-    except Exception:
-        stop_animation.set()
-        animation_task.cancel()
+        else:
+            await target.answer(msg.TXT_ADVICE_NEED_STATE, parse_mode=ParseMode.HTML)
         await rollback_daily_advice(uid)
+        if charge_id:
+            await refund_charge(charge_id)
+        return
+
+    # Шаг 5: заглушка + снятие часиков на inline-кнопке
+    placeholder = await target.answer(msg.TXT_HD_DAILY_ADVICE_CONNECTING)
+    if callback is not None:
+        try:
+            await callback.answer()
+        except TelegramBadRequest:
+            pass
+
+    cta_text = get_dynamic_cta_for_today()
+    try:
+        # Шаг 6: фоновая генерация (typing-loop + Gemini stream=False)
+        raw_forecast = await _background_advice_worker(
+            deps.bot(),
+            target.chat.id,
+            user_profile,
+            current_cta_text=cta_text,
+        )
+        final_text = sanitize_telegram_plain_text(raw_forecast.strip())
+        if not final_text:
+            raise RuntimeError("Gemini returned empty daily advice")
+        await placeholder.edit_text(
+            final_text,
+            reply_markup=_daily_advice_full_report_keyboard(),
+        )
+        await commit_daily_advice(uid)
+    except Exception:
+        await rollback_daily_advice(uid)
+        if charge_id:
+            await refund_charge(charge_id)
         logger.exception("hd_free_advice_failed user_id=%s", uid)
         try:
-            await forecast_message.edit_text(msg.TXT_HD_FREE_ADVICE_FAILED, parse_mode=ParseMode.HTML)
+            await placeholder.edit_text(msg.TXT_HD_DAILY_ADVICE_GENERATION_FAILED)
         except TelegramBadRequest:
             pass
 
@@ -294,11 +344,10 @@ async def advice_birth_save(message: Message, state: FSMContext) -> None:
 async def hd_free_advice(callback: CallbackQuery, state: FSMContext) -> None:
     uid = callback.from_user.id
     user = await get_user(uid)
-    if (user["last_free_date"] or "") == today_iso():
+    if not billing_bypass(uid) and (user["last_free_date"] or "") == today_iso():
         await callback.answer(msg.TXT_HD_FREE_ADVICE_USED_ALERT, show_alert=True)
         return
-    await callback.answer()
-    await _send_daily_advice(callback.message, uid, state)
+    await _send_daily_advice(callback.message, uid, state, callback=callback)
 
 @router.message(UserFlow.waiting_hd_birth_data, F.text)
 async def hd_premium_process(message: Message, state: FSMContext) -> None:
@@ -316,11 +365,16 @@ async def hd_premium_process(message: Message, state: FSMContext) -> None:
         return
     spend = await billing.spend_hd_full_report(uid)
     if not spend.ok:
-        await message.answer(
-            msg.TXT_HD_INSUFFICIENT_CRYSTALS.format(cost=settings.cost_hd),
-            reply_markup=paycat.shop_packages_keyboard(),
-            parse_mode=ParseMode.HTML,
-        )
+        if spend.error == "free_premium_create_blocked":
+            from platforms.telegram_utils import send_free_create_blocked
+
+            await send_free_create_blocked(message)
+        else:
+            await message.answer(
+                msg.TXT_HD_INSUFFICIENT_CRYSTALS.format(cost=settings.cost_hd),
+                reply_markup=paycat.shop_packages_keyboard(),
+                parse_mode=ParseMode.HTML,
+            )
         await state.clear()
         return
     charge_id = spend.charge.charge_id if spend.charge else ""
@@ -374,14 +428,21 @@ async def hd_premium_need_text(message: Message) -> None:
 async def match_process(message: Message, state: FSMContext) -> None:
     uid = message.from_user.id
     raw = (message.text or "").strip()
-    if not raw:
-        await message.answer(msg.TXT_MATCH_EMPTY_DATA)
-        return
     data = await state.get_data()
     own_birth_data = data.get("match_own_birth_data")
-    first_from_message, second_birth_data = parse_match_request(raw)
-    first_birth_data = str(own_birth_data or first_from_message or "").strip()
-    second_birth_data = (second_birth_data or "").strip()
+    prefilled_partner = (data.get("match_partner_prefill") or "").strip()
+
+    if prefilled_partner:
+        # Family Sharing шорткат: partner_birth_data уже подтянули из карты члена семьи.
+        first_birth_data = str(own_birth_data or "").strip()
+        second_birth_data = prefilled_partner
+    else:
+        if not raw:
+            await message.answer(msg.TXT_MATCH_EMPTY_DATA)
+            return
+        first_from_message, second_birth_data = parse_match_request(raw)
+        first_birth_data = str(own_birth_data or first_from_message or "").strip()
+        second_birth_data = (second_birth_data or "").strip()
     if not first_birth_data or not second_birth_data:
         await message.answer(msg.TXT_MATCH_ASK_BOTH)
         return
@@ -443,7 +504,7 @@ async def hd_report_section(callback: CallbackQuery) -> None:
         pdf_path: str | None = None
         try:
             birth_data = (user["hd_birth_data"] or "").strip() if "hd_birth_data" in user.keys() else None
-            async with chat_action_loop(bot, callback.message.chat.id, "upload_document"):
+            async with chat_action_loop(deps.bot(), callback.message.chat.id, "upload_document"):
                 pdf_path = create_pdf(uid, format_premium_report(report), birth_data)
                 await callback.message.answer_document(
                     FSInputFile(pdf_path),
@@ -480,23 +541,4 @@ async def cabinet_promo_start(callback: CallbackQuery, state: FSMContext) -> Non
 async def cabinet_show_instruction(callback: CallbackQuery) -> None:
     await send_same_as_instruction_button(callback.message)
     await callback.answer()
-
-@router.message(UserFlow.waiting_promo_code, F.text)
-async def promo_redeem(message: Message, state: FSMContext) -> None:
-    raw = (message.text or "").strip()
-    if raw.startswith("/"):
-        await state.clear()
-        return
-    pr = await run_promo_redeem(message.from_user.id, raw)
-    await state.clear()
-    if pr.outcome is PromoOutcome.REDEEMED:
-        await message.answer(msg.TXT_PROMO_REDEEMED.format(bonus=pr.bonus_energy))
-    elif pr.outcome is PromoOutcome.UNKNOWN:
-        await message.answer(msg.TXT_PROMO_UNKNOWN)
-    elif pr.outcome is PromoOutcome.USED:
-        await message.answer(msg.TXT_PROMO_USED)
-    elif pr.outcome is PromoOutcome.EXHAUSTED:
-        await message.answer(msg.TXT_PROMO_EXHAUSTED)
-    else:
-        await message.answer(msg.TXT_PROMO_UNKNOWN)
 

@@ -97,16 +97,22 @@ class VideoAccessResult:
 
 
 def check_video_tariff(tariff: TariffTier) -> VideoAccessResult:
-    if tariff is not TariffTier.ULTRA:
-        return VideoAccessResult(allowed=False, reason="ultra_required")
-    return VideoAccessResult(allowed=True)
+    """Видео доступно SMART/ULTRA (за 💎). FREE и MINI заблокированы."""
+    from services.tariffs import can_use_video, normalize_tariff
+
+    tname = normalize_tariff(tariff.value)
+    if can_use_video(tname):
+        return VideoAccessResult(allowed=True)
+    if tname.value == "mini":
+        return VideoAccessResult(allowed=False, reason="video_smart_or_higher_required")
+    return VideoAccessResult(allowed=False, reason="video_smart_or_higher_required")
 
 
 def resolve_video_route(scenario_id: str, tariff: TariffTier) -> VideoRoutePlan | None:
     spec = VIDEO_SCENARIOS.get(scenario_id)
     if not spec:
         return None
-    priority = 1 if tariff is TariffTier.ULTRA else 3
+    priority = 1 if tariff is TariffTier.ULTRA else (2 if tariff is TariffTier.SMART else 3)
     return VideoRoutePlan(
         scenario=spec,
         crystal_cost=spec.crystal_cost,
@@ -117,6 +123,8 @@ def resolve_video_route(scenario_id: str, tariff: TariffTier) -> VideoRoutePlan 
 
 async def spend_video_scenario(user_id: int, scenario_id: str) -> SpendResult:
     user = await store.load_user_billing(user_id)
+    if user.current_tariff is TariffTier.FREE:
+        return SpendResult(ok=False, error="free_premium_create_blocked")
     access = check_video_tariff(user.current_tariff)
     if not access.allowed:
         return SpendResult(ok=False, error=access.reason)

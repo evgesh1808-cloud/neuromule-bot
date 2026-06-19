@@ -108,6 +108,12 @@ from services.use_cases.animate_generation_turn import AnimateGenOutcome, run_an
 from platforms.telegram_chat_action import chat_action_loop
 from platforms.telegram_chat_stream import create_throttled_stream_reply
 from platforms.telegram_chunks import answer_chat_text
+from platforms.telegram_quote import (
+    REPLY_TO_BOT_FILTER,
+    build_quoted_user_prompt,
+    has_neurotext_message_input,
+    resolve_neurotext_quote_input,
+)
 from services.use_cases.chat_turn import ChatTurnOutcome, run_chat_turn
 from services.use_cases.music_generation_turn import MusicGenOutcome, run_music_generation_turn
 from services.use_cases.cabinet_turn import build_cabinet_view
@@ -129,6 +135,9 @@ logger = logging.getLogger(__name__)
 
 router = Router()
 
+# Один активный photo/chat turn на user_id — защита от двойного списания при retry Telegram.
+user_locks: dict[int, asyncio.Lock] = {}
+
 is_subscribed = deps.is_subscribed
 is_subscribed_cached = deps.is_subscribed_cached
 check_and_spend = deps.check_and_spend
@@ -140,49 +149,23 @@ def _is_admin(user_id: int) -> bool:
     return is_admin_user(user_id)
 
 
-@router.message(UserFlow.waiting_for_text_prompt, F.text)
+@router.message(
+    UserFlow.waiting_for_text_prompt,
+    F.text | F.photo | F.document | REPLY_TO_BOT_FILTER,
+)
 async def text_role_process(message: Message, state: FSMContext) -> None:
-    data = await state.get_data()
-    role_id = str(data.get("text_role") or "standard")
-    uid = message.from_user.id
-    raw = (message.text or "")[: settings.chat_max_message_chars]
+    from platforms.neurotext_input import handle_neurotext_user_message
 
-    async with chat_action_loop(deps.bot(), message.chat.id, "typing"):
-        await message.answer("Прокладываю кратчайший путь через нейроны...")
-        stream_cb = (
-            create_throttled_stream_reply(message, deps.bot(), settings)
-            if settings.telegram_chat_streaming
-            else None
-        )
-        result = await run_chat_turn(
-            settings,
-            uid,
-            raw,
-            stream_callback=stream_cb,
-            text_role=role_id,
-        )
-    await state.clear()
-    if result.outcome is ChatTurnOutcome.SUCCESS:
-        if stream_cb is None:
-            await answer_chat_text(message, result.assistant_message or "", settings)
-        return
-    if result.outcome is ChatTurnOutcome.EMPTY_INPUT:
-        await message.answer(msg.TXT_CHAT_EMPTY)
-        return
-    if result.outcome is ChatTurnOutcome.CONTEXT_TOO_LARGE:
-        await message.answer(msg.TXT_CHAT_CONTEXT_TOO_LARGE)
-        return
-    if result.outcome is ChatTurnOutcome.RATE_LIMITED:
-        await message.answer(msg.TXT_CHAT_RATE_LIMIT)
-        return
-    if result.outcome is ChatTurnOutcome.INSUFFICIENT_BALANCE:
-        await message.answer(msg.TXT_INSUFFICIENT_BALANCE, reply_markup=paycat.shop_packages_keyboard())
-        return
-    await message.answer(msg.TXT_GEN_JOB_FAILED)
+    await handle_neurotext_user_message(message, state)
+
 
 @router.message(UserFlow.waiting_for_text_prompt)
-async def text_role_need_text(message: Message) -> None:
-    await message.answer(msg.TXT_CREATE_TEXT_HINT, reply_markup=text_role_menu())
+async def text_role_unsupported(message: Message) -> None:
+    await message.answer(
+        "📝 В Нейротексте можно отправить <b>текст</b>, <b>фото</b> "
+        "или файл <b>.txt / .csv / .pdf / .docx</b>.",
+        parse_mode=ParseMode.HTML,
+    )
 
 @router.message(UserFlow.waiting_for_photo, F.text)
 async def photo_process(message: Message, state: FSMContext) -> None:
@@ -192,7 +175,20 @@ async def photo_process(message: Message, state: FSMContext) -> None:
     model_id = data.get("image_model_id", "")
     label = data.get("image_model_label", "модель")
     prompt = (message.text or "").strip()
-    pr = await run_photo_generation_turn(settings, bot, chat_id, user_id, model_id, label, prompt)
+
+    lock = user_locks.setdefault(user_id, asyncio.Lock())
+    async with lock:
+        await message.bot.send_chat_action(chat_id=chat_id, action="upload_photo")
+        async with chat_action_loop(deps.bot(), chat_id, "upload_photo"):
+            pr = await run_photo_generation_turn(
+                settings,
+                deps.bot(),
+                chat_id,
+                user_id,
+                model_id,
+                label,
+                prompt,
+            )
     if pr.outcome is PhotoGenOutcome.NEED_PROMPT:
         await message.answer(msg.TXT_CREATE_IMAGE_AFTER_MODEL)
         return
@@ -200,6 +196,7 @@ async def photo_process(message: Message, state: FSMContext) -> None:
         await message.answer(
             msg.TXT_INSUFFICIENT_BALANCE,
             reply_markup=paycat.shop_packages_keyboard(),
+            parse_mode=ParseMode.HTML,
         )
         await state.clear()
         return
@@ -207,7 +204,12 @@ async def photo_process(message: Message, state: FSMContext) -> None:
         await message.answer(
             msg.TXT_PHOTO_DAILY_LIMIT.format(limit=settings.free_daily_photo_limit),
             reply_markup=invite_limit_keyboard(),
+            parse_mode=ParseMode.HTML,
         )
+        await state.clear()
+        return
+    if pr.outcome is PhotoGenOutcome.FREE_IMAGE_MODEL_BLOCKED:
+        await message.answer(msg.TXT_FREE_IMAGE_MODEL_BLOCKED, parse_mode=ParseMode.HTML)
         await state.clear()
         return
     await message.answer(msg.TXT_GEN_STATUS_ACCEPTED)
@@ -275,13 +277,23 @@ async def animate_photo_process(message: Message, state: FSMContext) -> None:
     if ar.outcome is AnimateGenOutcome.NEED_PHOTO:
         await message.answer(msg.TXT_CREATE_ANIMATE_HINT)
         return
+    if ar.outcome is AnimateGenOutcome.FREE_PREMIUM_BLOCKED:
+        from platforms.telegram_utils import send_free_create_blocked
+
+        await send_free_create_blocked(message)
+        return
     if ar.outcome is AnimateGenOutcome.FORBIDDEN_BY_TARIFF:
-        await message.answer(msg.TXT_UPGRADE_TO_ULTRA, reply_markup=paycat.shop_packages_keyboard())
+        await message.answer(
+            msg.TXT_UPGRADE_TO_ULTRA,
+            reply_markup=paycat.shop_packages_keyboard(),
+            parse_mode=ParseMode.HTML,
+        )
         return
     if ar.outcome is AnimateGenOutcome.INSUFFICIENT_BALANCE:
         await message.answer(
             msg.TXT_INSUFFICIENT_BALANCE,
             reply_markup=paycat.shop_packages_keyboard(),
+            parse_mode=ParseMode.HTML,
         )
 
 @router.message(UserFlow.waiting_for_animate)
@@ -328,37 +340,12 @@ async def upscale_process(message: Message, state: FSMContext) -> None:
 async def upscale_need_photo(message: Message) -> None:
     await message.answer(msg.TXT_UPSCALE_HINT)
 
-@router.message(UserFlow.waiting_for_music, F.text)
-async def music_style_process(message: Message, state: FSMContext) -> None:
-    uid = message.from_user.id
-    style_prompt = (message.text or "").strip()
-    await state.clear()
-    mr = await run_music_generation_turn(
-        uid=uid,
-        style_prompt=style_prompt,
-        bot=message.bot,
-        chat_id=message.chat.id,
-        settings=settings,
-    )
-    if mr.outcome is MusicGenOutcome.NEED_HINT:
-        await message.answer(msg.TXT_CREATE_MUSIC_HINT)
-        return
-    if mr.outcome is MusicGenOutcome.FORBIDDEN_BY_TARIFF:
-        deny_text = msg.TXT_ACCESS_SMART_PLUS if mr.upgrade_to == "smart" else msg.TXT_UPGRADE_TO_ULTRA
-        await message.answer(deny_text, reply_markup=paycat.shop_packages_keyboard())
-        return
-    if mr.outcome is MusicGenOutcome.INSUFFICIENT_BALANCE:
-        await message.answer(
-            msg.TXT_INSUFFICIENT_BALANCE,
-            reply_markup=paycat.shop_packages_keyboard(),
-        )
-
-@router.message(UserFlow.waiting_for_music)
-async def music_need_text(message: Message) -> None:
-    await message.answer(msg.TXT_CREATE_MUSIC_HINT)
-
 @router.message(Command("profile"))
 async def profile(message: Message) -> None:
     view = await build_cabinet_view(settings, message.from_user.id)
-    await message.answer(view.text, reply_markup=cabinet_keyboard())
+    await message.answer(
+        view.text,
+        reply_markup=cabinet_keyboard(),
+        parse_mode=ParseMode.HTML,
+    )
 

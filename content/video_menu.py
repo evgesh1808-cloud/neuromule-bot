@@ -12,10 +12,15 @@ CB_VIDEO_PREFIX = "vid:"
 CB_VIDEO_CAT_PREFIX = "vidcat:"
 CB_VIDEO_EXTEND = "vid:extend"
 CB_VIDEO_LONG = "vid:long"
+CB_VIDEO_REGENERATE = "vid:regen"
+CB_VIDEO_UPSCALE = "vid:upscale"
 CB_VIDEO_CUSTOM_TEXT = "vid:custom_text_only"
 CB_VIDEO_CUSTOM_PHOTO = "vid:custom_photo_script"
 CB_VIDEO_CUSTOM_VIDEO = "vid:custom_video_script"
 CB_VIDEO_PRO_5 = "vid:video_pro_5sec"
+
+VIDEO_UPSCALE_COST = 5  # фикс-цена «улучшения качества» (5 💎)
+VIDEO_REGENERATE_COST = 20  # цена повторной генерации (берётся из активного сценария)
 
 VIDEO_CATEGORIES: tuple[tuple[str, str], ...] = (
     ("😅 Бытовые боли (50–70 💎)", "pain"),
@@ -59,7 +64,16 @@ def video_category_menu(category: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def result_video_keyboard_pro() -> InlineKeyboardMarkup:
+def result_video_keyboard_pro(task_id: str | None = None) -> InlineKeyboardMarkup:
+    """Финальная upsell-клавиатура после `bot.send_video`.
+
+    Состав по ТЗ NeuroMule 🐎⚡️:
+      • ⏱ Продлить видео (+5 сек) — VIDEO_EXTEND_5SEC 💎
+      • 🔍 Upscale качества — VIDEO_UPSCALE_COST 💎
+      • 🔁 Сгенерировать заново — VIDEO_REGENERATE_COST 💎
+      • 📢 Поделиться в Галерее + 🚀 Переслать другу (виральный ряд)
+    """
+    payload = f"get_media_{task_id}" if task_id else "get_media_last"
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -70,10 +84,26 @@ def result_video_keyboard_pro() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
-                    text=f"🎞 Длинное PRO (15–20 сек) — {VIDEO_LONG_15_20} 💎",
-                    callback_data=CB_VIDEO_LONG,
+                    text=f"🔍 Upscale качества — {VIDEO_UPSCALE_COST} 💎",
+                    callback_data=CB_VIDEO_UPSCALE,
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"🔁 Сгенерировать заново — {VIDEO_REGENERATE_COST} 💎",
+                    callback_data=CB_VIDEO_REGENERATE,
                 )
             ],
             [InlineKeyboardButton(text="🚀 Тарифы", callback_data=msg.CB_RESULT_PREMIUM)],
+            [
+                InlineKeyboardButton(
+                    text=msg.TXT_GALLERY_SHARE_BTN,
+                    callback_data=msg.CB_SHARE_TO_GALLERY,
+                ),
+                InlineKeyboardButton(
+                    text=msg.TXT_GALLERY_FORWARD_FRIEND_BTN,
+                    switch_inline_query=payload,
+                ),
+            ],
         ]
     )

@@ -4,12 +4,33 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from content import messages as msg
 
 
-def result_photo_keyboard() -> InlineKeyboardMarkup:
+def _gallery_share_row(task_id: str | None = None) -> list[InlineKeyboardButton]:
+    """Стандартный ряд под медиа-результат: «Поделиться» + «Переслать другу».
+
+    Изолирован тут, чтобы любая result-клавиатура могла его переиспользовать
+    без зависимости от ``platforms.handlers.gallery_flow`` (циклы импортов).
+    """
+
+    payload = f"get_media_{task_id}" if task_id else "get_media_last"
+    return [
+        InlineKeyboardButton(
+            text=msg.TXT_GALLERY_SHARE_BTN,
+            callback_data=msg.CB_SHARE_TO_GALLERY,
+        ),
+        InlineKeyboardButton(
+            text=msg.TXT_GALLERY_FORWARD_FRIEND_BTN,
+            switch_inline_query=payload,
+        ),
+    ]
+
+
+def result_photo_keyboard(task_id: str | None = None) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="🪄 Оживить это фото (Видео)", callback_data=msg.CB_RESULT_ANIMATE)],
             [InlineKeyboardButton(text="🔄 Повторить генерацию", callback_data=msg.CB_RESULT_REPEAT_PHOTO)],
             [InlineKeyboardButton(text="📥 Скачать в максимальном качестве — PRO", callback_data=msg.CB_RESULT_HD_PRO)],
+            _gallery_share_row(task_id),
         ]
     )
 
@@ -24,9 +45,76 @@ def result_video_keyboard() -> InlineKeyboardMarkup:
 
 
 def result_music_keyboard() -> InlineKeyboardMarkup:
+    """Базовая клавиатура под музыкальным результатом (legacy).
+
+    Сохраняется для обратной совместимости — в новом флоу используем
+    :func:`result_music_keyboard_pro`, где подключены апсейл-кнопки.
+    """
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="📥 Скачать MP3", callback_data=msg.CB_RESULT_MP3)],
             [InlineKeyboardButton(text="✍️ Изменить текст", callback_data=msg.CB_RESULT_EDIT_LYRICS)],
+        ]
+    )
+
+
+def music_studio_keyboard() -> InlineKeyboardMarkup:
+    """Главный экран Музыкальной студии NeuroMule с 3 режимами Suno AI."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=msg.TXT_MUSIC_MODE_AI_BTN,
+                    callback_data=msg.CB_MUSIC_MODE_AI,
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=msg.TXT_MUSIC_MODE_CUSTOM_BTN,
+                    callback_data=msg.CB_MUSIC_MODE_CUSTOM,
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=msg.TXT_MUSIC_MODE_INSTRUMENTAL_BTN,
+                    callback_data=msg.CB_MUSIC_MODE_INSTRUMENTAL,
+                )
+            ],
+        ]
+    )
+
+
+def result_music_keyboard_pro(task_id: str | None = None) -> InlineKeyboardMarkup:
+    """PRO-клавиатура апсейла под готовым треком NeuroMule 🐎⚡️.
+
+    4 фишки апсейла + ряд Галереи (Поделиться/Переслать другу).
+    """
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🎬 Видеоклип для Shorts ➔ 20 💎",
+                    callback_data=msg.CB_MUSIC_CLIP,
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="➕ Продлить трек (+1 мин) ➔ 15 💎",
+                    callback_data=msg.CB_MUSIC_EXTEND,
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🎤 Клон голоса ➔ 10 💎",
+                    callback_data=msg.CB_MUSIC_VOICE_CLONE,
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📢 Опубликовать на ИИ-Радио",
+                    callback_data=msg.CB_MUSIC_PUBLISH,
+                )
+            ],
+            _gallery_share_row(task_id),
         ]
     )
