@@ -382,6 +382,31 @@ async def run_xlsx_fast_path_turn(
         await rollback_last(settings, user_id)
         return ChatTurnResult(outcome=ChatTurnOutcome.AI_FAILED)
 
+    if subrole == "wb_ozon_finance" and worker.calculated_total > 0:
+        from dataclasses import replace
+
+        from services.table_generator_pack import _CAPTION_MAX
+        from services.table_wb_finance_ai import (
+            generate_wb_finance_consulting_html,
+            resolve_wb_metrics_for_rows,
+        )
+
+        wb_metrics = resolve_wb_metrics_for_rows(worker.rows, worker.calculated_total)
+        model_chain: list[str] = []
+        if billing_result and billing_result.plan.model_id:
+            model_chain.append(billing_result.plan.model_id)
+        model_chain.extend(m for m in settings.free_models if m not in model_chain)
+        ai_caption = await generate_wb_finance_consulting_html(
+            settings,
+            revenue_total=worker.calculated_total,
+            wb_metrics=wb_metrics,
+            models=model_chain or None,
+        )
+        if ai_caption:
+            if len(ai_caption) > _CAPTION_MAX:
+                ai_caption = ai_caption[: _CAPTION_MAX - 1] + "…"
+            worker = replace(worker, telegram_caption_html=ai_caption)
+
     table_json = rows_to_canonical_table_json(
         worker.rows,
         title=worker.title,

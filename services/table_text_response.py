@@ -360,27 +360,42 @@ def build_wb_finance_express_html(
     wb_metrics: WbMarketplaceMetrics | None = None,
 ) -> str:
     """
-    Премиальный финансовый шаблон для под-режима ``wb_ozon_finance``.
+    Локальный fallback для под-режима ``wb_ozon_finance`` (если ИИ недоступен).
 
     Расчёт УСН 6%, чистой прибыли и годового прогноза — только на сервере.
     """
     if calculated_total <= 0:
         return ""
 
-    tax = calculated_total * _USN_RATE
-    net_profit = calculated_total - tax
-    yearly_forecast = calculated_total * 12
+    from services.table_wb_finance_ai import compute_wb_finance_prompt_metrics
+
+    prompt_metrics = compute_wb_finance_prompt_metrics(calculated_total, wb_metrics)
+    if prompt_metrics is None:
+        return ""
+
+    tax = prompt_metrics.tax
+    net_profit = prompt_metrics.clear_profit
+    yearly_forecast = prompt_metrics.year_forecast
+    profitability = prompt_metrics.profitability_pct
 
     lines = [
         "📊 <b>ФИНАНСОВЫЙ ЭКСПРЕСС-АНАЛИЗ БИЗНЕСА</b>",
+        _FINANCE_SEPARATOR,
+        "🎯 <b>БИЗНЕС-СКОРИНГ:</b> <i>локальный расчёт (ИИ временно недоступен)</i>",
         _FINANCE_SEPARATOR,
         (
             f"💰 <b>ВАЛОВАЯ ВЫРУЧКА:</b> "
             f"<code>{_fmt_rub_in_code(calculated_total)} руб.</code>"
         ),
         f"📉 <b>НАЛОГ УСН (6%):</b> <code>{_fmt_rub_in_code(tax)} руб.</code>",
-        _FINANCE_SEPARATOR,
-        f"💵 <b>ЧИСТАЯ ПРИБЫЛЬ:</b> <code>{_fmt_rub_in_code(net_profit)} руб.</code>",
+        (
+            f"💵 <b>ЧИСТАЯ ПРИБЫЛЬ:</b> "
+            f"<code>{_fmt_rub_in_code(net_profit)} руб.</code>"
+        ),
+        (
+            f"Рентабельность по чистой прибыли: "
+            f"<code>{profitability:.1f}%</code>"
+        ),
         _FINANCE_SEPARATOR,
         "📈 <b>Локальная аналитика (0 ₽, сервер):</b>",
     ]

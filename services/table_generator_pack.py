@@ -21,7 +21,11 @@ from services.table_markdown import (
 )
 from services.table_xlsx_preprocess import pick_telegram_preview_rows, preprocess_xlsx_rows
 from services.table_xlsx_flow import build_wb_telegram_preview_html
-from services.table_text_response import build_table_one_screen_html, build_wb_finance_express_html
+from services.table_text_response import (
+    build_table_one_screen_html,
+    build_wb_finance_express_html,
+    compute_wb_marketplace_metrics,
+)
 from services.table_wb_chart import extract_wb_sales_series, try_render_wb_chart_png
 from services.telegram_safe_text import _escape_telegram_html, repair_telegram_html
 
@@ -391,7 +395,8 @@ def _build_pack_from_rows(
     caption: str | None = None
 
     if subrole == "wb_ozon_finance" and calculated_total > 0:
-        caption = build_wb_finance_express_html(calculated_total)
+        wb_metrics = compute_wb_marketplace_metrics(rows, revenue_total=calculated_total)
+        caption = build_wb_finance_express_html(calculated_total, wb_metrics=wb_metrics)
     elif ai_insights is not None and payload is not None:
         caption = build_table_one_screen_html(
             payload,
