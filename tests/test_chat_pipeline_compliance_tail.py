@@ -28,6 +28,19 @@ def test_inject_idempotent() -> None:
     assert len(messages[0]["content"]) == first_len
 
 
+def test_prepare_openrouter_skips_compliance_for_table_generator() -> None:
+    payload = [
+        {"role": "system", "content": "x"},
+        {"role": "user", "content": "q"},
+    ]
+    prepare_openrouter_chat_messages(
+        payload,
+        use_premium_prompt=True,
+        text_role="table_generator",
+    )
+    assert USER_COMPLIANCE_TAIL_MARKER not in payload[1]["content"]
+
+
 def test_prepare_openrouter_chat_messages() -> None:
     payload = [
         {"role": "system", "content": "x"},

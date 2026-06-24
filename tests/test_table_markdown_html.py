@@ -21,6 +21,13 @@ def test_markdown_table_converts_to_pre_block() -> None:
     assert "─" in out
 
 
+def test_format_assistant_for_role_stream_closes_open_tags() -> None:
+    raw = "Жирный <b>текст без закрытия"
+    out = format_assistant_for_role(raw, "standard", for_stream=True)
+    assert out.endswith("</b>")
+    assert "<b>" in out
+
+
 def test_format_assistant_for_role_table_generator() -> None:
     raw = "| A | B |\n|---|---|\n| 1 | 2 |"
     out = format_assistant_for_role(raw, "table_generator")

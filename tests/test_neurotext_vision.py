@@ -63,10 +63,10 @@ async def test_ask_ai_messages_multimodal_payload(monkeypatch) -> None:
     s = Settings(tg_token="x", openrouter_key="y", gemini_api_key="z")
     captured: dict = {}
 
-    async def _fake_post(client, settings, model, messages, *, timeout, max_tokens=None):
+    async def _fake_post(client, settings, model, messages, *, timeout, max_tokens=None, response_format=None):
         captured["messages"] = messages
         captured["model"] = model
-        return "vision ok"
+        return {"content": "vision ok", "prompt_tokens": 0, "completion_tokens": 0}
 
     with patch("services.ai_text._post_chat_completion", new=AsyncMock(side_effect=_fake_post)):
         messages = [
@@ -80,7 +80,7 @@ async def test_ask_ai_messages_multimodal_payload(monkeypatch) -> None:
             },
         ]
         out = await ask_ai_messages(s, messages, models=["google/gemini-2.5-flash"])
-        assert out == "vision ok"
+        assert out["content"] == "vision ok"
         user_content = captured["messages"][1]["content"]
         assert isinstance(user_content, list)
         assert user_content[1]["type"] == "image_url"
@@ -111,7 +111,7 @@ async def test_run_chat_turn_with_photo_billing_bypass(repo_module, monkeypatch)
 
     async def _fake_ask(_settings, messages, **kwargs):
         captured_messages.extend(messages)
-        return "Ответ по фото"
+        return {"content": "Ответ по фото", "prompt_tokens": 0, "completion_tokens": 0}
 
     with patch(
         "services.use_cases.chat_turn.allow_request",

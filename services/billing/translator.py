@@ -42,7 +42,7 @@ async def translate_prompt_to_english(settings: Settings, russian_text: str) -> 
             timeout=settings.openrouter_timeout_sec,
             models=[FREE_CHAT_MODEL],
         )
-        translated = (out or "").strip()
+        translated = (out.get("content") or "").strip()
         return translated or text
     except Exception:
         logger.warning("translate_prompt failed, using original", exc_info=True)
@@ -94,7 +94,7 @@ async def enhance_video_prompt_for_replicate(
             timeout=settings.openrouter_timeout_sec,
             models=[FREE_CHAT_MODEL],
         )
-        enhanced = (out or "").strip().strip('"').strip("'")
+        enhanced = (out.get("content") or "").strip().strip('"').strip("'")
         if not enhanced or len(enhanced) < len(translated) // 2:
             return _append_cinematic(translated)
         if not _looks_already_enhanced(enhanced):
@@ -165,7 +165,7 @@ async def enhance_music_style_prompt(
             timeout=settings.openrouter_timeout_sec,
             models=[FREE_CHAT_MODEL],
         )
-        enhanced = (out or "").strip().strip('"').strip("'")
+        enhanced = (out.get("content") or "").strip().strip('"').strip("'")
         if not enhanced or len(enhanced) < len(translated) // 2:
             return _append_hifi(translated)
         if not _looks_already_hifi(enhanced):

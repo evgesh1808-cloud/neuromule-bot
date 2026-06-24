@@ -245,7 +245,14 @@ CB_ADMIN_START_BROADCAST = "admin_start_broadcast"
 CB_ADMIN_GRANT_CRYSTALS = CB_ADMIN_GIVE_CRYSTALS
 CB_ADMIN_BROADCAST = CB_ADMIN_START_BROADCAST
 CB_TEXT_ROLE_PREFIX = "text_role:"
+CB_SET_ROLE_PREFIX = "set_role:"
+CB_SHOW_TABLE_SUBCATEGORIES = "show_table_subcategories"
+CB_SHOW_LIFESTYLE_SUBCATEGORIES = "show_lifestyle_subcategories"
+CB_BACK_TO_ROLES_MENU = "back_to_roles_menu"
+CB_NEW_DIALOG = "new_dialog"
+CB_BACK_TO_TOOLS = "back_to_tools"
 CB_TABLE_CHART_PREFIX = "tbl_chart:"
+CB_WB_CHART_PREFIX = "wb_chart:"
 BTN_TABLE_CHART_PIE = "🔄 Круговая"
 BTN_TABLE_CHART_LINE = "📊 Линейная"
 BTN_TABLE_CHART_BAR = "📈 Гистограмма"
@@ -292,30 +299,33 @@ INSTRUCTION_INLINE_BUTTON_LABEL = "📍 Инструкция"
 ADMIN_MAIN_MENU_BUTTON = "⚙️ Админ-панель"
 
 TEXT_ROLES: tuple[tuple[str, str], ...] = (
-    ("🔘 Стандарт", "standard"),
-    ("📑 Саммари", "summary"),
-    ("🎓 Академик", "academic"),
-    ("🎭 Психолог", "psychologist"),
-    ("🗣️ Спикер (TED)", "speaker"),
-    ("📱 Блогер", "blogger"),
-    ("📉 Аналитик", "analyst"),
-    ("🧙 Сказочник", "storyteller"),
-    ("📊 Таблицы", "table_generator"),
-    ("🎧 Подкаст", "podcast_doc"),
+    ("⚪ Стандарт", "standard"),
+    ("📄 Саммари", "summary"),
+    ("📊 ИИ-Аналитика & Таблицы", "table_generator"),
+    ("🎙️ Сценарии & Подкасты", "podcast_doc"),
+    ("📱 Блогер", "blogger_content"),
+    ("🧠 ИИ-Коуч", "psychologist_coach"),
+    ("🏃‍♂️ Фитнес", "fitness_nutrition"),
+    ("🍳 ИИ-Шеф", "chef_recipes"),
 )
 PREMIUM_TEXT_ROLE_IDS = {role_id for _, role_id in TEXT_ROLES if role_id != "standard"}
 
 TEXT_ROLE_COSTS: dict[str, tuple[int, int]] = {
     "standard": (1, 1),
     "summary": (5, 3),
+    "table_generator": (20, 10),
+    "podcast_doc": (40, 20),
+    "blogger_content": (5, 3),
+    "psychologist_coach": (5, 3),
+    "fitness_nutrition": (5, 3),
+    "chef_recipes": (5, 3),
+    # Обратная совместимость FSM / истории диалога
     "academic": (5, 3),
     "psychologist": (5, 3),
     "speaker": (5, 3),
     "blogger": (5, 3),
     "analyst": (5, 3),
     "storyteller": (5, 3),
-    "table_generator": (20, 10),
-    "podcast_doc": (40, 20),
 }
 
 FREE_TARIFF_ALLOWED_ROLES: frozenset[str] = frozenset({"standard"})
@@ -331,7 +341,7 @@ MULE_STATIC_EXAMPLES = [
 ]
 
 CB_CLEAR_CONTEXT = "clear_context"
-TXT_NEUROTEXT_CLEAR_BTN = "🧹 Новый диалог"
+TXT_NEUROTEXT_CLEAR_BTN = "🔔 Новый диалог"
 TXT_NEUROTEXT_CLEAR_DONE = "🧹 <b>Контекст очищен.</b> Можно стартовать новую тему."
 
 IMAGE_MODELS: tuple[tuple[str, str], ...] = (
@@ -517,6 +527,71 @@ TXT_CHAT_RATE_LIMIT = (
 TXT_CHAT_EMPTY = "Напишите текст сообщения — пустое сообщение не обрабатываю."
 TXT_CHAT_CONTEXT_TOO_LARGE = (
     "Сообщение слишком длинное для одного запроса к модели. Сократите текст или разбейте на части."
+)
+TXT_TABLE_GENERATOR_STATUS = (
+    "⏳ Анализирую данные... Процесс генерации и сборки отчета займет от 1 до 3 минут. "
+    "Пожалуйста, подождите."
+)
+CB_TABLE_SUBROLE_PREFIX = "set_table_subrole:"
+TXT_TABLE_SUBROLE_MENU = (
+    "📊 <b>Аналитика таблиц</b>\n\n"
+    "Выберите тип отчёта — от этого зависит локальная математика и формат Excel:"
+)
+TXT_TABLE_SUBROLE_READY = (
+    "📥 Отлично! Режим выбран. Отправьте ваш .xlsx файл или напишите данные текстом для анализа."
+)
+TXT_TABLE_SUBROLE_STANDARD = (
+    "📥 <b>Режим Базового отчета выбран!</b>\n\n"
+    "Я проведу классический технический анализ вашей таблицы, посчитаю суммы, "
+    "средние показатели и построю график трендов.\n\n"
+    "<b>Действие:</b> Отправьте ваш .xlsx файл в чат."
+)
+TXT_TABLE_SUBROLE_WB_OZON = (
+    "📥 <b>Режим Аналитики WB/Ozon выбран!</b>\n\n"
+    "Я проанализирую еженедельный отчет маркетплейса, автоматически рассчитаю общую выручку, "
+    "налог 6% УСН (для ИП), чистую прибыль, рекламную нагрузку и юнит-показатели за 0 рублей.\n\n"
+    "<b>Действие:</b> Отправьте ваш .xlsx файл отчета реализации маркетплейса в чат."
+)
+TXT_TABLE_SUBROLE_TRAFFIC = (
+    "📥 <b>Режим Маркетинга (ROI/CPA) выбран!</b>\n\n"
+    "Я рассчитаю сквозную юнит-экономику вашей рекламы (CTR, CPC, CPA, ROI), "
+    "выявив неэффективные кампании, сливающие бюджет.\n\n"
+    "<b>Действие:</b> Отправьте рекламную выгрузку в формате .xlsx или .csv в чат."
+)
+TXT_TABLE_SUBROLE_SEO = (
+    "📥 <b>Режим SEO (Excel) выбран!</b>\n\n"
+    "Я найду в вашей таблице колонку с наименованиями товаров и построчно сгенерирую "
+    "уникальные продающие SEO-описания через ИИ-модель.\n\n"
+    "<b>Действие:</b> Отправьте ваш .xlsx файл со списком товаров в чат."
+)
+
+_TABLE_SUBROLE_INSTRUCTIONS: dict[str, str] = {
+    "standard_report": TXT_TABLE_SUBROLE_STANDARD,
+    "wb_ozon_finance": TXT_TABLE_SUBROLE_WB_OZON,
+    "traffic_marketing": TXT_TABLE_SUBROLE_TRAFFIC,
+    "mass_seo_generation": TXT_TABLE_SUBROLE_SEO,
+}
+
+
+def table_subrole_instruction(subrole_id: str) -> str:
+    """B2B-инструкция после выбора под-режима table_generator."""
+    from services.table_subrole_types import normalize_table_subrole
+
+    sid = normalize_table_subrole(subrole_id)
+    return _TABLE_SUBROLE_INSTRUCTIONS.get(sid, TXT_TABLE_SUBROLE_READY)
+
+
+TXT_TABLE_AI_DEGRADATION_NOTICE = (
+    "\n\n⚠️ ИИ-аналитика временно перегружена. Сформирован точный базовый финансовый "
+    "отчет на основе локальных алгоритмов нашего сервера. Списания монет за ИИ не произошло."
+)
+TXT_TABLE_AI_FAILED_NO_ROWS = (
+    "⚠️ ИИ не смог разобрать таблицу. Отправьте файл <b>.xlsx</b> или <b>.csv</b> — "
+    "соберём отчёт локально на сервере без списания за ИИ."
+)
+TXT_TABLE_COLUMN_PARSE_WARNING = (
+    "⚠️ Не удалось автоматически распознать структуру колонок в файле. "
+    "Пожалуйста, убедитесь, что вы загрузили оригинальный еженедельный отчет Wildberries/Ozon."
 )
 TXT_CHAT_DAILY_LIMIT = "Лимит бесплатного тарифа: 30 текстов в день. Оформи MINI/SMART/ULTRA для продолжения."
 TXT_RESET_OK = (

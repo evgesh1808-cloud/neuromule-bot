@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>NeuroMule — отчёт</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        :root {
+            color-scheme: light dark;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--tg-theme-bg-color, #ffffff);
+            color: var(--tg-theme-text-color, #111111);
+            margin: 0;
+            padding: 16px;
+            padding-bottom: calc(16px + env(safe-area-inset-bottom));
+        }
+        h2 { margin: 0 0 8px; font-size: 1.25rem; }
+        .muted { opacity: 0.72; font-size: 0.9rem; margin: 0 0 16px; }
+        .card {
+            background: var(--tg-theme-secondary-bg-color, #f4f4f5);
+            border-radius: 14px;
+            padding: 14px;
+            margin-top: 12px;
+            overflow-x: auto;
+        }
+        .status { padding: 12px 0; }
+        .status.error { color: #c0392b; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+        th, td {
+            border-bottom: 1px solid rgba(127, 127, 127, 0.25);
+            padding: 8px 6px;
+            text-align: left;
+            white-space: nowrap;
+        }
+        th { font-weight: 600; }
+        td.num { text-align: right; font-variant-numeric: tabular-nums; }
+        button {
+            background: var(--tg-theme-button-color, #2481cc);
+            color: var(--tg-theme-button-text-color, #ffffff);
+            border: none;
+            border-radius: 10px;
+            padding: 12px 20px;
+            font-size: 16px;
+            cursor: pointer;
+            margin-top: 20px;
+            width: 100%;
+        }
+        button:disabled { opacity: 0.5; cursor: default; }
+    </style>
+</head>
+<body>
+    <h2>Привет, <span id="username">Пользователь</span>!</h2>
+    <p class="muted">NeuroMule — интерактивный отчёт</p>
+
+    <div class="card">
+        <h3 id="report-title">Отчёт</h3>
+        <div id="report-status" class="status">Загрузка…</div>
+        <div id="report-table"></div>
+    </div>
+
+    <button type="button" id="close-btn">Закрыть</button>
+
+    <script>
+        (function () {
+            const tg = window.Telegram && window.Telegram.WebApp;
+            if (!tg) {
+                document.getElementById("report-status").textContent =
+                    "Откройте страницу из Telegram Mini App.";
+                document.getElementById("report-status").classList.add("error");
+                return;
+            }
+
+            tg.ready();
+            tg.expand();
+
+            const user = tg.initDataUnsafe && tg.initDataUnsafe.user;
+            if (user && user.first_name) {
+                document.getElementById("username").textContent = user.first_name;
+            }
+
+            document.getElementById("close-btn").addEventListener("click", function () {
+                tg.close();
+            });
+
+            function resolveApiBase() {
+                const params = new URLSearchParams(window.location.search);
+                const fromQuery = (params.get("api_base") || "").trim().replace(/\/$/, "");
+                if (fromQuery) return fromQuery;
+                if (window.location.origin && window.location.origin !== "null") {
+                    return window.location.origin;
+                }
+                return "";
+            }
+
+            function resolveReportId() {
+                const params = new URLSearchParams(window.location.search);
+                const raw = (params.get("report_id") || "").trim();
+                if (!raw || !/^\d+$/.test(raw)) return null;
+                return raw;
+            }
+
+            function escapeHtml(value) {
+                return String(value)
+                    .replace(/&/g, "&amp;")
+                    .replace(/</g, "&lt;")
+                    .replace(/>/g, "&gt;")
+                    .replace(/"/g, "&quot;");
+            }
+
+            function looksNumeric(value) {
+                return /^-?\d[\d\s.,]*$/.test(String(value).trim());
+            }
+
+            function renderTable(payload) {
+                const title = payload.title || "Отчёт";
+                document.getElementById("report-title").textContent = title;
+
+                const headers = Array.isArray(payload.headers) ? payload.headers : [];
+                const rows = Array.isArray(payload.rows) ? payload.rows : [];
+                if (!headers.length && !rows.length) {
+                    document.getElementById("report-status").textContent = "Отчёт пуст.";
+                    return;
+                }
+
+                document.getElementById("report-status").textContent = "";
+
+                let html = "<table><thead><tr>";
+                headers.forEach(function (h) {
+                    html += "<th>" + escapeHtml(h) + "</th>";
+                });
+                html += "</tr></thead><tbody>";
+
+                rows.forEach(function (row) {
+                    html += "<tr>";
+                    headers.forEach(function (_, idx) {
+                        const cell = row[idx] != null ? row[idx] : "";
+                        const cls = looksNumeric(cell) ? " class=\"num\"" : "";
+                        html += "<td" + cls + ">" + escapeHtml(cell) + "</td>";
+                    });
+                    html += "</tr>";
+                });
+                html += "</tbody></table>";
+                document.getElementById("report-table").innerHTML = html;
+            }
+
+            async function loadReport() {
+                const statusEl = document.getElementById("report-status");
+                const reportId = resolveReportId();
+                const apiBase = resolveApiBase();
+
+                if (!reportId) {
+                    statusEl.textContent = "Не указан report_id в ссылке.";
+                    statusEl.classList.add("error");
+                    return;
+                }
+                if (!apiBase) {
+                    statusEl.textContent =
+                        "Не задан api_base. Добавьте ?api_base=https://ваш-сервер:8000";
+                    statusEl.classList.add("error");
+                    return;
+                }
+                if (!tg.initData) {
+                    statusEl.textContent = "Нет initData — откройте из Telegram.";
+                    statusEl.classList.add("error");
+                    return;
+                }
+
+                try {
+                    const response = await fetch(
+                        apiBase + "/api/v1/reports/" + encodeURIComponent(reportId),
+                        {
+                            method: "GET",
+                            headers: {
+                                Authorization: "tma " + tg.initData,
+                            },
+                            credentials: "include",
+                        }
+                    );
+
+                    if (response.status === 401) {
+                        statusEl.textContent = "Сессия недействительна. Перезапустите Mini App.";
+                        statusEl.classList.add("error");
+                        return;
+                    }
+                    if (response.status === 404) {
+                        statusEl.textContent = "Отчёт не найден или вы не его владелец.";
+                        statusEl.classList.add("error");
+                        return;
+                    }
+                    if (!response.ok) {
+                        throw new Error("HTTP " + response.status);
+                    }
+
+                    const body = await response.json();
+                    const payload = body.table_raw_json || body;
+                    renderTable(payload);
+                } catch (error) {
+                    console.error(error);
+                    statusEl.textContent =
+                        "Не удалось загрузить отчёт. Проверьте API, CORS и MINI_APP_CORS_ORIGINS.";
+                    statusEl.classList.add("error");
+                }
+            }
+
+            loadReport();
+        })();
+    </script>
+</body>
+</html>

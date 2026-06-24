@@ -2,32 +2,28 @@
 
 Фишка 2 мегаспеки NeuroMule 🐎⚡️: каждый текст, который мы извлекаем из .pdf /
 .docx / .txt / .md / .csv / caption-сообщения, обязан пройти через
-:func:`compress_extracted_text` перед склейкой в финальный промпт. Это срезает
-15–20 % веса контекста и напрямую уменьшает счёт OpenRouter:
+:func:`compress_extracted_text` перед склейкой в финальный промпт.
 
-* убираем zero-width / RTL-override / soft-hyphen и прочие невидимые
-  служебные символы — они тратят токены, но не несут смысла;
-* множественные пробелы / табуляции → один пробел;
-* три и больше переводов строки → ровно два (читаемые абзацы);
-* trailing-whitespace в строках → срез;
-* финальный ``.strip()`` без потери внутренней структуры.
+Для ``.pdf`` используем ``pypdf``. Сканы без текстового слоя рендерятся через
+``pypdfium2`` → PNG для Vision в Нейротексте.
 
-Для ``.pdf`` используем ``pypdf`` (обязательная зависимость). Сканы без
-текстового слоя рендерятся через ``pypdfium2`` → PNG для Vision в Нейротексте.
-``python-docx`` остаётся опциональным. Для .txt / .md / .csv — stdlib.
+Лимиты размера документов:
 
-Также экспортируем единый верхний лимит размера файла (15 МБ) — он же
-``MAX_DOCUMENT_BYTES`` — для всех точек входа документного инпута бота.
+* ``.xlsx`` / ``.xls`` / ``.csv`` — до **10 МБ**, скачивание чанками на диск
+  в ``/tmp/`` (без удержания файла в RAM через ``BytesIO``);
+* остальные форматы (``.pdf``, ``.docx``, ``.txt``, …) — до **15 МБ** в буфере.
 """
 
 from __future__ import annotations
 
 import base64
 import logging
+import os
 import re
+import tempfile
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, BinaryIO, Final
 
 logger = logging.getLogger(__name__)
 
@@ -44,11 +40,21 @@ _MULTI_NEWLINE_RE: Final = re.compile(r"\n{3,}")
 # Гард, чтобы не уронить ноду на 200-МБ "txt-бомбе".
 DEFAULT_MAX_CHARS: Final = 500_000
 
-# Жёсткий верхний лимит размера загружаемого документа.
-# Telegram сам ограничивает bot-uploaded files 20 МБ, но мы берём
-# консервативные 15 МБ — чтобы оставить запас и не получать «file is too
-# big» из bot.download_file на тяжёлых .pdf со сканами.
+# Жёсткий верхний лимит для табличных форматов (финансовые отчёты селлеров).
+MAX_SPREADSHEET_BYTES: Final = 10 * 1024 * 1024  # 10 MB
+
+# Лимит для прочих документов (.pdf, .docx, .txt, …).
 MAX_DOCUMENT_BYTES: Final = 15 * 1024 * 1024  # 15 MB
+
+SPREADSHEET_SUFFIXES: Final = frozenset({".xlsx", ".xls", ".csv"})
+
+_DOWNLOAD_CHUNK_SIZE: Final = 64 * 1024
+
+TXT_SPREADSHEET_TOO_BIG = (
+    "⚠️ <b>Размер табличного файла превышает лимит 10 МБ.</b>\n\n"
+    "Пожалуйста, сократите отчёт (меньше строк/листов) или отправьте сжатый "
+    "файл .xlsx/.csv."
+)
 
 TXT_DOCUMENT_TOO_BIG = (
     "⚠️ <b>Размер файла превышает лимит 15 МБ.</b>\n\n"
@@ -57,68 +63,196 @@ TXT_DOCUMENT_TOO_BIG = (
 )
 
 
-def is_document_size_ok(size_bytes: int | None) -> bool:
-    """Проверяет, что размер документа в пределах ``MAX_DOCUMENT_BYTES``.
+def _document_suffix(file_name: str | None) -> str:
+    return Path((file_name or "document").strip()).suffix.lower()
 
-    ``None`` → ``True`` (Telegram не всегда отдаёт точный размер для
-    forwarded-документов; в этом случае мы доверяем хэндлеру выше).
+
+def is_spreadsheet_suffix(suffix: str) -> bool:
+    return (suffix or "").strip().lower() in SPREADSHEET_SUFFIXES
+
+
+def max_document_bytes_for(file_name: str | None) -> int:
+    """Возвращает лимит в байтах в зависимости от расширения файла."""
+    if is_spreadsheet_suffix(_document_suffix(file_name)):
+        return MAX_SPREADSHEET_BYTES
+    return MAX_DOCUMENT_BYTES
+
+
+def document_too_big_message(file_name: str | None) -> str:
+    if is_spreadsheet_suffix(_document_suffix(file_name)):
+        return TXT_SPREADSHEET_TOO_BIG
+    return TXT_DOCUMENT_TOO_BIG
+
+
+def _temp_download_dir() -> Path:
+    preferred = Path("/tmp")
+    if preferred.is_dir():
+        return preferred
+    return Path(tempfile.gettempdir())
+
+
+def is_document_size_ok(
+    size_bytes: int | None,
+    *,
+    file_name: str | None = None,
+) -> bool:
+    """Проверяет размер документа с учётом расширения (10 / 15 МБ).
+
+    ``None`` → ``True`` (Telegram не всегда отдаёт точный размер).
     """
 
     if size_bytes is None:
         return True
-    return 0 <= int(size_bytes) <= MAX_DOCUMENT_BYTES
+    limit = max_document_bytes_for(file_name)
+    return 0 <= int(size_bytes) <= limit
 
 
 class DocumentTooBigError(ValueError):
-    """Документ превышает ``MAX_DOCUMENT_BYTES``.
+    """Документ превышает лимит для своего типа."""
 
-    Поднимается ``download_telegram_document_to_buffer`` ДО реального
-    ``bot.download_file``, что экономит трафик и RAM ноды Таймвеб
-    (потенциально 100+ МБ на каждый «жирный» PDF). Хэндлер должен поймать
-    это исключение и ответить юзеру ``TXT_DOCUMENT_TOO_BIG``.
-    """
-
-    def __init__(self, size_bytes: int) -> None:
-        super().__init__(
-            f"document too big: {size_bytes} bytes > limit {MAX_DOCUMENT_BYTES}"
-        )
+    def __init__(
+        self,
+        size_bytes: int,
+        *,
+        file_name: str | None = None,
+        limit_bytes: int | None = None,
+    ) -> None:
+        limit = int(limit_bytes if limit_bytes is not None else max_document_bytes_for(file_name))
+        super().__init__(f"document too big: {size_bytes} bytes > limit {limit}")
         self.size_bytes = int(size_bytes)
+        self.limit_bytes = limit
+        self.file_name = file_name
+
+
+class _LimitingDiskWriter(BinaryIO):
+    """Потоковая запись чанков на диск с жёстким лимитом размера."""
+
+    def __init__(self, path: Path, *, max_bytes: int) -> None:
+        self._path = path
+        self._max_bytes = max_bytes
+        self._written = 0
+        self._fh = path.open("wb")
+        self._closed = False
+
+    def write(self, data: bytes) -> int:  # type: ignore[override]
+        if self._closed:
+            raise ValueError("writer is closed")
+        nbytes = len(data)
+        if self._written + nbytes > self._max_bytes:
+            self._abort()
+            raise DocumentTooBigError(
+                self._written + nbytes,
+                limit_bytes=self._max_bytes,
+            )
+        self._fh.write(data)
+        self._written += nbytes
+        return nbytes
+
+    def _abort(self) -> None:
+        self._closed = True
+        try:
+            self._fh.close()
+        finally:
+            self._path.unlink(missing_ok=True)
+
+    def close(self) -> None:
+        if not self._closed:
+            self._fh.close()
+            self._closed = True
+
+    @property
+    def size(self) -> int:
+        return self._written
+
+    def readable(self) -> bool:
+        return False
+
+    def writable(self) -> bool:
+        return not self._closed
+
+    def seekable(self) -> bool:
+        return False
+
+    def flush(self) -> None:
+        self._fh.flush()
+
+
+async def download_telegram_document_to_path(
+    bot: Any,
+    document: Any,
+    *,
+    file_name: str | None = None,
+) -> str:
+    """Скачивает табличный документ чанками в ``/tmp/``, возвращает путь к файлу.
+
+    Только ``.xlsx``, ``.xls``, ``.csv`` — без удержания тела файла в RAM.
+    Caller обязан удалить файл после обработки.
+    """
+    name = (file_name or getattr(document, "file_name", None) or "document").strip()
+    suffix = _document_suffix(name)
+    if not is_spreadsheet_suffix(suffix):
+        raise ValueError(
+            f"download_telegram_document_to_path supports spreadsheet files only, got {suffix!r}"
+        )
+
+    max_size = max_document_bytes_for(name)
+    size_bytes = getattr(document, "file_size", None)
+    if size_bytes is not None and not is_document_size_ok(size_bytes, file_name=name):
+        raise DocumentTooBigError(int(size_bytes), file_name=name, limit_bytes=max_size)
+
+    file_obj = await bot.get_file(document.file_id)
+    tmp_dir = _temp_download_dir()
+    fd, tmp_name = tempfile.mkstemp(prefix="neuromule_sheet_", suffix=suffix, dir=str(tmp_dir))
+    os.close(fd)
+    dest_path = Path(tmp_name)
+    writer = _LimitingDiskWriter(dest_path, max_bytes=max_size)
+    try:
+        await bot.download_file(file_obj.file_path, destination=writer)
+        writer.close()
+        if not is_document_size_ok(writer.size, file_name=name):
+            dest_path.unlink(missing_ok=True)
+            raise DocumentTooBigError(writer.size, file_name=name, limit_bytes=max_size)
+        return str(dest_path)
+    except DocumentTooBigError:
+        raise
+    except Exception:
+        dest_path.unlink(missing_ok=True)
+        raise
+    finally:
+        if not writer._closed:
+            writer.close()
 
 
 async def download_telegram_document_to_buffer(
     bot: Any,
     document: Any,
     *,
-    max_size: int = MAX_DOCUMENT_BYTES,
+    file_name: str | None = None,
+    max_size: int | None = None,
 ) -> BytesIO:
-    """Безопасно скачать Telegram ``Document`` в ``io.BytesIO``.
+    """Безопасно скачать Telegram ``Document`` в ``io.BytesIO`` (не для таблиц).
 
-    Защищает поток обработки от:
-
-    * over-limit файлов (``DocumentTooBigError`` ДО скачивания);
-    * пропавших ``file_size`` (``None``) — доверяем aiogram, но всё равно
-      ограничиваем по ``max_size`` при копировании.
-
-    ``bot`` остаётся произвольным `aiogram.Bot`-совместимым объектом, чтобы
-    эту функцию можно было моковать в юнит-тестах без поднятия Telegram.
-
-    Возвращает позиционированный в начало ``BytesIO`` с байтами файла.
+    Для ``.xlsx`` / ``.xls`` / ``.csv`` используйте
+    :func:`download_telegram_document_to_path`.
     """
+    name = (file_name or getattr(document, "file_name", None) or "document").strip()
+    suffix = _document_suffix(name)
+    if is_spreadsheet_suffix(suffix):
+        raise ValueError(
+            "spreadsheet documents must use download_telegram_document_to_path, not BytesIO"
+        )
 
+    limit = int(max_size if max_size is not None else max_document_bytes_for(name))
     size_bytes = getattr(document, "file_size", None)
-    if size_bytes is not None and not is_document_size_ok(size_bytes):
-        raise DocumentTooBigError(int(size_bytes))
+    if size_bytes is not None and int(size_bytes) > limit:
+        raise DocumentTooBigError(int(size_bytes), file_name=name, limit_bytes=limit)
 
     file_obj = await bot.get_file(document.file_id)
     buffer = BytesIO()
-    # aiogram сам потоково пишет в `destination` — поэтому здесь не нужен
-    # ручной chunk-loop. Мы держим лимит через предварительную проверку
-    # выше + повторный замер длины после download (на случай, если у
-    # Telegram было ``file_size=None``).
     await bot.download_file(file_obj.file_path, destination=buffer)
     actual = buffer.tell()
-    if not is_document_size_ok(actual):
-        raise DocumentTooBigError(actual)
+    if actual > limit:
+        raise DocumentTooBigError(actual, file_name=name, limit_bytes=limit)
     buffer.seek(0)
     return buffer
 
@@ -265,7 +399,13 @@ def _read_xlsx_rows(path: Path, *, max_rows: int = 5000) -> list[list[str]]:
     return rows
 
 
+def read_xlsx_rows_from_path(path: Path | str, *, max_rows: int = 5000) -> list[list[str]]:
+    """Читает строки Excel с диска (без загрузки всего файла в ``BytesIO``)."""
+    return _read_xlsx_rows(Path(path), max_rows=max_rows)
+
+
 def read_xlsx_rows_from_bytes(data: bytes, *, max_rows: int = 5000) -> list[list[str]]:
+    """Читает Excel из небольшого in-memory буфера (только для тестов / микро-файлов)."""
     from openpyxl import load_workbook
 
     wb = load_workbook(BytesIO(data), read_only=True, data_only=True)
@@ -330,10 +470,18 @@ __all__ = (
     "pdf_first_page_to_data_url",
     "render_pdf_first_page_png",
     "read_xlsx_rows_from_bytes",
+    "read_xlsx_rows_from_path",
     "DEFAULT_MAX_CHARS",
     "MAX_DOCUMENT_BYTES",
+    "MAX_SPREADSHEET_BYTES",
+    "SPREADSHEET_SUFFIXES",
     "TXT_DOCUMENT_TOO_BIG",
+    "TXT_SPREADSHEET_TOO_BIG",
+    "document_too_big_message",
+    "is_spreadsheet_suffix",
+    "max_document_bytes_for",
     "is_document_size_ok",
     "DocumentTooBigError",
     "download_telegram_document_to_buffer",
+    "download_telegram_document_to_path",
 )

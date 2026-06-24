@@ -43,13 +43,15 @@ async def test_pr_c_raises_when_file_size_exceeds_limit(mocker: MockerFixture) -
     bot.download_file = mocker.AsyncMock()
     document = SimpleNamespace(
         file_id="big_pdf_id",
-        file_size=fp.MAX_DOCUMENT_BYTES + 1,  # 15 MB + 1 byte
+        file_size=fp.MAX_DOCUMENT_BYTES + 1,
+        file_name="big.pdf",
     )
 
     with pytest.raises(fp.DocumentTooBigError) as excinfo:
         await fp.download_telegram_document_to_buffer(bot, document)
 
     assert excinfo.value.size_bytes == fp.MAX_DOCUMENT_BYTES + 1
+    assert excinfo.value.limit_bytes == fp.MAX_DOCUMENT_BYTES
     # Никаких сетевых вызовов — экономим трафик ноды.
     bot.get_file.assert_not_called()
     bot.download_file.assert_not_called()
@@ -71,12 +73,13 @@ async def test_pr_c_unknown_size_triggers_post_download_validation(
         destination.write(too_big_payload)
 
     bot.download_file = mocker.AsyncMock(side_effect=_download)
-    document = SimpleNamespace(file_id="forwarded_id", file_size=None)
+    document = SimpleNamespace(file_id="forwarded_id", file_size=None, file_name="notes.txt")
 
     with pytest.raises(fp.DocumentTooBigError) as excinfo:
         await fp.download_telegram_document_to_buffer(bot, document)
 
     assert excinfo.value.size_bytes == fp.MAX_DOCUMENT_BYTES + 1
+    assert excinfo.value.limit_bytes == fp.MAX_DOCUMENT_BYTES
     # На этот раз download_file ОЖИДАЕТСЯ вызванным (file_size был unknown).
     bot.get_file.assert_awaited_once_with("forwarded_id")
     bot.download_file.assert_awaited_once()

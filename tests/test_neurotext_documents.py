@@ -103,6 +103,8 @@ async def test_run_chat_turn_table_role_with_document(repo_module) -> None:
         model_id="google/gemini-2.5-flash",
         max_tokens=640,
         use_premium_prompt=True,
+        energy_cost=20,
+        crystal_cost=10,
     )
     billing_result = SimpleNamespace(
         plan=fake_plan,
@@ -115,7 +117,11 @@ async def test_run_chat_turn_table_role_with_document(repo_module) -> None:
     async def _fake_ask(_settings, messages, **kwargs):
         user_msg = messages[-1]["content"]
         captured_prompt.append(user_msg if isinstance(user_msg, str) else str(user_msg))
-        return "Ответ по документу"
+        return {
+            "content": '{"title":"Отчёт","headers":["A","B"],"rows":[["1","2"]]}',
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+        }
 
     with patch(
         "services.use_cases.chat_turn.allow_request",
@@ -137,6 +143,9 @@ async def test_run_chat_turn_table_role_with_document(repo_module) -> None:
     ), patch(
         "services.use_cases.chat_turn.ask_ai_messages",
         new=AsyncMock(side_effect=_fake_ask),
+    ), patch(
+        "services.use_cases.chat_turn.insert_table_report",
+        new=AsyncMock(return_value=42),
     ), patch(
         "services.use_cases.chat_turn.commit_assistant_turn_queued",
         new=AsyncMock(),

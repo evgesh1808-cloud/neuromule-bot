@@ -11,7 +11,7 @@ from services import file_processor as fp
 
 
 def _stub_document(file_id: str, file_size: int | None) -> SimpleNamespace:
-    return SimpleNamespace(file_id=file_id, file_size=file_size)
+    return SimpleNamespace(file_id=file_id, file_size=file_size, file_name="notes.txt")
 
 
 def _make_bot(file_path: str, payload: bytes) -> MagicMock:
@@ -44,6 +44,7 @@ async def test_over_limit_size_raises_before_download() -> None:
     with pytest.raises(fp.DocumentTooBigError) as excinfo:
         await fp.download_telegram_document_to_buffer(bot, doc)
     assert excinfo.value.size_bytes == fp.MAX_DOCUMENT_BYTES + 1
+    assert excinfo.value.limit_bytes == fp.MAX_DOCUMENT_BYTES
     # get_file / download_file НЕ должны быть вызваны: экономим трафик.
     bot.get_file.assert_not_called()
     bot.download_file.assert_not_called()
@@ -67,6 +68,7 @@ async def test_unknown_size_still_protected_by_post_download_check() -> None:
         await fp.download_telegram_document_to_buffer(bot, doc)
     # На этот раз исключение прилетит ПОСЛЕ download (мы не знали размер заранее).
     assert excinfo.value.size_bytes == fp.MAX_DOCUMENT_BYTES + 1
+    assert excinfo.value.limit_bytes == fp.MAX_DOCUMENT_BYTES
 
 
 @pytest.mark.asyncio

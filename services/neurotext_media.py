@@ -98,8 +98,10 @@ async def telegram_document_to_neurotext_payload(
     from services.file_processor import (
         compress_extracted_text,
         download_telegram_document_to_buffer,
+        download_telegram_document_to_path,
         extract_text_from_document,
         extract_text_from_pdf,
+        is_spreadsheet_suffix,
         pdf_first_page_to_data_url,
     )
 
@@ -108,7 +110,27 @@ async def telegram_document_to_neurotext_payload(
     if suffix not in NEUROTEXT_DOCUMENT_SUFFIXES:
         raise NeurotextUnsupportedDocumentError(suffix or "<no-ext>")
 
-    buffer = await download_telegram_document_to_buffer(bot, document)
+    if is_spreadsheet_suffix(suffix):
+        file_path = await download_telegram_document_to_path(
+            bot,
+            document,
+            file_name=file_name,
+        )
+        try:
+            extracted = await extract_text_from_document(
+                file_path,
+                max_chars=max_chars,
+                compress=True,
+            )
+            return NeurotextDocumentPayload(extracted_text=extracted)
+        finally:
+            Path(file_path).unlink(missing_ok=True)
+
+    buffer = await download_telegram_document_to_buffer(
+        bot,
+        document,
+        file_name=file_name,
+    )
     raw_bytes = buffer.getvalue()
 
     if suffix == ".pdf":

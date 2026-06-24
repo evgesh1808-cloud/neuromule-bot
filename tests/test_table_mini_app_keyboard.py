@@ -32,6 +32,21 @@ def test_build_table_mini_app_url_appends_query(monkeypatch) -> None:
     assert build_table_mini_app_url(7) == "https://user.github.io/neuromule/index.html?report_id=7"
 
 
+def test_build_table_mini_app_url_appends_api_base(monkeypatch) -> None:
+    from config import settings
+
+    object.__setattr__(
+        settings,
+        "webapp_table_reports_url",
+        "https://user.github.io/neuromule/?report_id={report_id}",
+    )
+    object.__setattr__(settings, "mini_app_api_base_url", "https://api.example.com")
+    assert (
+        build_table_mini_app_url(42)
+        == "https://user.github.io/neuromule/?report_id=42&api_base=https://api.example.com"
+    )
+
+
 def test_get_table_mini_app_keyboard_always_with_report_id() -> None:
     kb = get_table_mini_app_keyboard(42)
     assert kb is not None

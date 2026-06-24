@@ -16,6 +16,7 @@ from typing import Any
 
 from config import Settings
 from services import conversation as conv
+from services import metrics
 from services.ai_text import StreamCallback, ask_ai_messages, estimate_messages_prompt_tokens
 from services.dialog_write_worker import commit_assistant_turn_queued
 from services.neurotext_media import build_openrouter_user_content
@@ -25,6 +26,7 @@ from services.billing.chat_pipeline import prepare_openrouter_chat_messages
 from services.billing.store import refund_charge
 from services.repository import dialog_append, dialog_pop_last_for_user, insert_table_report
 from services.table_json import canonicalize_table_json
+from services.table_text_response import extract_table_ai_insights
 from services.telegram_safe_text import (
     markdown_tables_to_telegram_html,
     markdown_to_html,
@@ -52,13 +54,17 @@ def clean_markdown_to_html(text: str) -> str:
     return repair_telegram_html(normalize_telegram_list_markup(text))
 
 
-def format_assistant_for_role(text: str, text_role: str) -> str:
+def format_assistant_for_role(text: str, text_role: str, *, for_stream: bool = False) -> str:
     """Финальная вёрстка ответа с учётом роли Нейротекста."""
     role_id = (text_role or "standard").strip().lower()
     if role_id == "table_generator":
         converted = markdown_tables_to_telegram_html(strip_redacted_thinking(text))
         return repair_telegram_html(converted)
-    return clean_markdown_to_html(text)
+    result = clean_markdown_to_html(text)
+    if for_stream:
+        # Автозакрытие <b>/<i>/<code>/<pre> в частичных SSE-чанках — без BadRequest.
+        result = repair_telegram_html(result)
+    return result
 
 
 class ChatTurnOutcome(str, Enum):
@@ -72,6 +78,7 @@ class ChatTurnOutcome(str, Enum):
     DAILY_LIMIT_EXCEEDED = "daily_limit_exceeded"
     CONTEXT_TOO_LARGE = "context_too_large"
     AI_FAILED = "ai_failed"
+    TABLE_JSON_INVALID = "table_json_invalid"
 
 
 @dataclass(frozen=True)
@@ -84,6 +91,7 @@ class ChatTurnResult:
         assistant_message — текст ответа модели; заполнено только при ``SUCCESS``.
         table_raw_json — канонический JSON таблицы для Excel/Mini App API.
         table_report_id — id в ``table_reports`` для ``GET /api/v1/reports/{id}``.
+        table_ai_insights — бизнес-выводы модели вне JSON (для «Один экран»).
     """
 
     outcome: ChatTurnOutcome
@@ -92,6 +100,11 @@ class ChatTurnResult:
     effective_text_role: str | None = None
     table_raw_json: str | None = None
     table_report_id: int | None = None
+    table_ai_insights: str | None = None
+    table_seo_xlsx_bytes: bytes | None = None
+    table_worker: object | None = None  # ``TableWorkerResult`` при локальной сборке
+    table_degraded: bool = False
+    table_degradation_notice: str | None = None
 
 
 def _apply_user_content_override(
@@ -103,6 +116,45 @@ def _apply_user_content_override(
         if payload[i].get("role") == "user":
             payload[i]["content"] = content
             return
+
+
+def _record_openrouter_usage(
+    *,
+    user_id: int,
+    model_id: str,
+    role: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+) -> None:
+    """Фиксирует фактический расход токенов OpenRouter (метрики + лог для аналитики)."""
+    labels = {"model": model_id, "role": role}
+    metrics.observe("openrouter.prompt_tokens", float(prompt_tokens), labels)
+    metrics.observe("openrouter.completion_tokens", float(completion_tokens), labels)
+    if prompt_tokens or completion_tokens:
+        logger.info(
+            "run_chat_turn: openrouter usage user_id=%s role=%s model=%s "
+            "prompt_tokens=%s completion_tokens=%s",
+            user_id,
+            role,
+            model_id,
+            prompt_tokens,
+            completion_tokens,
+        )
+
+
+def _record_chat_success_billing(
+    *,
+    role: str,
+    energy_cost: int,
+    crystal_cost: int,
+) -> None:
+    """Успешная генерация и списание валюты — для /admin_stats."""
+    labels = {"role": role}
+    metrics.incr("chat.success", labels)
+    if energy_cost > 0:
+        metrics.incr("billing.spent_energy", labels, value=energy_cost)
+    if crystal_cost > 0:
+        metrics.incr("billing.spent_crystals", labels, value=crystal_cost)
 
 
 async def run_chat_turn(
@@ -176,6 +228,7 @@ async def run_chat_turn(
     prepare_openrouter_chat_messages(
         payload,
         use_premium_prompt=plan.use_premium_prompt,
+        text_role=effective_role,
     )
 
     est_tokens = estimate_messages_prompt_tokens(payload, settings=settings)
@@ -192,6 +245,10 @@ async def run_chat_turn(
         except Exception:
             logger.debug("send_typing failed", exc_info=True)
 
+    is_table_role = (effective_role or "").strip().lower() == "table_generator"
+    if is_table_role:
+        stream_callback = None
+
     # Основная модель из биллинга + резерв из ``free_models``, если OpenRouter
     # отклонит ID (смена каталога моделей на стороне провайдера).
     model_chain: list[str] = []
@@ -204,14 +261,17 @@ async def run_chat_turn(
     if stream_callback is not None:
         async def _safe_stream_callback(full_text: str, done: bool) -> None:
             try:
-                await stream_callback(format_assistant_for_role(full_text, effective_role), done)
+                await stream_callback(
+                    format_assistant_for_role(full_text, effective_role, for_stream=True),
+                    done,
+                )
             except Exception:
                 # Битый HTML в стриме не должен валить весь ход чата.
                 logger.debug("stream_callback failed (ignored)", exc_info=True)
         safe_stream_callback = _safe_stream_callback
 
     try:
-        ans = await ask_ai_messages(
+        completion = await ask_ai_messages(
             settings,
             payload,
             timeout=settings.openrouter_timeout_sec,
@@ -231,42 +291,74 @@ async def run_chat_turn(
         await rollback_last(settings, user_id)
         return ChatTurnResult(outcome=ChatTurnOutcome.AI_FAILED)
 
-    raw_answer = strip_redacted_thinking(ans)
+    content = completion.get("content") or ""
+    try:
+        prompt_tokens = int(completion.get("prompt_tokens") or 0)
+        completion_tokens = int(completion.get("completion_tokens") or 0)
+    except (TypeError, ValueError):
+        prompt_tokens = 0
+        completion_tokens = 0
+
+    _record_openrouter_usage(
+        user_id=user_id,
+        model_id=plan.model_id,
+        role=effective_role,
+        prompt_tokens=max(prompt_tokens, 0),
+        completion_tokens=max(completion_tokens, 0),
+    )
+
+    raw_answer = strip_redacted_thinking(content)
     is_table_role = (effective_role or "").strip().lower() == "table_generator"
 
     if is_table_role:
-        table_json = canonicalize_table_json(raw_answer)
-        if not table_json:
+        try:
+            table_json = canonicalize_table_json(raw_answer)
+            if not table_json:
+                raise ValueError("invalid or empty table JSON")
+
+            ai_insights = extract_table_ai_insights(raw_answer)
+            await commit_assistant_turn_queued(user_id, table_json, settings.dialog_prune_keep)
+            report_id = await insert_table_report(user_id, table_json)
+            conv.schedule_memory_refresh(settings, user_id)
+            _record_chat_success_billing(
+                role=effective_role,
+                energy_cost=plan.energy_cost,
+                crystal_cost=plan.crystal_cost,
+            )
+            return ChatTurnResult(
+                outcome=ChatTurnOutcome.SUCCESS,
+                assistant_message=None,
+                user_notice=billing_result.notice,
+                effective_text_role=effective_role,
+                table_raw_json=table_json,
+                table_report_id=report_id,
+                table_ai_insights=ai_insights,
+            )
+        except Exception:
             logger.warning(
-                "run_chat_turn: invalid table JSON user_id=%s raw=%s",
+                "run_chat_turn: table JSON pipeline failed user_id=%s raw=%s",
                 user_id,
                 raw_answer[:500],
+                exc_info=True,
             )
             await dialog_pop_last_for_user(user_id)
             if charge_id:
                 await refund_charge(charge_id)
             await rollback_last(settings, user_id)
-            return ChatTurnResult(outcome=ChatTurnOutcome.AI_FAILED)
+            return ChatTurnResult(outcome=ChatTurnOutcome.TABLE_JSON_INVALID)
 
-        await commit_assistant_turn_queued(user_id, table_json, settings.dialog_prune_keep)
-        report_id = await insert_table_report(user_id, table_json)
-        conv.schedule_memory_refresh(settings, user_id)
-        return ChatTurnResult(
-            outcome=ChatTurnOutcome.SUCCESS,
-            assistant_message=None,
-            user_notice=billing_result.notice,
-            effective_text_role=effective_role,
-            table_raw_json=table_json,
-            table_report_id=report_id,
-        )
-
-    ans_trim = format_assistant_for_role(ans, effective_role)
+    ans_trim = format_assistant_for_role(content, effective_role)
     if plan.max_tokens <= 1000:
         ans_trim = ans_trim[: min(settings.chat_max_message_chars, 4090)]
     else:
         ans_trim = ans_trim[: settings.chat_max_message_chars]
     await commit_assistant_turn_queued(user_id, ans_trim, settings.dialog_prune_keep)
     conv.schedule_memory_refresh(settings, user_id)
+    _record_chat_success_billing(
+        role=effective_role,
+        energy_cost=plan.energy_cost,
+        crystal_cost=plan.crystal_cost,
+    )
     return ChatTurnResult(
         outcome=ChatTurnOutcome.SUCCESS,
         assistant_message=ans_trim,

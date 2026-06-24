@@ -190,6 +190,153 @@ def text_role_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def create_table_subroles_keyboard() -> InlineKeyboardMarkup:
+    """Промежуточное меню под-режимов table_generator (компактная сетка 2×2)."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📊 Базовый отчет",
+                    callback_data=f"{msg.CB_TABLE_SUBROLE_PREFIX}standard_report",
+                ),
+                InlineKeyboardButton(
+                    text="💼 Аналитика WB/Ozon",
+                    callback_data=f"{msg.CB_TABLE_SUBROLE_PREFIX}wb_ozon_finance",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📈 Маркетинг",
+                    callback_data=f"{msg.CB_TABLE_SUBROLE_PREFIX}traffic_marketing",
+                ),
+                InlineKeyboardButton(
+                    text="📝 SEO (Excel)",
+                    callback_data=f"{msg.CB_TABLE_SUBROLE_PREFIX}mass_seo_generation",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⬅️ Назад в меню ролей",
+                    callback_data=msg.CB_BACK_TO_ROLES_MENU,
+                ),
+            ],
+        ]
+    )
+
+
+LIFESTYLE_SUBROLES: tuple[tuple[str, str], ...] = (
+    ("📱 Блогер", "blogger_content"),
+    ("🧠 ИИ-Коуч", "psychologist_coach"),
+    ("🏃‍♂️ Фитнес", "fitness_nutrition"),
+    ("🍳 ИИ-Шеф", "chef_recipes"),
+)
+
+
+def create_lifestyle_subroles_keyboard(
+    *,
+    availability: dict[str, object] | None = None,
+    active_role_id: str = "",
+) -> InlineKeyboardMarkup:
+    """Подменю «Лайфстайл & Блоги» — 2×2 + назад."""
+    avail = availability or {}
+    rows: list[list[InlineKeyboardButton]] = []
+    pair: list[InlineKeyboardButton] = []
+    for label, role_id in LIFESTYLE_SUBROLES:
+        a = avail.get(role_id)
+        prefix = ""
+        suffix = ""
+        locked = bool(getattr(a, "locked", False)) if a is not None else False
+        if locked:
+            prefix = "🔒 "
+        if role_id == active_role_id and not locked:
+            suffix = " ✅"
+        pair.append(
+            InlineKeyboardButton(
+                text=f"{prefix}{label}{suffix}",
+                callback_data=f"{msg.CB_SET_ROLE_PREFIX}{role_id}",
+            )
+        )
+        if len(pair) == 2:
+            rows.append(pair)
+            pair = []
+    if pair:
+        rows.append(pair)
+    rows.append([
+        InlineKeyboardButton(
+            text="⬅️ Назад в меню ролей",
+            callback_data=msg.CB_BACK_TO_ROLES_MENU,
+        ),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _role_btn(
+    label: str,
+    callback_data: str,
+    *,
+    locked: bool = False,
+    active: bool = False,
+) -> InlineKeyboardButton:
+    prefix = "🔒 " if locked else ""
+    suffix = " ✅" if active and not locked else ""
+    return InlineKeyboardButton(text=f"{prefix}{label}{suffix}", callback_data=callback_data)
+
+
+async def create_roles_menu_keyboard(user_id: int, active_role_id: str) -> InlineKeyboardMarkup:
+    """Главное меню ролей NeuroMule (коммерческая сетка)."""
+    from services.use_cases.neurotext_turn import get_role_availability_map
+
+    avail_map = await get_role_availability_map(user_id)
+    active = (active_role_id or "standard").strip().lower()
+
+    def _a(role_id: str):
+        return avail_map.get(role_id)
+
+    std = _a("standard")
+    summ = _a("summary")
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                _role_btn(
+                    "⚪ Стандарт",
+                    f"{msg.CB_SET_ROLE_PREFIX}standard",
+                    locked=bool(std and std.locked),
+                    active=active == "standard",
+                ),
+                _role_btn(
+                    "📄 Саммари",
+                    f"{msg.CB_SET_ROLE_PREFIX}summary",
+                    locked=bool(summ and summ.locked),
+                    active=active == "summary",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📊 ИИ-Аналитика & Таблицы 📈",
+                    callback_data=msg.CB_SHOW_TABLE_SUBCATEGORIES,
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🎙️ Сценарии & Подкасты 🎧",
+                    callback_data=f"{msg.CB_SET_ROLE_PREFIX}podcast_doc",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="✨ Лайфстайл & Блоги",
+                    callback_data=msg.CB_SHOW_LIFESTYLE_SUBCATEGORIES,
+                ),
+            ],
+            [
+                InlineKeyboardButton(text=msg.TXT_NEUROTEXT_CLEAR_BTN, callback_data=msg.CB_NEW_DIALOG),
+                InlineKeyboardButton(text="⬅️ Назад", callback_data=msg.CB_BACK_TO_TOOLS),
+            ],
+        ]
+    )
+
+
 def photo_tools_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[

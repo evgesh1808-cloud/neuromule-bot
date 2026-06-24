@@ -13,6 +13,8 @@ from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
+_FALLBACK_ASSISTANT_TEXT = "ℹ️ Технический Fast-Path отчет без текстового анализа ИИ."
+
 _queue: asyncio.Queue["_CommitJob"] | None = None
 _worker_task: asyncio.Task[None] | None = None
 _worker_lock = asyncio.Lock()
@@ -24,6 +26,12 @@ class _CommitJob:
     assistant_text: str
     prune_keep: int
     done: asyncio.Future[None]
+
+
+def _normalize_assistant_text(text: str | None) -> str:
+    """Гарантирует NOT NULL для ``dialog_messages.content``."""
+    cleaned = (text or "").strip()
+    return cleaned if cleaned else _FALLBACK_ASSISTANT_TEXT
 
 
 async def start_dialog_write_worker() -> None:
@@ -48,8 +56,9 @@ async def start_dialog_write_worker() -> None:
         while True:
             job = await _queue.get()
             try:
+                text_to_save = _normalize_assistant_text(job.assistant_text)
                 async with _worker_lock:
-                    await repo.dialog_append(job.user_id, "assistant", job.assistant_text)
+                    await repo.dialog_append(job.user_id, "assistant", text_to_save)
                     await repo.dialog_prune_keep_last(job.user_id, job.prune_keep)
                 if not job.done.done():
                     job.done.set_result(None)
@@ -67,13 +76,15 @@ async def start_dialog_write_worker() -> None:
     _worker_task = asyncio.create_task(_run(), name="dialog_write_worker")
 
 
-async def commit_assistant_turn_queued(user_id: int, assistant_text: str, prune_keep: int) -> None:
+async def commit_assistant_turn_queued(user_id: int, assistant_text: str | None, prune_keep: int) -> None:
     """
     Сохраняет реплику ассистента и prune: через очередь воркера или напрямую (если воркер не запущен).
 
     Вызывающий **await**-ит завершение записи — история в БД согласована до возврата из use-case.
     """
     from config import settings
+
+    assistant_text = _normalize_assistant_text(assistant_text)
 
     if not settings.dialog_write_worker_enabled or _queue is None:
         from services.dialog_history import serialized_assistant_commit

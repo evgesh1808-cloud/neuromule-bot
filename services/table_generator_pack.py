@@ -1,4 +1,4 @@
-"""Локальная сборка отчёта table_generator: HTML, Excel, Smart Chart (без OpenRouter)."""
+"""Локальная сборка отчёта table_generator: Excel, Smart Chart (без OpenRouter)."""
 
 from __future__ import annotations
 
@@ -7,11 +7,22 @@ import re
 from dataclasses import dataclass
 from io import BytesIO
 
+try:
+    import matplotlib
+
+    matplotlib.use("Agg")
+except ImportError:
+    matplotlib = None  # type: ignore[assignment,misc]
+
 from services.table_chart_types import ChartType
-from services.table_json import TableJsonPayload, parse_table_json_response
+from services.table_json import TableJsonPayload, parse_table_json_response, table_payload_has_data
 from services.table_markdown import (
     normalize_table_rows,
 )
+from services.table_xlsx_preprocess import pick_telegram_preview_rows, preprocess_xlsx_rows
+from services.table_xlsx_flow import build_wb_telegram_preview_html
+from services.table_text_response import build_table_one_screen_html, build_wb_finance_express_html
+from services.table_wb_chart import extract_wb_sales_series, try_render_wb_chart_png
 from services.telegram_safe_text import _escape_telegram_html, repair_telegram_html
 
 logger = logging.getLogger(__name__)
@@ -39,35 +50,11 @@ _TIME_AXIS_KEYWORDS: frozenset[str] = frozenset(
 @dataclass(frozen=True)
 class TableGeneratorPack:
     rows: list[list[str]]
-    html_document: str
     telegram_caption_html: str
     xlsx_bytes: bytes
     chart_png_bytes: bytes | None
     chart_type: ChartType
-
-
-def _escape_html_cell(text: str) -> str:
-    return _escape_telegram_html((text or "").strip())
-
-
-def markdown_table_to_html_document(rows: list[list[str]]) -> str:
-    rows = normalize_table_rows(rows)
-    if not rows:
-        return ""
-    parts = [
-        '<table border="1" cellpadding="6" cellspacing="0">',
-        "<thead><tr>",
-    ]
-    for cell in rows[0]:
-        parts.append(f"<th><b>{_escape_html_cell(cell)}</b></th>")
-    parts.append("</tr></thead><tbody>")
-    for row in rows[1:]:
-        parts.append("<tr>")
-        for cell in row:
-            parts.append(f"<td>{_escape_html_cell(cell)}</td>")
-        parts.append("</tr>")
-    parts.append("</tbody></table>")
-    return "".join(parts)
+    calculated_total: float = 0.0
 
 
 def markdown_table_to_telegram_caption(
@@ -236,6 +223,10 @@ def render_chart_png_bytes(
     *,
     context_text: str = "",
 ) -> tuple[bytes | None, ChartType]:
+    wb_png = try_render_wb_chart_png(rows)
+    if wb_png is not None:
+        return wb_png, ChartType.BAR
+
     resolved = _resolve_chart_type(rows, chart_type, context_text=context_text)
     series = _extract_series(rows)
     if series is None:
@@ -243,9 +234,6 @@ def render_chart_png_bytes(
     labels, values, header = series
 
     try:
-        import matplotlib
-
-        matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except ImportError:
         logger.warning("matplotlib not installed — chart skipped")
@@ -295,27 +283,87 @@ def build_chart_png_bytes(
     return png
 
 
-def build_xlsx_bytes(rows: list[list[str]]) -> bytes:
+def build_xlsx_bytes(rows: list[list[str]]) -> tuple[bytes, float]:
     from openpyxl import Workbook
-    from openpyxl.styles import Font
+    from openpyxl.styles import Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    from services.table_number_parse import prepare_excel_value
+    from services.table_text_response import compute_table_column_metrics
 
     rows = normalize_table_rows(rows)
+    metrics = compute_table_column_metrics(rows)
+    calculated_total = 0.0
+
     wb = Workbook()
     ws = wb.active
     ws.title = "Отчёт"
-    bold = Font(bold=True)
-    for r_idx, row in enumerate(rows, start=1):
-        for c_idx, cell in enumerate(row, start=1):
-            ws.cell(row=r_idx, column=c_idx, value=cell)
-            if r_idx == 1:
-                ws.cell(row=r_idx, column=c_idx).font = bold
+
+    header_font = Font(bold=True)
+    total_fill = PatternFill(fill_type="solid", fgColor="E8F5E9")
+    total_label_font = Font(bold=True)
+    total_value_font = Font(bold=True, underline="double")
+    money_number_format = "#,##0"
+
+    if not rows:
+        buf = BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        return buf.getvalue(), 0.0
+
+    headers = metrics.headers if metrics else rows[0]
+    data_rows = metrics.data_rows if metrics else rows[1:]
+    value_col = metrics.value_col if metrics else -1
+    label_col = metrics.label_col if metrics else 0
+    add_total_row = metrics is not None and len(metrics.items) > 0
+
+    ncols = max(len(headers), max((len(r) for r in data_rows), default=0))
+
+    ws.append([prepare_excel_value(h) for h in headers])
+    for c_idx in range(1, ncols + 1):
+        ws.cell(row=1, column=c_idx).font = header_font
+
+    for row in data_rows:
+        padded = list(row) + [""] * max(0, ncols - len(row))
+        excel_row: list[object] = []
+        for c_idx, raw in enumerate(padded[:ncols]):
+            prepared = prepare_excel_value(raw)
+            excel_row.append(prepared)
+            if c_idx == value_col and isinstance(prepared, (int, float)):
+                calculated_total += float(prepared)
+        ws.append(excel_row)
+        row_idx = ws.max_row
+        for c_idx in range(ncols):
+            cell = ws.cell(row=row_idx, column=c_idx + 1)
+            if isinstance(cell.value, (int, float)):
+                cell.number_format = money_number_format
+
+    if add_total_row and metrics is not None:
+        last_data_row = 1 + len(data_rows)
+        total_row_idx = last_data_row + 1
+        if abs(calculated_total - round(calculated_total)) < 1e-9:
+            total_cell_value: int | float = int(round(calculated_total))
+        else:
+            total_cell_value = round(calculated_total, 2)
+
+        for c_idx in range(1, ncols + 1):
+            cell = ws.cell(row=total_row_idx, column=c_idx)
+            cell.fill = total_fill
+            if c_idx == label_col + 1:
+                cell.value = "Итого"
+                cell.font = total_label_font
+            elif c_idx == value_col + 1:
+                cell.value = total_cell_value
+                cell.font = total_value_font
+                cell.number_format = money_number_format
+
     buf = BytesIO()
     wb.save(buf)
     buf.seek(0)
-    return buf.getvalue()
+    return buf.getvalue(), calculated_total
 
 
-def build_xlsx_bytes_from_table(headers: list[str], data_rows: list[list[str]]) -> bytes:
+def build_xlsx_bytes_from_table(headers: list[str], data_rows: list[list[str]]) -> tuple[bytes, float]:
     """Сборка Excel из ``headers`` + ``rows`` (без regex/Markdown)."""
     rows = normalize_table_rows([headers, *data_rows])
     return build_xlsx_bytes(rows)
@@ -327,23 +375,54 @@ def _build_pack_from_rows(
     title: str | None = None,
     context_text: str = "",
     chart_type: ChartType = ChartType.AUTO,
+    telegram_rows: list[list[str]] | None = None,
+    payload: TableJsonPayload | None = None,
+    ai_insights: str | None = None,
+    table_subrole: str | None = None,
 ) -> TableGeneratorPack | None:
+    from services.table_subrole_types import normalize_table_subrole
+
     rows = normalize_table_rows(rows)
     if not rows:
         return None
-    html_doc = markdown_table_to_html_document(rows)
-    caption = markdown_table_to_telegram_caption(rows, title=title)
+    preview_rows = telegram_rows if telegram_rows else pick_telegram_preview_rows(rows)
+    xlsx_bytes, calculated_total = build_xlsx_bytes(rows)
+    subrole = normalize_table_subrole(table_subrole)
+    caption: str | None = None
+
+    if subrole == "wb_ozon_finance" and calculated_total > 0:
+        caption = build_wb_finance_express_html(calculated_total)
+    elif ai_insights is not None and payload is not None:
+        caption = build_table_one_screen_html(
+            payload,
+            ai_insights=ai_insights,
+            total_override=calculated_total,
+            table_subrole=table_subrole,
+        )
+    if not caption:
+        caption = build_wb_telegram_preview_html(
+            rows,
+            title=title or "Отчёт NeuroMule",
+            total_rub_override=calculated_total,
+        )
+    if not caption:
+        caption = markdown_table_to_telegram_caption(preview_rows, title=title)
+        if calculated_total > 0:
+            from services.table_number_parse import format_rub_total
+
+            caption = (
+                f"💰 <b>ИТОГО:</b> {format_rub_total(calculated_total)}\n{caption}"
+            )
     if len(caption) > _CAPTION_MAX:
         caption = caption[: _CAPTION_MAX - 1] + "…"
-    xlsx = build_xlsx_bytes(rows)
     chart_png, resolved = render_chart_png_bytes(rows, chart_type, context_text=context_text)
     return TableGeneratorPack(
         rows=rows,
-        html_document=html_doc,
         telegram_caption_html=caption,
-        xlsx_bytes=xlsx,
+        xlsx_bytes=xlsx_bytes,
         chart_png_bytes=chart_png,
         chart_type=resolved,
+        calculated_total=calculated_total,
     )
 
 
@@ -352,17 +431,26 @@ def build_table_generator_pack(
     *,
     context_text: str = "",
     chart_type: ChartType = ChartType.AUTO,
+    ai_insights: str | None = None,
+    table_subrole: str | None = None,
 ) -> TableGeneratorPack | None:
     """Собирает отчёт из JSON-ответа OpenRouter (роль table_generator)."""
-    payload = parse_table_json_response(raw_json)
-    if payload is None:
+    try:
+        payload = parse_table_json_response(raw_json)
+        if payload is None or not table_payload_has_data(payload):
+            return None
+        return _build_pack_from_rows(
+            payload.to_rows_with_header(),
+            title=payload.title,
+            context_text=context_text,
+            chart_type=chart_type,
+            payload=payload,
+            ai_insights=ai_insights,
+            table_subrole=table_subrole,
+        )
+    except Exception:
+        logger.exception("build_table_generator_pack failed")
         return None
-    return _build_pack_from_rows(
-        payload.to_rows_with_header(),
-        title=payload.title,
-        context_text=context_text,
-        chart_type=chart_type,
-    )
 
 
 def build_table_generator_pack_from_payload(
@@ -385,11 +473,21 @@ def build_table_generator_pack_from_rows(
     context_text: str = "",
     chart_type: ChartType = ChartType.AUTO,
     title: str | None = None,
+    preprocess: bool = True,
 ) -> TableGeneratorPack | None:
     """Локальная сборка из строк (например, после чтения .xlsx)."""
+    display_title = title
+    telegram_rows: list[list[str]] | None = None
+    matrix = rows
+    if preprocess:
+        pre = preprocess_xlsx_rows(rows, title=title or "Отчёт NeuroMule")
+        matrix = pre.rows
+        display_title = pre.title
+        telegram_rows = pre.telegram_rows
     return _build_pack_from_rows(
-        rows,
-        title=title,
+        matrix,
+        title=display_title,
         context_text=context_text,
         chart_type=chart_type,
+        telegram_rows=telegram_rows,
     )

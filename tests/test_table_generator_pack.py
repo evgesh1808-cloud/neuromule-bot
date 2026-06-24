@@ -12,8 +12,8 @@ from services.table_generator_pack import (
     build_table_generator_pack_from_rows,
     build_xlsx_bytes,
     build_xlsx_bytes_from_table,
-    markdown_table_to_html_document,
 )
+from services.table_mini_app_html import markdown_table_to_html_document
 from services.table_json import parse_table_json_response
 
 SAMPLE_JSON = (
@@ -38,16 +38,20 @@ def test_parse_json_to_rows() -> None:
 def test_markdown_table_to_html_document() -> None:
     payload = parse_table_json_response(SAMPLE_JSON)
     assert payload is not None
-    html = markdown_table_to_html_document(payload.to_rows_with_header())
-    assert "<table" in html
-    assert "<th><b>Месяц</b></th>" in html
-    assert "<td>Янв</td>" in html
+    html = markdown_table_to_html_document(payload.to_rows_with_header(), title="Доход")
+    assert "<!DOCTYPE html>" in html
+    assert "tg-theme-bg-color" in html
+    assert "position: sticky" in html
+    assert "PAGE_SIZE" in html
+    assert "Доход" in html
+    assert "Месяц" in html
+    assert "Янв" in html
 
 
 def test_build_xlsx_bytes_from_table() -> None:
     payload = parse_table_json_response(SAMPLE_JSON)
     assert payload is not None
-    data = build_xlsx_bytes_from_table(payload.headers, payload.rows)
+    data, total = build_xlsx_bytes_from_table(payload.headers, payload.rows)
     assert data[:2] == b"PK"
     from openpyxl import load_workbook
 
@@ -59,8 +63,60 @@ def test_build_xlsx_bytes_from_table() -> None:
 
 def test_build_xlsx_bytes_legacy_rows() -> None:
     rows = [["Месяц", "Доход"], ["Янв", "1200"]]
-    data = build_xlsx_bytes(rows)
+    data, total = build_xlsx_bytes(rows)
+    assert total == 1200
     assert data[:2] == b"PK"
+
+
+def test_build_xlsx_total_row_formula_and_styles() -> None:
+    from openpyxl import load_workbook
+
+    rows = [
+        ["Месяц", "Выручка"],
+        ["Январь", "60000"],
+        ["Февраль", "55000"],
+        ["Март", "70000"],
+    ]
+    data, total = build_xlsx_bytes(rows)
+    assert total == 185_000
+    wb = load_workbook(BytesIO(data))
+    ws = wb.active
+
+    assert ws.cell(1, 1).value == "Месяц"
+    assert ws.cell(2, 2).value == 60000
+    assert ws.cell(5, 1).value == "Итого"
+    assert ws.cell(5, 2).value == 185_000
+    assert ws.cell(5, 1).font.bold is True
+    assert ws.cell(5, 2).font.bold is True
+    assert ws.cell(5, 2).font.underline == "double"
+    assert ws.cell(5, 1).fill.fill_type == "solid"
+
+
+def test_xlsx_total_matches_telegram_one_screen() -> None:
+    from services.table_json import parse_table_json_response
+    from services.table_text_response import build_table_one_screen_html, compute_table_column_metrics
+
+    raw = (
+        '{"title":"Выручка","headers":["Месяц","Выручка"],'
+        '"rows":[["Январь","60000"],["Февраль","55000"],["Март","70000"]]}'
+    )
+    payload = parse_table_json_response(raw)
+    assert payload is not None
+    metrics = compute_table_column_metrics(payload.to_rows_with_header())
+    assert metrics is not None
+    assert metrics.total == 185_000
+
+    html = build_table_one_screen_html(payload, ai_insights="")
+    assert "185,000" in html
+
+    pack = build_table_generator_pack(raw, ai_insights="")
+    assert pack is not None
+    assert pack.calculated_total == 185_000
+    from openpyxl import load_workbook
+
+    wb = load_workbook(BytesIO(pack.xlsx_bytes))
+    ws = wb.active
+    assert ws.cell(5, 2).value == 185_000
 
 
 def test_build_table_generator_pack_with_chart() -> None:
@@ -103,6 +159,8 @@ async def test_run_chat_turn_table_returns_raw_json(repo_module, monkeypatch) ->
         model_id="google/gemini-2.5-flash",
         max_tokens=1024,
         use_premium_prompt=True,
+        energy_cost=20,
+        crystal_cost=0,
     )
     billing_result = SimpleNamespace(
         plan=fake_plan,
@@ -127,7 +185,13 @@ async def test_run_chat_turn_table_returns_raw_json(repo_module, monkeypatch) ->
         ),
     ), patch(
         "services.use_cases.chat_turn.ask_ai_messages",
-        new=AsyncMock(return_value=SAMPLE_JSON),
+        new=AsyncMock(
+            return_value={
+                "content": SAMPLE_JSON,
+                "prompt_tokens": 100,
+                "completion_tokens": 50,
+            }
+        ),
     ) as ask_mock, patch(
         "services.use_cases.chat_turn.commit_assistant_turn_queued",
         new=AsyncMock(),

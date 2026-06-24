@@ -130,7 +130,7 @@ async def _generate_inline_answer(query_text: str) -> str:
         {"role": "user", "content": query_text},
     ]
 
-    return await asyncio.wait_for(
+    completion = await asyncio.wait_for(
         ask_ai_messages(
             app_settings,
             payload,
@@ -139,6 +139,7 @@ async def _generate_inline_answer(query_text: str) -> str:
         ),
         timeout=INLINE_AI_TIMEOUT_SEC + 0.5,
     )
+    return (completion.get("content") or "").strip()
 
 
 # ─── stubs (заглушки в результатах inline) ─────────────────────────────────

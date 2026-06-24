@@ -68,7 +68,11 @@ from platforms.telegram_utils import (
     send_activation_success,
     send_start_paywall_screen,
 )
-from services import hd_service
+from services.admin_openrouter_stats import (
+    build_financial_pulse_report,
+    format_financial_pulse_html,
+    is_financial_stats_owner,
+)
 from services import payments_catalog as paycat
 from services.billing import billing
 from services.billing.store import refund_charge
@@ -542,6 +546,18 @@ async def _collect_family_members_with_hd(owner_id: int) -> list[tuple[int, str]
 @router.message(Command("match"))
 async def cmd_match(message: Message, state: FSMContext) -> None:
     await start_match_flow(message, message.from_user.id, state)
+
+@router.message(Command("admin_stats"))
+async def cmd_admin_stats(message: Message) -> None:
+    """Секретный финансовый пульс OpenRouter — только владелец (ADMIN_TELEGRAM_ID)."""
+    uid = message.from_user.id if message.from_user else 0
+    if not is_financial_stats_owner(uid):
+        return
+    report = build_financial_pulse_report()
+    text = format_financial_pulse_html(report)
+    logger.info("admin_stats_pulse owner_id=%s", uid)
+    await message.answer(text, parse_mode=ParseMode.HTML)
+
 
 @router.message(Command("admin"))
 @router.message(F.text == msg.ADMIN_MAIN_MENU_BUTTON)

@@ -1,4 +1,4 @@
-"""In-memory кэш данных таблицы для бесплатного переключения графиков."""
+"""Лёгкий in-memory кэш для переключения графиков (без матриц и xlsx в RAM)."""
 
 from __future__ import annotations
 
@@ -12,16 +12,14 @@ _SESSION_TTL_SEC = 6 * 60 * 60  # 6 ч
 
 @dataclass
 class TableSession:
+    """Только метаданные сессии; строки таблицы — в ``table_reports`` (SQLite)."""
+
     user_id: int
     chat_id: int
-    rows: list[list[str]]
-    caption_html: str
-    xlsx_bytes: bytes
     chart_message_id: int
     active_chart: ChartType
-    context_text: str
+    report_id: int
     created_at: float
-    report_id: int | None = None
 
 
 _sessions: dict[int, TableSession] = {}

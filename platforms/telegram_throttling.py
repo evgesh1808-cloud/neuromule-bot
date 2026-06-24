@@ -77,7 +77,8 @@ def _user_id_of(event: TelegramObject) -> int | None:
 def _is_table_chart_callback(event: TelegramObject) -> bool:
     if not isinstance(event, CallbackQuery):
         return False
-    return (event.data or "").startswith(msg.CB_TABLE_CHART_PREFIX)
+    data = event.data or ""
+    return data.startswith(msg.CB_TABLE_CHART_PREFIX) or data.startswith(msg.CB_WB_CHART_PREFIX)
 
 
 def _is_whitelisted_callback(event: TelegramObject) -> bool:

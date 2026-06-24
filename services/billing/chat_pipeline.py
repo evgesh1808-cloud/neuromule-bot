@@ -73,12 +73,14 @@ def prepare_openrouter_chat_messages(
     messages: list[dict[str, str]],
     *,
     use_premium_prompt: bool,
+    text_role: str | None = None,
 ) -> list[dict[str, str]]:
     """Финальная подготовка payload чата непосредственно перед OpenRouter."""
-    inject_compliance_rules_into_last_user_message(
-        messages,
-        use_premium_prompt=use_premium_prompt,
-    )
+    if (text_role or "").strip().lower() != "table_generator":
+        inject_compliance_rules_into_last_user_message(
+            messages,
+            use_premium_prompt=use_premium_prompt,
+        )
     return messages
 
 

@@ -43,3 +43,5 @@ def test_canonicalize_compact_json() -> None:
 def test_parse_invalid_returns_none() -> None:
     assert parse_table_json_response("| A | B |") is None
     assert canonicalize_table_json("not json") is None
+    assert parse_table_json_response('{"title":"Rrr","headers":["A"],"rows":[]}') is None
+    assert parse_table_json_response('{"title":"Rrr","headers":["A"],"rows":[["",""]]}') is None

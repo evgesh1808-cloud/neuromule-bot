@@ -1,38 +1,30 @@
-name: Deploy NeuroMul to Timeweb
+name: Deploy Mini App to GitHub Pages
 
 on:
   push:
     branches:
-      - main  # Автоматический запуск при пуше в ветку main
+      - main
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pages-deploy
+  cancel-in-progress: true
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4  # Работает на Node.js 24
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Deploy to Server via SSH
-      uses: appleboy/ssh-action@v1.2.0  # ОБНОВЛЕНО! Теперь тоже работает на Node.js 24
-      with:
-        host: ${{ secrets.SSH_HOST }}
-        username: ${{ secrets.SSH_USER }}
-        key: ${{ secrets.SSH_KEY }}
-        script: |
-          mkdir -p /app/neuromul
-          cd /app/neuromul
-          
-          # Скачиваем свежий код из вашего репозитория
-          if [ ! -d ".git" ]; then
-            git clone https://github.com .
-          else
-            git pull origin main
-          fi
-          
-          # Перезапускаем контейнеры в Docker
-          docker compose down
-          docker compose up --build -d
-          
-          # Чистим кэш сервера, чтобы не забивать диск Timeweb
-          docker system prune -f
+      - name: Deploy web/neuromule-table to gh-pages
+        uses: JamesIves/github-pages-deploy-action@v4
+        with:
+          folder: web/neuromule-table
+          branch: gh-pages
+          clean: true
+          single-commit: true
+          token: ${{ secrets.GITHUB_TOKEN }}

@@ -33,7 +33,7 @@ import logging
 from typing import Final, Iterable
 
 from config import Settings
-from services.ai_text import ask_ai_messages
+from services.ai_text import ask_ai_messages, ChatCompletionResult
 
 logger = logging.getLogger(__name__)
 
@@ -128,7 +128,7 @@ async def ask_cached_chat(
     *,
     models: list[str],
     timeout: float | None = None,
-) -> str:
+) -> ChatCompletionResult:
     """Тонкий passthrough в ``ask_ai_messages``, без модификации payload.
 
     Намеренно ничего не добавляет / не переставляет — иначе мы порушим

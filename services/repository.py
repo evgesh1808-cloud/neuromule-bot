@@ -108,6 +108,100 @@ async def _migrate_rate_limit_hits(db: aiosqlite.Connection) -> None:
     )
 
 
+async def _migrate_identity_map(db: aiosqlite.Connection) -> None:
+    """
+    Identity Map: сквозной ``account_id`` отдельно от нативных ID платформ.
+
+    ``accounts`` — единый профиль (тариф, баланс в переходный период дублируется в ``users``).
+    ``user_platform_links`` — связь (telegram|vk) + external_id → account_id.
+    """
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS accounts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tariff TEXT NOT NULL DEFAULT 'Free',
+            balance_energy INTEGER NOT NULL DEFAULT 30,
+            balance_crystals INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_platform_links (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id INTEGER NOT NULL,
+            platform TEXT NOT NULL,
+            external_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (account_id) REFERENCES accounts(id),
+            UNIQUE(platform, external_id)
+        )
+        """
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_platform_links_account "
+        "ON user_platform_links (account_id)"
+    )
+
+    async with db.execute("PRAGMA table_info(users)") as cur:
+        user_cols = {row[1] for row in await cur.fetchall()}
+    if "account_id" not in user_cols:
+        await db.execute("ALTER TABLE users ADD COLUMN account_id INTEGER")
+
+    # Backfill: существующие ``users.id`` трактуем как Telegram external_id.
+    has_balance_energy = "balance_energy" in user_cols
+    has_balance_crystals = "balance_crystals" in user_cols
+    if has_balance_energy and has_balance_crystals:
+        user_select = "SELECT id, tariff, balance_energy, balance_crystals FROM users"
+    else:
+        user_select = "SELECT id, tariff FROM users"
+    async with db.execute(user_select) as cur:
+        legacy_users = await cur.fetchall()
+    now = datetime.now(timezone.utc).isoformat()
+    for row in legacy_users:
+        legacy_id = int(row[0])
+        tariff = str(row[1] or "Free")
+        balance_energy = int(row[2]) if has_balance_energy and len(row) > 2 and row[2] is not None else 30
+        balance_crystals = (
+            int(row[3]) if has_balance_crystals and len(row) > 3 and row[3] is not None else 0
+        )
+
+        async with db.execute(
+            """
+            SELECT account_id FROM user_platform_links
+            WHERE platform = 'telegram' AND external_id = ?
+            """,
+            (legacy_id,),
+        ) as link_cur:
+            link_row = await link_cur.fetchone()
+
+        if link_row:
+            account_id = int(link_row[0])
+        else:
+            cursor = await db.execute(
+                """
+                INSERT INTO accounts (tariff, balance_energy, balance_crystals, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (tariff, balance_energy, balance_crystals, now),
+            )
+            account_id = int(cursor.lastrowid)
+            await db.execute(
+                """
+                INSERT OR IGNORE INTO user_platform_links
+                    (account_id, platform, external_id, created_at)
+                VALUES (?, 'telegram', ?, ?)
+                """,
+                (account_id, legacy_id, now),
+            )
+
+        await db.execute(
+            "UPDATE users SET account_id = ? WHERE id = ? AND (account_id IS NULL OR account_id = 0)",
+            (account_id, legacy_id),
+        )
+
+
 async def _migrate_table_reports(db: aiosqlite.Connection) -> None:
     """Таблицы table_generator для Mini App API (``/api/v1/reports/{id}``)."""
     await db.execute(
@@ -214,6 +308,7 @@ async def init_db(promo_seeds: str = "") -> None:
         await _migrate_drop_users_crystals(db)
         await _migrate_dialog_messages(db)
         await _migrate_table_reports(db)
+        await _migrate_identity_map(db)
         await _migrate_rate_limit_hits(db)
         await db.execute(
             """
@@ -311,6 +406,111 @@ class UserRow:
     @property
     def crystals_balance(self) -> int:
         return self.sub_crystals + self.buy_crystals
+
+
+async def get_or_create_account(platform: str, external_id: int) -> int:
+    """
+    Находит или создаёт сквозной ``account_id`` по паре (platform, external_id).
+
+    Платформы: ``telegram``, ``vk`` (и др. — lowercase).
+
+    Переходный период (Telegram):
+        - ``users.id`` по-прежнему равен ``external_id`` Telegram для биллинга/диалога;
+        - ``users.account_id`` связывает legacy-строку с ``accounts.id``.
+
+    Пример для Use-Case слоя::
+
+        account_id = await get_or_create_account("telegram", callback.from_user.id)
+        # Биллинг и dialog_messages пока на legacy users.id:
+        legacy_uid = await legacy_user_id_for_account(account_id, platform="telegram")
+        result = await run_chat_turn(settings, legacy_uid, text, ...)
+        # Новый код может оперировать account_id в метриках и кросс-платформенных фичах.
+
+    VK user 123 и Telegram user 123 получают **разные** ``account_id``.
+    """
+    platform_key = (platform or "").strip().lower()
+    if platform_key not in ("telegram", "vk", "max"):
+        raise ValueError(f"unsupported platform: {platform!r}")
+    native_id = int(external_id)
+    if native_id <= 0:
+        raise ValueError("external_id must be positive")
+
+    if platform_key == "telegram":
+        await ensure_user(native_id)
+
+    now = datetime.now(timezone.utc).isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """
+            SELECT account_id FROM user_platform_links
+            WHERE platform = ? AND external_id = ?
+            """,
+            (platform_key, native_id),
+        ) as cur:
+            row = await cur.fetchone()
+        if row:
+            return int(row[0])
+
+        cursor = await db.execute(
+            """
+            INSERT INTO accounts (tariff, balance_energy, balance_crystals, created_at)
+            VALUES ('Free', 30, 0, ?)
+            """,
+            (now,),
+        )
+        account_id = int(cursor.lastrowid)
+        await db.execute(
+            """
+            INSERT INTO user_platform_links (account_id, platform, external_id, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (account_id, platform_key, native_id, now),
+        )
+
+        if platform_key == "telegram":
+            await db.execute(
+                "UPDATE users SET account_id = ? WHERE id = ?",
+                (account_id, native_id),
+            )
+
+        await db.commit()
+        return account_id
+
+
+async def legacy_user_id_for_account(account_id: int, *, platform: str = "telegram") -> int | None:
+    """
+    Возвращает нативный ``external_id`` платформы для legacy-таблиц (``users``, ``dialog_messages``).
+
+    Для Telegram это по-прежнему ``users.id`` == ``telegram_user_id``.
+    """
+    platform_key = (platform or "").strip().lower()
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """
+            SELECT external_id FROM user_platform_links
+            WHERE account_id = ? AND platform = ?
+            """,
+            (int(account_id), platform_key),
+        ) as cur:
+            row = await cur.fetchone()
+    if not row:
+        return None
+    return int(row[0])
+
+
+async def get_account_id_for_platform(platform: str, external_id: int) -> int | None:
+    """Возвращает ``account_id`` без создания новой записи."""
+    platform_key = (platform or "").strip().lower()
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """
+            SELECT account_id FROM user_platform_links
+            WHERE platform = ? AND external_id = ?
+            """,
+            (platform_key, int(external_id)),
+        ) as cur:
+            row = await cur.fetchone()
+    return int(row[0]) if row else None
 
 
 async def ensure_user(user_id: int, username: str | None = None) -> None:
@@ -1104,6 +1304,62 @@ async def insert_table_report(user_id: int, table_json: str) -> int:
         )
         await db.commit()
         return int(cursor.lastrowid)
+
+
+async def fetch_table_report_rows_for_user(
+    report_id: int,
+    user_id: int,
+) -> tuple[list[list[str]], str] | None:
+    """
+    Загружает строки отчёта (header + data) только для владельца.
+
+    Возвращает ``(rows, title)`` или ``None``.
+    """
+    from services.table_json import parse_table_json_response
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT user_id, table_json FROM table_reports WHERE id = ?",
+            (int(report_id),),
+        ) as cur:
+            row = await cur.fetchone()
+    if not row or int(row[0]) != int(user_id):
+        return None
+    payload = parse_table_json_response(str(row[1]))
+    if payload is None:
+        return None
+    return payload.to_rows_with_header(), payload.title
+
+
+async def fetch_table_report_json_for_user(report_id: int, user_id: int) -> dict | None:
+    """
+    Загружает JSON отчёта только если ``table_reports.user_id`` совпадает с владельцем.
+
+    Используется Mini App API после валидации Telegram ``initData``.
+    """
+    import json
+
+    from services.table_json import parse_table_json_response
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT user_id, table_json FROM table_reports WHERE id = ?",
+            (int(report_id),),
+        ) as cur:
+            row = await cur.fetchone()
+    if not row or int(row[0]) != int(user_id):
+        return None
+    raw_json = str(row[1])
+    payload = parse_table_json_response(raw_json)
+    if payload is None:
+        try:
+            data = json.loads(raw_json)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(data, dict):
+            return None
+        return data
+    return json.loads(payload.raw_json)
 
 
 async def fetch_table_report_json(report_id: int) -> dict | None:

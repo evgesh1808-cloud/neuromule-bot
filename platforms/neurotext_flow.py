@@ -10,7 +10,20 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from content import messages as msg
+from content.messages import MULE_STATIC_EXAMPLES
+from platforms.telegram_keyboards import (
+    create_lifestyle_subroles_keyboard,
+    create_roles_menu_keyboard,
+    create_table_subroles_keyboard,
+)
 from platforms.telegram_states import UserFlow
+from services.use_cases.neurotext_turn import (
+    NeurotextRoleOutcome,
+    build_neurotext_intro,
+    get_role_availability_map,
+    normalize_text_role_id,
+    validate_text_role_pick,
+)
 
 
 async def ensure_neurotext_waiting_state(state: FSMContext) -> None:
@@ -19,13 +32,6 @@ async def ensure_neurotext_waiting_state(state: FSMContext) -> None:
     if not data.get("text_role"):
         await state.update_data(text_role="standard")
     await state.set_state(UserFlow.waiting_for_text_prompt)
-from services.use_cases.neurotext_turn import (
-    NeurotextRoleOutcome,
-    build_neurotext_intro,
-    get_role_availability_map,
-    validate_text_role_pick,
-)
-from content.messages import MULE_STATIC_EXAMPLES
 
 
 def _with_standard_example(base_text: str, active_role_id: str) -> str:
@@ -43,35 +49,11 @@ def _with_standard_example(base_text: str, active_role_id: str) -> str:
 
 async def _active_role_id(state: FSMContext) -> str:
     data = await state.get_data()
-    return str(data.get("text_role") or "standard")
+    return normalize_text_role_id(str(data.get("text_role") or "standard"))
 
 
 async def neurotext_role_keyboard(user_id: int, active_role_id: str) -> InlineKeyboardMarkup:
-    avail_map = await get_role_availability_map(user_id)
-    rows: list[list[InlineKeyboardButton]] = []
-    pair: list[InlineKeyboardButton] = []
-    for label, role_id in msg.TEXT_ROLES:
-        a = avail_map.get(role_id)
-        prefix = ""
-        suffix = ""
-        if a and a.locked:
-            prefix = "🔒 "
-        if role_id == active_role_id and not (a and a.locked):
-            suffix = " ✅"
-        text = f"{prefix}{label}{suffix}"
-        pair.append(InlineKeyboardButton(text=text, callback_data=f"{msg.CB_TEXT_ROLE_PREFIX}{role_id}"))
-        if len(pair) == 2:
-            rows.append(pair)
-            pair = []
-    if pair:
-        rows.append(pair)
-    rows.append([
-        InlineKeyboardButton(text=msg.TXT_NEUROTEXT_CLEAR_BTN, callback_data=msg.CB_CLEAR_CONTEXT),
-    ])
-    rows.append([
-        InlineKeyboardButton(text=msg.TXT_BACK_TO_TOOLS, callback_data=msg.CB_BACK_CREATE),
-    ])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+    return await create_roles_menu_keyboard(user_id, active_role_id)
 
 
 async def send_neurotext_role_menu(message: Message, state: FSMContext | None = None) -> None:
@@ -106,25 +88,21 @@ def _upgrade_card_keyboard(tariffs_keyboard) -> InlineKeyboardMarkup:
     base = tariffs_keyboard()
     rows = list(base.inline_keyboard)
     rows.append([
-        InlineKeyboardButton(text=msg.TXT_BACK_TO_TOOLS, callback_data=msg.CB_BACK_CREATE),
+        InlineKeyboardButton(text="⬅️ Назад", callback_data=msg.CB_BACK_TO_TOOLS),
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-async def handle_neurotext_role_pick(
+async def _handle_role_pick_locked(
     callback: CallbackQuery,
-    state: FSMContext,
+    pick,
     *,
     tariffs_keyboard,
-) -> None:
-    """Клик по роли: переключаем или показываем upgrade-карточку."""
-    await callback.answer()
-    role_id = (callback.data or "").removeprefix(msg.CB_TEXT_ROLE_PREFIX)
-    pick = await validate_text_role_pick(callback.from_user.id, role_id)
-
+) -> bool:
+    """Обработка блокировок роли. True = выход без активации."""
     if pick.outcome is NeurotextRoleOutcome.UNKNOWN_ROLE:
         await callback.answer("Неизвестный режим.", show_alert=True)
-        return
+        return True
 
     if pick.outcome is NeurotextRoleOutcome.SMART_REQUIRED:
         await callback.answer(
@@ -139,7 +117,7 @@ async def handle_neurotext_role_pick(
                 reply_markup=_upgrade_card_keyboard(tariffs_keyboard),
                 parse_mode=ParseMode.HTML,
             )
-        return
+        return True
 
     if pick.outcome is NeurotextRoleOutcome.PREMIUM_LOCKED:
         await callback.answer(
@@ -155,9 +133,34 @@ async def handle_neurotext_role_pick(
                 reply_markup=_upgrade_card_keyboard(tariffs_keyboard),
                 parse_mode=ParseMode.HTML,
             )
+        return True
+    return False
+
+
+async def handle_neurotext_role_pick(
+    callback: CallbackQuery,
+    state: FSMContext,
+    *,
+    tariffs_keyboard,
+) -> None:
+    """Клик по роли (``set_role:`` или legacy ``text_role:``)."""
+    raw = callback.data or ""
+    if raw.startswith(msg.CB_SET_ROLE_PREFIX):
+        role_id = raw.removeprefix(msg.CB_SET_ROLE_PREFIX)
+    else:
+        role_id = raw.removeprefix(msg.CB_TEXT_ROLE_PREFIX)
+    role_id = normalize_text_role_id(role_id)
+    pick = await validate_text_role_pick(callback.from_user.id, role_id)
+
+    if await _handle_role_pick_locked(callback, pick, tariffs_keyboard=tariffs_keyboard):
         return
 
     await state.update_data(text_role=pick.role_id)
+
+    if pick.role_id == "table_generator":
+        await handle_show_table_subcategories(callback, state, tariffs_keyboard=tariffs_keyboard, answered=True)
+        return
+
     await state.set_state(UserFlow.waiting_for_text_prompt)
 
     if pick.outcome is NeurotextRoleOutcome.OK_VIA_CRYSTALS and callback.message:
@@ -170,8 +173,79 @@ async def handle_neurotext_role_pick(
     await open_neurotext_from_callback(callback, state)
 
 
+async def handle_show_table_subcategories(
+    callback: CallbackQuery,
+    state: FSMContext,
+    *,
+    tariffs_keyboard=None,
+    answered: bool = False,
+) -> None:
+    """Подменю бизнес-подрежимов table_generator."""
+    if not answered:
+        await callback.answer()
+    pick = await validate_text_role_pick(callback.from_user.id, "table_generator")
+    if tariffs_keyboard and await _handle_role_pick_locked(callback, pick, tariffs_keyboard=tariffs_keyboard):
+        return
+
+    await state.update_data(text_role="table_generator", table_subrole=None)
+    # До выбора под-режима не переводим в waiting_for_text_prompt — только подменю.
+
+    if pick.outcome is NeurotextRoleOutcome.OK_VIA_CRYSTALS and callback.message:
+        await callback.message.answer(
+            f"💎 <b>Роль «{pick.role_label}» активирована за Кристаллы</b>\n"
+            f"Каждое сообщение спишет <b>{pick.crystal_cost} 💎</b>.",
+            parse_mode=ParseMode.HTML,
+        )
+
+    if callback.message:
+        try:
+            await callback.message.edit_text(
+                msg.TXT_TABLE_SUBROLE_MENU,
+                reply_markup=create_table_subroles_keyboard(),
+                parse_mode=ParseMode.HTML,
+            )
+        except TelegramBadRequest as exc:
+            if "message is not modified" not in str(exc).lower():
+                await callback.message.answer(
+                    msg.TXT_TABLE_SUBROLE_MENU,
+                    reply_markup=create_table_subroles_keyboard(),
+                    parse_mode=ParseMode.HTML,
+                )
+
+
+async def handle_show_lifestyle_subcategories(callback: CallbackQuery, state: FSMContext) -> None:
+    """Плавное переключение на подменю лайфстайл-ролей."""
+    await callback.answer()
+    active = await _active_role_id(state)
+    avail = await get_role_availability_map(callback.from_user.id)
+    kb = create_lifestyle_subroles_keyboard(availability=avail, active_role_id=active)
+    if callback.message:
+        try:
+            await callback.message.edit_reply_markup(reply_markup=kb)
+        except TelegramBadRequest as exc:
+            if "message is not modified" not in str(exc).lower():
+                await callback.message.answer(
+                    "✨ <b>Лайфстайл & Блоги</b> — выберите роль:",
+                    reply_markup=kb,
+                    parse_mode=ParseMode.HTML,
+                )
+
+
+async def handle_back_to_roles_menu(callback: CallbackQuery, state: FSMContext) -> None:
+    """Возврат из подменю в главное меню ролей."""
+    await callback.answer()
+    active = await _active_role_id(state)
+    kb = await create_roles_menu_keyboard(callback.from_user.id, active)
+    if callback.message:
+        try:
+            await callback.message.edit_reply_markup(reply_markup=kb)
+        except TelegramBadRequest as exc:
+            if "message is not modified" not in str(exc).lower():
+                await open_neurotext_from_callback(callback, state)
+
+
 async def handle_clear_context(callback: CallbackQuery, state: FSMContext) -> None:
-    """🧹 Новый диалог — очищает ТОЛЬКО историю чата.
+    """🔔 Новый диалог — очищает ТОЛЬКО историю чата.
 
     По ТЗ NeuroMule 🐎⚡️ ИИ-Память (``persistent_memory``) НЕ стирается этой
     кнопкой — она доступна только из раздела «🧠 Моя память» в ЛК.
@@ -181,7 +255,7 @@ async def handle_clear_context(callback: CallbackQuery, state: FSMContext) -> No
     await callback.answer("Контекст очищен")
     await clear_user_dialog(callback.from_user.id)
     data = await state.get_data()
-    role_id = str(data.get("text_role") or "standard")
+    role_id = normalize_text_role_id(str(data.get("text_role") or "standard"))
     await state.set_state(UserFlow.waiting_for_text_prompt)
     await state.update_data(text_role=role_id)
     if callback.message:

@@ -45,12 +45,36 @@ class RoleAvailability:
     via_crystals: bool
 
 
+TEXT_ROLE_ALIASES: dict[str, str] = {
+    "psychologist": "psychologist_coach",
+    "blogger": "blogger_content",
+    "academic": "summary",
+    "speaker": "podcast_doc",
+    "analyst": "summary",
+    "storyteller": "standard",
+}
+
+_LEGACY_ROLE_LABELS: dict[str, str] = {
+    "academic": "🎓 Академик",
+    "psychologist": "🎭 Психолог",
+    "speaker": "🗣️ Спикер (TED)",
+    "blogger": "📱 Блогер",
+    "analyst": "📉 Аналитик",
+    "storyteller": "🧙 Сказочник",
+}
+
+
+def normalize_text_role_id(role_id: str) -> str:
+    rid = (role_id or "standard").strip().lower()
+    return TEXT_ROLE_ALIASES.get(rid, rid)
+
+
 def text_role_label(role_id: str) -> str | None:
-    rid = (role_id or "").strip().lower()
+    rid = normalize_text_role_id(role_id)
     for label, role in TEXT_ROLES:
         if role == rid:
             return label
-    return None
+    return _LEGACY_ROLE_LABELS.get((role_id or "").strip().lower())
 
 
 def _role_availability(role_id: str, user: UserBillingState) -> RoleAvailability:
@@ -142,25 +166,26 @@ async def build_neurotext_intro(user_id: int, active_role_id: str = "standard") 
 
 async def validate_text_role_pick(user_id: int, role_id: str) -> NeurotextRolePickResult:
     """Проверка роли перед FSM. FREE может включить роль за 💎, если хватает."""
-    label = text_role_label(role_id)
+    canonical = normalize_text_role_id(role_id)
+    label = text_role_label(canonical) or text_role_label(role_id)
     if not label:
         return NeurotextRolePickResult(outcome=NeurotextRoleOutcome.UNKNOWN_ROLE)
 
     user = await billing.load_user(user_id)
-    plan = plan_text_chat(user, role_id)
-    energy, crystals = role_costs(role_id)
+    plan = plan_text_chat(user, canonical)
+    energy, crystals = role_costs(canonical)
 
     if plan.blocked and plan.block_reason == "role_requires_smart_tariff":
         return NeurotextRolePickResult(
             outcome=NeurotextRoleOutcome.SMART_REQUIRED,
-            role_id=role_id,
+            role_id=canonical,
             role_label=label,
             crystal_cost=crystals,
         )
     if plan.blocked and plan.block_reason == "expert_role_requires_paid_tariff":
         return NeurotextRolePickResult(
             outcome=NeurotextRoleOutcome.PREMIUM_LOCKED,
-            role_id=role_id,
+            role_id=canonical,
             role_label=label,
             crystal_cost=crystals,
         )
@@ -168,7 +193,7 @@ async def validate_text_role_pick(user_id: int, role_id: str) -> NeurotextRolePi
     via_crystals = plan.price_type is CurrencyKind.CRYSTALS and user.current_tariff is TariffTier.FREE
     return NeurotextRolePickResult(
         outcome=NeurotextRoleOutcome.OK_VIA_CRYSTALS if via_crystals else NeurotextRoleOutcome.OK,
-        role_id=role_id,
+        role_id=canonical,
         role_label=label,
         crystal_cost=crystals,
     )

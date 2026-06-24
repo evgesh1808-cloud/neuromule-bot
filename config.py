@@ -188,6 +188,21 @@ class Settings(BaseSettings):
     support_bot_username: Annotated[str, _nonempty_str("MuleHelp_bot")] = "MuleHelp_bot"
     admin_username: Annotated[str, _nonempty_str("")] = ""
     admin_ids: Annotated[list[int], _coerce_int_list([])] = Field(default_factory=list)
+    # Владелец секретной команды /admin_stats (если 0 — первый id из ADMIN_IDS).
+    admin_telegram_id: Annotated[int, _coerce_int(0)] = Field(
+        default=0,
+        validation_alias=AliasChoices("ADMIN_TELEGRAM_ID", "admin_telegram_id"),
+    )
+    # Курс USD→RUB для финансового пульса (/admin_stats).
+    admin_stats_usd_rub_rate: Annotated[float, _coerce_float(95.0)] = Field(
+        default=95.0,
+        validation_alias=AliasChoices("ADMIN_STATS_USD_RUB_RATE", "admin_stats_usd_rub_rate"),
+    )
+    # Gemini Flash через платный шлюз OpenRouter (иначе себестоимость Gemini = $0).
+    openrouter_gemini_billable: Annotated[bool, _coerce_bool(False)] = Field(
+        default=False,
+        validation_alias=AliasChoices("OPENROUTER_GEMINI_BILLABLE", "openrouter_gemini_billable"),
+    )
     god_mode_enabled: Annotated[bool, _coerce_bool(False)] = Field(
         default=False,
         validation_alias=AliasChoices("GOD_MODE_ENABLED", "god_mode_enabled"),
@@ -364,8 +379,14 @@ class Settings(BaseSettings):
     webapp_table_reports_url: str = (
         "https://your-user.github.io/neuromule-table/?report_id={report_id}"
     )
-    # CORS для Mini App API (``api/mini_app.py``). ``*`` или список через запятую.
-    mini_app_cors_origins: str = "*"
+    # Публичный URL FastAPI Mini App backend (без trailing slash).
+    # Пример: https://bot.example.com:8000 или http://127.0.0.1:8000
+    mini_app_api_base_url: str = ""
+    # CORS для Mini App API (``api/mini_app.py``). Список origin через запятую;
+    # ``*`` не используется при ``allow_credentials=True`` — см. ``api/mini_app.py``.
+    mini_app_cors_origins: str = ""
+    # Максимальный возраст Telegram WebApp initData (секунды).
+    mini_app_init_data_max_age_sec: Annotated[int, _coerce_int(86_400)] = 86_400
 
     free_models: Annotated[list[str], _coerce_str_list(_DEFAULT_FREE_MODELS)] = Field(
         default_factory=lambda: list(_DEFAULT_FREE_MODELS)

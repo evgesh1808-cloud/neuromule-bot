@@ -15,7 +15,7 @@ from services.use_cases.neurotext_turn import (
 async def test_free_user_cannot_pick_expert_role(repo_module) -> None:
     uid = 77001
     await repo_module.ensure_user(uid)
-    r = await validate_text_role_pick(uid, "psychologist")
+    r = await validate_text_role_pick(uid, "psychologist_coach")
     assert r.outcome is NeurotextRoleOutcome.PREMIUM_LOCKED
 
 
@@ -33,7 +33,7 @@ async def test_paid_user_can_pick_expert(repo_module) -> None:
     uid = 77003
     await repo_module.ensure_user(uid)
     await repo_module.set_user_tariff(uid, "MINI")
-    r = await validate_text_role_pick(uid, "analyst")
+    r = await validate_text_role_pick(uid, "blogger_content")
     assert r.outcome is NeurotextRoleOutcome.OK
 
 
@@ -66,15 +66,15 @@ async def test_intro_mini_header_and_podcast_locked(repo_module) -> None:
     await repo_module.set_user_tariff(uid, "MINI")
     await repo_module.update_balance(uid, "energy", 50)
 
-    intro = await build_neurotext_intro(uid, "analyst")
+    intro = await build_neurotext_intro(uid, "blogger_content")
     assert "Премиум" in intro
     assert "MINI" in intro
-    assert "Аналитик" in intro
+    assert "Блогер" in intro
 
     from services.use_cases.neurotext_turn import NeurotextRoleOutcome, get_role_availability_map
 
     avail = await get_role_availability_map(uid)
-    assert avail["analyst"].locked is False
+    assert avail["blogger_content"].locked is False
     assert avail["podcast_doc"].locked is True
     assert avail["podcast_doc"].locked_reason == "smart"
 

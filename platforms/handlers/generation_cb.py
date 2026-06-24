@@ -143,14 +143,23 @@ def _is_admin(user_id: int) -> bool:
 
 from platforms.handlers.start_admin import start_match_flow
 from platforms.neurotext_flow import (
+    handle_back_to_roles_menu,
     handle_clear_context,
     handle_neurotext_role_pick,
+    handle_show_lifestyle_subcategories,
+    handle_show_table_subcategories,
     open_neurotext_from_callback,
     send_neurotext_role_menu,
 )
 
 @router.callback_query(F.data == msg.CB_BACK_CREATE)
 async def back_create(callback: CallbackQuery) -> None:
+    await callback.message.answer(msg.TXT_SELECT_TOOL, reply_markup=create_menu())
+    await callback.answer()
+
+
+@router.callback_query(F.data == msg.CB_BACK_TO_TOOLS)
+async def back_to_tools(callback: CallbackQuery) -> None:
     await callback.message.answer(msg.TXT_SELECT_TOOL, reply_markup=create_menu())
     await callback.answer()
 
@@ -194,8 +203,74 @@ async def pick_text_role(callback: CallbackQuery, state: FSMContext) -> None:
     )
 
 
+@router.callback_query(F.data.startswith(msg.CB_SET_ROLE_PREFIX))
+async def pick_set_role(callback: CallbackQuery, state: FSMContext) -> None:
+    await handle_neurotext_role_pick(
+        callback,
+        state,
+        tariffs_keyboard=paycat.shop_packages_keyboard,
+    )
+
+
+@router.callback_query(F.data == msg.CB_SHOW_TABLE_SUBCATEGORIES)
+async def show_table_subcategories(callback: CallbackQuery, state: FSMContext) -> None:
+    await handle_show_table_subcategories(
+        callback,
+        state,
+        tariffs_keyboard=paycat.shop_packages_keyboard,
+    )
+
+
+@router.callback_query(F.data == msg.CB_SHOW_LIFESTYLE_SUBCATEGORIES)
+async def show_lifestyle_subcategories(callback: CallbackQuery, state: FSMContext) -> None:
+    await handle_show_lifestyle_subcategories(callback, state)
+
+
+@router.callback_query(F.data == msg.CB_BACK_TO_ROLES_MENU)
+async def back_to_roles_menu(callback: CallbackQuery, state: FSMContext) -> None:
+    await handle_back_to_roles_menu(callback, state)
+
+
+@router.callback_query(F.data.startswith(msg.CB_TABLE_SUBROLE_PREFIX))
+async def pick_table_subrole(callback: CallbackQuery, state: FSMContext) -> None:
+    """Выбор под-режима table_generator → инструкция и ожидание файла/текста."""
+    await callback.answer()
+    subrole_id = (callback.data or "").removeprefix(msg.CB_TABLE_SUBROLE_PREFIX).strip().lower()
+    from services.table_subrole_types import VALID_TABLE_SUBROLES, normalize_table_subrole
+
+    if subrole_id not in VALID_TABLE_SUBROLES:
+        await callback.answer("Неизвестный режим таблиц.", show_alert=True)
+        return
+
+    normalized = normalize_table_subrole(subrole_id)
+    await state.update_data(
+        text_role="table_generator",
+        table_subrole=normalized,
+    )
+    await state.set_state(UserFlow.waiting_for_text_prompt)
+
+    instruction = msg.table_subrole_instruction(normalized)
+    if callback.message:
+        try:
+            await callback.message.delete()
+        except TelegramBadRequest:
+            try:
+                await callback.message.edit_reply_markup(reply_markup=None)
+            except TelegramBadRequest:
+                pass
+        await callback.message.answer(
+            instruction,
+            parse_mode=ParseMode.HTML,
+        )
+
+
 @router.callback_query(F.data == msg.CB_CLEAR_CONTEXT)
 async def neurotext_clear_context(callback: CallbackQuery, state: FSMContext) -> None:
+    await handle_clear_context(callback, state)
+
+
+@router.callback_query(F.data == msg.CB_NEW_DIALOG)
+async def neurotext_new_dialog(callback: CallbackQuery, state: FSMContext) -> None:
     await handle_clear_context(callback, state)
 
 @router.callback_query(F.data == msg.CB_CREATE_IMAGE)

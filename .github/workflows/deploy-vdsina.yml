@@ -1,0 +1,56 @@
+name: Deploy to VDSina
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy to VDSina via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            set -e
+            DEPLOY_DIR="/root/neuromule-bot"
+            REPO_URL="https://github.com/${{ github.repository }}.git"
+
+            mkdir -p "${DEPLOY_DIR}"
+            cd "${DEPLOY_DIR}"
+
+            if [ ! -d ".git" ]; then
+              git clone "${REPO_URL}" .
+            else
+              git fetch origin main
+              git reset --hard origin/main
+            fi
+
+            if [ ! -d "venv" ]; then
+              python3 -m venv venv
+            fi
+            # shellcheck disable=SC1091
+            source venv/bin/activate
+            pip install -q -r requirements.txt
+
+            if pm2 describe neuromule-tg >/dev/null 2>&1; then
+              pm2 restart neuromule-tg --update-env
+            else
+              pm2 start main.py --name neuromule-tg --interpreter venv/bin/python --cwd "${DEPLOY_DIR}"
+            fi
+
+            if pm2 describe neuromule-api >/dev/null 2>&1; then
+              pm2 restart neuromule-api --update-env
+            else
+              NEUROMULE_PLATFORM=api pm2 start main.py --name neuromule-api --interpreter venv/bin/python --cwd "${DEPLOY_DIR}"
+            fi
+
+            pm2 save || true

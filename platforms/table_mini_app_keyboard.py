@@ -28,11 +28,18 @@ def build_table_mini_app_url(report_id: int | str) -> str:
     if not rid:
         raise ValueError("report_id is required for mini app URL")
     if "{report_id}" in template:
-        return template.format(report_id=rid)
-    if template.endswith(("=", "&")):
-        return f"{template}{rid}"
-    sep = "&" if "?" in template else "?"
-    return f"{template}{sep}report_id={rid}"
+        url = template.format(report_id=rid)
+    elif template.endswith(("=", "&")):
+        url = f"{template}{rid}"
+    else:
+        sep = "&" if "?" in template else "?"
+        url = f"{template}{sep}report_id={rid}"
+
+    api_base = (settings.mini_app_api_base_url or "").strip().rstrip("/")
+    if api_base and "api_base=" not in url:
+        joiner = "&" if "?" in url else "?"
+        url = f"{url}{joiner}api_base={api_base}"
+    return url
 
 
 def get_table_mini_app_keyboard(report_id: int | str | None) -> InlineKeyboardMarkup | None:
@@ -51,12 +58,26 @@ def get_table_mini_app_keyboard(report_id: int | str | None) -> InlineKeyboardMa
     )
 
 
-def _chart_row(active: ChartType) -> list[InlineKeyboardButton]:
+def _chart_row(
+    active: ChartType,
+    report_id: int | str | None = None,
+) -> list[InlineKeyboardButton]:
+    _wb_keys = {
+        ChartType.PIE: "pie",
+        ChartType.LINE: "line",
+        ChartType.BAR: "barh",
+    }
+
     def _btn(label: str, chart: ChartType) -> InlineKeyboardButton:
         suffix = " ✓" if active == chart else ""
+        wb_key = _wb_keys[chart]
+        if report_id is not None:
+            callback_data = f"{msg.CB_WB_CHART_PREFIX}{wb_key}:{report_id}"
+        else:
+            callback_data = f"{msg.CB_TABLE_CHART_PREFIX}{chart.value}"
         return InlineKeyboardButton(
             text=f"{label}{suffix}",
-            callback_data=f"{msg.CB_TABLE_CHART_PREFIX}{chart.value}",
+            callback_data=callback_data,
         )
 
     return [
@@ -75,5 +96,5 @@ def table_delivery_keyboard(
     mini_row = get_table_mini_app_keyboard(report_id)
     if mini_row is not None:
         rows.extend(mini_row.inline_keyboard)
-    rows.append(_chart_row(chart_type))
+    rows.append(_chart_row(chart_type, report_id))
     return InlineKeyboardMarkup(inline_keyboard=rows)

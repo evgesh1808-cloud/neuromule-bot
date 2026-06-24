@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import logging
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, Awaitable, Callable
+from typing import Any, AsyncIterator, Awaitable, Callable, TypedDict
 
 import httpx
 
@@ -20,6 +20,43 @@ logger = logging.getLogger(__name__)
 
 # Колбэк стриминга: (накопленный_текст, завершено_ли_сообщение).
 StreamCallback = Callable[[str, bool], Awaitable[None]]
+
+
+class ChatCompletionResult(TypedDict):
+    """Ответ OpenRouter Chat Completions с usage для финансовой аналитики."""
+
+    content: str
+    prompt_tokens: int
+    completion_tokens: int
+
+
+def _extract_usage_tokens(data: Any) -> tuple[int, int]:
+    """Безопасно извлекает ``prompt_tokens`` / ``completion_tokens`` из ``usage``."""
+    try:
+        if not isinstance(data, dict):
+            return 0, 0
+        usage = data.get("usage")
+        if not isinstance(usage, dict):
+            return 0, 0
+        prompt = int(usage.get("prompt_tokens") or 0)
+        completion = int(usage.get("completion_tokens") or 0)
+        return max(prompt, 0), max(completion, 0)
+    except (TypeError, ValueError, AttributeError):
+        logger.debug("OpenRouter usage parse failed", exc_info=True)
+        return 0, 0
+
+
+def _build_completion_result(
+    content: str,
+    *,
+    prompt_tokens: int = 0,
+    completion_tokens: int = 0,
+) -> ChatCompletionResult:
+    return {
+        "content": content,
+        "prompt_tokens": max(int(prompt_tokens or 0), 0),
+        "completion_tokens": max(int(completion_tokens or 0), 0),
+    }
 
 
 def _estimate_messages_chars(messages: list[dict[str, Any]]) -> int:
@@ -151,6 +188,7 @@ def _chat_payload(
     stream: bool,
     max_tokens: int | None = None,
     response_format: dict[str, Any] | None = None,
+    temperature: float | None = None,
 ) -> dict[str, Any]:
     """
     Собирает тело POST /chat/completions: модель, сообщения, ``max_tokens``, опционально ``stream``.
@@ -164,8 +202,11 @@ def _chat_payload(
     }
     if stream:
         body["stream"] = True
+        body["stream_options"] = {"include_usage": True}
     if response_format:
         body["response_format"] = response_format
+    if temperature is not None:
+        body["temperature"] = temperature
     return body
 
 
@@ -178,7 +219,8 @@ async def _post_chat_completion(
     timeout: float,
     max_tokens: int | None = None,
     response_format: dict[str, Any] | None = None,
-) -> str | None:
+    temperature: float | None = None,
+) -> ChatCompletionResult | None:
     """Один нестриминговый запрос; при HTTP≠200 или пустом content возвращает ``None``."""
     payload = _chat_payload(
         settings,
@@ -187,6 +229,7 @@ async def _post_chat_completion(
         stream=False,
         max_tokens=max_tokens,
         response_format=response_format,
+        temperature=temperature,
     )
     response = await client.post(
         settings.openrouter_chat_url,
@@ -211,11 +254,24 @@ async def _post_chat_completion(
             response.text[:500],
         )
         return None
-    data = response.json()
-    content = data["choices"][0]["message"]["content"]
+    try:
+        data = response.json()
+    except Exception:
+        logger.warning("OpenRouter model=%s invalid JSON body", model, exc_info=True)
+        return None
+    try:
+        content = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        logger.warning("OpenRouter model=%s missing choices/message/content", model)
+        return None
     if not isinstance(content, str):
         return None
-    return content
+    prompt_tokens, completion_tokens = _extract_usage_tokens(data)
+    return _build_completion_result(
+        content,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+    )
 
 
 def _stream_delta_text(piece: Any) -> str:
@@ -270,9 +326,12 @@ async def _post_chat_completion_stream(
     stream_callback: StreamCallback,
     max_tokens: int | None = None,
     response_format: dict[str, Any] | None = None,
-) -> str | None:
+    temperature: float | None = None,
+) -> ChatCompletionResult | None:
     """
     Стриминговый запрос (SSE): ``data:`` по байтам, ``delta.content``, колбэк с частичным текстом.
+
+    При ``stream_options.include_usage`` OpenRouter присылает ``usage`` в финальном SSE-чанке.
     """
     payload = _chat_payload(
         settings,
@@ -281,8 +340,11 @@ async def _post_chat_completion_stream(
         stream=True,
         max_tokens=max_tokens,
         response_format=response_format,
+        temperature=temperature,
     )
     acc = ""
+    prompt_tokens = 0
+    completion_tokens = 0
     try:
         async with client.stream(
             "POST",
@@ -304,12 +366,23 @@ async def _post_chat_completion_stream(
                 if raw == "[DONE]":
                     if acc:
                         await stream_callback(acc, True)
-                    return acc or None
+                    return (
+                        _build_completion_result(
+                            acc,
+                            prompt_tokens=prompt_tokens,
+                            completion_tokens=completion_tokens,
+                        )
+                        if acc
+                        else None
+                    )
                 try:
                     obj = json.loads(raw)
                 except json.JSONDecodeError:
                     logger.debug("OpenRouter stream skip bad JSON: %s", raw[:200])
                     continue
+                pt, ct = _extract_usage_tokens(obj)
+                if pt or ct:
+                    prompt_tokens, completion_tokens = pt, ct
                 for ch in obj.get("choices") or []:
                     delta = ch.get("delta") or {}
                     piece = _stream_delta_text(delta.get("content"))
@@ -318,7 +391,15 @@ async def _post_chat_completion_stream(
                         await stream_callback(acc, False)
             if acc:
                 await stream_callback(acc, True)
-            return acc or None
+            return (
+                _build_completion_result(
+                    acc,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                )
+                if acc
+                else None
+            )
     except Exception:
         logger.exception("OpenRouter stream model=%s failed", model)
         if acc:
@@ -343,16 +424,22 @@ async def ask_ai_messages(
     max_tokens: int | None = None,
     text_role: str | None = None,
     response_format: dict[str, Any] | None = None,
-) -> str:
+    temperature: float | None = None,
+) -> ChatCompletionResult:
     """
     Отправляет ``messages`` в OpenRouter; перебирает ``free_models`` до успеха.
 
     Если задан ``stream_callback``, сначала для каждой модели пробуется SSE; при неудаче — обычный POST.
 
     ``text_role == "table_generator"`` включает JSON Mode: ``response_format: {type: json_object}``.
+
+    Возвращает словарь ``{content, prompt_tokens, completion_tokens}``; при отсутствии ``usage`` токены = 0.
     """
-    if response_format is None and (text_role or "").strip().lower() == "table_generator":
+    is_table_role = (text_role or "").strip().lower() == "table_generator"
+    if response_format is None and is_table_role:
         response_format = {"type": "json_object"}
+    if is_table_role:
+        stream_callback = None
     if _estimate_messages_chars(messages) > max_context_chars:
         logger.warning("OpenRouter: context too long (%s chars), aborting", max_context_chars)
         raise RuntimeError("context_too_long")
@@ -386,7 +473,7 @@ async def ask_ai_messages(
         for model in model_chain:
             try:
                 if use_stream:
-                    content = await _post_chat_completion_stream(
+                    result = await _post_chat_completion_stream(
                         client,
                         settings,
                         model,
@@ -395,10 +482,11 @@ async def ask_ai_messages(
                         stream_callback=stream_callback,
                         max_tokens=max_tokens,
                         response_format=response_format,
+                        temperature=temperature,
                     )
-                    if content:
-                        return content
-                content = await _post_chat_completion(
+                    if result is not None and result.get("content"):
+                        return result
+                result = await _post_chat_completion(
                     client,
                     settings,
                     model,
@@ -406,11 +494,12 @@ async def ask_ai_messages(
                     timeout=t,
                     max_tokens=max_tokens,
                     response_format=response_format,
+                    temperature=temperature,
                 )
-                if content is not None:
+                if result is not None and result.get("content"):
                     if stream_callback is not None:
-                        await stream_callback(content, True)
-                    return content
+                        await stream_callback(result["content"], True)
+                    return result
             except Exception:
                 logger.exception("OpenRouter model=%s request failed", model)
                 continue
@@ -441,7 +530,7 @@ async def ask_ai_text(
             {"role": "system", "content": system},
             {"role": "user", "content": prompt},
         ]
-        return await ask_ai_messages(
+        completion = await ask_ai_messages(
             settings,
             messages,
             timeout=timeout_override,
@@ -449,6 +538,7 @@ async def ask_ai_text(
             max_context_tokens=16_000,
             http_client=http_client,
         )
+        return completion.get("content") or ""
     except RuntimeError as e:
         if str(e) in ("context_too_long", "context_too_long_tokens"):
             return "Запрос слишком длинный. Сократите текст и попробуйте снова."
