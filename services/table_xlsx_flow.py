@@ -385,7 +385,6 @@ async def run_xlsx_fast_path_turn(
     if subrole == "wb_ozon_finance" and worker.calculated_total > 0:
         from dataclasses import replace
 
-        from services.table_generator_pack import _CAPTION_MAX
         from services.table_wb_finance_ai import (
             generate_wb_finance_consulting_html,
             resolve_wb_metrics_for_rows,
@@ -406,8 +405,6 @@ async def run_xlsx_fast_path_turn(
             from services.table_wb_finance_ai import append_wb_finance_mini_app_cta
 
             ai_caption = append_wb_finance_mini_app_cta(ai_caption)
-            if len(ai_caption) > _CAPTION_MAX:
-                ai_caption = ai_caption[: _CAPTION_MAX - 1] + "…"
             worker = replace(worker, telegram_caption_html=ai_caption)
 
     table_json = rows_to_canonical_table_json(

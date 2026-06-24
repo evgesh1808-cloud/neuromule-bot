@@ -39,6 +39,8 @@ def test_build_wb_marketplace_finance_system_prompt_variables() -> None:
     assert "СВЕТОФОР ЗДОРОВЬЯ" in prompt
     assert "КАЛЬКУЛЯТОР УПУЩЕННОЙ ВЫГОДЫ" in prompt
     assert "12,500.00 руб." in prompt
+    assert "2000 символов" in prompt
+    assert "2–3 предложения" in prompt or "2-3 предложения" in prompt
     assert "Подключите" not in prompt
 
 

@@ -23,7 +23,8 @@ logger = logging.getLogger(__name__)
 
 _USN_RATE = 0.06
 _WB_FINANCE_AI_TEMPERATURE = 0.45
-_WB_FINANCE_MAX_OUTPUT_TOKENS = 3200
+_WB_FINANCE_MAX_OUTPUT_TOKENS = 1400
+_WB_FINANCE_TELEGRAM_SOFT_MAX_CHARS = 2000
 _FINANCE_SEPARATOR = "────────────────────────"
 _OLD_FINALE_MARKERS = (
     "Финальный Excel",
@@ -315,7 +316,8 @@ def build_wb_marketplace_finance_user_prompt(
     return (
         "Ниже — подтверждённые метрики локального ETL-расчёта NeuroMule. "
         "Сформируй финансовый экспресс-отчёт строго по структуре из system prompt. "
-        "Числа выручки, налога, прибыли, рентабельности, скоринга и FOMO не меняй.\n\n"
+        "Числа выручки, налога, прибыли, рентабельности, скоринга и FOMO не меняй. "
+        "Пиши ёмко: весь ответ до 2000 символов, зоны светофора — по 2–3 предложения.\n\n"
         f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
     )
 
