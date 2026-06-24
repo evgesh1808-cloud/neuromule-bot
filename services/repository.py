@@ -220,6 +220,43 @@ async def _migrate_table_reports(db: aiosqlite.Connection) -> None:
     )
 
 
+async def _migrate_wb_api(db: aiosqlite.Connection) -> None:
+    """Токены WB API и очередь утренних уведомлений (09:00)."""
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS wb_api_tokens (
+            user_id INTEGER PRIMARY KEY,
+            api_token TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS wb_api_morning_notifications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            report_id INTEGER NOT NULL,
+            scheduled_for TEXT NOT NULL,
+            sent_at TEXT,
+            net_profit REAL NOT NULL DEFAULT 0,
+            group_a_leader TEXT NOT NULL DEFAULT '',
+            oos_product TEXT,
+            oos_days INTEGER,
+            fomo_rub REAL NOT NULL DEFAULT 0,
+            morning_insight TEXT NOT NULL DEFAULT '',
+            digest_line TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_wb_morning_scheduled "
+        "ON wb_api_morning_notifications (scheduled_for, sent_at)"
+    )
+
+
 async def _migrate_dialog_messages(db: aiosqlite.Connection) -> None:
     await db.execute(
         """
@@ -308,6 +345,7 @@ async def init_db(promo_seeds: str = "") -> None:
         await _migrate_drop_users_crystals(db)
         await _migrate_dialog_messages(db)
         await _migrate_table_reports(db)
+        await _migrate_wb_api(db)
         await _migrate_identity_map(db)
         await _migrate_rate_limit_hits(db)
         await db.execute(
@@ -1335,7 +1373,7 @@ async def fetch_table_report_json_for_user(report_id: int, user_id: int) -> dict
     """
     Загружает JSON отчёта только если ``table_reports.user_id`` совпадает с владельцем.
 
-    Используется Mini App API после валидации Telegram ``initData``.
+    Сохраняет расширенные поля (``abc_analysis``, ``out_of_stock_forecast``) для Mini App.
     """
     import json
 
@@ -1350,16 +1388,18 @@ async def fetch_table_report_json_for_user(report_id: int, user_id: int) -> dict
     if not row or int(row[0]) != int(user_id):
         return None
     raw_json = str(row[1])
+    try:
+        data = json.loads(raw_json)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
     payload = parse_table_json_response(raw_json)
-    if payload is None:
-        try:
-            data = json.loads(raw_json)
-        except json.JSONDecodeError:
-            return None
-        if not isinstance(data, dict):
-            return None
-        return data
-    return json.loads(payload.raw_json)
+    if payload is not None:
+        data.setdefault("title", payload.title)
+        data.setdefault("headers", payload.headers)
+        data.setdefault("rows", payload.rows)
+    return data
 
 
 async def fetch_table_report_json(report_id: int) -> dict | None:
@@ -1390,3 +1430,115 @@ async def fetch_table_report_json(report_id: int) -> dict | None:
             return None
         return data
     return json.loads(payload.raw_json)
+
+
+# ── WB API nightly worker ───────────────────────────────────────────────────
+
+
+async def upsert_wb_api_token(user_id: int, api_token: str, *, enabled: bool = True) -> None:
+    await ensure_user(user_id)
+    ts = datetime.now(timezone.utc).isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO wb_api_tokens (user_id, api_token, enabled, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                api_token = excluded.api_token,
+                enabled = excluded.enabled,
+                updated_at = excluded.updated_at
+            """,
+            (int(user_id), api_token.strip(), 1 if enabled else 0, ts),
+        )
+        await db.commit()
+
+
+async def list_wb_api_enabled_users() -> list[tuple[int, str]]:
+    """``(user_id, api_token)`` для ночного батча."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT user_id, api_token FROM wb_api_tokens WHERE enabled = 1"
+        ) as cur:
+            rows = await cur.fetchall()
+    return [(int(r[0]), str(r[1])) for r in rows]
+
+
+async def insert_wb_morning_notification(
+    *,
+    user_id: int,
+    report_id: int,
+    scheduled_for: str,
+    digest_line: str,
+    net_profit: float,
+    group_a_leader: str,
+    oos_product: str | None,
+    oos_days: int | None,
+    fomo_rub: float,
+    morning_insight: str,
+) -> int:
+    ts = datetime.now(timezone.utc).isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """
+            INSERT INTO wb_api_morning_notifications (
+                user_id, report_id, scheduled_for, sent_at,
+                net_profit, group_a_leader, oos_product, oos_days, fomo_rub,
+                morning_insight, digest_line, created_at
+            ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(user_id),
+                int(report_id),
+                scheduled_for,
+                float(net_profit),
+                group_a_leader,
+                oos_product,
+                oos_days,
+                float(fomo_rub),
+                morning_insight,
+                digest_line,
+                ts,
+            ),
+        )
+        await db.commit()
+        return int(cursor.lastrowid)
+
+
+async def list_due_wb_morning_notifications(now_iso: str) -> list[dict]:
+    """Неотправленные уведомления, у которых ``scheduled_for <= now``."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """
+            SELECT id, user_id, report_id, net_profit, group_a_leader,
+                   oos_product, oos_days, fomo_rub, morning_insight, digest_line
+            FROM wb_api_morning_notifications
+            WHERE sent_at IS NULL AND scheduled_for <= ?
+            ORDER BY scheduled_for ASC
+            """,
+            (now_iso,),
+        ) as cur:
+            rows = await cur.fetchall()
+    keys = (
+        "id",
+        "user_id",
+        "report_id",
+        "net_profit",
+        "group_a_leader",
+        "oos_product",
+        "oos_days",
+        "fomo_rub",
+        "morning_insight",
+        "digest_line",
+    )
+    return [dict(zip(keys, row, strict=True)) for row in rows]
+
+
+async def mark_wb_morning_notification_sent(notification_id: int) -> None:
+    ts = datetime.now(timezone.utc).isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE wb_api_morning_notifications SET sent_at = ? WHERE id = ?",
+            (ts, int(notification_id)),
+        )
+        await db.commit()
+

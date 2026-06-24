@@ -6,6 +6,7 @@ NEUROMULE_PLATFORM:
   vk — vkbottle (заглушка, общий сервисный слой подключается позже)
   max — maxgram (заглушка до реализации polling/webhook)
   api — FastAPI для Mini App backend
+  wb_worker — ночной батч WB API + утренние уведомления 09:00 МСК
 """
 from __future__ import annotations
 
@@ -124,6 +125,10 @@ def main() -> None:
 
         port = int(os.getenv("API_PORT", "8000"))
         uvicorn.run("api.mini_app:app", host="0.0.0.0", port=port, reload=False)
+    elif mode in ("wb_worker", "wb_api_worker"):
+        from workers.wb_api_worker import run_wb_api_worker
+
+        asyncio.run(run_wb_api_worker())
     else:
         print(f"Неизвестный NEUROMULE_PLATFORM={mode!r}", file=sys.stderr)
         sys.exit(1)

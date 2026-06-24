@@ -21,7 +21,8 @@ async def get_report_data(
     Возвращает отчёт для Telegram Mini App только владельцу.
 
     Требует валидный ``initData`` (см. :func:`api.auth.require_telegram_user`).
-    Поле ``table_raw_json`` — объект ``{title, headers, rows}``.
+    Поле ``table_raw_json`` — объект ``{title, headers, rows, abc_analysis,
+    out_of_stock_forecast, summary, ...}`` (WB API worker добавляет расширенные поля).
     """
     data = await repo.fetch_table_report_json_for_user(report_id, telegram_user_id)
     if data is None:

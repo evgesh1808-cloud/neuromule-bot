@@ -403,6 +403,9 @@ async def run_xlsx_fast_path_turn(
             models=model_chain or None,
         )
         if ai_caption:
+            from services.table_wb_finance_ai import append_wb_finance_mini_app_cta
+
+            ai_caption = append_wb_finance_mini_app_cta(ai_caption)
             if len(ai_caption) > _CAPTION_MAX:
                 ai_caption = ai_caption[: _CAPTION_MAX - 1] + "…"
             worker = replace(worker, telegram_caption_html=ai_caption)

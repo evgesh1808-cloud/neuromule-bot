@@ -362,68 +362,20 @@ def build_wb_finance_express_html(
     """
     Локальный fallback для под-режима ``wb_ozon_finance`` (если ИИ недоступен).
 
-    Расчёт УСН 6%, чистой прибыли и годового прогноза — только на сервере.
+    Расчёт УСН 6%, чистой прибыли, скоринга, FOMO и CTA — только на сервере.
     """
     if calculated_total <= 0:
         return ""
 
-    from services.table_wb_finance_ai import compute_wb_finance_prompt_metrics
+    from services.table_wb_finance_ai import (
+        build_wb_finance_express_html_local,
+        compute_wb_finance_prompt_metrics,
+    )
 
     prompt_metrics = compute_wb_finance_prompt_metrics(calculated_total, wb_metrics)
     if prompt_metrics is None:
         return ""
-
-    tax = prompt_metrics.tax
-    net_profit = prompt_metrics.clear_profit
-    yearly_forecast = prompt_metrics.year_forecast
-    profitability = prompt_metrics.profitability_pct
-
-    lines = [
-        "📊 <b>ФИНАНСОВЫЙ ЭКСПРЕСС-АНАЛИЗ БИЗНЕСА</b>",
-        _FINANCE_SEPARATOR,
-        "🎯 <b>БИЗНЕС-СКОРИНГ:</b> <i>локальный расчёт (ИИ временно недоступен)</i>",
-        _FINANCE_SEPARATOR,
-        (
-            f"💰 <b>ВАЛОВАЯ ВЫРУЧКА:</b> "
-            f"<code>{_fmt_rub_in_code(calculated_total)} руб.</code>"
-        ),
-        f"📉 <b>НАЛОГ УСН (6%):</b> <code>{_fmt_rub_in_code(tax)} руб.</code>",
-        (
-            f"💵 <b>ЧИСТАЯ ПРИБЫЛЬ:</b> "
-            f"<code>{_fmt_rub_in_code(net_profit)} руб.</code>"
-        ),
-        (
-            f"Рентабельность по чистой прибыли: "
-            f"<code>{profitability:.1f}%</code>"
-        ),
-        _FINANCE_SEPARATOR,
-        "📈 <b>Локальная аналитика (0 ₽, сервер):</b>",
-    ]
-    if wb_metrics and wb_metrics.insight_lines:
-        lines.extend(wb_metrics.insight_lines)
-    else:
-        lines.extend(
-            [
-                (
-                    "• <i>Оптимизация:</i> Налог УСН 6% можно официально уменьшить на сумму "
-                    "фиксированных страховых взносов ИП, если оплатить их внутри отчетного квартала."
-                ),
-            ]
-        )
-    lines.extend(
-        [
-            (
-                "• <i>Прогноз:</i> При сохранении текущей динамики, ваш годовой оборот составит "
-                f"около <code>{_fmt_rub_in_code(yearly_forecast, decimals=0)} руб.</code>"
-            ),
-            _FINANCE_SEPARATOR,
-            (
-                "🗂️ <i>Финальный Excel-отчет с графиками трендов уже собран и прикреплен ниже. "
-                "Нажмите на кнопку, чтобы открыть интерактивный дашборд!</i>"
-            ),
-        ]
-    )
-    return repair_telegram_html("\n".join(lines))
+    return build_wb_finance_express_html_local(prompt_metrics, wb_metrics)
 
 
 def fmt_count(value: float) -> str:
@@ -594,7 +546,11 @@ def build_table_one_screen_html(
         return ""
 
     if normalize_table_subrole(table_subrole) == "wb_ozon_finance" and total > 0:
-        return build_wb_finance_express_html(total)
+        wb_metrics = compute_wb_marketplace_metrics(
+            payload.to_rows_with_header(),
+            revenue_total=total,
+        )
+        return build_wb_finance_express_html(total, wb_metrics=wb_metrics)
 
     count = len(items)
     average = total / count if count else 0.0

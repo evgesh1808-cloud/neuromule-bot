@@ -53,4 +53,10 @@ jobs:
               NEUROMULE_PLATFORM=api pm2 start main.py --name neuromule-api --interpreter venv/bin/python --cwd "${DEPLOY_DIR}"
             fi
 
+            if pm2 describe neuromule-wb-worker >/dev/null 2>&1; then
+              pm2 restart neuromule-wb-worker --update-env
+            else
+              NEUROMULE_PLATFORM=wb_worker pm2 start main.py --name neuromule-wb-worker --interpreter venv/bin/python --cwd "${DEPLOY_DIR}"
+            fi
+
             pm2 save || true

@@ -43,14 +43,14 @@ def build_table_mini_app_url(report_id: int | str) -> str:
 
 
 def get_table_mini_app_keyboard(report_id: int | str | None) -> InlineKeyboardMarkup | None:
-    """Премиальная кнопка Web App «📊 Открыть интерактивный отчёт»."""
+    """Премиальная кнопка Web App «📊 Открыть интерактивный дашборд»."""
     if report_id is None:
         return None
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="📊 Открыть интерактивный отчёт",
+                    text="📊 Открыть интерактивный дашборд",
                     web_app=WebAppInfo(url=build_table_mini_app_url(report_id)),
                 )
             ]

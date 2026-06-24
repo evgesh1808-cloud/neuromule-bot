@@ -18,6 +18,7 @@ def test_build_table_mini_app_url_with_placeholder(monkeypatch) -> None:
         "webapp_table_reports_url",
         "https://user.github.io/neuromule/?report_id={report_id}",
     )
+    object.__setattr__(settings, "mini_app_api_base_url", "")
     assert build_table_mini_app_url(42) == "https://user.github.io/neuromule/?report_id=42"
 
 
@@ -29,6 +30,7 @@ def test_build_table_mini_app_url_appends_query(monkeypatch) -> None:
         "webapp_table_reports_url",
         "https://user.github.io/neuromule/index.html",
     )
+    object.__setattr__(settings, "mini_app_api_base_url", "")
     assert build_table_mini_app_url(7) == "https://user.github.io/neuromule/index.html?report_id=7"
 
 
@@ -50,7 +52,7 @@ def test_build_table_mini_app_url_appends_api_base(monkeypatch) -> None:
 def test_get_table_mini_app_keyboard_always_with_report_id() -> None:
     kb = get_table_mini_app_keyboard(42)
     assert kb is not None
-    assert kb.inline_keyboard[0][0].text == "📊 Открыть интерактивный отчёт"
+    assert kb.inline_keyboard[0][0].text == "📊 Открыть интерактивный дашборд"
     assert kb.inline_keyboard[0][0].web_app is not None
 
 

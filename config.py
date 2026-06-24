@@ -494,6 +494,17 @@ class Settings(BaseSettings):
     # Очередь записи assistant+prune в SQLite (один фоновый воркер); в тестах воркер не стартует — прямой коммит.
     dialog_write_worker_enabled: bool = True
 
+    # --- WB API nightly worker (workers/wb_api_worker.py) ---
+    wb_api_base_url: Annotated[
+        str, _nonempty_str("https://statistics-api.wildberries.ru")
+    ] = "https://statistics-api.wildberries.ru"
+    wb_api_timeout_sec: Annotated[float, _coerce_float(30.0)] = 30.0
+    wb_api_poll_interval_sec: Annotated[float, _coerce_float(60.0)] = 60.0
+    wb_api_batch_hour: Annotated[int, _coerce_int(3)] = 3
+    wb_api_morning_hour: Annotated[int, _coerce_int(9)] = 9
+    wb_api_morning_minute: Annotated[int, _coerce_int(0)] = 0
+    wb_api_run_batch_on_start: Annotated[bool, _coerce_bool(True)] = True
+
 
 settings = Settings()
 
