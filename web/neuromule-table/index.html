@@ -3,90 +3,176 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
-    <title>NeuroMule — ИИ-дашборд</title>
+    <title>NeuroMule — дашборд аналитики</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <style>
         :root {
             --accent: #8B3FFD;
             --accent-soft: rgba(139, 63, 253, 0.14);
-            --radius: 12px;
-            --shadow: 0 4px 24px rgba(0, 0, 0, 0.08);
+            --accent-glow: rgba(139, 63, 253, 0.28);
+            --radius: 14px;
+            --radius-sm: 10px;
+            --shadow: 0 6px 28px rgba(0, 0, 0, 0.1);
+            --transition: 0.2s cubic-bezier(0.25, 0.1, 0.25, 1);
             color-scheme: light dark;
         }
 
-        * { box-sizing: border-box; }
+        * {
+            box-sizing: border-box;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        html {
+            scroll-behavior: smooth;
+        }
 
         body {
             margin: 0;
             font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            background: var(--tg-theme-bg-color, #0f0f12);
-            color: var(--tg-theme-text-color, #f5f5f7);
-            padding: 12px 14px calc(24px + env(safe-area-inset-bottom));
+            background: var(--tg-theme-bg-color, #f2f2f7);
+            color: var(--tg-theme-text-color, #1c1c1e);
+            padding: 14px 16px calc(28px + env(safe-area-inset-bottom));
             -webkit-font-smoothing: antialiased;
+            overflow-x: hidden;
         }
 
-        body.platform-wb { --accent: #8B3FFD; --accent-soft: rgba(139, 63, 253, 0.16); }
-        body.platform-ozon { --accent: #005BFF; --accent-soft: rgba(0, 91, 255, 0.16); }
-        body.platform-yandex { --accent: #FFCC00; --accent-soft: rgba(255, 204, 0, 0.2); }
-        body.platform-1c { --accent: #2DBE60; --accent-soft: rgba(45, 190, 96, 0.16); }
+        body.platform-wb   { --accent: #8B3FFD; --accent-soft: rgba(139, 63, 253, 0.14); --accent-glow: rgba(139, 63, 253, 0.28); }
+        body.platform-ozon { --accent: #005BFF; --accent-soft: rgba(0, 91, 255, 0.14);   --accent-glow: rgba(0, 91, 255, 0.28); }
+        body.platform-yandex { --accent: #E6A800; --accent-soft: rgba(255, 204, 0, 0.18); --accent-glow: rgba(255, 204, 0, 0.32); }
+        body.platform-1c { --accent: #2DBE60; --accent-soft: rgba(45, 190, 96, 0.14);  --accent-glow: rgba(45, 190, 96, 0.28); }
 
+        .app-shell {
+            max-width: 520px;
+            margin: 0 auto;
+        }
+
+        /* ── Header ─────────────────────────────────────────── */
         .header {
-            margin-bottom: 16px;
+            margin-bottom: 18px;
         }
 
         .header h1 {
             margin: 0 0 4px;
-            font-size: 1.35rem;
+            font-size: 1.4rem;
             font-weight: 700;
-            letter-spacing: -0.02em;
+            letter-spacing: -0.025em;
+            line-height: 1.2;
         }
 
         .header p {
             margin: 0;
             font-size: 0.88rem;
             color: var(--tg-theme-hint-color, #8e8e93);
+            line-height: 1.4;
         }
 
+        /* ── Cards ──────────────────────────────────────────── */
         .card {
-            background: var(--tg-theme-secondary-bg-color, #1c1c1e);
+            background: var(--tg-theme-secondary-bg-color, #ffffff);
             border-radius: var(--radius);
             padding: 16px;
             margin-bottom: 14px;
             box-shadow: var(--shadow);
-            border: 1px solid rgba(127, 127, 127, 0.12);
+            border: 1px solid color-mix(in srgb, var(--tg-theme-hint-color, #8e8e93) 12%, transparent);
         }
 
         .card-title {
-            margin: 0 0 12px;
+            margin: 0 0 14px;
             font-size: 1rem;
             font-weight: 650;
             display: flex;
             align-items: center;
             gap: 8px;
+            line-height: 1.3;
         }
 
+        /* ── Score banner ───────────────────────────────────── */
+        .score-banner {
+            background: linear-gradient(135deg, var(--accent-soft), transparent 70%);
+            border: 1px solid var(--accent);
+            border-radius: var(--radius);
+            padding: 18px 16px;
+            margin-bottom: 14px;
+            text-align: center;
+            box-shadow: 0 4px 20px var(--accent-glow);
+        }
+
+        .score-banner-label {
+            font-size: 0.78rem;
+            font-weight: 600;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            color: var(--tg-theme-hint-color, #8e8e93);
+            margin-bottom: 6px;
+        }
+
+        .score-banner-value {
+            font-size: 1.65rem;
+            font-weight: 800;
+            color: var(--accent);
+            font-variant-numeric: tabular-nums;
+            letter-spacing: -0.02em;
+        }
+
+        /* ── Metrics grid ───────────────────────────────────── */
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-bottom: 14px;
+        }
+
+        .metric-card {
+            background: var(--tg-theme-secondary-bg-color, #ffffff);
+            border-radius: var(--radius);
+            padding: 14px;
+            border: 1px solid color-mix(in srgb, var(--tg-theme-hint-color, #8e8e93) 10%, transparent);
+            transition: border-color var(--transition);
+        }
+
+        .metric-label {
+            font-size: 0.72rem;
+            font-weight: 500;
+            color: var(--tg-theme-hint-color, #8e8e93);
+            margin-bottom: 6px;
+            line-height: 1.3;
+        }
+
+        .metric-value {
+            font-size: 1.05rem;
+            font-weight: 700;
+            font-variant-numeric: tabular-nums;
+            color: var(--accent);
+            line-height: 1.2;
+        }
+
+        .metric-value.positive { color: #34c759; }
+        .metric-value.negative { color: #ff3b30; }
+
+        /* ── Platform nav ─────────────────────────────────── */
         .platform-scroll {
             display: flex;
             gap: 8px;
             overflow-x: auto;
-            padding-bottom: 4px;
-            margin-bottom: 14px;
+            padding-bottom: 6px;
+            margin-bottom: 16px;
             scrollbar-width: none;
+            -webkit-overflow-scrolling: touch;
         }
 
         .platform-scroll::-webkit-scrollbar { display: none; }
 
         .platform-btn {
             flex: 0 0 auto;
-            border: 1px solid rgba(127, 127, 127, 0.2);
-            background: var(--tg-theme-secondary-bg-color, #1c1c1e);
-            color: var(--tg-theme-text-color, #fff);
+            border: 1px solid color-mix(in srgb, var(--tg-theme-hint-color, #8e8e93) 22%, transparent);
+            background: var(--tg-theme-secondary-bg-color, #ffffff);
+            color: var(--tg-theme-text-color, #1c1c1e);
             border-radius: 999px;
             padding: 10px 16px;
-            font-size: 0.85rem;
+            font-size: 0.84rem;
             font-weight: 600;
             cursor: pointer;
-            transition: transform 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+            transition: transform var(--transition), background var(--transition), border-color var(--transition), color var(--transition);
             white-space: nowrap;
         }
 
@@ -96,56 +182,42 @@
             color: var(--accent);
         }
 
-        .platform-btn:active { transform: scale(0.97); }
+        .platform-btn:active { transform: scale(0.96); }
 
-        .metrics-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 10px;
-            margin-bottom: 14px;
-        }
-
-        .metric-card {
-            background: var(--tg-theme-secondary-bg-color, #1c1c1e);
-            border-radius: var(--radius);
-            padding: 14px;
-            border: 1px solid rgba(127, 127, 127, 0.1);
-        }
-
-        .metric-label {
-            font-size: 0.75rem;
-            color: var(--tg-theme-hint-color, #8e8e93);
-            margin-bottom: 6px;
-        }
-
-        .metric-value {
-            font-size: 1.15rem;
-            font-weight: 700;
-            font-variant-numeric: tabular-nums;
-            color: var(--accent);
-        }
-
+        /* ── Form controls ──────────────────────────────────── */
         .field-label {
             display: block;
             font-size: 0.8rem;
+            font-weight: 500;
             color: var(--tg-theme-hint-color, #8e8e93);
             margin-bottom: 6px;
         }
 
         .text-input {
             width: 100%;
-            border: 1px solid rgba(127, 127, 127, 0.25);
-            border-radius: 10px;
+            border: 1px solid color-mix(in srgb, var(--tg-theme-hint-color, #8e8e93) 28%, transparent);
+            border-radius: var(--radius-sm);
             padding: 12px 14px;
             font-size: 0.95rem;
-            background: var(--tg-theme-bg-color, #0f0f12);
-            color: var(--tg-theme-text-color, #fff);
-            margin-bottom: 14px;
+            background: var(--tg-theme-bg-color, #f2f2f7);
+            color: var(--tg-theme-text-color, #1c1c1e);
+            margin-bottom: 12px;
+            transition: border-color var(--transition);
         }
 
         .text-input:focus {
             outline: none;
             border-color: var(--accent);
+        }
+
+        .text-input::placeholder {
+            color: var(--tg-theme-hint-color, #8e8e93);
+        }
+
+        .token-mask {
+            font-size: 0.78rem;
+            color: var(--tg-theme-hint-color, #8e8e93);
+            margin: -6px 0 12px;
         }
 
         .toggle-row {
@@ -154,18 +226,21 @@
             justify-content: space-between;
             gap: 12px;
             margin-bottom: 14px;
+            padding: 4px 0;
         }
 
         .toggle-label {
             font-size: 0.9rem;
             font-weight: 500;
             flex: 1;
+            line-height: 1.35;
         }
 
+        /* iOS-style switch */
         .switch {
             position: relative;
-            width: 52px;
-            height: 30px;
+            width: 51px;
+            height: 31px;
             flex-shrink: 0;
         }
 
@@ -179,22 +254,22 @@
             position: absolute;
             inset: 0;
             cursor: pointer;
-            background: rgba(127, 127, 127, 0.35);
+            background: color-mix(in srgb, var(--tg-theme-hint-color, #8e8e93) 35%, transparent);
             border-radius: 999px;
-            transition: background 0.2s ease;
+            transition: background var(--transition);
         }
 
         .slider::before {
             content: "";
             position: absolute;
-            height: 24px;
-            width: 24px;
-            left: 3px;
-            bottom: 3px;
+            height: 27px;
+            width: 27px;
+            left: 2px;
+            bottom: 2px;
             background: #fff;
             border-radius: 50%;
-            transition: transform 0.2s ease;
-            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+            transition: transform var(--transition);
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
         }
 
         .switch input:checked + .slider {
@@ -202,11 +277,11 @@
         }
 
         .switch input:checked + .slider::before {
-            transform: translateX(22px);
+            transform: translateX(20px);
         }
 
         .switch input:disabled + .slider {
-            opacity: 0.45;
+            opacity: 0.42;
             cursor: not-allowed;
         }
 
@@ -220,7 +295,7 @@
             cursor: pointer;
             background: var(--tg-theme-button-color, var(--accent));
             color: var(--tg-theme-button-text-color, #ffffff);
-            transition: opacity 0.15s ease, transform 0.1s ease;
+            transition: opacity var(--transition), transform 0.1s ease;
         }
 
         .btn-primary:active { transform: scale(0.98); }
@@ -228,22 +303,25 @@
 
         .btn-ghost {
             width: 100%;
-            margin-top: 10px;
-            border: 1px solid rgba(127, 127, 127, 0.25);
+            margin-top: 6px;
+            border: 1px solid color-mix(in srgb, var(--tg-theme-hint-color, #8e8e93) 25%, transparent);
             border-radius: var(--radius);
-            padding: 12px;
+            padding: 13px;
             background: transparent;
-            color: var(--tg-theme-text-color, #fff);
+            color: var(--tg-theme-text-color, #1c1c1e);
             font-size: 0.95rem;
+            font-weight: 500;
             cursor: pointer;
         }
 
+        /* ── ABC tabs ───────────────────────────────────────── */
         .abc-tabs {
             display: flex;
             gap: 6px;
-            margin-bottom: 12px;
+            margin-bottom: 14px;
             overflow-x: auto;
             scrollbar-width: none;
+            -webkit-overflow-scrolling: touch;
         }
 
         .abc-tabs::-webkit-scrollbar { display: none; }
@@ -252,62 +330,112 @@
             flex: 1 0 auto;
             min-width: 0;
             border: none;
-            border-radius: 10px;
+            border-radius: var(--radius-sm);
             padding: 10px 8px;
-            font-size: 0.72rem;
+            font-size: 0.7rem;
             font-weight: 600;
+            line-height: 1.25;
             cursor: pointer;
-            background: rgba(127, 127, 127, 0.12);
-            color: var(--tg-theme-text-color, #fff);
-            transition: background 0.15s ease;
+            background: color-mix(in srgb, var(--tg-theme-hint-color, #8e8e93) 10%, transparent);
+            color: var(--tg-theme-text-color, #1c1c1e);
+            transition: background var(--transition), color var(--transition);
         }
 
-        .abc-tab.active-a { background: rgba(52, 199, 89, 0.2); color: #34c759; }
-        .abc-tab.active-b { background: rgba(255, 204, 0, 0.2); color: #ffcc00; }
-        .abc-tab.active-c { background: rgba(255, 59, 48, 0.2); color: #ff3b30; }
+        .abc-tab.active-a { background: rgba(52, 199, 89, 0.18); color: #248a3d; }
+        .abc-tab.active-b { background: rgba(255, 204, 0, 0.2);  color: #b8860b; }
+        .abc-tab.active-c { background: rgba(255, 59, 48, 0.16); color: #d70015; }
 
-        .product-list {
+        /* ── SKU cards ──────────────────────────────────────── */
+        .sku-list {
             display: flex;
             flex-direction: column;
-            gap: 8px;
-            min-height: 80px;
+            gap: 10px;
+            min-height: 60px;
         }
 
-        .product-item {
+        .sku-card {
+            background: var(--tg-theme-bg-color, #f2f2f7);
+            border-radius: var(--radius-sm);
+            padding: 14px;
+            border: 1px solid color-mix(in srgb, var(--tg-theme-hint-color, #8e8e93) 10%, transparent);
+            transition: border-color var(--transition), box-shadow var(--transition);
+        }
+
+        .sku-card.risk {
+            border-color: rgba(255, 59, 48, 0.35);
+            box-shadow: 0 0 0 1px rgba(255, 59, 48, 0.08);
+        }
+
+        .sku-header {
             display: flex;
             align-items: flex-start;
             justify-content: space-between;
             gap: 10px;
-            padding: 12px;
-            border-radius: 10px;
-            background: var(--tg-theme-bg-color, #0f0f12);
-            border: 1px solid rgba(127, 127, 127, 0.1);
+            margin-bottom: 10px;
         }
 
-        .product-name {
-            font-size: 0.88rem;
-            font-weight: 600;
-            margin-bottom: 4px;
+        .sku-name {
+            font-size: 0.92rem;
+            font-weight: 650;
+            line-height: 1.3;
+            margin: 0 0 3px;
         }
 
-        .product-meta {
+        .sku-article {
             font-size: 0.75rem;
             color: var(--tg-theme-hint-color, #8e8e93);
+            font-family: ui-monospace, "SF Mono", Menlo, monospace;
         }
 
-        .product-right {
-            text-align: right;
-            font-size: 0.8rem;
-            font-weight: 600;
+        .sku-badge {
+            font-size: 0.72rem;
+            font-weight: 700;
+            padding: 4px 8px;
+            border-radius: 6px;
+            background: var(--accent-soft);
+            color: var(--accent);
             white-space: nowrap;
         }
 
-        .fomo-badge {
+        .sku-badge.alert {
+            background: rgba(255, 59, 48, 0.14);
             color: #ff3b30;
-            font-size: 0.72rem;
-            margin-top: 4px;
         }
 
+        .sku-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px 12px;
+        }
+
+        .sku-field-label {
+            font-size: 0.68rem;
+            color: var(--tg-theme-hint-color, #8e8e93);
+            margin-bottom: 2px;
+        }
+
+        .sku-field-value {
+            font-size: 0.82rem;
+            font-weight: 600;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .sku-field-value.danger { color: #ff3b30; }
+        .sku-field-value.success { color: #34c759; }
+
+        .fomo-row {
+            margin-top: 10px;
+            padding-top: 10px;
+            border-top: 1px dashed rgba(255, 59, 48, 0.25);
+            font-size: 0.8rem;
+            font-weight: 600;
+            color: #ff3b30;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        /* ── What-If ──────────────────────────────────────────── */
         .range-block {
             margin-bottom: 18px;
         }
@@ -315,72 +443,101 @@
         .range-header {
             display: flex;
             justify-content: space-between;
-            font-size: 0.85rem;
-            margin-bottom: 8px;
+            align-items: baseline;
+            font-size: 0.88rem;
+            margin-bottom: 10px;
+            gap: 8px;
+        }
+
+        .range-header span:first-child {
+            flex: 1;
+            line-height: 1.3;
         }
 
         .range-header span:last-child {
             font-weight: 700;
+            font-variant-numeric: tabular-nums;
             color: var(--accent);
+            flex-shrink: 0;
         }
 
         input[type="range"] {
             width: 100%;
             height: 6px;
-            accent-color: var(--accent);
+            -webkit-appearance: none;
+            appearance: none;
+            background: color-mix(in srgb, var(--tg-theme-hint-color, #8e8e93) 25%, transparent);
+            border-radius: 999px;
+            outline: none;
+            cursor: pointer;
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            background: var(--accent);
+            box-shadow: 0 2px 8px var(--accent-glow);
+            cursor: pointer;
+        }
+
+        input[type="range"]::-moz-range-thumb {
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            background: var(--accent);
+            border: none;
+            box-shadow: 0 2px 8px var(--accent-glow);
             cursor: pointer;
         }
 
         .whatif-result {
-            margin-top: 12px;
+            margin-top: 4px;
             padding: 14px;
-            border-radius: 10px;
+            border-radius: var(--radius-sm);
             background: var(--accent-soft);
             font-size: 0.9rem;
-            line-height: 1.45;
+            line-height: 1.5;
             font-weight: 500;
         }
 
-        .table-wrap {
-            overflow-x: auto;
-            margin-top: 8px;
+        .whatif-result em {
+            font-style: normal;
+            font-weight: 700;
+            color: var(--accent);
         }
 
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 0.78rem;
+        /* ── Skeletons ──────────────────────────────────────── */
+        @keyframes shimmer {
+            0%   { background-position: 200% 0; }
+            100% { background-position: -200% 0; }
         }
-
-        th, td {
-            padding: 8px 6px;
-            text-align: left;
-            border-bottom: 1px solid rgba(127, 127, 127, 0.15);
-            white-space: nowrap;
-        }
-
-        th {
-            color: var(--tg-theme-hint-color, #8e8e93);
-            font-weight: 600;
-        }
-
-        td.num { text-align: right; font-variant-numeric: tabular-nums; }
 
         .skeleton {
             background: linear-gradient(
                 90deg,
-                rgba(127, 127, 127, 0.08) 25%,
-                rgba(127, 127, 127, 0.18) 50%,
-                rgba(127, 127, 127, 0.08) 75%
+                color-mix(in srgb, var(--tg-theme-hint-color, #8e8e93) 8%, transparent) 25%,
+                color-mix(in srgb, var(--tg-theme-hint-color, #8e8e93) 18%, transparent) 50%,
+                color-mix(in srgb, var(--tg-theme-hint-color, #8e8e93) 8%, transparent) 75%
             );
             background-size: 200% 100%;
-            animation: shimmer 1.2s infinite ease-in-out;
-            border-radius: 8px;
-            min-height: 18px;
+            animation: shimmer 1.3s infinite ease-in-out;
+            border-radius: var(--radius-sm);
         }
 
-        .skeleton-card {
-            height: 64px;
+        .skeleton-banner {
+            height: 72px;
+            margin-bottom: 14px;
+            border-radius: var(--radius);
+        }
+
+        .skeleton-metric {
+            height: 68px;
+        }
+
+        .skeleton-sku {
+            height: 120px;
             margin-bottom: 10px;
         }
 
@@ -389,26 +546,25 @@
             margin-bottom: 8px;
         }
 
-        @keyframes shimmer {
-            0% { background-position: 200% 0; }
-            100% { background-position: -200% 0; }
-        }
-
+        /* ── Toast ──────────────────────────────────────────── */
         .toast {
             position: fixed;
-            left: 14px;
-            right: 14px;
-            bottom: calc(16px + env(safe-area-inset-bottom));
-            padding: 12px 16px;
+            left: 16px;
+            right: 16px;
+            bottom: calc(18px + env(safe-area-inset-bottom));
+            padding: 13px 16px;
             border-radius: var(--radius);
-            background: var(--tg-theme-secondary-bg-color, #1c1c1e);
-            border: 1px solid rgba(127, 127, 127, 0.2);
+            background: var(--tg-theme-secondary-bg-color, #ffffff);
+            border: 1px solid color-mix(in srgb, var(--tg-theme-hint-color, #8e8e93) 20%, transparent);
             font-size: 0.88rem;
+            line-height: 1.4;
             box-shadow: var(--shadow);
-            transform: translateY(120%);
+            transform: translateY(130%);
             opacity: 0;
-            transition: transform 0.25s ease, opacity 0.25s ease;
-            z-index: 100;
+            transition: transform 0.28s ease, opacity 0.28s ease;
+            z-index: 200;
+            max-width: 520px;
+            margin: 0 auto;
         }
 
         .toast.visible {
@@ -417,551 +573,791 @@
         }
 
         .toast.error {
-            border-color: rgba(255, 59, 48, 0.5);
-            color: #ff6b6b;
+            border-color: rgba(255, 59, 48, 0.45);
+            color: #ff3b30;
         }
 
         .empty-hint {
             font-size: 0.85rem;
             color: var(--tg-theme-hint-color, #8e8e93);
             text-align: center;
-            padding: 20px 8px;
-        }
-
-        .token-mask {
-            font-size: 0.78rem;
-            color: var(--tg-theme-hint-color, #8e8e93);
-            margin-top: -8px;
-            margin-bottom: 12px;
+            padding: 24px 10px;
+            line-height: 1.45;
         }
 
         .hidden { display: none !important; }
     </style>
 </head>
 <body class="platform-wb">
-    <header class="header">
-        <h1>Привет, <span id="username">Селлер</span>!</h1>
-        <p>NeuroMule — премиальный ИИ-дашборд маркетплейса</p>
-    </header>
+    <div class="app-shell">
+        <header class="header">
+            <h1>Привет, <span id="username">Селлер</span>!</h1>
+            <p>NeuroMule — премиальный дашборд сквозной аналитики</p>
+        </header>
 
-    <section class="card" id="autopilot-card">
-        <h2 class="card-title">🚀 Автопилот NeuroMule (Оцифровка по API)</h2>
-        <label class="field-label" for="wb-api-key">WB API Key</label>
-        <input type="password" id="wb-api-key" class="text-input" placeholder="Вставьте ключ Statistics API Wildberries" autocomplete="off">
-        <p class="token-mask" id="token-mask"></p>
-        <div class="toggle-row">
-            <span class="toggle-label">Ежедневный мониторинг (50 💎/сутки)</span>
-            <label class="switch">
-                <input type="checkbox" id="wb-toggle" disabled>
-                <span class="slider"></span>
-            </label>
+        <!-- 1. Автопилот -->
+        <section class="card" id="autopilot-card">
+            <h2 class="card-title">🚀 Автопилот NeuroMule (Ежедневная оцифровка)</h2>
+            <label class="field-label" for="wb-api-key">WB API Key</label>
+            <input type="password" id="wb-api-key" class="text-input"
+                   placeholder="Вставьте ключ Statistics API Wildberries" autocomplete="off">
+            <p class="token-mask" id="token-mask"></p>
+            <div class="toggle-row">
+                <span class="toggle-label">Ежедневный мониторинг (50 💎/сутки)</span>
+                <label class="switch" aria-label="Ежедневный мониторинг">
+                    <input type="checkbox" id="wb-toggle" disabled>
+                    <span class="slider"></span>
+                </label>
+            </div>
+            <button type="button" class="btn-primary" id="wb-save-btn">Сохранить</button>
+        </section>
+
+        <!-- 2. Каналы продаж -->
+        <nav class="platform-scroll" id="platform-nav" aria-label="Каналы продаж">
+            <button type="button" class="platform-btn active" data-platform="wildberries">🟣 Wildberries</button>
+            <button type="button" class="platform-btn" data-platform="ozon">🔵 Ozon</button>
+            <button type="button" class="platform-btn" data-platform="yandex">🟡 Яндекс.Маркет</button>
+            <button type="button" class="platform-btn" data-platform="1c">🟢 1С / МойСклад</button>
+        </nav>
+
+        <!-- 3. Бизнес-скоринг + метрики (skeleton) -->
+        <div id="score-skeleton" class="skeleton skeleton-banner"></div>
+        <div id="metrics-skeleton" class="metrics-grid">
+            <div class="metric-card skeleton skeleton-metric"></div>
+            <div class="metric-card skeleton skeleton-metric"></div>
+            <div class="metric-card skeleton skeleton-metric"></div>
+            <div class="metric-card skeleton skeleton-metric"></div>
         </div>
-        <button type="button" class="btn-primary" id="wb-save-btn">Сохранить</button>
-    </section>
 
-    <nav class="platform-scroll" id="platform-nav" aria-label="Площадки">
-        <button type="button" class="platform-btn active" data-platform="wildberries">🟣 Wildberries</button>
-        <button type="button" class="platform-btn" data-platform="ozon">🔵 Ozon</button>
-        <button type="button" class="platform-btn" data-platform="yandex">🟡 Яндекс.Маркет</button>
-        <button type="button" class="platform-btn" data-platform="1c">🟢 1С / МойСклад</button>
-    </nav>
+        <!-- 3. Бизнес-скоринг + метрики (live) -->
+        <div id="score-live" class="score-banner hidden">
+            <div class="score-banner-label">🎯 Бизнес-скоринг магазина</div>
+            <div class="score-banner-value" id="metric-score">— / 10</div>
+        </div>
+        <div id="metrics-live" class="metrics-grid hidden">
+            <div class="metric-card">
+                <div class="metric-label">💰 Валовая выручка</div>
+                <div class="metric-value" id="metric-revenue">—</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">📉 Налог УСН (6%)</div>
+                <div class="metric-value" id="metric-tax">—</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">💵 Чистая прибыль</div>
+                <div class="metric-value positive" id="metric-profit">—</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">📊 Рентабельность</div>
+                <div class="metric-value" id="metric-margin-pct">—</div>
+            </div>
+        </div>
 
-    <div id="metrics-skeleton" class="metrics-grid">
-        <div class="metric-card skeleton skeleton-card"></div>
-        <div class="metric-card skeleton skeleton-card"></div>
+        <!-- 4. ABC / Юнит-экономика -->
+        <section class="card" id="abc-card">
+            <h2 class="card-title">📦 Юнит-экономика и ABC-анализ</h2>
+            <div class="abc-tabs" id="abc-tabs">
+                <button type="button" class="abc-tab active-a" data-abc="a">🟢 Группа А — Локомотивы</button>
+                <button type="button" class="abc-tab" data-abc="b">🟡 Группа В — Стабильные</button>
+                <button type="button" class="abc-tab" data-abc="c">🔴 Группа С — Неликвид</button>
+            </div>
+            <div id="abc-skeleton">
+                <div class="skeleton skeleton-sku"></div>
+                <div class="skeleton skeleton-sku"></div>
+            </div>
+            <div class="sku-list hidden" id="sku-list"></div>
+        </section>
+
+        <!-- 5. What-If -->
+        <section class="card" id="whatif-card">
+            <h2 class="card-title">🧮 Моделирование прибыли</h2>
+            <div class="range-block">
+                <div class="range-header">
+                    <span>Процент выкупа</span>
+                    <span id="buyout-val">65%</span>
+                </div>
+                <input type="range" id="buyout-range" min="0" max="100" value="65" step="1"
+                       aria-label="Процент выкупа">
+            </div>
+            <div class="range-block">
+                <div class="range-header">
+                    <span>Доля рекламы (ДРР)</span>
+                    <span id="drr-val">15%</span>
+                </div>
+                <input type="range" id="drr-range" min="0" max="50" value="15" step="1"
+                       aria-label="Доля рекламных расходов">
+            </div>
+            <div class="whatif-result" id="whatif-result">
+                Двигайте ползунки, чтобы смоделировать влияние на юнит-экономику и чистую прибыль.
+            </div>
+        </section>
+
+        <button type="button" class="btn-ghost" id="close-btn">Закрыть Mini App</button>
     </div>
 
-    <div id="metrics-live" class="metrics-grid hidden">
-        <div class="metric-card">
-            <div class="metric-label">Чистая прибыль</div>
-            <div class="metric-value" id="metric-profit">—</div>
-        </div>
-        <div class="metric-card">
-            <div class="metric-label">Бизнес-скоринг</div>
-            <div class="metric-value" id="metric-score">—</div>
-        </div>
-    </div>
-
-    <section class="card" id="abc-card">
-        <h2 class="card-title">📦 ABC-анализ матрицы</h2>
-        <div class="abc-tabs" id="abc-tabs">
-            <button type="button" class="abc-tab active-a" data-abc="a">🟢 Группа А — Локомотивы</button>
-            <button type="button" class="abc-tab" data-abc="b">🟡 Группа В — Стабильные</button>
-            <button type="button" class="abc-tab" data-abc="c">🔴 Группа С — Неликвид</button>
-        </div>
-        <div id="abc-skeleton">
-            <div class="skeleton skeleton-line"></div>
-            <div class="skeleton skeleton-line"></div>
-            <div class="skeleton skeleton-line"></div>
-        </div>
-        <div class="product-list hidden" id="abc-list"></div>
-    </section>
-
-    <section class="card hidden" id="table-card">
-        <h2 class="card-title" id="report-title">Детализация</h2>
-        <div class="table-wrap" id="report-table"></div>
-    </section>
-
-    <section class="card" id="whatif-card">
-        <h2 class="card-title">🧮 ИИ-Моделирование прибыли</h2>
-        <div class="range-block">
-            <div class="range-header">
-                <span>Процент выкупа товаров</span>
-                <span id="buyout-val">65%</span>
-            </div>
-            <input type="range" id="buyout-range" min="0" max="100" value="65" step="1">
-        </div>
-        <div class="range-block">
-            <div class="range-header">
-                <span>Доля рекламных расходов (ДРР)</span>
-                <span id="drr-val">15%</span>
-            </div>
-            <input type="range" id="drr-range" min="0" max="50" value="15" step="1">
-        </div>
-        <div class="whatif-result" id="whatif-result">
-            Двигайте ползунки, чтобы смоделировать рост чистой прибыли.
-        </div>
-    </section>
-
-    <button type="button" class="btn-ghost" id="close-btn">Закрыть Mini App</button>
-    <div class="toast" id="toast" role="status"></div>
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
     <script>
-        (function () {
-            const tg = window.Telegram && window.Telegram.WebApp;
-            const state = {
-                apiBase: "",
-                reportId: null,
-                platform: "wildberries",
-                abcTab: "a",
-                report: null,
-                baseBuyout: 65,
-                baseDrr: 15,
-                baseProfit: 0,
-                revenue: 0,
-                oosMap: {},
+    (function () {
+        "use strict";
+
+        const tg = window.Telegram && window.Telegram.WebApp;
+
+        const PLATFORMS = {
+            wildberries: { bodyClass: "platform-wb", api: "wildberries" },
+            ozon:        { bodyClass: "platform-ozon", api: "ozon" },
+            yandex:      { bodyClass: "platform-yandex", api: "yandex" },
+            "1c":          { bodyClass: "platform-1c", api: "1c" },
+        };
+
+        const USN_RATE = 0.06;
+
+        const state = {
+            apiBase: "",
+            reportId: null,
+            platform: "wildberries",
+            abcTab: "a",
+            report: null,
+            skuItems: [],
+            oosMap: {},
+            baseBuyout: 65,
+            baseDrr: 15,
+            baseProfit: 0,
+            baseRevenue: 0,
+            businessScore: 0,
+            loading: false,
+        };
+
+        function $(id) { return document.getElementById(id); }
+
+        /* ── Telegram theme ─────────────────────────────────── */
+        function applyTelegramTheme() {
+            if (!tg) return;
+            tg.ready();
+            tg.expand();
+            const p = tg.themeParams || {};
+            const root = document.documentElement;
+            const map = {
+                "--tg-theme-bg-color": p.bg_color,
+                "--tg-theme-text-color": p.text_color,
+                "--tg-theme-hint-color": p.hint_color,
+                "--tg-theme-link-color": p.link_color,
+                "--tg-theme-button-color": p.button_color,
+                "--tg-theme-button-text-color": p.button_text_color,
+                "--tg-theme-secondary-bg-color": p.secondary_bg_color,
+                "--tg-theme-header-bg-color": p.header_bg_color,
+                "--tg-theme-accent-text-color": p.accent_text_color,
+                "--tg-theme-section-bg-color": p.section_bg_color,
+                "--tg-theme-section-header-text-color": p.section_header_text_color,
+                "--tg-theme-subtitle-text-color": p.subtitle_text_color,
+                "--tg-theme-destructive-text-color": p.destructive_text_color,
             };
+            Object.keys(map).forEach(function (key) {
+                if (map[key]) root.style.setProperty(key, map[key]);
+            });
+            if (tg.colorScheme === "dark") {
+                document.documentElement.style.colorScheme = "dark";
+            }
+            const user = tg.initDataUnsafe && tg.initDataUnsafe.user;
+            if (user && user.first_name) {
+                $("username").textContent = user.first_name;
+            }
+        }
 
-            const PLATFORMS = {
-                wildberries: { bodyClass: "platform-wb", api: "wildberries" },
-                ozon: { bodyClass: "platform-ozon", api: "ozon" },
-                yandex: { bodyClass: "platform-yandex", api: "yandex" },
-                "1c": { bodyClass: "platform-1c", api: "1c" },
+        /* ── Utils ────────────────────────────────────────────── */
+        function showToast(message, isError) {
+            const el = $("toast");
+            el.textContent = message;
+            el.classList.toggle("error", !!isError);
+            el.classList.add("visible");
+            clearTimeout(showToast._t);
+            showToast._t = setTimeout(function () { el.classList.remove("visible"); }, 3400);
+        }
+
+        function authHeaders() {
+            return {
+                Authorization: "tma " + (tg && tg.initData ? tg.initData : ""),
+                "Content-Type": "application/json",
             };
+        }
 
-            function $(id) { return document.getElementById(id); }
-
-            function showToast(message, isError) {
-                const el = $("toast");
-                el.textContent = message;
-                el.classList.toggle("error", !!isError);
-                el.classList.add("visible");
-                clearTimeout(showToast._t);
-                showToast._t = setTimeout(function () {
-                    el.classList.remove("visible");
-                }, 3200);
+        function resolveApiBase() {
+            const params = new URLSearchParams(window.location.search);
+            const fromQuery = (params.get("api_base") || "").trim().replace(/\/$/, "");
+            if (fromQuery) return fromQuery;
+            if (window.location.origin && window.location.origin !== "null") {
+                return window.location.origin;
             }
+            return "";
+        }
 
-            function authHeaders() {
-                return {
-                    Authorization: "tma " + (tg && tg.initData ? tg.initData : ""),
-                    "Content-Type": "application/json",
-                };
-            }
+        function resolveReportId() {
+            const raw = (new URLSearchParams(window.location.search).get("report_id") || "").trim();
+            return raw && /^\d+$/.test(raw) ? raw : null;
+        }
 
-            function resolveApiBase() {
-                const params = new URLSearchParams(window.location.search);
-                const fromQuery = (params.get("api_base") || "").trim().replace(/\/$/, "");
-                if (fromQuery) return fromQuery;
-                if (window.location.origin && window.location.origin !== "null") {
-                    return window.location.origin;
-                }
-                return "";
-            }
+        function formatRub(value) {
+            const n = Number(value) || 0;
+            return n.toLocaleString("ru-RU", { maximumFractionDigits: 0 }) + " ₽";
+        }
 
-            function resolveReportId() {
-                const params = new URLSearchParams(window.location.search);
-                const raw = (params.get("report_id") || "").trim();
-                if (!raw || !/^\d+$/.test(raw)) return null;
-                return raw;
-            }
+        function formatPct(value) {
+            return (Number(value) || 0).toFixed(1) + "%";
+        }
 
-            function formatRub(value) {
-                const n = Number(value) || 0;
-                return n.toLocaleString("ru-RU", { maximumFractionDigits: 0 }) + " ₽";
-            }
+        function escapeHtml(value) {
+            return String(value)
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;");
+        }
 
-            function escapeHtml(value) {
-                return String(value)
-                    .replace(/&/g, "&amp;")
-                    .replace(/</g, "&lt;")
-                    .replace(/>/g, "&gt;")
-                    .replace(/"/g, "&quot;");
-            }
+        function parseNum(cell) {
+            if (cell == null || cell === "") return 0;
+            return parseFloat(String(cell).replace(/\s/g, "").replace(",", ".")) || 0;
+        }
 
-            function setPlatform(platformKey) {
-                state.platform = platformKey;
-                const cfg = PLATFORMS[platformKey] || PLATFORMS.wildberries;
-                document.body.className = cfg.bodyClass;
-                document.querySelectorAll(".platform-btn").forEach(function (btn) {
-                    btn.classList.toggle("active", btn.dataset.platform === platformKey);
+        function isBalanceError(detail) {
+            const s = String(detail || "").toLowerCase();
+            return s.includes("insufficient") || s.includes("баланс") ||
+                   s.includes("кристалл") || s.includes("💎") || s.includes("crystals");
+        }
+
+        /* ── Platform ─────────────────────────────────────────── */
+        function setPlatform(platformKey) {
+            state.platform = platformKey;
+            const cfg = PLATFORMS[platformKey] || PLATFORMS.wildberries;
+            document.body.className = cfg.bodyClass;
+            document.querySelectorAll(".platform-btn").forEach(function (btn) {
+                btn.classList.toggle("active", btn.dataset.platform === platformKey);
+            });
+        }
+
+        /* ── Loading skeletons ────────────────────────────────── */
+        function showDashboardSkeleton(show) {
+            $("score-skeleton").classList.toggle("hidden", !show);
+            $("metrics-skeleton").classList.toggle("hidden", !show);
+            $("score-live").classList.toggle("hidden", show);
+            $("metrics-live").classList.toggle("hidden", show);
+            showAbcSkeleton(show);
+        }
+
+        function showAbcSkeleton(show) {
+            $("abc-skeleton").classList.toggle("hidden", !show);
+            $("sku-list").classList.toggle("hidden", show);
+        }
+
+        /* ── Data normalization ─────────────────────────────── */
+        function buildOosMap(oosList) {
+            const map = {};
+            (oosList || []).forEach(function (item) {
+                const keys = [
+                    (item.sku || "").toLowerCase(),
+                    (item.name || "").toLowerCase(),
+                ].filter(Boolean);
+                keys.forEach(function (k) { map[k] = item; });
+            });
+            return map;
+        }
+
+        function normalizeSkuItem(raw, group) {
+            const name = raw.name || raw.label || "—";
+            const article = raw.article_id || raw.article || raw.sku || raw.nm_id || "—";
+            const revenue = Number(raw.revenue != null ? raw.revenue : raw.retail_amount) || 0;
+            const margin = Number(
+                raw.margin != null ? raw.margin :
+                raw.net_profit != null ? raw.net_profit :
+                raw.net_income_per_unit
+            ) || 0;
+            const logistics = Number(raw.logistics != null ? raw.logistics : raw.logistics_cost) ||
+                (revenue > 0 ? revenue * 0.08 : 0);
+            const adCost = Number(raw.ad_cost != null ? raw.ad_cost : raw.advertising) ||
+                (revenue > 0 ? revenue * (state.baseDrr / 100) : 0);
+            const cost = Number(raw.cost != null ? raw.cost : raw.cogs) ||
+                Math.max(0, revenue - margin - logistics - adCost);
+            const buyout = Number(raw.buyout_pct != null ? raw.buyout_pct : raw.buyout) || state.baseBuyout;
+            const roi = cost > 0 ? (margin / cost) * 100 : 0;
+            return {
+                name: name,
+                article: String(article),
+                revenue: revenue,
+                margin: margin,
+                logistics: logistics,
+                adCost: adCost,
+                cost: cost,
+                buyout: buyout,
+                roi: roi,
+                abc_group: raw.abc_group || group || "B",
+                baseMargin: margin,
+                baseLogistics: logistics,
+                baseAdCost: adCost,
+            };
+        }
+
+        function deriveSkuItems(payload) {
+            const catalog = payload.sku_catalog;
+            if (Array.isArray(catalog) && catalog.length) {
+                return catalog.map(function (item) {
+                    return normalizeSkuItem(item, item.abc_group);
                 });
             }
 
-            function showMetricsSkeleton(show) {
-                $("metrics-skeleton").classList.toggle("hidden", !show);
-                $("metrics-live").classList.toggle("hidden", show);
-            }
-
-            function showAbcSkeleton(show) {
-                $("abc-skeleton").classList.toggle("hidden", !show);
-                $("abc-list").classList.toggle("hidden", show);
-            }
-
-            function buildOosMap(oosList) {
-                const map = {};
-                (oosList || []).forEach(function (item) {
-                    const key = (item.name || item.sku || "").toLowerCase();
-                    if (key) map[key] = item;
-                });
-                return map;
-            }
-
-            function deriveAbcFromRows(payload) {
-                const abc = payload.abc_analysis;
-                if (abc && (abc.group_a || abc.group_b || abc.group_c)) {
-                    return {
-                        a: abc.group_a || [],
-                        b: abc.group_b || [],
-                        c: abc.group_c || [],
-                    };
-                }
-                const headers = payload.headers || [];
-                const rows = payload.rows || [];
-                if (!headers.length || !rows.length) {
-                    return { a: [], b: [], c: [] };
-                }
-                const nameIdx = 1;
-                const marginIdx = headers.findIndex(function (h) {
-                    return /марж/i.test(String(h));
-                });
-                const revIdx = headers.findIndex(function (h) {
-                    return /выруч|перечисл/i.test(String(h));
-                });
-                const items = rows.map(function (row) {
-                    const name = row[nameIdx] || row[0] || "—";
-                    const margin = marginIdx >= 0 ? parseFloat(String(row[marginIdx]).replace(/\s/g, "").replace(",", ".")) : 0;
-                    const revenue = revIdx >= 0 ? parseFloat(String(row[revIdx]).replace(/\s/g, "").replace(",", ".")) : 0;
-                    return { name: name, margin: margin || 0, revenue: revenue || 0 };
-                }).filter(function (i) { return i.name && i.name !== "—"; });
-                items.sort(function (a, b) { return (b.margin || b.revenue) - (a.margin || a.revenue); });
-                const topN = Math.max(1, Math.ceil(items.length * 0.2));
-                const groupA = items.slice(0, topN);
-                const groupC = items.filter(function (i) { return i.margin <= 0; });
-                const aNames = new Set(groupA.map(function (i) { return i.name; }));
-                const cNames = new Set(groupC.map(function (i) { return i.name; }));
-                const groupB = items.filter(function (i) {
-                    return !aNames.has(i.name) && !cNames.has(i.name);
-                });
-                function mapItem(i, group) {
-                    return {
-                        name: i.name,
-                        margin: i.margin,
-                        revenue: i.revenue,
-                        abc_group: group,
-                    };
-                }
-                return {
-                    a: groupA.map(function (i) { return mapItem(i, "A"); }),
-                    b: groupB.map(function (i) { return mapItem(i, "B"); }),
-                    c: groupC.map(function (i) { return mapItem(i, "C"); }),
-                };
-            }
-
-            function renderAbcList() {
-                const payload = state.report || {};
-                const groups = deriveAbcFromRows(payload);
-                const tab = state.abcTab;
-                const list = tab === "a" ? groups.a : tab === "b" ? groups.b : groups.c;
-                const container = $("abc-list");
-                container.innerHTML = "";
-                if (!list.length) {
-                    container.innerHTML = '<p class="empty-hint">Нет товаров в этой группе для выбранной площадки.</p>';
-                    return;
-                }
-                list.forEach(function (item) {
-                    const name = item.name || item.label || "—";
-                    const margin = item.margin != null ? item.margin : item.net_income_per_unit;
-                    const revenue = item.revenue != null ? item.revenue : 0;
-                    const oos = state.oosMap[(name || "").toLowerCase()] || null;
-                    const isGroupC = tab === "c";
-                    const fomo = oos && oos.fomo_lost_rub ? oos.fomo_lost_rub : 0;
-                    const days = oos && oos.days_until_stockout != null ? oos.days_until_stockout : null;
-                    const warn = isGroupC && (fomo > 0 || (days != null && days < 7));
-                    const div = document.createElement("div");
-                    div.className = "product-item";
-                    div.innerHTML =
-                        '<div><div class="product-name">' + escapeHtml(name) +
-                        (warn ? ' 🚨' : '') +
-                        '</div><div class="product-meta">Маржа: ' + formatRub(margin) +
-                        (revenue ? " · Выручка: " + formatRub(revenue) : "") +
-                        (days != null ? " · OOS: " + days + " дн." : "") +
-                        '</div>' +
-                        (warn && fomo > 0 ? '<div class="fomo-badge">Упущено: ' + formatRub(fomo) + '</div>' : '') +
-                        '</div><div class="product-right">' + (item.abc_group || tab.toUpperCase()) + '</div>';
-                    container.appendChild(div);
-                });
-            }
-
-            function renderMetrics(payload) {
-                const summary = payload.summary || {};
-                const profit = summary.net_profit != null ? summary.net_profit : state.baseProfit;
-                const score = summary.business_score || payload.business_score;
-                $("metric-profit").textContent = formatRub(profit);
-                $("metric-score").textContent = score != null ? Number(score).toFixed(1) + " / 10" : "—";
-                state.baseProfit = Number(profit) || 0;
-                state.revenue = Number(summary.revenue || payload.revenue_rub || 0);
-                if (summary.buyout_coef_pct != null) {
-                    state.baseBuyout = Number(summary.buyout_coef_pct);
-                    $("buyout-range").value = state.baseBuyout;
-                    $("buyout-val").textContent = state.baseBuyout.toFixed(0) + "%";
-                }
-                if (summary.ad_load_pct != null) {
-                    state.baseDrr = Number(summary.ad_load_pct);
-                    $("drr-range").value = Math.min(50, state.baseDrr);
-                    $("drr-val").textContent = state.baseDrr.toFixed(0) + "%";
-                }
-                updateWhatIf();
-            }
-
-            function renderTable(payload) {
-                const title = payload.title || "Отчёт";
-                $("report-title").textContent = title;
-                const headers = Array.isArray(payload.headers) ? payload.headers : [];
-                const rows = Array.isArray(payload.rows) ? payload.rows : [];
-                const card = $("table-card");
-                if (!headers.length || !rows.length) {
-                    card.classList.add("hidden");
-                    return;
-                }
-                card.classList.remove("hidden");
-                let html = "<table><thead><tr>";
-                headers.forEach(function (h) {
-                    html += "<th>" + escapeHtml(h) + "</th>";
-                });
-                html += "</tr></thead><tbody>";
-                rows.slice(0, 40).forEach(function (row) {
-                    html += "<tr>";
-                    headers.forEach(function (_, idx) {
-                        const cell = row[idx] != null ? row[idx] : "";
-                        const num = /^-?\d[\d\s.,]*$/.test(String(cell).trim());
-                        html += "<td" + (num ? ' class="num"' : "") + ">" + escapeHtml(cell) + "</td>";
+            const abc = payload.abc_analysis;
+            if (abc) {
+                const items = [];
+                ["a", "b", "c"].forEach(function (g) {
+                    const key = "group_" + g;
+                    (abc[key] || []).forEach(function (item) {
+                        items.push(normalizeSkuItem(item, g.toUpperCase()));
                     });
-                    html += "</tr>";
                 });
-                html += "</tbody></table>";
-                $("report-table").innerHTML = html;
+                if (items.length) return items;
             }
 
-            function updateWhatIf() {
-                const buyout = Number($("buyout-range").value);
-                const drr = Number($("drr-range").value);
-                $("buyout-val").textContent = buyout + "%";
-                $("drr-val").textContent = drr + "%";
-                const revenue = state.revenue || state.baseProfit * 10 || 100000;
+            const headers = payload.headers || [];
+            const rows = payload.rows || [];
+            if (!headers.length || !rows.length) return [];
+
+            const nameIdx = headers.findIndex(function (h) {
+                return /товар|предмет|наимен/i.test(String(h));
+            });
+            const skuIdx = headers.findIndex(function (h) {
+                return /sku|артикул/i.test(String(h));
+            });
+            const revIdx = headers.findIndex(function (h) {
+                return /выруч|перечисл/i.test(String(h));
+            });
+            const marginIdx = headers.findIndex(function (h) {
+                return /марж/i.test(String(h));
+            });
+            const abcIdx = headers.findIndex(function (h) {
+                return /abc/i.test(String(h));
+            });
+
+            return rows.map(function (row) {
+                const name = row[nameIdx >= 0 ? nameIdx : 1] || row[0] || "—";
+                if (!name || /итого/i.test(String(name))) return null;
+                return normalizeSkuItem({
+                    name: name,
+                    sku: skuIdx >= 0 ? row[skuIdx] : "",
+                    revenue: revIdx >= 0 ? parseNum(row[revIdx]) : 0,
+                    margin: marginIdx >= 0 ? parseNum(row[marginIdx]) : 0,
+                    abc_group: abcIdx >= 0 ? row[abcIdx] : "B",
+                }, abcIdx >= 0 ? row[abcIdx] : "B");
+            }).filter(Boolean);
+        }
+
+        function deriveAbcGroups() {
+            const groups = { a: [], b: [], c: [] };
+            state.skuItems.forEach(function (item) {
+                const g = String(item.abc_group || "B").toUpperCase();
+                if (g === "A") groups.a.push(item);
+                else if (g === "C") groups.c.push(item);
+                else groups.b.push(item);
+            });
+            if (!groups.a.length && !groups.b.length && !groups.c.length) {
+                const sorted = state.skuItems.slice().sort(function (a, b) {
+                    return b.margin - a.margin;
+                });
+                const topN = Math.max(1, Math.ceil(sorted.length * 0.2));
+                groups.a = sorted.slice(0, topN);
+                groups.c = sorted.filter(function (i) { return i.margin <= 0; });
+                const aSet = new Set(groups.a);
+                const cSet = new Set(groups.c);
+                groups.b = sorted.filter(function (i) {
+                    return !aSet.has(i) && !cSet.has(i);
+                });
+            }
+            return groups;
+        }
+
+        function computeBusinessScore(revenue, profit, buyout, drr) {
+            if (revenue <= 0) return 5.0;
+            const marginPct = (profit / revenue) * 100;
+            let score = 5.0;
+            if (marginPct >= 25) score += 2.0;
+            else if (marginPct >= 15) score += 1.2;
+            else if (marginPct >= 5) score += 0.5;
+            else if (marginPct < 0) score -= 2.0;
+            if (buyout >= 70) score += 1.0;
+            else if (buyout >= 55) score += 0.4;
+            else score -= 0.6;
+            if (drr <= 12) score += 0.8;
+            else if (drr <= 20) score += 0.2;
+            else score -= 0.5;
+            return Math.min(10, Math.max(1, Math.round(score * 10) / 10));
+        }
+
+        function extractFinancials(payload) {
+            const summary = payload.summary || {};
+            let revenue = Number(summary.revenue || summary.revenue_rub || payload.revenue_rub) || 0;
+            let profit = Number(summary.net_profit || summary.clear_profit) || 0;
+
+            if (!revenue && state.skuItems.length) {
+                revenue = state.skuItems.reduce(function (s, i) { return s + i.revenue; }, 0);
+            }
+            if (!profit && state.skuItems.length) {
+                profit = state.skuItems.reduce(function (s, i) { return s + i.margin; }, 0);
+            }
+
+            const tax = revenue * USN_RATE;
+            const netAfterTax = profit > 0 ? profit - tax * (profit / Math.max(revenue, 1)) : profit;
+            const marginPct = revenue > 0 ? (profit / revenue) * 100 : 0;
+
+            const buyout = Number(summary.buyout_coef_pct || summary.buyout_pct) || state.baseBuyout;
+            const drr = Number(summary.ad_load_pct || summary.drr_pct) || state.baseDrr;
+            const score = Number(summary.business_score) ||
+                computeBusinessScore(revenue, profit, buyout, drr);
+
+            return {
+                revenue: revenue,
+                tax: tax,
+                profit: profit,
+                netAfterTax: netAfterTax,
+                marginPct: marginPct,
+                buyout: buyout,
+                drr: drr,
+                score: score,
+            };
+        }
+
+        /* ── What-If unit economics ─────────────────────────── */
+        function simulateSkuMargin(item, buyout, drr) {
+            const buyoutRatio = buyout / 100;
+            const baseBuyoutRatio = state.baseBuyout / 100;
+            const returnRateDelta = Math.max(0, (1 - buyoutRatio) - (1 - baseBuyoutRatio));
+            const logisticsAdj = item.baseLogistics * (1 + returnRateDelta * 2.5);
+            const adAdj = item.revenue * (drr / 100);
+            const margin = item.revenue - item.cost - logisticsAdj - adAdj;
+            const roi = item.cost > 0 ? (margin / item.cost) * 100 : 0;
+            return {
+                margin: margin,
+                logistics: logisticsAdj,
+                adCost: adAdj,
+                roi: roi,
+            };
+        }
+
+        function recalcWhatIf() {
+            const buyout = Number($("buyout-range").value);
+            const drr = Number($("drr-range").value);
+            $("buyout-val").textContent = buyout + "%";
+            $("drr-val").textContent = drr + "%";
+
+            let projectedProfit = 0;
+            state.skuItems.forEach(function (item) {
+                projectedProfit += simulateSkuMargin(item, buyout, drr).margin;
+            });
+
+            if (!state.skuItems.length) {
+                const revenue = state.baseRevenue || state.baseProfit * 10 || 100000;
                 const buyoutDelta = ((buyout - state.baseBuyout) / 100) * revenue * 0.12;
                 const drrDelta = ((state.baseDrr - drr) / 100) * revenue;
-                const projected = state.baseProfit + buyoutDelta + drrDelta;
-                const gain = projected - state.baseProfit;
-                const sign = gain >= 0 ? "+" : "";
-                $("whatif-result").textContent =
-                    "Если вы измените эти показатели, ваша прибыль " +
-                    (gain >= 0 ? "вырастет" : "снизится") +
-                    " на " + sign + formatRub(Math.abs(gain)) +
-                    "! Прогноз чистой прибыли: " + formatRub(projected) + ".";
+                projectedProfit = state.baseProfit + buyoutDelta + drrDelta;
             }
 
-            async function apiFetch(path, options) {
-                if (!state.apiBase) throw new Error("api_base не задан");
-                const response = await fetch(state.apiBase + path, Object.assign({
-                    credentials: "include",
-                    headers: authHeaders(),
-                }, options || {}));
-                return response;
+            const gain = projectedProfit - state.baseProfit;
+            const sign = gain >= 0 ? "+" : "−";
+            const el = $("whatif-result");
+            el.innerHTML =
+                "При этих показателях ваша <em>чистая прибыль</em> " +
+                (gain >= 0 ? "вырастет" : "снизится") +
+                " на <em>" + sign + formatRub(Math.abs(gain)) + "</em>! " +
+                "Прогноз: <em>" + formatRub(projectedProfit) + "</em>.";
+
+            renderSkuList();
+        }
+
+        /* ── Render ─────────────────────────────────────────── */
+        function renderMetrics(fin) {
+            $("metric-score").textContent = fin.score.toFixed(1) + " / 10";
+            $("metric-revenue").textContent = formatRub(fin.revenue);
+            $("metric-tax").textContent = formatRub(fin.tax);
+            const profitEl = $("metric-profit");
+            profitEl.textContent = formatRub(fin.profit);
+            profitEl.classList.toggle("negative", fin.profit < 0);
+            profitEl.classList.toggle("positive", fin.profit >= 0);
+            $("metric-margin-pct").textContent = formatPct(fin.marginPct);
+
+            state.baseProfit = fin.profit;
+            state.baseRevenue = fin.revenue;
+            state.businessScore = fin.score;
+            state.baseBuyout = fin.buyout;
+            state.baseDrr = fin.drr;
+
+            $("buyout-range").value = Math.round(fin.buyout);
+            $("drr-range").value = Math.min(50, Math.round(fin.drr));
+            $("buyout-val").textContent = Math.round(fin.buyout) + "%";
+            $("drr-val").textContent = Math.min(50, Math.round(fin.drr)) + "%";
+        }
+
+        function renderSkuList() {
+            const groups = deriveAbcGroups();
+            const tab = state.abcTab;
+            const list = tab === "a" ? groups.a : tab === "b" ? groups.b : groups.c;
+            const container = $("sku-list");
+            const buyout = Number($("buyout-range").value);
+            const drr = Number($("drr-range").value);
+            container.innerHTML = "";
+
+            if (!list.length) {
+                container.innerHTML =
+                    '<p class="empty-hint">Нет товаров в этой группе для выбранной площадки.<br>' +
+                    'Загрузите отчёт в боте или подключите Автопилот.</p>';
+                return;
             }
 
-            async function loadWbStatus() {
-                try {
-                    const response = await apiFetch("/api/v1/wb/status", { method: "GET" });
-                    if (!response.ok) return;
-                    const data = await response.json();
-                    const toggle = $("wb-toggle");
-                    toggle.disabled = !data.has_token;
-                    toggle.checked = !!data.enabled;
-                    if (data.token_mask) {
-                        $("token-mask").textContent = "Сохранённый ключ: " + data.token_mask;
-                    }
-                } catch (e) {
-                    console.warn("wb status", e);
+            list.forEach(function (item) {
+                const sim = simulateSkuMargin(item, buyout, drr);
+                const oos = state.oosMap[item.article.toLowerCase()] ||
+                            state.oosMap[item.name.toLowerCase()] || null;
+                const fomo = oos ? Number(oos.fomo_lost_rub) || 0 : 0;
+                const isGroupC = tab === "c";
+                const isRisk = isGroupC && (fomo > 0 || item.margin <= 0 ||
+                    (oos && oos.risk_out_of_stock));
+
+                const card = document.createElement("article");
+                card.className = "sku-card" + (isRisk ? " risk" : "");
+
+                let fomoHtml = "";
+                if (isGroupC && (fomo > 0 || item.margin < 0)) {
+                    const loss = fomo > 0 ? fomo : Math.abs(item.margin);
+                    fomoHtml =
+                        '<div class="fomo-row">🚨 Упущенная выгода: ' + formatRub(loss) + '</div>';
                 }
-            }
 
-            async function saveWbSetup() {
-                const token = ($("wb-api-key").value || "").trim();
-                if (token.length < 8) {
-                    showToast("Введите корректный WB API Key (мин. 8 символов)", true);
-                    return;
-                }
-                const btn = $("wb-save-btn");
-                btn.disabled = true;
-                try {
-                    const response = await apiFetch("/api/v1/wb/setup", {
-                        method: "POST",
-                        body: JSON.stringify({
-                            api_token: token,
-                            enabled: $("wb-toggle").checked,
-                        }),
-                    });
-                    const data = await response.json().catch(function () { return {}; });
-                    if (!response.ok) {
-                        throw new Error(data.detail || "Ошибка сохранения");
-                    }
-                    $("wb-toggle").disabled = false;
-                    if (data.token_mask) {
-                        $("token-mask").textContent = "Сохранённый ключ: " + data.token_mask;
-                    }
-                    $("wb-api-key").value = "";
-                    showToast("API Key сохранён. Автопилот готов к работе.");
-                } catch (e) {
-                    showToast(e.message || "Сеть недоступна", true);
-                } finally {
-                    btn.disabled = false;
-                }
-            }
+                card.innerHTML =
+                    '<div class="sku-header">' +
+                        '<div>' +
+                            '<div class="sku-name">' + escapeHtml(item.name) +
+                            (isRisk ? ' 🚨' : '') + '</div>' +
+                            '<div class="sku-article">Арт: ' + escapeHtml(item.article) + '</div>' +
+                        '</div>' +
+                        '<span class="sku-badge' + (isRisk ? ' alert' : '') + '">' +
+                            'Группа ' + escapeHtml(item.abc_group) +
+                        '</span>' +
+                    '</div>' +
+                    '<div class="sku-grid">' +
+                        '<div><div class="sku-field-label">Себестоимость</div>' +
+                            '<div class="sku-field-value">' + formatRub(item.cost) + '</div></div>' +
+                        '<div><div class="sku-field-label">Логистика</div>' +
+                            '<div class="sku-field-value">' + formatRub(sim.logistics) + '</div></div>' +
+                        '<div><div class="sku-field-label">Маржа</div>' +
+                            '<div class="sku-field-value ' + (sim.margin >= 0 ? 'success' : 'danger') + '">' +
+                            formatRub(sim.margin) + '</div></div>' +
+                        '<div><div class="sku-field-label">ROI</div>' +
+                            '<div class="sku-field-value">' + formatPct(sim.roi) + '</div></div>' +
+                    '</div>' + fomoHtml;
 
-            async function toggleWbMonitoring(enabled) {
+                container.appendChild(card);
+            });
+        }
+
+        function applyReport(payload) {
+            state.report = payload;
+            state.oosMap = buildOosMap(payload.out_of_stock_forecast || []);
+            state.skuItems = deriveSkuItems(payload);
+            const fin = extractFinancials(payload);
+            renderMetrics(fin);
+            showDashboardSkeleton(false);
+            renderSkuList();
+            recalcWhatIf();
+        }
+
+        /* ── API ────────────────────────────────────────────── */
+        async function apiFetch(path, options) {
+            if (!state.apiBase) throw new Error("api_base не задан");
+            return fetch(state.apiBase + path, Object.assign({
+                credentials: "include",
+                headers: authHeaders(),
+            }, options || {}));
+        }
+
+        async function loadWbStatus() {
+            try {
+                const response = await apiFetch("/api/v1/wb/status", { method: "GET" });
+                if (!response.ok) return;
+                const data = await response.json();
                 const toggle = $("wb-toggle");
-                toggle.disabled = true;
-                try {
-                    const response = await apiFetch("/api/v1/wb/toggle", {
-                        method: "POST",
-                        body: JSON.stringify({ enabled: enabled }),
-                    });
-                    const data = await response.json().catch(function () { return {}; });
-                    if (!response.ok) {
-                        toggle.checked = !enabled;
-                        throw new Error(data.detail || "Не удалось переключить");
-                    }
-                    showToast(data.billing_note || (enabled ? "Мониторинг включён" : "Мониторинг выключен"));
-                } catch (e) {
-                    toggle.checked = !enabled;
-                    showToast(e.message || "Ошибка сети", true);
-                } finally {
-                    toggle.disabled = false;
+                toggle.disabled = !data.has_token;
+                toggle.checked = !!data.enabled;
+                if (data.token_mask) {
+                    $("token-mask").textContent = "Сохранённый ключ: " + data.token_mask;
                 }
+            } catch (e) {
+                console.warn("wb status", e);
             }
+        }
 
-            async function loadReport() {
-                if (!state.reportId) {
-                    showToast("Не указан report_id в ссылке", true);
+        async function saveWbSetup() {
+            const token = ($("wb-api-key").value || "").trim();
+            if (token.length < 8) {
+                showToast("Введите корректный WB API Key (мин. 8 символов)", true);
+                return;
+            }
+            const btn = $("wb-save-btn");
+            const toggle = $("wb-toggle");
+            btn.disabled = true;
+            try {
+                const response = await apiFetch("/api/v1/wb/setup", {
+                    method: "POST",
+                    body: JSON.stringify({
+                        api_token: token,
+                        enabled: toggle.checked,
+                    }),
+                });
+                const data = await response.json().catch(function () { return {}; });
+                if (!response.ok) {
+                    if (response.status === 402 || isBalanceError(data.detail)) {
+                        toggle.checked = false;
+                    }
+                    throw new Error(data.detail || "Ошибка сохранения");
+                }
+                toggle.disabled = false;
+                if (data.token_mask) {
+                    $("token-mask").textContent = "Сохранённый ключ: " + data.token_mask;
+                }
+                $("wb-api-key").value = "";
+                showToast("API Key сохранён. Автопилот готов к работе.");
+            } catch (e) {
+                showToast(e.message || "Сеть недоступна", true);
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        async function toggleWbMonitoring(enabled) {
+            const toggle = $("wb-toggle");
+            const prev = !enabled;
+            toggle.disabled = true;
+            try {
+                const response = await apiFetch("/api/v1/wb/toggle", {
+                    method: "POST",
+                    body: JSON.stringify({ enabled: enabled }),
+                });
+                const data = await response.json().catch(function () { return {}; });
+                if (!response.ok) {
+                    toggle.checked = prev;
+                    const detail = data.detail || "";
+                    if (response.status === 402 || isBalanceError(detail)) {
+                        showToast("Недостаточно 💎 на балансе. Пополните кристаллы в боте.", true);
+                    } else {
+                        showToast(detail || "Не удалось переключить мониторинг", true);
+                    }
                     return;
                 }
-                showMetricsSkeleton(true);
-                showAbcSkeleton(true);
-                try {
-                    const platformApi = (PLATFORMS[state.platform] || PLATFORMS.wildberries).api;
-                    const url = "/api/v1/reports/" + encodeURIComponent(state.reportId) +
-                        "?platform=" + encodeURIComponent(platformApi);
-                    const response = await apiFetch(url, { method: "GET" });
-                    if (response.status === 401) {
-                        showToast("Сессия недействительна. Перезапустите Mini App.", true);
-                        return;
-                    }
-                    if (response.status === 404) {
-                        showToast("Отчёт не найден", true);
-                        return;
-                    }
-                    if (!response.ok) {
-                        throw new Error("HTTP " + response.status);
-                    }
-                    const body = await response.json();
-                    const payload = body.table_raw_json || body;
-                    if (state.platform !== "wildberries" && !payload.source) {
-                        showToast("Для " + state.platform + " пока демо-режим. Данные WB.", false);
-                    }
-                    state.report = payload;
-                    state.oosMap = buildOosMap(payload.out_of_stock_forecast || []);
-                    renderMetrics(payload);
-                    showMetricsSkeleton(false);
-                    renderAbcList();
-                    showAbcSkeleton(false);
-                    renderTable(payload);
-                } catch (e) {
-                    console.error(e);
-                    showToast("Не удалось загрузить отчёт. Проверьте API и CORS.", true);
-                    showMetricsSkeleton(false);
-                    showAbcSkeleton(false);
-                }
+                showToast(data.billing_note || (enabled ? "Мониторинг включён" : "Мониторинг выключен"));
+            } catch (e) {
+                toggle.checked = prev;
+                showToast(e.message || "Ошибка сети", true);
+            } finally {
+                toggle.disabled = false;
             }
+        }
 
-            function bindAbcTabs() {
-                document.querySelectorAll(".abc-tab").forEach(function (btn) {
-                    btn.addEventListener("click", function () {
-                        state.abcTab = btn.dataset.abc || "a";
-                        document.querySelectorAll(".abc-tab").forEach(function (b) {
-                            b.classList.remove("active-a", "active-b", "active-c");
-                        });
-                        const cls = state.abcTab === "a" ? "active-a" : state.abcTab === "b" ? "active-b" : "active-c";
-                        btn.classList.add(cls);
-                        renderAbcList();
-                    });
-                });
+        async function loadReport() {
+            if (!state.reportId) {
+                showToast("Не указан report_id в ссылке Mini App", true);
+                showDashboardSkeleton(false);
+                return;
             }
+            if (state.loading) return;
+            state.loading = true;
+            showDashboardSkeleton(true);
 
-            function bindPlatforms() {
-                document.querySelectorAll(".platform-btn").forEach(function (btn) {
-                    btn.addEventListener("click", function () {
-                        const key = btn.dataset.platform || "wildberries";
-                        setPlatform(key);
-                        loadReport();
-                    });
-                });
-            }
+            try {
+                const platformApi = (PLATFORMS[state.platform] || PLATFORMS.wildberries).api;
+                const url = "/api/v1/reports/" + encodeURIComponent(state.reportId) +
+                    "?platform=" + encodeURIComponent(platformApi);
+                const response = await apiFetch(url, { method: "GET" });
 
-            function init() {
-                if (!tg) {
-                    showToast("Откройте страницу из Telegram Mini App", true);
+                if (response.status === 401) {
+                    showToast("Сессия недействительна. Перезапустите Mini App.", true);
                     return;
                 }
-                tg.ready();
-                tg.expand();
-                if (tg.themeParams) {
-                    document.documentElement.style.setProperty("--tg-theme-bg-color", tg.themeParams.bg_color || "");
+                if (response.status === 404) {
+                    showToast("Отчёт не найден", true);
+                    return;
                 }
-                const user = tg.initDataUnsafe && tg.initDataUnsafe.user;
-                if (user && user.first_name) {
-                    $("username").textContent = user.first_name;
+                if (!response.ok) {
+                    throw new Error("HTTP " + response.status);
                 }
-                state.apiBase = resolveApiBase();
-                state.reportId = resolveReportId();
-                if (!state.apiBase) {
-                    showToast("Добавьте ?api_base=https://ваш-сервер в ссылку", true);
+
+                const body = await response.json();
+                const payload = body.table_raw_json || body;
+
+                if (state.platform !== "wildberries" && payload.source === "wb_api_nightly_worker") {
+                    showToast("Для этой площадки пока демо — показаны данные WB.", false);
                 }
-                bindPlatforms();
-                bindAbcTabs();
-                $("wb-save-btn").addEventListener("click", saveWbSetup);
-                $("wb-toggle").addEventListener("change", function (e) {
-                    toggleWbMonitoring(e.target.checked);
+
+                applyReport(payload);
+            } catch (e) {
+                console.error(e);
+                showToast("Не удалось загрузить отчёт. Проверьте API и CORS.", true);
+                showDashboardSkeleton(false);
+            } finally {
+                state.loading = false;
+            }
+        }
+
+        /* ── Bindings ───────────────────────────────────────── */
+        function bindAbcTabs() {
+            document.querySelectorAll(".abc-tab").forEach(function (btn) {
+                btn.addEventListener("click", function () {
+                    state.abcTab = btn.dataset.abc || "a";
+                    document.querySelectorAll(".abc-tab").forEach(function (b) {
+                        b.classList.remove("active-a", "active-b", "active-c");
+                    });
+                    const cls = state.abcTab === "a" ? "active-a" :
+                                state.abcTab === "b" ? "active-b" : "active-c";
+                    btn.classList.add(cls);
+                    renderSkuList();
                 });
-                $("buyout-range").addEventListener("input", updateWhatIf);
-                $("drr-range").addEventListener("input", updateWhatIf);
-                $("close-btn").addEventListener("click", function () { tg.close(); });
-                loadWbStatus();
-                loadReport();
+            });
+        }
+
+        function bindPlatforms() {
+            document.querySelectorAll(".platform-btn").forEach(function (btn) {
+                btn.addEventListener("click", function () {
+                    const key = btn.dataset.platform || "wildberries";
+                    setPlatform(key);
+                    loadReport();
+                });
+            });
+        }
+
+        function init() {
+            if (!tg) {
+                showToast("Откройте страницу из Telegram Mini App", true);
+            }
+            applyTelegramTheme();
+            state.apiBase = resolveApiBase();
+            state.reportId = resolveReportId();
+
+            if (!state.apiBase) {
+                showToast("Добавьте ?api_base=https://ваш-сервер в ссылку", true);
             }
 
-            init();
-        })();
+            bindPlatforms();
+            bindAbcTabs();
+
+            $("wb-save-btn").addEventListener("click", saveWbSetup);
+            $("wb-toggle").addEventListener("change", function (e) {
+                toggleWbMonitoring(e.target.checked);
+            });
+            $("buyout-range").addEventListener("input", recalcWhatIf);
+            $("drr-range").addEventListener("input", recalcWhatIf);
+            $("close-btn").addEventListener("click", function () {
+                if (tg) tg.close();
+            });
+
+            loadWbStatus();
+            loadReport();
+        }
+
+        init();
+    })();
     </script>
 </body>
 </html>
