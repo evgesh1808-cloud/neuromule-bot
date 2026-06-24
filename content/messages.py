@@ -253,9 +253,15 @@ CB_NEW_DIALOG = "new_dialog"
 CB_BACK_TO_TOOLS = "back_to_tools"
 CB_TABLE_CHART_PREFIX = "tbl_chart:"
 CB_WB_CHART_PREFIX = "wb_chart:"
-BTN_TABLE_CHART_PIE = "🔄 Круговая"
-BTN_TABLE_CHART_LINE = "📊 Линейная"
-BTN_TABLE_CHART_BAR = "📈 Гистограмма"
+BTN_TABLE_CHART_PIE = "🥧 Круговая"
+BTN_TABLE_CHART_LINE = "📈 Линейная"
+BTN_TABLE_CHART_BAR = "📊 Гистограмма"
+BTN_MINI_APP_DASHBOARD = "🚀 Премиум-дашборд ABC"
+BTN_TEXT_ROLE_TABLE = "📊 Сквозная аналитика & Дашборд"
+BTN_TABLE_SUBROLE_STANDARD = "📊 Базовый отчёт"
+BTN_TABLE_SUBROLE_WB_OZON = "💼 Финансы WB/Ozon"
+BTN_TABLE_SUBROLE_TRAFFIC = "📈 Маркетинг ROI"
+BTN_TABLE_SUBROLE_SEO = "📝 SEO (Excel)"
 
 BTN_DAILY_ADVICE = "🔮 Совет дня"
 BTN_PROFILE = "👤 Мой профиль"
@@ -301,7 +307,7 @@ ADMIN_MAIN_MENU_BUTTON = "⚙️ Админ-панель"
 TEXT_ROLES: tuple[tuple[str, str], ...] = (
     ("⚪ Стандарт", "standard"),
     ("📄 Саммари", "summary"),
-    ("📊 ИИ-Аналитика & Таблицы", "table_generator"),
+    ("📊 Сквозная аналитика & Дашборд", "table_generator"),
     ("🎙️ Сценарии & Подкасты", "podcast_doc"),
     ("📱 Блогер", "blogger_content"),
     ("🧠 ИИ-Коуч", "psychologist_coach"),
@@ -534,8 +540,8 @@ TXT_TABLE_GENERATOR_STATUS = (
 )
 CB_TABLE_SUBROLE_PREFIX = "set_table_subrole:"
 TXT_TABLE_SUBROLE_MENU = (
-    "📊 <b>Аналитика таблиц</b>\n\n"
-    "Выберите тип отчёта — от этого зависит локальная математика и формат Excel:"
+    "📊 <b>Сквозная аналитика маркетплейсов</b>\n\n"
+    "Выберите тип отчёта — от этого зависит расчёт юнит-экономики и формат дашборда:"
 )
 TXT_TABLE_SUBROLE_READY = (
     "📥 Отлично! Режим выбран. Отправьте ваш .xlsx файл или напишите данные текстом для анализа."

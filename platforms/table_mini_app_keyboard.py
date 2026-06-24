@@ -13,7 +13,7 @@ _DEFAULT_MINI_APP_TEMPLATE = (
     "https://your-user.github.io/neuromule-table/?report_id={report_id}"
 )
 # Версия UI — сбрасывает кэш Telegram WebApp при обновлении дашборда.
-_MINI_APP_UI_VERSION = "20260527c"
+_MINI_APP_UI_VERSION = "20260527d"
 
 
 def build_table_mini_app_url(report_id: int | str) -> str:
@@ -48,14 +48,14 @@ def build_table_mini_app_url(report_id: int | str) -> str:
 
 
 def get_table_mini_app_keyboard(report_id: int | str | None) -> InlineKeyboardMarkup | None:
-    """Премиальная кнопка Web App «📊 Открыть интерактивный дашборд»."""
+    """Кнопка Web App — премиальный дашборд ABC и What-If."""
     if report_id is None:
         return None
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="📊 Открыть интерактивный дашборд",
+                    text=msg.BTN_MINI_APP_DASHBOARD,
                     web_app=WebAppInfo(url=build_table_mini_app_url(report_id)),
                 )
             ]

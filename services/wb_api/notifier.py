@@ -10,6 +10,7 @@ from aiogram.enums import ParseMode
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 
 from config import settings
+from content import messages as msg
 from platforms.table_mini_app_keyboard import build_table_mini_app_url
 from services.wb_api.types import WbBatchDigest
 
@@ -78,7 +79,7 @@ class TelegramNotifierPort:
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="📊 Открыть интерактивный дашборд",
+                        text=msg.BTN_MINI_APP_DASHBOARD,
                         web_app=WebAppInfo(url=build_table_mini_app_url(report_id)),
                     )
                 ]

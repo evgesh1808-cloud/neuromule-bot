@@ -196,21 +196,21 @@ def create_table_subroles_keyboard() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="📊 Базовый отчет",
+                    text=msg.BTN_TABLE_SUBROLE_STANDARD,
                     callback_data=f"{msg.CB_TABLE_SUBROLE_PREFIX}standard_report",
                 ),
                 InlineKeyboardButton(
-                    text="💼 Аналитика WB/Ozon",
+                    text=msg.BTN_TABLE_SUBROLE_WB_OZON,
                     callback_data=f"{msg.CB_TABLE_SUBROLE_PREFIX}wb_ozon_finance",
                 ),
             ],
             [
                 InlineKeyboardButton(
-                    text="📈 Маркетинг",
+                    text=msg.BTN_TABLE_SUBROLE_TRAFFIC,
                     callback_data=f"{msg.CB_TABLE_SUBROLE_PREFIX}traffic_marketing",
                 ),
                 InlineKeyboardButton(
-                    text="📝 SEO (Excel)",
+                    text=msg.BTN_TABLE_SUBROLE_SEO,
                     callback_data=f"{msg.CB_TABLE_SUBROLE_PREFIX}mass_seo_generation",
                 ),
             ],
@@ -313,7 +313,7 @@ async def create_roles_menu_keyboard(user_id: int, active_role_id: str) -> Inlin
             ],
             [
                 InlineKeyboardButton(
-                    text="📊 ИИ-Аналитика & Таблицы 📈",
+                    text=msg.BTN_TEXT_ROLE_TABLE,
                     callback_data=msg.CB_SHOW_TABLE_SUBCATEGORIES,
                 ),
             ],

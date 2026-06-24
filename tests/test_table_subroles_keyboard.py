@@ -13,9 +13,9 @@ def test_create_table_subroles_keyboard_layout() -> None:
     assert len(kb.inline_keyboard[0]) == 2
     assert len(kb.inline_keyboard[1]) == 2
     labels = [btn.text for row in kb.inline_keyboard[:2] for btn in row]
-    assert "📊 Базовый отчет" in labels
-    assert "💼 Аналитика WB/Ozon" in labels
-    assert "📈 Маркетинг" in labels
+    assert "📊 Базовый отчёт" in labels
+    assert "💼 Финансы WB/Ozon" in labels
+    assert "📈 Маркетинг ROI" in labels
     assert "📝 SEO (Excel)" in labels
     callbacks = [
         btn.callback_data

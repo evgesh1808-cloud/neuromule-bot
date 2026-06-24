@@ -60,3 +60,4 @@ jobs:
             fi
 
             pm2 save || true
+            echo "Deployed commit: $(git -C "${DEPLOY_DIR}" log -1 --oneline)"
