@@ -32,6 +32,22 @@ _OLD_FINALE_MARKERS = (
     "Автопилот по API",
     "Хватит загружать",
 )
+_LEGACY_FINANCE_MARKERS = (
+    "ИИ-ПЛАН",
+    "ИИ-Инсайт",
+    "ИИ-ИНСАЙТ",
+    "Senior ИИ",
+    "Серверный расчёт",
+    "Серверный",
+    "локальный ETL",
+    "ИИ-Моделирование",
+)
+_LEGACY_FINANCE_REPLACEMENTS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"ИИ[\s\-–—]*План\s*действий", re.IGNORECASE), "СТРАТЕГИЧЕСКИЙ ПЛАН ДЕЙСТВИЙ НА СЕГОДНЯ"),
+    (re.compile(r"ИИ[\s\-–—]*Инсайт", re.IGNORECASE), "КЛЮЧЕВОЙ БИЗНЕС-ВЕРДИКТ"),
+    (re.compile(r"Серверный\s+расч[её]т", re.IGNORECASE), "Потенциальная упущенная выгода"),
+    (re.compile(r"ABC[\s\-–—]*АНАЛИЗ\s+МАТРИЦЫ\s*\(\s*локальный\s+ETL[^)]*\)", re.IGNORECASE), "ABC-АНАЛИЗ МАТРИЦЫ"),
+)
 
 
 @dataclass(frozen=True)
@@ -515,6 +531,167 @@ def build_wb_finance_openrouter_prompt_pair(
     return system, user
 
 
+def has_legacy_wb_finance_markers(text: str) -> bool:
+    """True, если в тексте остались устаревшие маркеры CFO-отчёта."""
+    sample = (text or "").strip()
+    if not sample:
+        return True
+    return any(marker.lower() in sample.lower() for marker in _LEGACY_FINANCE_MARKERS)
+
+
+def sanitize_wb_finance_html(html: str) -> str:
+    """Нормализует устаревшие заголовки и формулировки в ответе модели."""
+    text = (html or "").strip()
+    for pattern, replacement in _LEGACY_FINANCE_REPLACEMENTS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
+def _abc_sku_to_dict(sku: object, group: str) -> dict[str, Any]:
+    """MatrixAbcSku / MatrixSkuDetail → JSON для Mini App."""
+    name = getattr(sku, "name", "—")
+    article = getattr(sku, "article_id", "") or name
+    revenue = float(getattr(sku, "revenue", 0) or 0)
+    margin = float(getattr(sku, "net_profit", getattr(sku, "margin", 0)) or 0)
+    buyout = float(getattr(sku, "buyout_pct", 0) or 0)
+    return {
+        "sku": str(article),
+        "name": str(name),
+        "article_id": str(article),
+        "revenue": round(revenue, 2),
+        "revenue_rub": round(revenue, 2),
+        "margin": round(margin, 2),
+        "margin_rub": round(margin, 2),
+        "buyout_pct": round(buyout, 1),
+        "abc_group": group,
+    }
+
+
+def build_wb_finance_mini_app_extensions(
+    revenue_total: float,
+    wb_metrics: WbMarketplaceMetrics | None,
+    *,
+    matrix_rows: list[list[str]] | None,
+) -> dict[str, Any] | None:
+    """Расширения table_raw_json для Mini App (ABC, SKU, summary)."""
+    prompt_metrics = compute_wb_finance_prompt_metrics(
+        revenue_total, wb_metrics, matrix_rows=matrix_rows
+    )
+    if prompt_metrics is None:
+        return None
+
+    from services.file_processor import compute_seller_matrix_etl
+
+    matrix_etl = (
+        compute_seller_matrix_etl(matrix_rows, revenue_total=revenue_total)
+        if matrix_rows
+        else None
+    )
+
+    group_a: list[dict[str, Any]] = []
+    group_b: list[dict[str, Any]] = []
+    group_c: list[dict[str, Any]] = []
+    if matrix_etl and matrix_etl.sku_catalog:
+        for item in matrix_etl.sku_catalog:
+            g = (item.abc_group or "B").upper()
+            row = _abc_sku_to_dict(item, g)
+            if g == "A":
+                group_a.append(row)
+            elif g == "C":
+                group_c.append(row)
+            else:
+                group_b.append(row)
+    elif prompt_metrics.sku_catalog_items:
+        for item in prompt_metrics.sku_catalog_items:
+            g = str(item.get("abc_group") or "B").upper()
+            row = {
+                "sku": str(item.get("article_id") or item.get("name") or "—"),
+                "name": str(item.get("name") or "—"),
+                "article_id": str(item.get("article_id") or "—"),
+                "revenue": round(float(item.get("revenue_rub") or 0), 2),
+                "revenue_rub": round(float(item.get("revenue_rub") or 0), 2),
+                "margin": round(float(item.get("margin_rub") or 0), 2),
+                "margin_rub": round(float(item.get("margin_rub") or 0), 2),
+                "buyout_pct": round(float(item.get("buyout_pct") or 0), 1),
+                "abc_group": g,
+            }
+            if g == "A":
+                group_a.append(row)
+            elif g == "C":
+                group_c.append(row)
+            else:
+                group_b.append(row)
+
+    oos_forecast: list[dict[str, Any]] = []
+    if matrix_etl:
+        for oos in matrix_etl.oos_forecasts:
+            fomo = 0.0
+            if oos.risk_out_of_stock and oos.days_until_stockout is not None:
+                shortage = max(0.0, 7.0 - oos.days_until_stockout)
+                fomo = max(0.0, shortage * 500.0)
+            oos_forecast.append({
+                "sku": oos.label,
+                "name": oos.label,
+                "days_until_stockout": (
+                    round(oos.days_until_stockout, 1)
+                    if oos.days_until_stockout is not None
+                    else None
+                ),
+                "risk_out_of_stock": oos.risk_out_of_stock,
+                "fomo_lost_rub": round(fomo, 2),
+            })
+
+    sku_catalog = list(prompt_metrics.sku_catalog_items)
+    return {
+        "source": "wb_ozon_finance_xlsx",
+        "abc_analysis": {
+            "group_a": group_a,
+            "group_b": group_b,
+            "group_c": group_c,
+        },
+        "sku_catalog": sku_catalog,
+        "out_of_stock_forecast": oos_forecast,
+        "summary": {
+            "revenue": round(prompt_metrics.revenue, 2),
+            "revenue_rub": round(prompt_metrics.revenue, 2),
+            "net_profit": round(prompt_metrics.clear_profit, 2),
+            "business_score": prompt_metrics.business_score,
+            "profitability_pct": round(prompt_metrics.profitability_pct, 1),
+            "ad_load_pct": round(prompt_metrics.adv_load_pct, 1),
+            "buyout_coef_pct": round(prompt_metrics.buy_ratio_pct, 1),
+            "fomo_rub": round(prompt_metrics.fomo_lost_rub, 2),
+            "group_a_leader": prompt_metrics.abc_a_leader_name,
+        },
+    }
+
+
+def enrich_table_json_wb_finance(
+    table_json: str,
+    *,
+    revenue_total: float,
+    wb_metrics: WbMarketplaceMetrics | None = None,
+    matrix_rows: list[list[str]] | None = None,
+) -> str:
+    """Дополняет канонический JSON отчёта полями для Mini App дашборда."""
+    from services.table_json import canonicalize_table_json
+
+    extensions = build_wb_finance_mini_app_extensions(
+        revenue_total, wb_metrics, matrix_rows=matrix_rows
+    )
+    if not extensions:
+        return table_json
+    try:
+        payload = json.loads(table_json)
+    except json.JSONDecodeError:
+        return table_json
+    if not isinstance(payload, dict):
+        return table_json
+    payload.update(extensions)
+    return canonicalize_table_json(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    )
+
+
 def append_wb_finance_mini_app_cta(html: str) -> str:
     """Добавляет единый CTA про Автопилот API и Mini App (если ещё нет)."""
     text = (html or "").strip()
@@ -757,9 +934,13 @@ async def generate_wb_finance_consulting_html(
         logger.exception("wb_finance AI consulting request failed")
         return None
 
-    content = (completion.get("content") or "").strip()
-    if not content:
-        return None
+    content = sanitize_wb_finance_html((completion.get("content") or "").strip())
+    if not content or has_legacy_wb_finance_markers(content):
+        logger.warning(
+            "wb_finance AI returned legacy/empty format — local CFO fallback"
+        )
+        local = build_wb_finance_express_html_local(prompt_metrics, wb_metrics)
+        return append_wb_finance_mini_app_cta(local)
     return append_wb_finance_mini_app_cta(repair_telegram_html(content))
 
 

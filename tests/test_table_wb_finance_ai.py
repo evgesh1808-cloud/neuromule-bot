@@ -155,3 +155,47 @@ def test_append_wb_finance_mini_app_cta() -> None:
     assert "Автопилот по API" in out
     assert "09:00" in out
     assert "Первые 3 дня" in out
+
+
+def test_sanitize_wb_finance_html_replaces_legacy_headers() -> None:
+    from services.table_wb_finance_ai import has_legacy_wb_finance_markers, sanitize_wb_finance_html
+
+    raw = "📋 ИИ-План действий\n💸 Серверный расчёт: 1000"
+    cleaned = sanitize_wb_finance_html(raw)
+    assert "ИИ-План" not in cleaned
+    assert "Серверный" not in cleaned
+    assert "СТРАТЕГИЧЕСКИЙ ПЛАН" in cleaned
+    assert has_legacy_wb_finance_markers(raw)
+    assert not has_legacy_wb_finance_markers(cleaned)
+
+
+def test_enrich_table_json_wb_finance_adds_abc_and_summary() -> None:
+    from services.table_wb_finance_ai import enrich_table_json_wb_finance
+    from services.table_text_response import compute_wb_marketplace_metrics
+
+    matrix = [
+        [
+            "Предмет",
+            "Выкупили, шт.",
+            "Доставки, шт.",
+            "Возвраты, шт.",
+            "Удержания за продвижение",
+            "К перечислению, руб.",
+        ],
+        ["Футболка Premium", "80", "90", "10", "5000", "100000"],
+        ["DEAD", "0", "20", "20", "1000", "5000"],
+    ]
+    base = '{"title":"T","headers":["A"],"rows":[["1"]]}'
+    wb = compute_wb_marketplace_metrics(matrix, revenue_total=105_000.0)
+    enriched = enrich_table_json_wb_finance(
+        base,
+        revenue_total=105_000.0,
+        wb_metrics=wb,
+        matrix_rows=matrix,
+    )
+    import json
+
+    payload = json.loads(enriched)
+    assert "abc_analysis" in payload
+    assert "sku_catalog" in payload
+    assert payload["summary"]["business_score"] > 0

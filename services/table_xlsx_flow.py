@@ -382,6 +382,7 @@ async def run_xlsx_fast_path_turn(
         await rollback_last(settings, user_id)
         return ChatTurnResult(outcome=ChatTurnOutcome.AI_FAILED)
 
+    wb_metrics = None
     if subrole == "wb_ozon_finance" and worker.calculated_total > 0:
         from dataclasses import replace
 
@@ -413,6 +414,15 @@ async def run_xlsx_fast_path_turn(
         title=worker.title,
         summary=preprocessed.summary,
     )
+    if subrole == "wb_ozon_finance" and worker.calculated_total > 0 and table_json and wb_metrics is not None:
+        from services.table_wb_finance_ai import enrich_table_json_wb_finance
+
+        table_json = enrich_table_json_wb_finance(
+            table_json,
+            revenue_total=worker.calculated_total,
+            wb_metrics=wb_metrics,
+            matrix_rows=worker.rows,
+        )
     assistant_dialog_text = _resolve_fast_path_assistant_text(
         table_json,
         title=worker.title,

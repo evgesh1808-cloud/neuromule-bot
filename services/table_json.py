@@ -87,12 +87,17 @@ def parse_table_json_response(ai_response: str) -> TableJsonPayload | None:
                 continue
             rows.append([_cell_to_str(cell) for cell in row])
 
+        stored: dict[str, Any] = {"title": title, "headers": headers, "rows": rows}
+        for key, value in data.items():
+            if key not in stored:
+                stored[key] = value
+
         payload = TableJsonPayload(
             title=title,
             headers=headers,
             rows=rows,
             raw_json=json.dumps(
-                {"title": title, "headers": headers, "rows": rows},
+                stored,
                 ensure_ascii=False,
                 separators=(",", ":"),
             ),

@@ -12,6 +12,8 @@ from services.table_chart_types import ChartType
 _DEFAULT_MINI_APP_TEMPLATE = (
     "https://your-user.github.io/neuromule-table/?report_id={report_id}"
 )
+# Версия UI — сбрасывает кэш Telegram WebApp при обновлении дашборда.
+_MINI_APP_UI_VERSION = "20260527b"
 
 
 def build_table_mini_app_url(report_id: int | str) -> str:
@@ -39,6 +41,9 @@ def build_table_mini_app_url(report_id: int | str) -> str:
     if api_base and "api_base=" not in url:
         joiner = "&" if "?" in url else "?"
         url = f"{url}{joiner}api_base={api_base}"
+    if "ui_v=" not in url:
+        joiner = "&" if "?" in url else "?"
+        url = f"{url}{joiner}ui_v={_MINI_APP_UI_VERSION}"
     return url
 
 
