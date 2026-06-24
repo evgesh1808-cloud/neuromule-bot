@@ -898,10 +898,11 @@ async def generate_wb_finance_consulting_html(
     http_client: object | None = None,
 ) -> str | None:
     """
-    Генерирует HTML-консалтинг через OpenRouter.
+    CFO-отчёт для wb_ozon_finance — всегда локальный шаблон (без OpenRouter).
 
-    При ошибке возвращает ``None`` — вызывающий код использует локальный fallback.
+    Гарантирует актуальные заголовки и формулировки без риска «старого» текста модели.
     """
+    del settings, models, http_client  # OpenRouter отключён для стабильности отчёта
     if wb_metrics is None and matrix_rows:
         wb_metrics = resolve_wb_metrics_for_rows(matrix_rows, revenue_total)
     prompt_metrics = compute_wb_finance_prompt_metrics(
@@ -909,39 +910,8 @@ async def generate_wb_finance_consulting_html(
     )
     if prompt_metrics is None:
         return None
-
-    system = build_wb_marketplace_finance_system_prompt(**_prompt_kwargs_from_metrics(prompt_metrics))
-    user = build_wb_marketplace_finance_user_prompt(prompt_metrics, wb_metrics)
-
-    model_chain = [m for m in (models or settings.free_models) if str(m).strip()]
-    if not model_chain:
-        return None
-
-    try:
-        completion = await ask_ai_messages(
-            settings,
-            [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            timeout=settings.openrouter_timeout_sec,
-            http_client=http_client,
-            models=model_chain,
-            max_tokens=_WB_FINANCE_MAX_OUTPUT_TOKENS,
-            temperature=_WB_FINANCE_AI_TEMPERATURE,
-        )
-    except Exception:
-        logger.exception("wb_finance AI consulting request failed")
-        return None
-
-    content = sanitize_wb_finance_html((completion.get("content") or "").strip())
-    if not content or has_legacy_wb_finance_markers(content):
-        logger.warning(
-            "wb_finance AI returned legacy/empty format — local CFO fallback"
-        )
-        local = build_wb_finance_express_html_local(prompt_metrics, wb_metrics)
-        return append_wb_finance_mini_app_cta(local)
-    return append_wb_finance_mini_app_cta(repair_telegram_html(content))
+    local = build_wb_finance_express_html_local(prompt_metrics, wb_metrics)
+    return append_wb_finance_mini_app_cta(local)
 
 
 def resolve_wb_metrics_for_rows(
