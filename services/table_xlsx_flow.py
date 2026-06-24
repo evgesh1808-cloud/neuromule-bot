@@ -399,6 +399,7 @@ async def run_xlsx_fast_path_turn(
             settings,
             revenue_total=worker.calculated_total,
             wb_metrics=wb_metrics,
+            matrix_rows=worker.rows,
             models=model_chain or None,
         )
         if ai_caption:

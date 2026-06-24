@@ -16,6 +16,7 @@ router = APIRouter(prefix="/api/v1", tags=["reports"])
 async def get_report_data(
     report_id: int,
     telegram_user_id: Annotated[int, Depends(require_telegram_user)],
+    platform: str = "wildberries",
 ) -> dict[str, Any]:
     """
     Возвращает отчёт для Telegram Mini App только владельцу.
@@ -27,7 +28,14 @@ async def get_report_data(
     data = await repo.fetch_table_report_json_for_user(report_id, telegram_user_id)
     if data is None:
         raise HTTPException(status_code=404, detail="Report not found")
+    platform_key = (platform or "wildberries").strip().lower()
+    allowed = {"wildberries", "wb", "ozon", "yandex", "yandex_market", "1c", "moysklad"}
+    if platform_key not in allowed:
+        platform_key = "wildberries"
+    if platform_key == "wb":
+        platform_key = "wildberries"
     return {
         "report_id": report_id,
+        "platform": platform_key,
         "table_raw_json": data,
     }

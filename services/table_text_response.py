@@ -358,6 +358,7 @@ def build_wb_finance_express_html(
     calculated_total: float,
     *,
     wb_metrics: WbMarketplaceMetrics | None = None,
+    matrix_rows: list[list[str]] | None = None,
 ) -> str:
     """
     Локальный fallback для под-режима ``wb_ozon_finance`` (если ИИ недоступен).
@@ -372,11 +373,12 @@ def build_wb_finance_express_html(
         compute_wb_finance_prompt_metrics,
     )
 
-    prompt_metrics = compute_wb_finance_prompt_metrics(calculated_total, wb_metrics)
+    prompt_metrics = compute_wb_finance_prompt_metrics(
+        calculated_total, wb_metrics, matrix_rows=matrix_rows
+    )
     if prompt_metrics is None:
         return ""
     return build_wb_finance_express_html_local(prompt_metrics, wb_metrics)
-
 
 def fmt_count(value: float) -> str:
     if abs(value - round(value)) < 1e-9:
@@ -550,7 +552,11 @@ def build_table_one_screen_html(
             payload.to_rows_with_header(),
             revenue_total=total,
         )
-        return build_wb_finance_express_html(total, wb_metrics=wb_metrics)
+        return build_wb_finance_express_html(
+            total,
+            wb_metrics=wb_metrics,
+            matrix_rows=payload.to_rows_with_header(),
+        )
 
     count = len(items)
     average = total / count if count else 0.0

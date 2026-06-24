@@ -1542,3 +1542,43 @@ async def mark_wb_morning_notification_sent(notification_id: int) -> None:
         )
         await db.commit()
 
+
+async def fetch_wb_api_settings(user_id: int) -> dict[str, object] | None:
+    """Настройки автопилота WB API для Mini App (без полного токена)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT api_token, enabled, updated_at FROM wb_api_tokens WHERE user_id = ?",
+            (int(user_id),),
+        ) as cur:
+            row = await cur.fetchone()
+    if not row:
+        return None
+    token = str(row[0] or "").strip()
+    masked = ""
+    if len(token) > 8:
+        masked = f"{token[:4]}…{token[-4:]}"
+    elif token:
+        masked = "••••"
+    return {
+        "has_token": bool(token),
+        "token_mask": masked,
+        "enabled": bool(int(row[1])),
+        "updated_at": str(row[2] or ""),
+    }
+
+
+async def set_wb_api_enabled(user_id: int, enabled: bool) -> bool:
+    """Вкл/выкл ежедневный мониторинг без смены токена."""
+    ts = datetime.now(timezone.utc).isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """
+            UPDATE wb_api_tokens
+            SET enabled = ?, updated_at = ?
+            WHERE user_id = ?
+            """,
+            (1 if enabled else 0, ts, int(user_id)),
+        )
+        await db.commit()
+        return int(cursor.rowcount or 0) > 0
+

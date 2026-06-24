@@ -49,6 +49,12 @@ class WbFinancePromptMetrics:
     verdict: str
     fomo_lost_rub: float
     fomo_breakdown: tuple[str, ...]
+    logistics_fomo_rub: float = 0.0
+    abc_a_leader: str = "—"
+    abc_a_count: int = 0
+    abc_c_count: int = 0
+    abc_c_summary: str = "нет"
+    oos_forecast_line: str = "данных по остаткам недостаточно"
     total_ad_cost: float = 0.0
     sales_qty: float = 0.0
     returns_qty: float = 0.0
@@ -187,10 +193,20 @@ def compute_fomo_lost_rub(
 def compute_wb_finance_prompt_metrics(
     revenue_total: float,
     wb_metrics: WbMarketplaceMetrics | None = None,
+    *,
+    matrix_rows: list[list[str]] | None = None,
 ) -> WbFinancePromptMetrics | None:
     """Собирает переменные ETL для system/user prompt и локального fallback."""
     if revenue_total <= 0:
         return None
+
+    from services.file_processor import compute_seller_matrix_etl
+
+    matrix_etl = (
+        compute_seller_matrix_etl(matrix_rows, revenue_total=revenue_total)
+        if matrix_rows
+        else None
+    )
     tax = revenue_total * _USN_RATE
     clear_profit = revenue_total - tax
     profitability = (clear_profit / revenue_total * 100.0) if revenue_total > 0 else 0.0
@@ -216,6 +232,34 @@ def compute_wb_finance_prompt_metrics(
         worst_unit_label=worst_label,
     )
     fomo_rub, fomo_parts = compute_fomo_lost_rub(revenue_total, wb_metrics)
+    logistics_fomo = 0.0
+    abc_a_leader = "—"
+    abc_a_count = 0
+    abc_c_count = 0
+    abc_c_summary = "нет"
+    oos_line = "данных по остаткам недостаточно"
+    if matrix_etl:
+        logistics_fomo = matrix_etl.logistics_fomo_rub
+        if logistics_fomo > 0:
+            fomo_rub = round(fomo_rub + logistics_fomo, 2)
+            fomo_parts = (*fomo_parts, matrix_etl.logistics_fomo_detail)
+        abc_a_leader = matrix_etl.abc_a_leader
+        abc_a_count = len(matrix_etl.abc_group_a)
+        abc_c_count = len(matrix_etl.abc_group_c)
+        if matrix_etl.abc_group_c:
+            abc_c_summary = ", ".join(s.label[:24] for s in matrix_etl.abc_group_c[:3])
+            if abc_c_count > 3:
+                abc_c_summary += f" и ещё {abc_c_count - 3}"
+        elif abc_c_count == 0:
+            abc_c_summary = "убыточных SKU не выявлено"
+        if matrix_etl.oos_critical_sku and matrix_etl.oos_critical_days is not None:
+            oos_line = (
+                f"«{matrix_etl.oos_critical_sku}» закончится через "
+                f"{matrix_etl.oos_critical_days:.0f} дн. (риск OOS)"
+            )
+        elif matrix_etl.oos_forecasts:
+            oos_line = "критических OOS по остаткам не выявлено"
+
     return WbFinancePromptMetrics(
         revenue=revenue_total,
         tax=tax,
@@ -228,6 +272,12 @@ def compute_wb_finance_prompt_metrics(
         verdict=verdict,
         fomo_lost_rub=fomo_rub,
         fomo_breakdown=fomo_parts,
+        logistics_fomo_rub=logistics_fomo,
+        abc_a_leader=abc_a_leader,
+        abc_a_count=abc_a_count,
+        abc_c_count=abc_c_count,
+        abc_c_summary=abc_c_summary,
+        oos_forecast_line=oos_line,
         total_ad_cost=wb_metrics.total_advertising_cost if wb_metrics else 0.0,
         sales_qty=wb_metrics.sales_qty if wb_metrics else 0.0,
         returns_qty=wb_metrics.returns_qty if wb_metrics else 0.0,
@@ -247,6 +297,12 @@ def _prompt_kwargs_from_metrics(metrics: WbFinancePromptMetrics) -> dict[str, st
         "business_score": f"{metrics.business_score:.1f}",
         "verdict": metrics.verdict,
         "fomo_lost_rub": _fmt_rub_in_code(metrics.fomo_lost_rub),
+        "logistics_fomo_rub": _fmt_rub_in_code(metrics.logistics_fomo_rub),
+        "abc_a_leader": metrics.abc_a_leader,
+        "abc_a_count": str(metrics.abc_a_count),
+        "abc_c_count": str(metrics.abc_c_count),
+        "abc_c_summary": metrics.abc_c_summary,
+        "oos_forecast_line": metrics.oos_forecast_line,
     }
 
 
@@ -302,6 +358,14 @@ def build_wb_marketplace_finance_user_prompt(
         "business_verdict": prompt_metrics.verdict,
         "fomo_lost_rub": round(prompt_metrics.fomo_lost_rub, 2),
         "fomo_breakdown": list(prompt_metrics.fomo_breakdown),
+        "logistics_fomo_rub": round(prompt_metrics.logistics_fomo_rub, 2),
+        "abc_analysis": {
+            "group_a_leader": prompt_metrics.abc_a_leader,
+            "group_a_count": prompt_metrics.abc_a_count,
+            "group_c_count": prompt_metrics.abc_c_count,
+            "group_c_summary": prompt_metrics.abc_c_summary,
+        },
+        "out_of_stock_forecast": prompt_metrics.oos_forecast_line,
         "ad_load_pct": round(prompt_metrics.adv_load_pct, 1),
         "buyout_coef_pct": round(prompt_metrics.buy_ratio_pct, 1),
         "year_forecast_rub": round(prompt_metrics.year_forecast, 0),
@@ -316,7 +380,7 @@ def build_wb_marketplace_finance_user_prompt(
     return (
         "Ниже — подтверждённые метрики локального ETL-расчёта NeuroMule. "
         "Сформируй финансовый экспресс-отчёт строго по структуре из system prompt. "
-        "Числа выручки, налога, прибыли, рентабельности, скоринга и FOMO не меняй. "
+        "Числа выручки, налога, прибыли, рентабельности, скоринга, FOMO, ABC и OOS не меняй. "
         "Пиши ёмко: весь ответ до 2000 символов, зоны светофора — по 2–3 предложения.\n\n"
         f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
     )
@@ -325,12 +389,35 @@ def build_wb_marketplace_finance_user_prompt(
 def build_wb_finance_system_prompt_from_totals(
     revenue_total: float,
     wb_metrics: WbMarketplaceMetrics | None = None,
+    *,
+    matrix_rows: list[list[str]] | None = None,
 ) -> str | None:
     """Удобная обёртка: revenue + wb_metrics → готовый system prompt."""
-    metrics = compute_wb_finance_prompt_metrics(revenue_total, wb_metrics)
+    metrics = compute_wb_finance_prompt_metrics(
+        revenue_total, wb_metrics, matrix_rows=matrix_rows
+    )
     if metrics is None:
         return None
     return build_wb_marketplace_finance_system_prompt(**_prompt_kwargs_from_metrics(metrics))
+
+
+def build_wb_finance_openrouter_prompt_pair(
+    matrix_rows: list[list[str]],
+    *,
+    revenue_total: float,
+    wb_metrics: WbMarketplaceMetrics | None = None,
+) -> tuple[str, str] | None:
+    """Пара system + user для OpenRouter после локального ETL матрицы."""
+    if wb_metrics is None:
+        wb_metrics = resolve_wb_metrics_for_rows(matrix_rows, revenue_total)
+    prompt_metrics = compute_wb_finance_prompt_metrics(
+        revenue_total, wb_metrics, matrix_rows=matrix_rows
+    )
+    if prompt_metrics is None:
+        return None
+    system = build_wb_marketplace_finance_system_prompt(**_prompt_kwargs_from_metrics(prompt_metrics))
+    user = build_wb_marketplace_finance_user_prompt(prompt_metrics, wb_metrics)
+    return system, user
 
 
 def append_wb_finance_mini_app_cta(html: str) -> str:
@@ -374,6 +461,16 @@ def build_wb_finance_express_html_local(
             f"<code>{prompt_metrics.profitability_pct:.1f}%</code>"
         ),
         _FINANCE_SEPARATOR,
+        "📦 <b>ABC-АНАЛИЗ МАТРИЦЫ</b>",
+        (
+            f"🅰️ Группа A: лидер <b>{_escape_verdict(prompt_metrics.abc_a_leader)}</b> "
+            f"(<code>{prompt_metrics.abc_a_count}</code> SKU)"
+        ),
+        (
+            f"🅲 Группа C: <code>{prompt_metrics.abc_c_count}</code> SKU — "
+            f"<i>{_escape_verdict(prompt_metrics.abc_c_summary)}</i>"
+        ),
+        _FINANCE_SEPARATOR,
         "📈 <b>СВЕТОФОР ЗДОРОВЬЯ БИЗНЕСА</b>",
     ]
     for zone_line in _build_traffic_light_block(wb_metrics, prompt_metrics):
@@ -408,6 +505,7 @@ def build_wb_finance_express_html_local(
                 f"ДРР {prompt_metrics.adv_load_pct:.1f}%, рентабельность "
                 f"{prompt_metrics.profitability_pct:.1f}%.</i>"
             ),
+            f"📦 <b>OOS:</b> <i>{_escape_verdict(prompt_metrics.oos_forecast_line)}</i>",
         ]
     )
     return append_wb_finance_mini_app_cta("\n".join(lines))
@@ -485,6 +583,7 @@ async def generate_wb_finance_consulting_html(
     *,
     revenue_total: float,
     wb_metrics: WbMarketplaceMetrics | None = None,
+    matrix_rows: list[list[str]] | None = None,
     models: list[str] | None = None,
     http_client: object | None = None,
 ) -> str | None:
@@ -493,7 +592,11 @@ async def generate_wb_finance_consulting_html(
 
     При ошибке возвращает ``None`` — вызывающий код использует локальный fallback.
     """
-    prompt_metrics = compute_wb_finance_prompt_metrics(revenue_total, wb_metrics)
+    if wb_metrics is None and matrix_rows:
+        wb_metrics = resolve_wb_metrics_for_rows(matrix_rows, revenue_total)
+    prompt_metrics = compute_wb_finance_prompt_metrics(
+        revenue_total, wb_metrics, matrix_rows=matrix_rows
+    )
     if prompt_metrics is None:
         return None
 

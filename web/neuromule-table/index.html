@@ -2,92 +2,572 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <title>NeuroMule — отчёт</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
+    <title>NeuroMule — ИИ-дашборд</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <style>
         :root {
+            --accent: #8B3FFD;
+            --accent-soft: rgba(139, 63, 253, 0.14);
+            --radius: 12px;
+            --shadow: 0 4px 24px rgba(0, 0, 0, 0.08);
             color-scheme: light dark;
         }
+
+        * { box-sizing: border-box; }
+
         body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            background-color: var(--tg-theme-bg-color, #ffffff);
-            color: var(--tg-theme-text-color, #111111);
             margin: 0;
-            padding: 16px;
-            padding-bottom: calc(16px + env(safe-area-inset-bottom));
+            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background: var(--tg-theme-bg-color, #0f0f12);
+            color: var(--tg-theme-text-color, #f5f5f7);
+            padding: 12px 14px calc(24px + env(safe-area-inset-bottom));
+            -webkit-font-smoothing: antialiased;
         }
-        h2 { margin: 0 0 8px; font-size: 1.25rem; }
-        .muted { opacity: 0.72; font-size: 0.9rem; margin: 0 0 16px; }
+
+        body.platform-wb { --accent: #8B3FFD; --accent-soft: rgba(139, 63, 253, 0.16); }
+        body.platform-ozon { --accent: #005BFF; --accent-soft: rgba(0, 91, 255, 0.16); }
+        body.platform-yandex { --accent: #FFCC00; --accent-soft: rgba(255, 204, 0, 0.2); }
+        body.platform-1c { --accent: #2DBE60; --accent-soft: rgba(45, 190, 96, 0.16); }
+
+        .header {
+            margin-bottom: 16px;
+        }
+
+        .header h1 {
+            margin: 0 0 4px;
+            font-size: 1.35rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+        }
+
+        .header p {
+            margin: 0;
+            font-size: 0.88rem;
+            color: var(--tg-theme-hint-color, #8e8e93);
+        }
+
         .card {
-            background: var(--tg-theme-secondary-bg-color, #f4f4f5);
-            border-radius: 14px;
-            padding: 14px;
-            margin-top: 12px;
-            overflow-x: auto;
+            background: var(--tg-theme-secondary-bg-color, #1c1c1e);
+            border-radius: var(--radius);
+            padding: 16px;
+            margin-bottom: 14px;
+            box-shadow: var(--shadow);
+            border: 1px solid rgba(127, 127, 127, 0.12);
         }
-        .status { padding: 12px 0; }
-        .status.error { color: #c0392b; }
+
+        .card-title {
+            margin: 0 0 12px;
+            font-size: 1rem;
+            font-weight: 650;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .platform-scroll {
+            display: flex;
+            gap: 8px;
+            overflow-x: auto;
+            padding-bottom: 4px;
+            margin-bottom: 14px;
+            scrollbar-width: none;
+        }
+
+        .platform-scroll::-webkit-scrollbar { display: none; }
+
+        .platform-btn {
+            flex: 0 0 auto;
+            border: 1px solid rgba(127, 127, 127, 0.2);
+            background: var(--tg-theme-secondary-bg-color, #1c1c1e);
+            color: var(--tg-theme-text-color, #fff);
+            border-radius: 999px;
+            padding: 10px 16px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+            white-space: nowrap;
+        }
+
+        .platform-btn.active {
+            background: var(--accent-soft);
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+
+        .platform-btn:active { transform: scale(0.97); }
+
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-bottom: 14px;
+        }
+
+        .metric-card {
+            background: var(--tg-theme-secondary-bg-color, #1c1c1e);
+            border-radius: var(--radius);
+            padding: 14px;
+            border: 1px solid rgba(127, 127, 127, 0.1);
+        }
+
+        .metric-label {
+            font-size: 0.75rem;
+            color: var(--tg-theme-hint-color, #8e8e93);
+            margin-bottom: 6px;
+        }
+
+        .metric-value {
+            font-size: 1.15rem;
+            font-weight: 700;
+            font-variant-numeric: tabular-nums;
+            color: var(--accent);
+        }
+
+        .field-label {
+            display: block;
+            font-size: 0.8rem;
+            color: var(--tg-theme-hint-color, #8e8e93);
+            margin-bottom: 6px;
+        }
+
+        .text-input {
+            width: 100%;
+            border: 1px solid rgba(127, 127, 127, 0.25);
+            border-radius: 10px;
+            padding: 12px 14px;
+            font-size: 0.95rem;
+            background: var(--tg-theme-bg-color, #0f0f12);
+            color: var(--tg-theme-text-color, #fff);
+            margin-bottom: 14px;
+        }
+
+        .text-input:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+
+        .toggle-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 14px;
+        }
+
+        .toggle-label {
+            font-size: 0.9rem;
+            font-weight: 500;
+            flex: 1;
+        }
+
+        .switch {
+            position: relative;
+            width: 52px;
+            height: 30px;
+            flex-shrink: 0;
+        }
+
+        .switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .slider {
+            position: absolute;
+            inset: 0;
+            cursor: pointer;
+            background: rgba(127, 127, 127, 0.35);
+            border-radius: 999px;
+            transition: background 0.2s ease;
+        }
+
+        .slider::before {
+            content: "";
+            position: absolute;
+            height: 24px;
+            width: 24px;
+            left: 3px;
+            bottom: 3px;
+            background: #fff;
+            border-radius: 50%;
+            transition: transform 0.2s ease;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+        }
+
+        .switch input:checked + .slider {
+            background: var(--accent);
+        }
+
+        .switch input:checked + .slider::before {
+            transform: translateX(22px);
+        }
+
+        .switch input:disabled + .slider {
+            opacity: 0.45;
+            cursor: not-allowed;
+        }
+
+        .btn-primary {
+            width: 100%;
+            border: none;
+            border-radius: var(--radius);
+            padding: 14px 18px;
+            font-size: 1rem;
+            font-weight: 650;
+            cursor: pointer;
+            background: var(--tg-theme-button-color, var(--accent));
+            color: var(--tg-theme-button-text-color, #ffffff);
+            transition: opacity 0.15s ease, transform 0.1s ease;
+        }
+
+        .btn-primary:active { transform: scale(0.98); }
+        .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .btn-ghost {
+            width: 100%;
+            margin-top: 10px;
+            border: 1px solid rgba(127, 127, 127, 0.25);
+            border-radius: var(--radius);
+            padding: 12px;
+            background: transparent;
+            color: var(--tg-theme-text-color, #fff);
+            font-size: 0.95rem;
+            cursor: pointer;
+        }
+
+        .abc-tabs {
+            display: flex;
+            gap: 6px;
+            margin-bottom: 12px;
+            overflow-x: auto;
+            scrollbar-width: none;
+        }
+
+        .abc-tabs::-webkit-scrollbar { display: none; }
+
+        .abc-tab {
+            flex: 1 0 auto;
+            min-width: 0;
+            border: none;
+            border-radius: 10px;
+            padding: 10px 8px;
+            font-size: 0.72rem;
+            font-weight: 600;
+            cursor: pointer;
+            background: rgba(127, 127, 127, 0.12);
+            color: var(--tg-theme-text-color, #fff);
+            transition: background 0.15s ease;
+        }
+
+        .abc-tab.active-a { background: rgba(52, 199, 89, 0.2); color: #34c759; }
+        .abc-tab.active-b { background: rgba(255, 204, 0, 0.2); color: #ffcc00; }
+        .abc-tab.active-c { background: rgba(255, 59, 48, 0.2); color: #ff3b30; }
+
+        .product-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            min-height: 80px;
+        }
+
+        .product-item {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 10px;
+            padding: 12px;
+            border-radius: 10px;
+            background: var(--tg-theme-bg-color, #0f0f12);
+            border: 1px solid rgba(127, 127, 127, 0.1);
+        }
+
+        .product-name {
+            font-size: 0.88rem;
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+
+        .product-meta {
+            font-size: 0.75rem;
+            color: var(--tg-theme-hint-color, #8e8e93);
+        }
+
+        .product-right {
+            text-align: right;
+            font-size: 0.8rem;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+
+        .fomo-badge {
+            color: #ff3b30;
+            font-size: 0.72rem;
+            margin-top: 4px;
+        }
+
+        .range-block {
+            margin-bottom: 18px;
+        }
+
+        .range-header {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.85rem;
+            margin-bottom: 8px;
+        }
+
+        .range-header span:last-child {
+            font-weight: 700;
+            color: var(--accent);
+        }
+
+        input[type="range"] {
+            width: 100%;
+            height: 6px;
+            accent-color: var(--accent);
+            cursor: pointer;
+        }
+
+        .whatif-result {
+            margin-top: 12px;
+            padding: 14px;
+            border-radius: 10px;
+            background: var(--accent-soft);
+            font-size: 0.9rem;
+            line-height: 1.45;
+            font-weight: 500;
+        }
+
+        .table-wrap {
+            overflow-x: auto;
+            margin-top: 8px;
+        }
+
         table {
             width: 100%;
             border-collapse: collapse;
-            font-size: 13px;
+            font-size: 0.78rem;
         }
+
         th, td {
-            border-bottom: 1px solid rgba(127, 127, 127, 0.25);
             padding: 8px 6px;
             text-align: left;
+            border-bottom: 1px solid rgba(127, 127, 127, 0.15);
             white-space: nowrap;
         }
-        th { font-weight: 600; }
-        td.num { text-align: right; font-variant-numeric: tabular-nums; }
-        button {
-            background: var(--tg-theme-button-color, #2481cc);
-            color: var(--tg-theme-button-text-color, #ffffff);
-            border: none;
-            border-radius: 10px;
-            padding: 12px 20px;
-            font-size: 16px;
-            cursor: pointer;
-            margin-top: 20px;
-            width: 100%;
+
+        th {
+            color: var(--tg-theme-hint-color, #8e8e93);
+            font-weight: 600;
         }
-        button:disabled { opacity: 0.5; cursor: default; }
+
+        td.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+        .skeleton {
+            background: linear-gradient(
+                90deg,
+                rgba(127, 127, 127, 0.08) 25%,
+                rgba(127, 127, 127, 0.18) 50%,
+                rgba(127, 127, 127, 0.08) 75%
+            );
+            background-size: 200% 100%;
+            animation: shimmer 1.2s infinite ease-in-out;
+            border-radius: 8px;
+            min-height: 18px;
+        }
+
+        .skeleton-card {
+            height: 64px;
+            margin-bottom: 10px;
+        }
+
+        .skeleton-line {
+            height: 14px;
+            margin-bottom: 8px;
+        }
+
+        @keyframes shimmer {
+            0% { background-position: 200% 0; }
+            100% { background-position: -200% 0; }
+        }
+
+        .toast {
+            position: fixed;
+            left: 14px;
+            right: 14px;
+            bottom: calc(16px + env(safe-area-inset-bottom));
+            padding: 12px 16px;
+            border-radius: var(--radius);
+            background: var(--tg-theme-secondary-bg-color, #1c1c1e);
+            border: 1px solid rgba(127, 127, 127, 0.2);
+            font-size: 0.88rem;
+            box-shadow: var(--shadow);
+            transform: translateY(120%);
+            opacity: 0;
+            transition: transform 0.25s ease, opacity 0.25s ease;
+            z-index: 100;
+        }
+
+        .toast.visible {
+            transform: translateY(0);
+            opacity: 1;
+        }
+
+        .toast.error {
+            border-color: rgba(255, 59, 48, 0.5);
+            color: #ff6b6b;
+        }
+
+        .empty-hint {
+            font-size: 0.85rem;
+            color: var(--tg-theme-hint-color, #8e8e93);
+            text-align: center;
+            padding: 20px 8px;
+        }
+
+        .token-mask {
+            font-size: 0.78rem;
+            color: var(--tg-theme-hint-color, #8e8e93);
+            margin-top: -8px;
+            margin-bottom: 12px;
+        }
+
+        .hidden { display: none !important; }
     </style>
 </head>
-<body>
-    <h2>Привет, <span id="username">Пользователь</span>!</h2>
-    <p class="muted">NeuroMule — интерактивный отчёт</p>
+<body class="platform-wb">
+    <header class="header">
+        <h1>Привет, <span id="username">Селлер</span>!</h1>
+        <p>NeuroMule — премиальный ИИ-дашборд маркетплейса</p>
+    </header>
 
-    <div class="card">
-        <h3 id="report-title">Отчёт</h3>
-        <div id="report-status" class="status">Загрузка…</div>
-        <div id="report-table"></div>
+    <section class="card" id="autopilot-card">
+        <h2 class="card-title">🚀 Автопилот NeuroMule (Оцифровка по API)</h2>
+        <label class="field-label" for="wb-api-key">WB API Key</label>
+        <input type="password" id="wb-api-key" class="text-input" placeholder="Вставьте ключ Statistics API Wildberries" autocomplete="off">
+        <p class="token-mask" id="token-mask"></p>
+        <div class="toggle-row">
+            <span class="toggle-label">Ежедневный мониторинг (50 💎/сутки)</span>
+            <label class="switch">
+                <input type="checkbox" id="wb-toggle" disabled>
+                <span class="slider"></span>
+            </label>
+        </div>
+        <button type="button" class="btn-primary" id="wb-save-btn">Сохранить</button>
+    </section>
+
+    <nav class="platform-scroll" id="platform-nav" aria-label="Площадки">
+        <button type="button" class="platform-btn active" data-platform="wildberries">🟣 Wildberries</button>
+        <button type="button" class="platform-btn" data-platform="ozon">🔵 Ozon</button>
+        <button type="button" class="platform-btn" data-platform="yandex">🟡 Яндекс.Маркет</button>
+        <button type="button" class="platform-btn" data-platform="1c">🟢 1С / МойСклад</button>
+    </nav>
+
+    <div id="metrics-skeleton" class="metrics-grid">
+        <div class="metric-card skeleton skeleton-card"></div>
+        <div class="metric-card skeleton skeleton-card"></div>
     </div>
 
-    <button type="button" id="close-btn">Закрыть</button>
+    <div id="metrics-live" class="metrics-grid hidden">
+        <div class="metric-card">
+            <div class="metric-label">Чистая прибыль</div>
+            <div class="metric-value" id="metric-profit">—</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">Бизнес-скоринг</div>
+            <div class="metric-value" id="metric-score">—</div>
+        </div>
+    </div>
+
+    <section class="card" id="abc-card">
+        <h2 class="card-title">📦 ABC-анализ матрицы</h2>
+        <div class="abc-tabs" id="abc-tabs">
+            <button type="button" class="abc-tab active-a" data-abc="a">🟢 Группа А — Локомотивы</button>
+            <button type="button" class="abc-tab" data-abc="b">🟡 Группа В — Стабильные</button>
+            <button type="button" class="abc-tab" data-abc="c">🔴 Группа С — Неликвид</button>
+        </div>
+        <div id="abc-skeleton">
+            <div class="skeleton skeleton-line"></div>
+            <div class="skeleton skeleton-line"></div>
+            <div class="skeleton skeleton-line"></div>
+        </div>
+        <div class="product-list hidden" id="abc-list"></div>
+    </section>
+
+    <section class="card hidden" id="table-card">
+        <h2 class="card-title" id="report-title">Детализация</h2>
+        <div class="table-wrap" id="report-table"></div>
+    </section>
+
+    <section class="card" id="whatif-card">
+        <h2 class="card-title">🧮 ИИ-Моделирование прибыли</h2>
+        <div class="range-block">
+            <div class="range-header">
+                <span>Процент выкупа товаров</span>
+                <span id="buyout-val">65%</span>
+            </div>
+            <input type="range" id="buyout-range" min="0" max="100" value="65" step="1">
+        </div>
+        <div class="range-block">
+            <div class="range-header">
+                <span>Доля рекламных расходов (ДРР)</span>
+                <span id="drr-val">15%</span>
+            </div>
+            <input type="range" id="drr-range" min="0" max="50" value="15" step="1">
+        </div>
+        <div class="whatif-result" id="whatif-result">
+            Двигайте ползунки, чтобы смоделировать рост чистой прибыли.
+        </div>
+    </section>
+
+    <button type="button" class="btn-ghost" id="close-btn">Закрыть Mini App</button>
+    <div class="toast" id="toast" role="status"></div>
 
     <script>
         (function () {
             const tg = window.Telegram && window.Telegram.WebApp;
-            if (!tg) {
-                document.getElementById("report-status").textContent =
-                    "Откройте страницу из Telegram Mini App.";
-                document.getElementById("report-status").classList.add("error");
-                return;
+            const state = {
+                apiBase: "",
+                reportId: null,
+                platform: "wildberries",
+                abcTab: "a",
+                report: null,
+                baseBuyout: 65,
+                baseDrr: 15,
+                baseProfit: 0,
+                revenue: 0,
+                oosMap: {},
+            };
+
+            const PLATFORMS = {
+                wildberries: { bodyClass: "platform-wb", api: "wildberries" },
+                ozon: { bodyClass: "platform-ozon", api: "ozon" },
+                yandex: { bodyClass: "platform-yandex", api: "yandex" },
+                "1c": { bodyClass: "platform-1c", api: "1c" },
+            };
+
+            function $(id) { return document.getElementById(id); }
+
+            function showToast(message, isError) {
+                const el = $("toast");
+                el.textContent = message;
+                el.classList.toggle("error", !!isError);
+                el.classList.add("visible");
+                clearTimeout(showToast._t);
+                showToast._t = setTimeout(function () {
+                    el.classList.remove("visible");
+                }, 3200);
             }
 
-            tg.ready();
-            tg.expand();
-
-            const user = tg.initDataUnsafe && tg.initDataUnsafe.user;
-            if (user && user.first_name) {
-                document.getElementById("username").textContent = user.first_name;
+            function authHeaders() {
+                return {
+                    Authorization: "tma " + (tg && tg.initData ? tg.initData : ""),
+                    "Content-Type": "application/json",
+                };
             }
-
-            document.getElementById("close-btn").addEventListener("click", function () {
-                tg.close();
-            });
 
             function resolveApiBase() {
                 const params = new URLSearchParams(window.location.search);
@@ -106,6 +586,11 @@
                 return raw;
             }
 
+            function formatRub(value) {
+                const n = Number(value) || 0;
+                return n.toLocaleString("ru-RU", { maximumFractionDigits: 0 }) + " ₽";
+            }
+
             function escapeHtml(value) {
                 return String(value)
                     .replace(/&/g, "&amp;")
@@ -114,102 +599,368 @@
                     .replace(/"/g, "&quot;");
             }
 
-            function looksNumeric(value) {
-                return /^-?\d[\d\s.,]*$/.test(String(value).trim());
+            function setPlatform(platformKey) {
+                state.platform = platformKey;
+                const cfg = PLATFORMS[platformKey] || PLATFORMS.wildberries;
+                document.body.className = cfg.bodyClass;
+                document.querySelectorAll(".platform-btn").forEach(function (btn) {
+                    btn.classList.toggle("active", btn.dataset.platform === platformKey);
+                });
+            }
+
+            function showMetricsSkeleton(show) {
+                $("metrics-skeleton").classList.toggle("hidden", !show);
+                $("metrics-live").classList.toggle("hidden", show);
+            }
+
+            function showAbcSkeleton(show) {
+                $("abc-skeleton").classList.toggle("hidden", !show);
+                $("abc-list").classList.toggle("hidden", show);
+            }
+
+            function buildOosMap(oosList) {
+                const map = {};
+                (oosList || []).forEach(function (item) {
+                    const key = (item.name || item.sku || "").toLowerCase();
+                    if (key) map[key] = item;
+                });
+                return map;
+            }
+
+            function deriveAbcFromRows(payload) {
+                const abc = payload.abc_analysis;
+                if (abc && (abc.group_a || abc.group_b || abc.group_c)) {
+                    return {
+                        a: abc.group_a || [],
+                        b: abc.group_b || [],
+                        c: abc.group_c || [],
+                    };
+                }
+                const headers = payload.headers || [];
+                const rows = payload.rows || [];
+                if (!headers.length || !rows.length) {
+                    return { a: [], b: [], c: [] };
+                }
+                const nameIdx = 1;
+                const marginIdx = headers.findIndex(function (h) {
+                    return /марж/i.test(String(h));
+                });
+                const revIdx = headers.findIndex(function (h) {
+                    return /выруч|перечисл/i.test(String(h));
+                });
+                const items = rows.map(function (row) {
+                    const name = row[nameIdx] || row[0] || "—";
+                    const margin = marginIdx >= 0 ? parseFloat(String(row[marginIdx]).replace(/\s/g, "").replace(",", ".")) : 0;
+                    const revenue = revIdx >= 0 ? parseFloat(String(row[revIdx]).replace(/\s/g, "").replace(",", ".")) : 0;
+                    return { name: name, margin: margin || 0, revenue: revenue || 0 };
+                }).filter(function (i) { return i.name && i.name !== "—"; });
+                items.sort(function (a, b) { return (b.margin || b.revenue) - (a.margin || a.revenue); });
+                const topN = Math.max(1, Math.ceil(items.length * 0.2));
+                const groupA = items.slice(0, topN);
+                const groupC = items.filter(function (i) { return i.margin <= 0; });
+                const aNames = new Set(groupA.map(function (i) { return i.name; }));
+                const cNames = new Set(groupC.map(function (i) { return i.name; }));
+                const groupB = items.filter(function (i) {
+                    return !aNames.has(i.name) && !cNames.has(i.name);
+                });
+                function mapItem(i, group) {
+                    return {
+                        name: i.name,
+                        margin: i.margin,
+                        revenue: i.revenue,
+                        abc_group: group,
+                    };
+                }
+                return {
+                    a: groupA.map(function (i) { return mapItem(i, "A"); }),
+                    b: groupB.map(function (i) { return mapItem(i, "B"); }),
+                    c: groupC.map(function (i) { return mapItem(i, "C"); }),
+                };
+            }
+
+            function renderAbcList() {
+                const payload = state.report || {};
+                const groups = deriveAbcFromRows(payload);
+                const tab = state.abcTab;
+                const list = tab === "a" ? groups.a : tab === "b" ? groups.b : groups.c;
+                const container = $("abc-list");
+                container.innerHTML = "";
+                if (!list.length) {
+                    container.innerHTML = '<p class="empty-hint">Нет товаров в этой группе для выбранной площадки.</p>';
+                    return;
+                }
+                list.forEach(function (item) {
+                    const name = item.name || item.label || "—";
+                    const margin = item.margin != null ? item.margin : item.net_income_per_unit;
+                    const revenue = item.revenue != null ? item.revenue : 0;
+                    const oos = state.oosMap[(name || "").toLowerCase()] || null;
+                    const isGroupC = tab === "c";
+                    const fomo = oos && oos.fomo_lost_rub ? oos.fomo_lost_rub : 0;
+                    const days = oos && oos.days_until_stockout != null ? oos.days_until_stockout : null;
+                    const warn = isGroupC && (fomo > 0 || (days != null && days < 7));
+                    const div = document.createElement("div");
+                    div.className = "product-item";
+                    div.innerHTML =
+                        '<div><div class="product-name">' + escapeHtml(name) +
+                        (warn ? ' 🚨' : '') +
+                        '</div><div class="product-meta">Маржа: ' + formatRub(margin) +
+                        (revenue ? " · Выручка: " + formatRub(revenue) : "") +
+                        (days != null ? " · OOS: " + days + " дн." : "") +
+                        '</div>' +
+                        (warn && fomo > 0 ? '<div class="fomo-badge">Упущено: ' + formatRub(fomo) + '</div>' : '') +
+                        '</div><div class="product-right">' + (item.abc_group || tab.toUpperCase()) + '</div>';
+                    container.appendChild(div);
+                });
+            }
+
+            function renderMetrics(payload) {
+                const summary = payload.summary || {};
+                const profit = summary.net_profit != null ? summary.net_profit : state.baseProfit;
+                const score = summary.business_score || payload.business_score;
+                $("metric-profit").textContent = formatRub(profit);
+                $("metric-score").textContent = score != null ? Number(score).toFixed(1) + " / 10" : "—";
+                state.baseProfit = Number(profit) || 0;
+                state.revenue = Number(summary.revenue || payload.revenue_rub || 0);
+                if (summary.buyout_coef_pct != null) {
+                    state.baseBuyout = Number(summary.buyout_coef_pct);
+                    $("buyout-range").value = state.baseBuyout;
+                    $("buyout-val").textContent = state.baseBuyout.toFixed(0) + "%";
+                }
+                if (summary.ad_load_pct != null) {
+                    state.baseDrr = Number(summary.ad_load_pct);
+                    $("drr-range").value = Math.min(50, state.baseDrr);
+                    $("drr-val").textContent = state.baseDrr.toFixed(0) + "%";
+                }
+                updateWhatIf();
             }
 
             function renderTable(payload) {
                 const title = payload.title || "Отчёт";
-                document.getElementById("report-title").textContent = title;
-
+                $("report-title").textContent = title;
                 const headers = Array.isArray(payload.headers) ? payload.headers : [];
                 const rows = Array.isArray(payload.rows) ? payload.rows : [];
-                if (!headers.length && !rows.length) {
-                    document.getElementById("report-status").textContent = "Отчёт пуст.";
+                const card = $("table-card");
+                if (!headers.length || !rows.length) {
+                    card.classList.add("hidden");
                     return;
                 }
-
-                document.getElementById("report-status").textContent = "";
-
+                card.classList.remove("hidden");
                 let html = "<table><thead><tr>";
                 headers.forEach(function (h) {
                     html += "<th>" + escapeHtml(h) + "</th>";
                 });
                 html += "</tr></thead><tbody>";
-
-                rows.forEach(function (row) {
+                rows.slice(0, 40).forEach(function (row) {
                     html += "<tr>";
                     headers.forEach(function (_, idx) {
                         const cell = row[idx] != null ? row[idx] : "";
-                        const cls = looksNumeric(cell) ? " class=\"num\"" : "";
-                        html += "<td" + cls + ">" + escapeHtml(cell) + "</td>";
+                        const num = /^-?\d[\d\s.,]*$/.test(String(cell).trim());
+                        html += "<td" + (num ? ' class="num"' : "") + ">" + escapeHtml(cell) + "</td>";
                     });
                     html += "</tr>";
                 });
                 html += "</tbody></table>";
-                document.getElementById("report-table").innerHTML = html;
+                $("report-table").innerHTML = html;
+            }
+
+            function updateWhatIf() {
+                const buyout = Number($("buyout-range").value);
+                const drr = Number($("drr-range").value);
+                $("buyout-val").textContent = buyout + "%";
+                $("drr-val").textContent = drr + "%";
+                const revenue = state.revenue || state.baseProfit * 10 || 100000;
+                const buyoutDelta = ((buyout - state.baseBuyout) / 100) * revenue * 0.12;
+                const drrDelta = ((state.baseDrr - drr) / 100) * revenue;
+                const projected = state.baseProfit + buyoutDelta + drrDelta;
+                const gain = projected - state.baseProfit;
+                const sign = gain >= 0 ? "+" : "";
+                $("whatif-result").textContent =
+                    "Если вы измените эти показатели, ваша прибыль " +
+                    (gain >= 0 ? "вырастет" : "снизится") +
+                    " на " + sign + formatRub(Math.abs(gain)) +
+                    "! Прогноз чистой прибыли: " + formatRub(projected) + ".";
+            }
+
+            async function apiFetch(path, options) {
+                if (!state.apiBase) throw new Error("api_base не задан");
+                const response = await fetch(state.apiBase + path, Object.assign({
+                    credentials: "include",
+                    headers: authHeaders(),
+                }, options || {}));
+                return response;
+            }
+
+            async function loadWbStatus() {
+                try {
+                    const response = await apiFetch("/api/v1/wb/status", { method: "GET" });
+                    if (!response.ok) return;
+                    const data = await response.json();
+                    const toggle = $("wb-toggle");
+                    toggle.disabled = !data.has_token;
+                    toggle.checked = !!data.enabled;
+                    if (data.token_mask) {
+                        $("token-mask").textContent = "Сохранённый ключ: " + data.token_mask;
+                    }
+                } catch (e) {
+                    console.warn("wb status", e);
+                }
+            }
+
+            async function saveWbSetup() {
+                const token = ($("wb-api-key").value || "").trim();
+                if (token.length < 8) {
+                    showToast("Введите корректный WB API Key (мин. 8 символов)", true);
+                    return;
+                }
+                const btn = $("wb-save-btn");
+                btn.disabled = true;
+                try {
+                    const response = await apiFetch("/api/v1/wb/setup", {
+                        method: "POST",
+                        body: JSON.stringify({
+                            api_token: token,
+                            enabled: $("wb-toggle").checked,
+                        }),
+                    });
+                    const data = await response.json().catch(function () { return {}; });
+                    if (!response.ok) {
+                        throw new Error(data.detail || "Ошибка сохранения");
+                    }
+                    $("wb-toggle").disabled = false;
+                    if (data.token_mask) {
+                        $("token-mask").textContent = "Сохранённый ключ: " + data.token_mask;
+                    }
+                    $("wb-api-key").value = "";
+                    showToast("API Key сохранён. Автопилот готов к работе.");
+                } catch (e) {
+                    showToast(e.message || "Сеть недоступна", true);
+                } finally {
+                    btn.disabled = false;
+                }
+            }
+
+            async function toggleWbMonitoring(enabled) {
+                const toggle = $("wb-toggle");
+                toggle.disabled = true;
+                try {
+                    const response = await apiFetch("/api/v1/wb/toggle", {
+                        method: "POST",
+                        body: JSON.stringify({ enabled: enabled }),
+                    });
+                    const data = await response.json().catch(function () { return {}; });
+                    if (!response.ok) {
+                        toggle.checked = !enabled;
+                        throw new Error(data.detail || "Не удалось переключить");
+                    }
+                    showToast(data.billing_note || (enabled ? "Мониторинг включён" : "Мониторинг выключен"));
+                } catch (e) {
+                    toggle.checked = !enabled;
+                    showToast(e.message || "Ошибка сети", true);
+                } finally {
+                    toggle.disabled = false;
+                }
             }
 
             async function loadReport() {
-                const statusEl = document.getElementById("report-status");
-                const reportId = resolveReportId();
-                const apiBase = resolveApiBase();
-
-                if (!reportId) {
-                    statusEl.textContent = "Не указан report_id в ссылке.";
-                    statusEl.classList.add("error");
+                if (!state.reportId) {
+                    showToast("Не указан report_id в ссылке", true);
                     return;
                 }
-                if (!apiBase) {
-                    statusEl.textContent =
-                        "Не задан api_base. Добавьте ?api_base=https://ваш-сервер:8000";
-                    statusEl.classList.add("error");
-                    return;
-                }
-                if (!tg.initData) {
-                    statusEl.textContent = "Нет initData — откройте из Telegram.";
-                    statusEl.classList.add("error");
-                    return;
-                }
-
+                showMetricsSkeleton(true);
+                showAbcSkeleton(true);
                 try {
-                    const response = await fetch(
-                        apiBase + "/api/v1/reports/" + encodeURIComponent(reportId),
-                        {
-                            method: "GET",
-                            headers: {
-                                Authorization: "tma " + tg.initData,
-                            },
-                            credentials: "include",
-                        }
-                    );
-
+                    const platformApi = (PLATFORMS[state.platform] || PLATFORMS.wildberries).api;
+                    const url = "/api/v1/reports/" + encodeURIComponent(state.reportId) +
+                        "?platform=" + encodeURIComponent(platformApi);
+                    const response = await apiFetch(url, { method: "GET" });
                     if (response.status === 401) {
-                        statusEl.textContent = "Сессия недействительна. Перезапустите Mini App.";
-                        statusEl.classList.add("error");
+                        showToast("Сессия недействительна. Перезапустите Mini App.", true);
                         return;
                     }
                     if (response.status === 404) {
-                        statusEl.textContent = "Отчёт не найден или вы не его владелец.";
-                        statusEl.classList.add("error");
+                        showToast("Отчёт не найден", true);
                         return;
                     }
                     if (!response.ok) {
                         throw new Error("HTTP " + response.status);
                     }
-
                     const body = await response.json();
                     const payload = body.table_raw_json || body;
+                    if (state.platform !== "wildberries" && !payload.source) {
+                        showToast("Для " + state.platform + " пока демо-режим. Данные WB.", false);
+                    }
+                    state.report = payload;
+                    state.oosMap = buildOosMap(payload.out_of_stock_forecast || []);
+                    renderMetrics(payload);
+                    showMetricsSkeleton(false);
+                    renderAbcList();
+                    showAbcSkeleton(false);
                     renderTable(payload);
-                } catch (error) {
-                    console.error(error);
-                    statusEl.textContent =
-                        "Не удалось загрузить отчёт. Проверьте API, CORS и MINI_APP_CORS_ORIGINS.";
-                    statusEl.classList.add("error");
+                } catch (e) {
+                    console.error(e);
+                    showToast("Не удалось загрузить отчёт. Проверьте API и CORS.", true);
+                    showMetricsSkeleton(false);
+                    showAbcSkeleton(false);
                 }
             }
 
-            loadReport();
+            function bindAbcTabs() {
+                document.querySelectorAll(".abc-tab").forEach(function (btn) {
+                    btn.addEventListener("click", function () {
+                        state.abcTab = btn.dataset.abc || "a";
+                        document.querySelectorAll(".abc-tab").forEach(function (b) {
+                            b.classList.remove("active-a", "active-b", "active-c");
+                        });
+                        const cls = state.abcTab === "a" ? "active-a" : state.abcTab === "b" ? "active-b" : "active-c";
+                        btn.classList.add(cls);
+                        renderAbcList();
+                    });
+                });
+            }
+
+            function bindPlatforms() {
+                document.querySelectorAll(".platform-btn").forEach(function (btn) {
+                    btn.addEventListener("click", function () {
+                        const key = btn.dataset.platform || "wildberries";
+                        setPlatform(key);
+                        loadReport();
+                    });
+                });
+            }
+
+            function init() {
+                if (!tg) {
+                    showToast("Откройте страницу из Telegram Mini App", true);
+                    return;
+                }
+                tg.ready();
+                tg.expand();
+                if (tg.themeParams) {
+                    document.documentElement.style.setProperty("--tg-theme-bg-color", tg.themeParams.bg_color || "");
+                }
+                const user = tg.initDataUnsafe && tg.initDataUnsafe.user;
+                if (user && user.first_name) {
+                    $("username").textContent = user.first_name;
+                }
+                state.apiBase = resolveApiBase();
+                state.reportId = resolveReportId();
+                if (!state.apiBase) {
+                    showToast("Добавьте ?api_base=https://ваш-сервер в ссылку", true);
+                }
+                bindPlatforms();
+                bindAbcTabs();
+                $("wb-save-btn").addEventListener("click", saveWbSetup);
+                $("wb-toggle").addEventListener("change", function (e) {
+                    toggleWbMonitoring(e.target.checked);
+                });
+                $("buyout-range").addEventListener("input", updateWhatIf);
+                $("drr-range").addEventListener("input", updateWhatIf);
+                $("close-btn").addEventListener("click", function () { tg.close(); });
+                loadWbStatus();
+                loadReport();
+            }
+
+            init();
         })();
     </script>
 </body>

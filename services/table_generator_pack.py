@@ -396,7 +396,11 @@ def _build_pack_from_rows(
 
     if subrole == "wb_ozon_finance" and calculated_total > 0:
         wb_metrics = compute_wb_marketplace_metrics(rows, revenue_total=calculated_total)
-        caption = build_wb_finance_express_html(calculated_total, wb_metrics=wb_metrics)
+        caption = build_wb_finance_express_html(
+            calculated_total,
+            wb_metrics=wb_metrics,
+            matrix_rows=rows,
+        )
     elif ai_insights is not None and payload is not None:
         caption = build_table_one_screen_html(
             payload,

@@ -27,6 +27,12 @@ def test_build_wb_marketplace_finance_system_prompt_variables() -> None:
         business_score="7.5",
         verdict="Высокая маржинальность при контролируемом ДРР.",
         fomo_lost_rub="12,500.00",
+        logistics_fomo_rub="3,200.00",
+        abc_a_leader="WRAPPER",
+        abc_a_count="2",
+        abc_c_count="1",
+        abc_c_summary="DEAD",
+        oos_forecast_line="«BOX» закончится через 3 дн. (риск OOS)",
     )
     assert "185,000.00 руб." in prompt
     assert "11,100.00 руб." in prompt
@@ -40,7 +46,10 @@ def test_build_wb_marketplace_finance_system_prompt_variables() -> None:
     assert "КАЛЬКУЛЯТОР УПУЩЕННОЙ ВЫГОДЫ" in prompt
     assert "12,500.00 руб." in prompt
     assert "2000 символов" in prompt
-    assert "2–3 предложения" in prompt or "2-3 предложения" in prompt
+    assert "мессенджере Telegram" in prompt
+    assert "ABC-АНАЛИЗ" in prompt
+    assert "WRAPPER" in prompt
+    assert "3,200.00" in prompt
     assert "Подключите" not in prompt
 
 
@@ -58,7 +67,7 @@ def test_compute_wb_finance_prompt_metrics_from_etl() -> None:
     ]
     wb = compute_wb_marketplace_metrics(matrix, revenue_total=6000.0)
     assert wb is not None
-    metrics = compute_wb_finance_prompt_metrics(6000.0, wb)
+    metrics = compute_wb_finance_prompt_metrics(6000.0, wb, matrix_rows=matrix)
     assert metrics is not None
     assert metrics.revenue == 6000.0
     assert metrics.tax == 360.0
@@ -77,7 +86,8 @@ def test_compute_wb_finance_prompt_metrics_from_etl() -> None:
     user = build_wb_marketplace_finance_user_prompt(metrics, wb)
     assert "revenue_rub" in user
     assert "fomo_lost_rub" in user
-    assert "traffic_light_hints" in user
+    assert "abc_analysis" in user
+    assert metrics.abc_a_count >= 0
     assert "Футболка" in user
 
 

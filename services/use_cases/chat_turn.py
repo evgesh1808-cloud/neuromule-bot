@@ -36,6 +36,24 @@ from services.telegram_safe_text import (
 
 logger = logging.getLogger(__name__)
 
+# Лимит финансового отчёта WB/Ozon в Telegram (ручная загрузка xlsx).
+WB_FINANCE_TELEGRAM_MAX_CHARS = 2000
+
+
+def build_wb_finance_openrouter_prompts(
+    matrix_rows: list[list[str]],
+    *,
+    revenue_total: float,
+) -> tuple[str, str] | None:
+    """
+    System + user prompt для финансовой сессии после локального ETL.
+
+    ABC, FOMO логистики невыкупов и OOS считаются в :mod:`services.file_processor`.
+    """
+    from services.table_wb_finance_ai import build_wb_finance_openrouter_prompt_pair
+
+    return build_wb_finance_openrouter_prompt_pair(matrix_rows, revenue_total=revenue_total)
+
 
 def strip_redacted_thinking(text: str) -> str:
     """Удаляет служебные блоки рассуждений модели перед показом пользователю."""

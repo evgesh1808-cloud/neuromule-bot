@@ -316,7 +316,11 @@ def _build_telegram_caption(
 ) -> str:
     if subrole_id == "wb_ozon_finance" and calculated_total > 0:
         wb_metrics = compute_wb_marketplace_metrics(rows, revenue_total=calculated_total)
-        caption = build_wb_finance_express_html(calculated_total, wb_metrics=wb_metrics)
+        caption = build_wb_finance_express_html(
+            calculated_total,
+            wb_metrics=wb_metrics,
+            matrix_rows=rows,
+        )
         if len(caption) > _CAPTION_MAX:
             caption = caption[: _CAPTION_MAX - 1] + "…"
         return caption

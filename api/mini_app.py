@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from config import settings
 from services import repository as repo
 from services.api.report_endpoints import router as reports_router
+from services.api.wb_endpoints import router as wb_router
 
 logger = logging.getLogger(__name__)
 
@@ -98,11 +99,12 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins(),
     allow_credentials=True,
-    allow_methods=["GET", "OPTIONS"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "X-Telegram-Init-Data"],
 )
 
 app.include_router(reports_router)
+app.include_router(wb_router)
 
 
 @app.get("/health")

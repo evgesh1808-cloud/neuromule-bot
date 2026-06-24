@@ -18,12 +18,16 @@ from __future__ import annotations
 
 import base64
 import logging
+import math
 import os
 import re
 import tempfile
+from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 from typing import Any, BinaryIO, Final
+
+from services.table_number_parse import safe_float
 
 logger = logging.getLogger(__name__)
 
@@ -463,14 +467,249 @@ async def extract_text_from_document(
     return raw
 
 
+# ─── Локальный ETL товарной матрицы (ABC / FOMO логистики / OOS) ───────────
+
+_TOP_A_SHARE = 0.20
+_OOS_RISK_DAYS = 7.0
+_WB_LABEL_HINTS = ("предмет", "артикул", "наименование", "номенклатур", "бренд")
+_WB_REVENUE_HINTS = ("перечислению", "выруч", "заработок")
+_WB_SALES_HINTS = ("выкупили", "реализован", "продаж")
+_WB_DELIVERY_HINTS = ("доставк", "к клиенту")
+_WB_RETURN_HINTS = ("возврат",)
+_WB_COMMISSION_HINTS = ("вознагражден", "комисс")
+_WB_LOGISTICS_HINTS = ("логистик", "доставк", "хранен")
+_WB_AD_HINTS = ("продвижен", "реклам", "удержан")
+_WB_STOCK_HINTS = ("остаток", "склад", "stock", "quantity")
+_WB_QTY_UNIT_HINTS = ("шт", "кол-во", "количество", "единиц")
+
+
+@dataclass(frozen=True)
+class MatrixAbcSku:
+    label: str
+    net_profit: float
+    abc_group: str
+
+
+@dataclass(frozen=True)
+class MatrixOosForecast:
+    label: str
+    stock_qty: float
+    sales_period_qty: float
+    days_until_stockout: float | None
+    risk_out_of_stock: bool
+
+
+@dataclass(frozen=True)
+class SellerMatrixEtl:
+    """Результат локального ETL по строкам отчёта маркетплейса (0 ₽ OpenRouter)."""
+
+    abc_group_a: tuple[MatrixAbcSku, ...]
+    abc_group_c: tuple[MatrixAbcSku, ...]
+    abc_a_leader: str
+    logistics_fomo_rub: float
+    logistics_fomo_detail: str
+    oos_forecasts: tuple[MatrixOosForecast, ...]
+    oos_critical_sku: str | None
+    oos_critical_days: float | None
+
+
+def _matrix_col(headers: list[str], hints: tuple[str, ...], *, require_qty: bool = False) -> int | None:
+    for idx, header in enumerate(headers):
+        low = (header or "").lower()
+        if not any(h in low for h in hints):
+            continue
+        if require_qty and not any(q in low for q in _WB_QTY_UNIT_HINTS):
+            continue
+        return idx
+    return None
+
+
+def _is_total_row(label: str) -> bool:
+    low = (label or "").strip().lower()
+    return low.startswith(("итого", "всего", "total"))
+
+
+@dataclass
+class _SkuBucket:
+    revenue: float = 0.0
+    commission: float = 0.0
+    logistics: float = 0.0
+    ad_cost: float = 0.0
+    sales_qty: float = 0.0
+    deliveries_qty: float = 0.0
+    returns_qty: float = 0.0
+    stock_qty: float = 0.0
+
+    @property
+    def net_profit(self) -> float:
+        return self.revenue - self.commission - self.logistics - self.ad_cost
+
+    @property
+    def unit_logistics(self) -> float:
+        if self.sales_qty > 0:
+            return self.logistics / self.sales_qty
+        if self.deliveries_qty > 0:
+            return self.logistics / self.deliveries_qty
+        return 0.0
+
+
+def compute_seller_matrix_etl(
+    rows: list[list[str]],
+    *,
+    revenue_total: float = 0.0,
+) -> SellerMatrixEtl | None:
+    """
+    ABC по чистой прибыли SKU, FOMO логистики невыкупов, прогноз OOS.
+
+    ``rows`` — матрица ``[headers, *data]`` из xlsx/csv (см. :func:`read_xlsx_rows_from_path`).
+    """
+    if not rows or len(rows) < 2:
+        return None
+
+    headers = [str(h).strip() for h in rows[0]]
+    label_col = _matrix_col(headers, _WB_LABEL_HINTS) or 0
+    rev_col = _matrix_col(headers, _WB_REVENUE_HINTS)
+    sales_col = _matrix_col(headers, _WB_SALES_HINTS, require_qty=True)
+    if sales_col is None:
+        sales_col = _matrix_col(headers, _WB_SALES_HINTS)
+    del_col = _matrix_col(headers, _WB_DELIVERY_HINTS, require_qty=True)
+    if del_col is None:
+        del_col = _matrix_col(headers, _WB_DELIVERY_HINTS)
+    ret_col = _matrix_col(headers, _WB_RETURN_HINTS, require_qty=True)
+    if ret_col is None:
+        ret_col = _matrix_col(headers, _WB_RETURN_HINTS)
+    comm_col = _matrix_col(headers, _WB_COMMISSION_HINTS)
+    log_col = _matrix_col(headers, _WB_LOGISTICS_HINTS)
+    ad_cols = [
+        idx
+        for idx, h in enumerate(headers)
+        if any(x in (h or "").lower() for x in _WB_AD_HINTS)
+    ]
+    stock_col = _matrix_col(headers, _WB_STOCK_HINTS)
+
+    buckets: dict[str, _SkuBucket] = {}
+    for row in rows[1:]:
+        label = (row[label_col] if label_col < len(row) else "").strip() or "—"
+        if _is_total_row(label):
+            continue
+        bucket = buckets.setdefault(label[:64], _SkuBucket())
+        if rev_col is not None and rev_col < len(row):
+            bucket.revenue += safe_float(row[rev_col])
+        if sales_col is not None and sales_col < len(row):
+            bucket.sales_qty += safe_float(row[sales_col])
+        if del_col is not None and del_col < len(row):
+            bucket.deliveries_qty += safe_float(row[del_col])
+        if ret_col is not None and ret_col < len(row):
+            bucket.returns_qty += safe_float(row[ret_col])
+        if comm_col is not None and comm_col < len(row):
+            bucket.commission += abs(safe_float(row[comm_col]))
+        if log_col is not None and log_col < len(row):
+            bucket.logistics += abs(safe_float(row[log_col]))
+        for ac in ad_cols:
+            if ac < len(row):
+                bucket.ad_cost += abs(safe_float(row[ac]))
+        if stock_col is not None and stock_col < len(row):
+            bucket.stock_qty += max(0.0, safe_float(row[stock_col]))
+
+    if not buckets:
+        return None
+
+    # ABC по чистой прибыли (Парето)
+    ranked = sorted(buckets.items(), key=lambda x: x[1].net_profit, reverse=True)
+    n = len(ranked)
+    top_a_n = max(1, math.ceil(n * _TOP_A_SHARE))
+    group_a_labels = {label for label, _ in ranked[:top_a_n]}
+    group_a = tuple(
+        MatrixAbcSku(label=label, net_profit=round(b.net_profit, 2), abc_group="A")
+        for label, b in ranked
+        if label in group_a_labels
+    )
+    group_c = tuple(
+        MatrixAbcSku(label=label, net_profit=round(b.net_profit, 2), abc_group="C")
+        for label, b in buckets.items()
+        if b.net_profit <= 0
+    )
+    abc_leader = group_a[0].label if group_a else (ranked[0][0] if ranked else "—")
+
+    # FOMO: логистика невыкупленных (доставки − выкупы) × юнит-логистика
+    logistics_fomo = 0.0
+    fomo_parts: list[str] = []
+    for label, b in buckets.items():
+        non_buyout = max(0.0, b.deliveries_qty - b.sales_qty)
+        if non_buyout <= 0 and b.returns_qty > 0:
+            non_buyout = b.returns_qty
+        if non_buyout <= 0:
+            continue
+        unit_log = b.unit_logistics
+        if unit_log <= 0 and b.logistics > 0:
+            unit_log = b.logistics / max(non_buyout, 1.0)
+        loss = non_buyout * unit_log
+        if loss > 1.0:
+            logistics_fomo += loss
+            if len(fomo_parts) < 3:
+                fomo_parts.append(
+                    f"«{label[:28]}»: {non_buyout:.0f} невыкуп. × {unit_log:.0f} руб. логистики"
+                )
+    logistics_detail = (
+        "Логистика невыкупленных: " + "; ".join(fomo_parts)
+        if fomo_parts
+        else "Существенных потерь на логистике невыкупов не выявлено."
+    )
+
+    # OOS: остаток / (продажи за период / 7 дней)
+    oos_list: list[MatrixOosForecast] = []
+    for label, b in buckets.items():
+        daily = b.sales_qty / 7.0 if b.sales_qty > 0 else 0.0
+        days: float | None = None
+        risk = False
+        if daily > 0 and b.stock_qty > 0:
+            days = b.stock_qty / daily
+            risk = days < _OOS_RISK_DAYS
+        elif b.stock_qty <= 0 and b.sales_qty > 0:
+            days = 0.0
+            risk = True
+        oos_list.append(
+            MatrixOosForecast(
+                label=label,
+                stock_qty=b.stock_qty,
+                sales_period_qty=b.sales_qty,
+                days_until_stockout=round(days, 1) if days is not None else None,
+                risk_out_of_stock=risk,
+            )
+        )
+    risky = [f for f in oos_list if f.risk_out_of_stock and f.days_until_stockout is not None]
+    risky.sort(key=lambda x: x.days_until_stockout or 999.0)
+    oos_sku: str | None = None
+    oos_days: float | None = None
+    if risky:
+        oos_sku = risky[0].label
+        oos_days = risky[0].days_until_stockout
+
+    _ = revenue_total  # зарезервировано для будущей нормализации долей
+    return SellerMatrixEtl(
+        abc_group_a=group_a,
+        abc_group_c=group_c,
+        abc_a_leader=abc_leader,
+        logistics_fomo_rub=round(logistics_fomo, 2),
+        logistics_fomo_detail=logistics_detail,
+        oos_forecasts=tuple(oos_list),
+        oos_critical_sku=oos_sku,
+        oos_critical_days=oos_days,
+    )
+
+
 __all__ = (
     "compress_extracted_text",
+    "compute_seller_matrix_etl",
     "extract_text_from_document",
     "extract_text_from_pdf",
     "pdf_first_page_to_data_url",
     "render_pdf_first_page_png",
     "read_xlsx_rows_from_bytes",
     "read_xlsx_rows_from_path",
+    "SellerMatrixEtl",
+    "MatrixAbcSku",
+    "MatrixOosForecast",
     "DEFAULT_MAX_CHARS",
     "MAX_DOCUMENT_BYTES",
     "MAX_SPREADSHEET_BYTES",
