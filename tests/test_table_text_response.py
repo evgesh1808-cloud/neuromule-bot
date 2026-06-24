@@ -71,7 +71,11 @@ def test_build_wb_finance_express_html() -> None:
     assert "2,220,000" in html  # yearly forecast
     assert "НАЛОГ УСН" in html
     assert "БИЗНЕС-СКОРИНГ" in html
+    assert "КЛЮЧЕВОЙ БИЗНЕС-ВЕРДИКТ" in html
+    assert "СТРАТЕГИЧЕСКИЙ ПЛАН ДЕЙСТВИЙ НА СЕГОДНЯ" in html
     assert "СВЕТОФОР" in html
+    assert "Серверный" not in html
+    assert "ИИ-ПЛАН" not in html
     assert "Автопилот по API" in html
     assert "интерактивный дашборд" in html
 

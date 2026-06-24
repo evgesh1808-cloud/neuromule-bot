@@ -201,14 +201,17 @@ def _referral_block(bot_username: str, user_id: int, invites: int) -> str:
 
 async def build_user_profile_html(settings: Settings, user_id: int) -> str:
     """Собирает финальный HTML-текст экрана «👤 Мой профиль»."""
+    from services.billing import billing
+
     row = await get_user_row(user_id)
+    billing_user = await billing.load_user(user_id)
     invites = await referrals_count(user_id)
 
     tariff = TariffTier.from_db(row.tariff)
     sub = int(row.sub_crystals or 0)
     buy = int(row.buy_crystals or 0)
     total_diamonds = sub + buy
-    energy = int(row.energy or 0)
+    energy = int(billing_user.total_energy)
 
     photo_limit = settings.free_daily_photo_limit
     energy_max = (

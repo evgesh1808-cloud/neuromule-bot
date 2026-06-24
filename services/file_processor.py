@@ -472,6 +472,8 @@ async def extract_text_from_document(
 _TOP_A_SHARE = 0.20
 _OOS_RISK_DAYS = 7.0
 _WB_LABEL_HINTS = ("предмет", "артикул", "наименование", "номенклатур", "бренд")
+_WB_NAME_HINTS = ("предмет", "наименование", "номенклатур", "бренд", "товар")
+_WB_ARTICLE_HINTS = ("артикул", "sku", "nm id", "nmid", "vendor", "код товара", "barcode", "штрих")
 _WB_REVENUE_HINTS = ("перечислению", "выруч", "заработок")
 _WB_SALES_HINTS = ("выкупили", "реализован", "продаж")
 _WB_DELIVERY_HINTS = ("доставк", "к клиенту")
@@ -484,10 +486,43 @@ _WB_QTY_UNIT_HINTS = ("шт", "кол-во", "количество", "едини
 
 
 @dataclass(frozen=True)
-class MatrixAbcSku:
-    label: str
+class MatrixSkuDetail:
+    """Товарная строка ETL: имя, артикул, выручка, маржа, выкуп."""
+
+    name: str
+    article_id: str
+    revenue: float
     net_profit: float
+    buyout_pct: float
+    abc_group: str | None = None
+
+    @property
+    def label(self) -> str:
+        """Краткое имя для обратной совместимости."""
+        return self.name
+
+    def catalog_line(self) -> str:
+        """Формат для промпта: Имя (Артикул) — Выручка — Маржа — Выкуп."""
+        rev = f"{self.revenue:,.2f}".replace(",", " ")
+        margin = f"{self.net_profit:,.2f}".replace(",", " ")
+        return (
+            f"{self.name} (Артикул: {self.article_id}) — "
+            f"{rev} руб. — {margin} руб. — {self.buyout_pct:.1f}%"
+        )
+
+
+@dataclass(frozen=True)
+class MatrixAbcSku:
+    name: str
+    article_id: str
+    revenue: float
+    net_profit: float
+    buyout_pct: float
     abc_group: str
+
+    @property
+    def label(self) -> str:
+        return self.name
 
 
 @dataclass(frozen=True)
@@ -511,6 +546,8 @@ class SellerMatrixEtl:
     oos_forecasts: tuple[MatrixOosForecast, ...]
     oos_critical_sku: str | None
     oos_critical_days: float | None
+    sku_catalog: tuple[MatrixSkuDetail, ...] = ()
+    outsider_sku: MatrixSkuDetail | None = None
 
 
 def _matrix_col(headers: list[str], hints: tuple[str, ...], *, require_qty: bool = False) -> int | None:
@@ -529,8 +566,43 @@ def _is_total_row(label: str) -> bool:
     return low.startswith(("итого", "всего", "total"))
 
 
+def _matrix_name_and_article_cols(headers: list[str]) -> tuple[int, int | None]:
+    """Колонка названия товара и опционально отдельный артикул."""
+    article_col = _matrix_col(headers, _WB_ARTICLE_HINTS)
+    name_col: int | None = None
+    for hints in (_WB_NAME_HINTS, _WB_LABEL_HINTS):
+        for idx, header in enumerate(headers):
+            low = (header or "").lower()
+            if any(h in low for h in hints) and idx != article_col:
+                name_col = idx
+                break
+        if name_col is not None:
+            break
+    if name_col is None:
+        name_col = _matrix_col(headers, _WB_LABEL_HINTS) or 0
+    if article_col is not None and article_col == name_col:
+        article_col = None
+    return name_col, article_col
+
+
+def _row_sku_identity(
+    row: list[str],
+    *,
+    name_col: int,
+    article_col: int | None,
+) -> tuple[str, str]:
+    name = (row[name_col] if name_col < len(row) else "").strip() or "—"
+    if article_col is not None and article_col < len(row):
+        article = (row[article_col] or "").strip() or name
+    else:
+        article = name
+    return name[:64], article[:48]
+
+
 @dataclass
 class _SkuBucket:
+    name: str
+    article_id: str
     revenue: float = 0.0
     commission: float = 0.0
     logistics: float = 0.0
@@ -552,6 +624,24 @@ class _SkuBucket:
             return self.logistics / self.deliveries_qty
         return 0.0
 
+    @property
+    def buyout_pct(self) -> float:
+        if self.deliveries_qty > 0:
+            return self.sales_qty / self.deliveries_qty * 100.0
+        if self.sales_qty > 0:
+            return 100.0
+        return 0.0
+
+    def to_detail(self, *, abc_group: str | None = None) -> MatrixSkuDetail:
+        return MatrixSkuDetail(
+            name=self.name,
+            article_id=self.article_id,
+            revenue=round(self.revenue, 2),
+            net_profit=round(self.net_profit, 2),
+            buyout_pct=round(self.buyout_pct, 1),
+            abc_group=abc_group,
+        )
+
 
 def compute_seller_matrix_etl(
     rows: list[list[str]],
@@ -567,7 +657,7 @@ def compute_seller_matrix_etl(
         return None
 
     headers = [str(h).strip() for h in rows[0]]
-    label_col = _matrix_col(headers, _WB_LABEL_HINTS) or 0
+    name_col, article_col = _matrix_name_and_article_cols(headers)
     rev_col = _matrix_col(headers, _WB_REVENUE_HINTS)
     sales_col = _matrix_col(headers, _WB_SALES_HINTS, require_qty=True)
     if sales_col is None:
@@ -587,12 +677,15 @@ def compute_seller_matrix_etl(
     ]
     stock_col = _matrix_col(headers, _WB_STOCK_HINTS)
 
-    buckets: dict[str, _SkuBucket] = {}
+    buckets: dict[tuple[str, str], _SkuBucket] = {}
     for row in rows[1:]:
-        label = (row[label_col] if label_col < len(row) else "").strip() or "—"
-        if _is_total_row(label):
+        name, article_id = _row_sku_identity(row, name_col=name_col, article_col=article_col)
+        if _is_total_row(name):
             continue
-        bucket = buckets.setdefault(label[:64], _SkuBucket())
+        bucket = buckets.get((name, article_id))
+        if bucket is None:
+            bucket = _SkuBucket(name=name, article_id=article_id)
+            buckets[(name, article_id)] = bucket
         if rev_col is not None and rev_col < len(row):
             bucket.revenue += safe_float(row[rev_col])
         if sales_col is not None and sales_col < len(row):
@@ -618,23 +711,59 @@ def compute_seller_matrix_etl(
     ranked = sorted(buckets.items(), key=lambda x: x[1].net_profit, reverse=True)
     n = len(ranked)
     top_a_n = max(1, math.ceil(n * _TOP_A_SHARE))
-    group_a_labels = {label for label, _ in ranked[:top_a_n]}
+    group_a_keys = {key for key, _ in ranked[:top_a_n]}
     group_a = tuple(
-        MatrixAbcSku(label=label, net_profit=round(b.net_profit, 2), abc_group="A")
-        for label, b in ranked
-        if label in group_a_labels
+        MatrixAbcSku(
+            name=b.name,
+            article_id=b.article_id,
+            revenue=round(b.revenue, 2),
+            net_profit=round(b.net_profit, 2),
+            buyout_pct=round(b.buyout_pct, 1),
+            abc_group="A",
+        )
+        for key, b in ranked
+        if key in group_a_keys
     )
     group_c = tuple(
-        MatrixAbcSku(label=label, net_profit=round(b.net_profit, 2), abc_group="C")
-        for label, b in buckets.items()
+        MatrixAbcSku(
+            name=b.name,
+            article_id=b.article_id,
+            revenue=round(b.revenue, 2),
+            net_profit=round(b.net_profit, 2),
+            buyout_pct=round(b.buyout_pct, 1),
+            abc_group="C",
+        )
+        for key, b in buckets.items()
         if b.net_profit <= 0
     )
-    abc_leader = group_a[0].label if group_a else (ranked[0][0] if ranked else "—")
+    abc_leader = group_a[0].name if group_a else (ranked[0][1].name if ranked else "—")
+
+    sku_catalog = tuple(
+        b.to_detail(
+            abc_group=(
+                "A"
+                if key in group_a_keys
+                else ("C" if b.net_profit <= 0 else "B")
+            )
+        )
+        for key, b in ranked
+    )
+    outsider_sku: MatrixSkuDetail | None = None
+    if group_c:
+        worst_c = min(group_c, key=lambda s: s.net_profit)
+        outsider_sku = MatrixSkuDetail(
+            name=worst_c.name,
+            article_id=worst_c.article_id,
+            revenue=worst_c.revenue,
+            net_profit=worst_c.net_profit,
+            buyout_pct=worst_c.buyout_pct,
+            abc_group="C",
+        )
 
     # FOMO: логистика невыкупленных (доставки − выкупы) × юнит-логистика
     logistics_fomo = 0.0
     fomo_parts: list[str] = []
-    for label, b in buckets.items():
+    for (name, _), b in buckets.items():
         non_buyout = max(0.0, b.deliveries_qty - b.sales_qty)
         if non_buyout <= 0 and b.returns_qty > 0:
             non_buyout = b.returns_qty
@@ -648,7 +777,8 @@ def compute_seller_matrix_etl(
             logistics_fomo += loss
             if len(fomo_parts) < 3:
                 fomo_parts.append(
-                    f"«{label[:28]}»: {non_buyout:.0f} невыкуп. × {unit_log:.0f} руб. логистики"
+                    f"«{name[:28]}» (Арт: {b.article_id[:16]}): {non_buyout:.0f} невыкуп. × "
+                    f"{unit_log:.0f} руб. логистики"
                 )
     logistics_detail = (
         "Логистика невыкупленных: " + "; ".join(fomo_parts)
@@ -658,7 +788,7 @@ def compute_seller_matrix_etl(
 
     # OOS: остаток / (продажи за период / 7 дней)
     oos_list: list[MatrixOosForecast] = []
-    for label, b in buckets.items():
+    for (name, _), b in buckets.items():
         daily = b.sales_qty / 7.0 if b.sales_qty > 0 else 0.0
         days: float | None = None
         risk = False
@@ -670,7 +800,7 @@ def compute_seller_matrix_etl(
             risk = True
         oos_list.append(
             MatrixOosForecast(
-                label=label,
+                label=name,
                 stock_qty=b.stock_qty,
                 sales_period_qty=b.sales_qty,
                 days_until_stockout=round(days, 1) if days is not None else None,
@@ -695,6 +825,8 @@ def compute_seller_matrix_etl(
         oos_forecasts=tuple(oos_list),
         oos_critical_sku=oos_sku,
         oos_critical_days=oos_days,
+        sku_catalog=sku_catalog,
+        outsider_sku=outsider_sku,
     )
 
 
@@ -709,6 +841,7 @@ __all__ = (
     "read_xlsx_rows_from_path",
     "SellerMatrixEtl",
     "MatrixAbcSku",
+    "MatrixSkuDetail",
     "MatrixOosForecast",
     "DEFAULT_MAX_CHARS",
     "MAX_DOCUMENT_BYTES",

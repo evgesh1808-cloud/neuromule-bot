@@ -37,7 +37,7 @@ from services.telegram_safe_text import (
 logger = logging.getLogger(__name__)
 
 # Лимит финансового отчёта WB/Ozon в Telegram (ручная загрузка xlsx).
-WB_FINANCE_TELEGRAM_MAX_CHARS = 2000
+WB_FINANCE_TELEGRAM_MAX_CHARS = 2200
 
 
 def build_wb_finance_openrouter_prompts(

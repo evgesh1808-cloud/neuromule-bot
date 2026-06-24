@@ -38,6 +38,18 @@ def test_logistics_fomo_non_buyouts() -> None:
     assert "невыкуп" in etl.logistics_fomo_detail.lower() or "Логистика" in etl.logistics_fomo_detail
 
 
+def test_sku_catalog_line_format() -> None:
+    etl = compute_seller_matrix_etl(_sample_matrix(), revenue_total=115_000.0)
+    assert etl is not None
+    assert etl.sku_catalog
+    line = etl.sku_catalog[0].catalog_line()
+    assert "Артикул:" in line
+    assert "руб." in line
+    assert "%" in line
+    assert etl.outsider_sku is not None
+    assert etl.outsider_sku.name == "DEAD"
+
+
 def test_oos_forecast_risky_sku() -> None:
     etl = compute_seller_matrix_etl(_sample_matrix(), revenue_total=115_000.0)
     assert etl is not None

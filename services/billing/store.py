@@ -288,6 +288,8 @@ async def load_user_billing(user_id: int) -> UserBillingState:
                 id, tariff,
                 COALESCE(energy_free, energy, 30),
                 COALESCE(energy_paid, 0),
+                COALESCE(sub_crystals, 0),
+                COALESCE(buy_crystals, 0),
                 crystals,
                 last_reset_date,
                 referred_by,
@@ -301,17 +303,20 @@ async def load_user_billing(user_id: int) -> UserBillingState:
             row = await cur.fetchone()
     if not row:
         raise LookupError(f"user {user_id}")
+    sub_cr = int(row[4] or 0)
+    buy_cr = int(row[5] or 0)
+    crystals_total = sub_cr + buy_cr if (row[4] is not None or row[5] is not None) else int(row[6] or 0)
     return UserBillingState(
         user_id=int(row[0]),
         current_tariff=TariffTier.from_db(row[1]),
         energy_free=int(row[2] or 0),
         energy_paid=int(row[3] or 0),
-        crystals=int(row[4] or 0),
-        last_energy_reset=row[5],
-        invited_by_id=int(row[6]) if row[6] is not None else None,
-        first_purchase_done=bool(row[7]),
-        photo_daily_date=row[8],
-        photo_daily_count=int(row[9] or 0),
+        crystals=crystals_total,
+        last_energy_reset=row[7],
+        invited_by_id=int(row[8]) if row[8] is not None else None,
+        first_purchase_done=bool(row[9]),
+        photo_daily_date=row[10],
+        photo_daily_count=int(row[11] or 0),
     )
 
 

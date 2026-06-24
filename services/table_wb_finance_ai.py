@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 _USN_RATE = 0.06
 _WB_FINANCE_AI_TEMPERATURE = 0.45
 _WB_FINANCE_MAX_OUTPUT_TOKENS = 1400
-_WB_FINANCE_TELEGRAM_SOFT_MAX_CHARS = 2000
+_WB_FINANCE_TELEGRAM_SOFT_MAX_CHARS = 2200
 _FINANCE_SEPARATOR = "────────────────────────"
 _OLD_FINALE_MARKERS = (
     "Финальный Excel",
@@ -51,9 +51,20 @@ class WbFinancePromptMetrics:
     fomo_breakdown: tuple[str, ...]
     logistics_fomo_rub: float = 0.0
     abc_a_leader: str = "—"
+    abc_a_leader_name: str = "—"
+    abc_a_leader_article: str = "—"
+    abc_a_leader_revenue: float = 0.0
+    abc_a_leader_margin: float = 0.0
+    abc_a_leader_buyout: float = 0.0
     abc_a_count: int = 0
     abc_c_count: int = 0
     abc_c_summary: str = "нет"
+    outsider_name: str = "—"
+    outsider_article: str = "—"
+    outsider_loss: float = 0.0
+    outsider_buyout: float = 0.0
+    sku_catalog_lines: tuple[str, ...] = ()
+    sku_catalog_items: tuple[dict[str, Any], ...] = ()
     oos_forecast_line: str = "данных по остаткам недостаточно"
     total_ad_cost: float = 0.0
     sales_qty: float = 0.0
@@ -234,24 +245,72 @@ def compute_wb_finance_prompt_metrics(
     fomo_rub, fomo_parts = compute_fomo_lost_rub(revenue_total, wb_metrics)
     logistics_fomo = 0.0
     abc_a_leader = "—"
+    abc_a_leader_name = "—"
+    abc_a_leader_article = "—"
+    abc_a_leader_revenue = 0.0
+    abc_a_leader_margin = 0.0
+    abc_a_leader_buyout = 0.0
     abc_a_count = 0
     abc_c_count = 0
     abc_c_summary = "нет"
+    outsider_name = "—"
+    outsider_article = "—"
+    outsider_loss = 0.0
+    outsider_buyout = 0.0
+    sku_catalog_lines: tuple[str, ...] = ()
+    sku_catalog_items: tuple[dict[str, Any], ...] = ()
     oos_line = "данных по остаткам недостаточно"
     if matrix_etl:
         logistics_fomo = matrix_etl.logistics_fomo_rub
         if logistics_fomo > 0:
             fomo_rub = round(fomo_rub + logistics_fomo, 2)
             fomo_parts = (*fomo_parts, matrix_etl.logistics_fomo_detail)
-        abc_a_leader = matrix_etl.abc_a_leader
+        if matrix_etl.abc_group_a:
+            leader = matrix_etl.abc_group_a[0]
+            abc_a_leader = leader.name
+            abc_a_leader_name = leader.name
+            abc_a_leader_article = leader.article_id
+            abc_a_leader_revenue = leader.revenue
+            abc_a_leader_margin = leader.net_profit
+            abc_a_leader_buyout = leader.buyout_pct
+        else:
+            abc_a_leader = matrix_etl.abc_a_leader
+            abc_a_leader_name = matrix_etl.abc_a_leader
+            abc_a_leader_article = matrix_etl.abc_a_leader
         abc_a_count = len(matrix_etl.abc_group_a)
         abc_c_count = len(matrix_etl.abc_group_c)
         if matrix_etl.abc_group_c:
-            abc_c_summary = ", ".join(s.label[:24] for s in matrix_etl.abc_group_c[:3])
+            abc_c_summary = ", ".join(
+                f"{s.name} (Арт: {s.article_id})" for s in matrix_etl.abc_group_c[:3]
+            )
             if abc_c_count > 3:
                 abc_c_summary += f" и ещё {abc_c_count - 3}"
         elif abc_c_count == 0:
             abc_c_summary = "убыточных SKU не выявлено"
+        if matrix_etl.outsider_sku:
+            outsider_name = matrix_etl.outsider_sku.name
+            outsider_article = matrix_etl.outsider_sku.article_id
+            outsider_loss = abs(matrix_etl.outsider_sku.net_profit)
+            outsider_buyout = matrix_etl.outsider_sku.buyout_pct
+        elif matrix_etl.abc_group_c:
+            worst = min(matrix_etl.abc_group_c, key=lambda s: s.net_profit)
+            outsider_name = worst.name
+            outsider_article = worst.article_id
+            outsider_loss = abs(worst.net_profit)
+            outsider_buyout = worst.buyout_pct
+        if matrix_etl.sku_catalog:
+            sku_catalog_lines = tuple(s.catalog_line() for s in matrix_etl.sku_catalog[:20])
+            sku_catalog_items = tuple(
+                {
+                    "name": s.name,
+                    "article_id": s.article_id,
+                    "revenue_rub": s.revenue,
+                    "margin_rub": s.net_profit,
+                    "buyout_pct": s.buyout_pct,
+                    "abc_group": s.abc_group,
+                }
+                for s in matrix_etl.sku_catalog[:20]
+            )
         if matrix_etl.oos_critical_sku and matrix_etl.oos_critical_days is not None:
             oos_line = (
                 f"«{matrix_etl.oos_critical_sku}» закончится через "
@@ -274,9 +333,20 @@ def compute_wb_finance_prompt_metrics(
         fomo_breakdown=fomo_parts,
         logistics_fomo_rub=logistics_fomo,
         abc_a_leader=abc_a_leader,
+        abc_a_leader_name=abc_a_leader_name,
+        abc_a_leader_article=abc_a_leader_article,
+        abc_a_leader_revenue=abc_a_leader_revenue,
+        abc_a_leader_margin=abc_a_leader_margin,
+        abc_a_leader_buyout=abc_a_leader_buyout,
         abc_a_count=abc_a_count,
         abc_c_count=abc_c_count,
         abc_c_summary=abc_c_summary,
+        outsider_name=outsider_name,
+        outsider_article=outsider_article,
+        outsider_loss=outsider_loss,
+        outsider_buyout=outsider_buyout,
+        sku_catalog_lines=sku_catalog_lines,
+        sku_catalog_items=sku_catalog_items,
         oos_forecast_line=oos_line,
         total_ad_cost=wb_metrics.total_advertising_cost if wb_metrics else 0.0,
         sales_qty=wb_metrics.sales_qty if wb_metrics else 0.0,
@@ -286,6 +356,11 @@ def compute_wb_finance_prompt_metrics(
 
 
 def _prompt_kwargs_from_metrics(metrics: WbFinancePromptMetrics) -> dict[str, str]:
+    catalog_block = (
+        "\n".join(f"• {line}" for line in metrics.sku_catalog_lines)
+        if metrics.sku_catalog_lines
+        else "—"
+    )
     return {
         "revenue": _fmt_rub_in_code(metrics.revenue),
         "tax": _fmt_rub_in_code(metrics.tax),
@@ -299,9 +374,16 @@ def _prompt_kwargs_from_metrics(metrics: WbFinancePromptMetrics) -> dict[str, st
         "fomo_lost_rub": _fmt_rub_in_code(metrics.fomo_lost_rub),
         "logistics_fomo_rub": _fmt_rub_in_code(metrics.logistics_fomo_rub),
         "abc_a_leader": metrics.abc_a_leader,
+        "abc_a_leader_name": metrics.abc_a_leader_name,
+        "abc_a_leader_article": metrics.abc_a_leader_article,
         "abc_a_count": str(metrics.abc_a_count),
         "abc_c_count": str(metrics.abc_c_count),
         "abc_c_summary": metrics.abc_c_summary,
+        "outsider_name": metrics.outsider_name,
+        "outsider_article": metrics.outsider_article,
+        "outsider_loss": _fmt_rub_in_code(metrics.outsider_loss),
+        "outsider_buyout": f"{metrics.outsider_buyout:.1f}",
+        "sku_catalog_block": catalog_block,
         "oos_forecast_line": metrics.oos_forecast_line,
     }
 
@@ -349,7 +431,7 @@ def build_wb_marketplace_finance_user_prompt(
                 )
 
     payload: dict[str, Any] = {
-        "etl_source": "local_python_wb_ozon_finance",
+        "etl_source": "wb_ozon_finance_report",
         "revenue_rub": round(prompt_metrics.revenue, 2),
         "tax_usn_6pct_rub": round(prompt_metrics.tax, 2),
         "clear_profit_rub": round(prompt_metrics.clear_profit, 2),
@@ -360,11 +442,22 @@ def build_wb_marketplace_finance_user_prompt(
         "fomo_breakdown": list(prompt_metrics.fomo_breakdown),
         "logistics_fomo_rub": round(prompt_metrics.logistics_fomo_rub, 2),
         "abc_analysis": {
-            "group_a_leader": prompt_metrics.abc_a_leader,
+            "group_a_leader_name": prompt_metrics.abc_a_leader_name,
+            "group_a_leader_article": prompt_metrics.abc_a_leader_article,
+            "group_a_leader_revenue_rub": round(prompt_metrics.abc_a_leader_revenue, 2),
+            "group_a_leader_margin_rub": round(prompt_metrics.abc_a_leader_margin, 2),
+            "group_a_leader_buyout_pct": round(prompt_metrics.abc_a_leader_buyout, 1),
             "group_a_count": prompt_metrics.abc_a_count,
             "group_c_count": prompt_metrics.abc_c_count,
             "group_c_summary": prompt_metrics.abc_c_summary,
         },
+        "outsider_sku": {
+            "name": prompt_metrics.outsider_name,
+            "article_id": prompt_metrics.outsider_article,
+            "loss_rub": round(prompt_metrics.outsider_loss, 2),
+            "buyout_pct": round(prompt_metrics.outsider_buyout, 1),
+        },
+        "sku_catalog": list(prompt_metrics.sku_catalog_items),
         "out_of_stock_forecast": prompt_metrics.oos_forecast_line,
         "ad_load_pct": round(prompt_metrics.adv_load_pct, 1),
         "buyout_coef_pct": round(prompt_metrics.buy_ratio_pct, 1),
@@ -378,10 +471,12 @@ def build_wb_marketplace_finance_user_prompt(
         "local_insights": list(wb_metrics.insight_lines) if wb_metrics else [],
     }
     return (
-        "Ниже — подтверждённые метрики локального ETL-расчёта NeuroMule. "
-        "Сформируй финансовый экспресс-отчёт строго по структуре из system prompt. "
-        "Числа выручки, налога, прибыли, рентабельности, скоринга, FOMO, ABC и OOS не меняй. "
-        "Пиши ёмко: весь ответ до 2000 символов, зоны светофора — по 2–3 предложения.\n\n"
+        "Ниже — подтверждённые финансовые показатели и каталог SKU из отчёта маркетплейса. "
+        "Сформируй экспресс-отчёт строго по структуре из system prompt. "
+        "Числа выручки, налога, прибыли, рентабельности, скоринга, упущенной выгоды, ABC и OOS не меняй. "
+        "Используй точные названия товаров и артикулы из sku_catalog — без обобщений. "
+        "Пиши как финансовый директор, без слов «ИИ», «серверный», «алгоритм». "
+        f"Весь ответ до {_WB_FINANCE_TELEGRAM_SOFT_MAX_CHARS} символов.\n\n"
         f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
     )
 
@@ -440,7 +535,9 @@ def build_wb_finance_express_html_local(
     prompt_metrics: WbFinancePromptMetrics,
     wb_metrics: WbMarketplaceMetrics | None,
 ) -> str:
-    """Премиальный локальный отчёт (0 ₽ OpenRouter) — тот же стиль, что и ИИ."""
+    """Премиальный локальный отчёт (0 ₽) — тот же стиль, что и консалтинг CFO."""
+    leader_name = _escape_verdict(prompt_metrics.abc_a_leader_name)
+    leader_art = _escape_verdict(prompt_metrics.abc_a_leader_article)
     lines = [
         "📊 <b>ФИНАНСОВЫЙ ЭКСПРЕСС-АНАЛИЗ БИЗНЕСА</b>",
         _FINANCE_SEPARATOR,
@@ -448,6 +545,7 @@ def build_wb_finance_express_html_local(
             f"🎯 <b>БИЗНЕС-СКОРИНГ МАГАЗИНА:</b> "
             f"<code>{prompt_metrics.business_score:.1f} / 10</code>"
         ),
+        "💡 <b>КЛЮЧЕВОЙ БИЗНЕС-ВЕРДИКТ:</b>",
         f"<i>{_escape_verdict(prompt_metrics.verdict)}</i>",
         _FINANCE_SEPARATOR,
         f"💰 <b>ВАЛОВАЯ ВЫРУЧКА:</b> <code>{_fmt_rub_in_code(prompt_metrics.revenue)} руб.</code>",
@@ -463,12 +561,11 @@ def build_wb_finance_express_html_local(
         _FINANCE_SEPARATOR,
         "📦 <b>ABC-АНАЛИЗ МАТРИЦЫ</b>",
         (
-            f"🅰️ Группа A: лидер <b>{_escape_verdict(prompt_metrics.abc_a_leader)}</b> "
-            f"(<code>{prompt_metrics.abc_a_count}</code> SKU)"
+            f"🅰️ Лидер группы A: <b>{_escape_verdict(prompt_metrics.abc_a_leader_name)}</b> "
+            f"(Артикул: <code>{_escape_verdict(prompt_metrics.abc_a_leader_article)}</code>)"
         ),
         (
-            f"🅲 Группа C: <code>{prompt_metrics.abc_c_count}</code> SKU — "
-            f"<i>{_escape_verdict(prompt_metrics.abc_c_summary)}</i>"
+            f"🅲 Группа C: <i>{_escape_verdict(prompt_metrics.abc_c_summary)}</i>"
         ),
         _FINANCE_SEPARATOR,
         "📈 <b>СВЕТОФОР ЗДОРОВЬЯ БИЗНЕСА</b>",
@@ -478,9 +575,10 @@ def build_wb_finance_express_html_local(
     lines.extend(
         [
             _FINANCE_SEPARATOR,
-            "💸 <b>КАЛЬКУЛЯТОР УПУЩЕННОЙ ВЫГОДЫ (FOMO)</b>",
+            "💸 <b>КАЛЬКУЛЯТОР УПУЩЕННОЙ ВЫГОДЫ</b>",
             (
-                f"Серверный расчёт: <code>{_fmt_rub_in_code(prompt_metrics.fomo_lost_rub)} руб.</code>"
+                f"Потенциальная упущенная выгода: "
+                f"<code>{_fmt_rub_in_code(prompt_metrics.fomo_lost_rub)} руб.</code>"
             ),
         ]
     )
@@ -506,7 +604,30 @@ def build_wb_finance_express_html_local(
                 f"{prompt_metrics.profitability_pct:.1f}%.</i>"
             ),
             f"📦 <b>OOS:</b> <i>{_escape_verdict(prompt_metrics.oos_forecast_line)}</i>",
+            _FINANCE_SEPARATOR,
+            "📋 <b>СТРАТЕГИЧЕСКИЙ ПЛАН ДЕЙСТВИЙ НА СЕГОДНЯ</b>",
+            (
+                f"<b>1.</b> Усилить закуп и рекламу на <b>{leader_name}</b> "
+                f"(арт. <code>{leader_art}</code>) — главный драйвер маржи."
+            ),
         ]
+    )
+    if prompt_metrics.outsider_name not in ("—", "") and prompt_metrics.outsider_loss > 0:
+        out_name = _escape_verdict(prompt_metrics.outsider_name)
+        out_art = _escape_verdict(prompt_metrics.outsider_article)
+        lines.append(
+            f"<b>2.</b> Для <b>{out_name}</b> (арт. <code>{out_art}</code>) поднимите цену "
+            f"или остановите рекламу — убыток "
+            f"<code>{_fmt_rub_in_code(prompt_metrics.outsider_loss)}</code> руб."
+        )
+    else:
+        lines.append(
+            f"<b>2.</b> Зафиксируйте ДРР на уровне "
+            f"<code>{prompt_metrics.adv_load_pct:.1f}%</code> — не раздувайте рекламу без окупаемости."
+        )
+    lines.append(
+        f"<b>3.</b> Контролируйте остатки по рисковым SKU: "
+        f"<i>{_escape_verdict(prompt_metrics.oos_forecast_line)}</i>"
     )
     return append_wb_finance_mini_app_cta("\n".join(lines))
 
@@ -522,14 +643,19 @@ def _build_traffic_light_block(
     prompt_metrics: WbFinancePromptMetrics,
 ) -> list[str]:
     """🟢🟡🔴 блоки для локального fallback."""
-    green = (
-        f"🟢 <b>ЗОНА УСПЕХА:</b> Рентабельность "
-        f"<code>{prompt_metrics.profitability_pct:.1f}%</code> — "
-    )
-    if wb_metrics and wb_metrics.top5_units:
+    leader_name = _escape_verdict(prompt_metrics.abc_a_leader_name)
+    leader_art = _escape_verdict(prompt_metrics.abc_a_leader_article)
+    green = f"🟢 <b>ЗОНА УСПЕХА:</b> Лидер группы A — <b>{leader_name}</b> (Арт: <code>{leader_art}</code>), "
+    if prompt_metrics.abc_a_leader_margin > 0:
+        green += (
+            f"маржа <code>{_fmt_rub_in_code(prompt_metrics.abc_a_leader_margin)}</code> руб., "
+            f"выкуп <code>{prompt_metrics.abc_a_leader_buyout:.1f}%</code>. "
+            f"Масштабируйте закуп и рекламу на этот SKU."
+        )
+    elif wb_metrics and wb_metrics.top5_units:
         best = max(wb_metrics.top5_units, key=lambda u: u.net_income)
         green += (
-            f"лидер «{best.label}» даёт <code>{_fmt_rub_in_code(best.net_income)}</code>/шт. "
+            f"«{best.label}» даёт <code>{_fmt_rub_in_code(best.net_income)}</code>/шт. "
             "Масштабируйте закуп и рекламу на этот SKU."
         )
     else:
@@ -552,7 +678,14 @@ def _build_traffic_light_block(
         )
 
     red = "🔴 <b>КРИТИЧЕСКАЯ ЗОНА:</b> "
-    if wb_metrics and wb_metrics.top5_units:
+    if prompt_metrics.outsider_name not in ("—", "") and prompt_metrics.outsider_loss > 0:
+        red += (
+            f"Аутсайдер: <b>{_escape_verdict(prompt_metrics.outsider_name)}</b> "
+            f"(Артикул: <code>{_escape_verdict(prompt_metrics.outsider_article)}</code>) "
+            f"принёс убыток <code>{_fmt_rub_in_code(prompt_metrics.outsider_loss)}</code> руб. "
+            f"из-за выкупа <code>{prompt_metrics.outsider_buyout:.1f}%</code>."
+        )
+    elif wb_metrics and wb_metrics.top5_units:
         worst = min(wb_metrics.top5_units, key=lambda u: u.net_income)
         if worst.net_income < 0:
             red += (

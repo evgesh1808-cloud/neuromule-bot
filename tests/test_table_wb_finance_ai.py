@@ -29,28 +29,48 @@ def test_build_wb_marketplace_finance_system_prompt_variables() -> None:
         fomo_lost_rub="12,500.00",
         logistics_fomo_rub="3,200.00",
         abc_a_leader="WRAPPER",
+        abc_a_leader_name="Футболка Premium",
+        abc_a_leader_article="WRAPPER-001",
         abc_a_count="2",
         abc_c_count="1",
-        abc_c_summary="DEAD",
+        abc_c_summary="DEAD (Арт: DEAD-99)",
+        outsider_name="DEAD",
+        outsider_article="DEAD-99",
+        outsider_loss="400.00",
+        outsider_buyout="0.0",
+        sku_catalog_block="• Футболка Premium (Артикул: WRAPPER-001) — 100 000.00 руб. — 85 000.00 руб. — 77.8%",
         oos_forecast_line="«BOX» закончится через 3 дн. (риск OOS)",
     )
     assert "185,000.00 руб." in prompt
     assert "11,100.00 руб." in prompt
     assert "173,900.00 руб." in prompt
-    assert "рекламная нагрузка 13.3%" in prompt or "реклама 13.3%" in prompt
-    assert "выкуп 72.5%" in prompt or "buy_ratio" not in prompt
+    assert "реклама 13.3%" in prompt or "ДРР 13.3%" in prompt
     assert "2,220,000 руб." in prompt
-    assert "Senior Финансовый Директор" in prompt
+    assert "Senior ИИ-Аналитик" not in prompt
+    assert "финансовый директор" in prompt
     assert "БИЗНЕС-СКОРИНГ МАГАЗИНА" in prompt
     assert "СВЕТОФОР ЗДОРОВЬЯ" in prompt
     assert "КАЛЬКУЛЯТОР УПУЩЕННОЙ ВЫГОДЫ" in prompt
     assert "12,500.00 руб." in prompt
-    assert "2000 символов" in prompt
-    assert "мессенджере Telegram" in prompt
+    assert "2200 символов" in prompt
     assert "ABC-АНАЛИЗ" in prompt
-    assert "WRAPPER" in prompt
+    assert "Футболка Premium" in prompt
+    assert "WRAPPER-001" in prompt
     assert "3,200.00" in prompt
+    assert "КАТАЛОГ ТОВАРОВ ETL" not in prompt
     assert "Подключите" not in prompt
+    assert "СЛУЖЕБНЫЕ ПРАВИЛА" in prompt
+    assert "СТРАТЕГИЧЕСКИЙ ПЛАН ДЕЙСТВИЙ НА СЕГОДНЯ" in prompt
+    assert "КЛЮЧЕВОЙ БИЗНЕС-ВЕРДИКТ" in prompt
+    assert "ИИ-ПЛАН" not in prompt
+    template_section = prompt.split("СТРУКТУРА ОТВЕТА", 1)[-1]
+    assert "серверный" not in template_section.lower()
+    assert "Серверный" not in template_section
+    assert " ИИ" not in template_section
+    assert "ИИ-" not in template_section
+    assert "лидер — всего" not in prompt
+    assert "всего <code>" not in prompt
+    assert "ABC-АНАЛИЗ МАТРИЦЫ (локальный" not in prompt
 
 
 def test_compute_wb_finance_prompt_metrics_from_etl() -> None:
@@ -86,8 +106,8 @@ def test_compute_wb_finance_prompt_metrics_from_etl() -> None:
     user = build_wb_marketplace_finance_user_prompt(metrics, wb)
     assert "revenue_rub" in user
     assert "fomo_lost_rub" in user
-    assert "abc_analysis" in user
-    assert metrics.abc_a_count >= 0
+    assert "sku_catalog" in user
+    assert "outsider_sku" in user
     assert "Футболка" in user
 
 

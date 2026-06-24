@@ -709,15 +709,18 @@ async def update_balance(user_id: int, field: str, delta: int) -> None:
 
         await add_buy_crystals(user_id, delta)
         return
+    if delta == 0:
+        return
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """
-            UPDATE users
-            SET energy = energy + ?,
-                balance_energy = energy + ?
+            UPDATE users SET
+                energy_paid = COALESCE(energy_paid, 0) + ?,
+                energy = COALESCE(energy_free, 0) + COALESCE(energy_paid, 0) + ?,
+                balance_energy = COALESCE(energy_free, 0) + COALESCE(energy_paid, 0) + ?
             WHERE id = ?
             """,
-            (delta, delta, user_id),
+            (delta, delta, delta, user_id),
         )
         await db.commit()
 
