@@ -55,8 +55,8 @@ def test_build_wb_marketplace_finance_system_prompt_variables() -> None:
         ),
         localization_index_line="не указан в исходных данных",
     )
-    assert "MPSTATS" in prompt
-    assert "Проблемные зоны матрицы" in prompt
+    assert "автоматический финансовый модуль" in prompt.lower() or "оцифровки маркетплейсов" in prompt
+    assert "Проблемные зоны и скрытые убытки" in prompt
     assert "Балласт" in prompt
     assert "Неликвид" in prompt
     assert "185,000.00 руб." in prompt
@@ -65,21 +65,21 @@ def test_build_wb_marketplace_finance_system_prompt_variables() -> None:
     assert "реклама 13.3%" in prompt or "ДРР 13.3%" in prompt
     assert "2,220,000 руб." in prompt
     assert "Senior ИИ-Аналитик" not in prompt
-    assert "финансовый директор" in prompt
-    assert "ИНДЕКС ЗДОРОВЬЯ МАГАЗИНА" in prompt
-    assert "СВЕТОФОР ЗДОРОВЬЯ" in prompt
-    assert "КАЛЬКУЛЯТОР УПУЩЕННОЙ ВЫГОДЫ" in prompt
+    assert "ИНДЕКС ЗДОРОВЬЯ БИЗНЕСА" in prompt
+    assert "СВЕТОФОР ЭФФЕКТИВНОСТИ" in prompt
+    assert "КАЛЬКУЛЯТОР ПОТЕРЬ" in prompt
     assert "12,500.00 руб." in prompt
     assert "2000 символов" in prompt
-    assert "ABC-АНАЛИЗ ПРОДАЖ" in prompt
+    assert "РЕЙТИНГ ПРОДАЖ ПО ТОВАРАМ" in prompt
     assert "Футболка Premium" in prompt
     assert "WRAPPER-001" in prompt
     assert "3,200.00" in prompt
     assert "КАТАЛОГ ТОВАРОВ ETL" not in prompt
     assert "Подключите" not in prompt
     assert "СЛУЖЕБНЫЕ ПРАВИЛА" in prompt
-    assert "СТРАТЕГИЧЕСКИЙ ПЛАН ДЕЙСТВИЙ НА СЕГОДНЯ" in prompt
-    assert "ГЛАВНЫЙ ВЫВОД ИИ" in prompt
+    assert "ПЛАН ДЕЙСТВИЙ ДЛЯ ПРЕДПРИНИМАТЕЛЯ" in prompt
+    assert "ГЛАВНЫЙ АНАЛИТИЧЕСКИЙ ВЫВОД" in prompt
+    assert "ГЛАВНЫЙ ВЫВОД ИИ" not in prompt
     assert "ОБЩАЯ ВЫРУЧКА" in prompt
     assert "ИИ-ПЛАН" not in prompt
     template_section = prompt.split("СТРУКТУРА ОТВЕТА", 1)[-1]
@@ -89,6 +89,7 @@ def test_build_wb_marketplace_finance_system_prompt_variables() -> None:
     assert "лидер — всего" not in prompt
     assert "всего <code>" not in prompt
     assert "ABC-АНАЛИЗ МАТРИЦЫ (локальный" not in prompt
+    assert "cfo-v7" in prompt
     assert "выкуп &lt;15%" in prompt or "15%" in prompt
     assert "20%" in prompt
     assert "• DEAD" in prompt
@@ -190,7 +191,7 @@ def test_sanitize_wb_finance_html_replaces_legacy_headers() -> None:
     cleaned = sanitize_wb_finance_html(raw)
     assert "ИИ-План" not in cleaned
     assert "Серверный" not in cleaned
-    assert "СТРАТЕГИЧЕСКИЙ ПЛАН" in cleaned
+    assert "ПЛАН ДЕЙСТВИЙ" in cleaned
     assert has_legacy_wb_finance_markers(raw)
     assert not has_legacy_wb_finance_markers(cleaned)
 
@@ -207,7 +208,7 @@ def test_sanitize_wb_finance_html_strips_technical_parentheses() -> None:
     assert "локальный ETL" not in cleaned
     assert "по 2–3 предложения" not in cleaned
     assert "каждый шаг" not in cleaned
-    assert "ABC-АНАЛИЗ ПРОДАЖ" in cleaned
+    assert "РЕЙТИНГ ПРОДАЖ" in cleaned
 
 
 def test_enrich_table_json_wb_finance_adds_abc_and_summary() -> None:
@@ -271,8 +272,8 @@ def test_build_matrix_problem_zones_ballast_and_illiquid() -> None:
     etl = compute_seller_matrix_etl(matrix, revenue_total=90_000.0)
     assert etl is not None
     block = build_matrix_problem_zones_block(etl)
-    assert "📉 Балласт" in block
-    assert "❄️ Неликвид" in block
+    assert "Балласт" in block
+    assert "Неликвид" in block
     assert "LB-1" in block or "BALLAST" in block or "B-1" in block
     assert "I-9" in block or "ILLIQ" in block
 
@@ -352,8 +353,8 @@ def test_local_report_includes_problem_zones() -> None:
     assert metrics is not None
     assert "Неликвид" in metrics.matrix_problem_zones_block
     html = build_wb_finance_express_html_local(metrics, None)
-    assert "Проблемные зоны матрицы" in html
-    assert "❄️ Неликвид" in html
+    assert "Проблемные зоны и скрытые убытки" in html
+    assert "Неликвид" in html
 
 
 def test_local_report_includes_cfo_build_marker() -> None:
@@ -380,7 +381,7 @@ def test_local_report_includes_cfo_build_marker() -> None:
         abc_a_leader_margin=5_000.0,
     )
     html = build_wb_finance_express_html_local(metrics, None)
-    assert "CFO build cfo-v6" in html
+    assert "CFO build cfo-v7" in html
     assert "арт. W-1" in html or "W-1" in html
 
 

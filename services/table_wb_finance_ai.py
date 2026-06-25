@@ -56,6 +56,15 @@ def _dedupe_report_noise(text: str) -> str:
     return cleaned.strip()
 
 
+def _sku_label_is_valid(name: str, article: str) -> bool:
+    """Строка с пустым прочерком вместо имени не выводится в отчёт."""
+    n = (name or "").strip()
+    a = (article or "").strip()
+    if n in ("—", "-", "–") and a in ("—", "-", "–", ""):
+        return False
+    return bool(n and n not in ("—", "-", "–")) or bool(a and a not in ("—", "-", "–"))
+
+
 def _ru_more_goods_suffix(count: int) -> str:
     """«… и ещё N товара/товаров» с правильным склонением."""
     n = abs(int(count))
@@ -360,12 +369,12 @@ def build_matrix_problem_zones_block(matrix_etl: object | None) -> str:
 
     lines: list[str] = []
     if ballast:
-        lines.append("📉 Балласт:")
-        for _, label, reason in ballast[:2]:
+        lines.append("📉 <b>Балласт (Деньги уходят на пустые покатушки):</b>")
+        for _, label, reason in ballast:
             lines.append(f"• {label} — {reason}")
     if illiquid:
-        lines.append("❄️ Неликвид:")
-        for _, label, reason in illiquid[:2]:
+        lines.append("❄️ <b>Неликвид (Капитал заморожен на складе):</b>")
+        for _, label, reason in illiquid:
             lines.append(f"• {label} — {reason}")
     return "\n".join(lines) if lines else "проблемных зон в группе C не выявлено"
 
@@ -373,17 +382,18 @@ def build_matrix_problem_zones_block(matrix_etl: object | None) -> str:
 def _format_sku_bullet_lines(
     items: Iterable[tuple[str, str]],
     *,
-    max_items: int = 5,
+    max_items: int | None = None,
     overflow_suffix: str | None = None,
 ) -> str:
-    """Список SKU маркерами «•», по одному на строку."""
+    """Список товаров маркерами «•», по одному на строку (без сокращений по умолчанию)."""
     lines: list[str] = []
-    batch = list(items)
-    for name, article in batch[:max_items]:
+    batch = [(n, a) for n, a in items if _sku_label_is_valid(n, a)]
+    display = batch if max_items is None else batch[:max_items]
+    for name, article in display:
         lines.append(f"• {_format_sku_label(name, article)}")
     if overflow_suffix:
         lines.append(overflow_suffix)
-    elif len(batch) > max_items:
+    elif max_items is not None and len(batch) > max_items:
         lines.append(_ru_more_goods_suffix(len(batch) - max_items))
     return "\n".join(lines) if lines else "• убыточных товаров не выявлено"
 
@@ -440,7 +450,7 @@ def _build_strategic_plan_lines(
         lines.append(
             f"<b>1.</b> Усилить закуп и рекламу на <b>{leader_label}</b> — "
             f"лидер A, выкуп <code>{prompt_metrics.abc_a_leader_buyout:.1f}%</code>, "
-            f"маржа <code>{_fmt_rub_in_code(prompt_metrics.abc_a_leader_margin)}</code> руб."
+            f"чистая прибыль с одной продажи: <code>{_fmt_rub_in_code(prompt_metrics.abc_a_leader_margin)}</code> руб."
         )
     elif wb_metrics and wb_metrics.top5_units:
         scale_candidate = None
@@ -458,7 +468,7 @@ def _build_strategic_plan_lines(
             )
         else:
             lines.append(
-                "<b>1.</b> Не масштабируйте SKU с нулевым выкупом или убытком — "
+                "<b>1.</b> Не масштабируйте товары с нулевым выкупом или убытком — "
                 "сначала поднимите конверсию карточки и цену."
             )
     else:
@@ -472,7 +482,7 @@ def _build_strategic_plan_lines(
         lines.append(
             f"<b>2.</b> Катастрофический ДРР <code>{prompt_metrics.adv_load_pct:.1f}%</code> — "
             "немедленно режьте рекламный бюджет минимум вдвое, отключите все неокупаемые кампании "
-            "и пересоберите семантику под маржинальные SKU."
+            "и пересоберите семантику под маржинальные товары."
         )
     elif prompt_metrics.adv_load_pct > _HIGH_DRR_PCT:
         lines.append(
@@ -492,7 +502,7 @@ def _build_strategic_plan_lines(
         )
 
     lines.append(
-        f"<b>3.</b> Контролируйте остатки по рисковым SKU: "
+        f"<b>3.</b> Контролируйте остатки по рисковым артикулам: "
         f"<i>{_escape_verdict(_dedupe_report_noise(prompt_metrics.oos_forecast_line))}</i>"
     )
     return lines
@@ -500,7 +510,7 @@ _WB_FINANCE_MAX_OUTPUT_TOKENS = 1400
 _WB_FINANCE_TELEGRAM_SOFT_MAX_CHARS = 2000
 _FINANCE_SEPARATOR = "────────────────────────"
 # Меняйте при каждом релизе CFO-шаблона — видно внизу отчёта для проверки деплоя.
-_FINANCE_REPORT_BUILD = "cfo-v6"
+_FINANCE_REPORT_BUILD = "cfo-v7"
 _OLD_FINALE_MARKERS = (
     "Финальный Excel",
     "интерактивный дашборд",
@@ -518,14 +528,23 @@ _LEGACY_FINANCE_MARKERS = (
     "ИИ-Моделирование",
 )
 _LEGACY_FINANCE_REPLACEMENTS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"ИИ[\s\-–—]*План\s*действий", re.IGNORECASE), "СТРАТЕГИЧЕСКИЙ ПЛАН ДЕЙСТВИЙ НА СЕГОДНЯ"),
-    (re.compile(r"ИИ[\s\-–—]*Инсайт", re.IGNORECASE), "ГЛАВНЫЙ ВЫВОД ИИ"),
-    (re.compile(r"КЛЮЧЕВОЙ\s+БИЗНЕС-ВЕРДИКТ", re.IGNORECASE), "ГЛАВНЫЙ ВЫВОД ИИ"),
+    (re.compile(r"ИИ[\s\-–—]*План\s*действий", re.IGNORECASE), "ПЛАН ДЕЙСТВИЙ ДЛЯ ПРЕДПРИНИМАТЕЛЯ НА СЕГОДНЯ"),
+    (re.compile(r"ИИ[\s\-–—]*Инсайт", re.IGNORECASE), "ГЛАВНЫЙ АНАЛИТИЧЕСКИЙ ВЫВОД"),
+    (re.compile(r"КЛЮЧЕВОЙ\s+БИЗНЕС-ВЕРДИКТ", re.IGNORECASE), "ГЛАВНЫЙ АНАЛИТИЧЕСКИЙ ВЫВОД"),
+    (re.compile(r"ГЛАВНЫЙ\s+ВЫВОД\s+ИИ", re.IGNORECASE), "ГЛАВНЫЙ АНАЛИТИЧЕСКИЙ ВЫВОД"),
     (re.compile(r"ВАЛОВАЯ\s+ВЫРУЧКА", re.IGNORECASE), "ОБЩАЯ ВЫРУЧКА"),
-    (re.compile(r"Серверный\s+расч[её]т", re.IGNORECASE), "Потенциальная упущенная выгода"),
-    (re.compile(r"ABC[\s\-–—]*АНАЛИЗ\s+МАТРИЦЫ\s*\(\s*локальный\s+ETL[^)]*\)", re.IGNORECASE), "ABC-АНАЛИЗ ПРОДАЖ"),
-    (re.compile(r"ABC[\s\-–—]*АНАЛИЗ\s+МАТРИЦЫ", re.IGNORECASE), "ABC-АНАЛИЗ ПРОДАЖ"),
-    (re.compile(r"БИЗНЕС-СКОРИНГ\s+МАГАЗИНА", re.IGNORECASE), "ИНДЕКС ЗДОРОВЬЯ МАГАЗИНА"),
+    (re.compile(r"Серверный\s+расч[её]т", re.IGNORECASE), "Потенциально можно вернуть в оборот"),
+    (re.compile(r"ABC[\s\-–—]*АНАЛИЗ\s+ПРОДАЖ", re.IGNORECASE), "РЕЙТИНГ ПРОДАЖ ПО ТОВАРАМ"),
+    (re.compile(r"ABC[\s\-–—]*АНАЛИЗ\s+МАТРИЦЫ\s*\(\s*локальный\s+ETL[^)]*\)", re.IGNORECASE), "РЕЙТИНГ ПРОДАЖ ПО ТОВАРАМ"),
+    (re.compile(r"ABC[\s\-–—]*АНАЛИЗ\s+МАТРИЦЫ", re.IGNORECASE), "РЕЙТИНГ ПРОДАЖ ПО ТОВАРАМ"),
+    (re.compile(r"БИЗНЕС-СКОРИНГ\s+МАГАЗИНА", re.IGNORECASE), "ИНДЕКС ЗДОРОВЬЯ БИЗНЕСА"),
+    (re.compile(r"ИНДЕКС\s+ЗДОРОВЬЯ\s+МАГАЗИНА", re.IGNORECASE), "ИНДЕКС ЗДОРОВЬЯ БИЗНЕСА"),
+    (re.compile(r"СВЕТОФОР\s+ЗДОРОВЬЯ\s+БИЗНЕСА", re.IGNORECASE), "СВЕТОФОР ЭФФЕКТИВНОСТИ"),
+    (re.compile(r"Проблемные\s+зоны\s+матрицы", re.IGNORECASE), "Проблемные зоны и скрытые убытки"),
+    (re.compile(r"ПРОГНОЗ\s+И\s+КРЭШ-ТЕСТ", re.IGNORECASE), "ПРОГНОЗ И ОБНУЛЕНИЕ ОСТАТКОВ"),
+    (re.compile(r"СТРАТЕГИЧЕСКИЙ\s+ПЛАН\s+ДЕЙСТВИЙ", re.IGNORECASE), "ПЛАН ДЕЙСТВИЙ ДЛЯ ПРЕДПРИНИМАТЕЛЯ"),
+    (re.compile(r"\bOOS\b", re.IGNORECASE), "Обнуление остатков на складе"),
+    (re.compile(r"риск\s+OOS", re.IGNORECASE), "риск обнуления остатков"),
 )
 _TECH_HINT_PAREN_RE = re.compile(
     r"\(\s*[^)]*(?:"
@@ -865,7 +884,6 @@ def compute_wb_finance_prompt_metrics(
         if matrix_etl.abc_group_c:
             abc_c_summary = _format_sku_bullet_lines(
                 [(s.name, s.article_id) for s in matrix_etl.abc_group_c],
-                max_items=5,
             )
         elif abc_c_count == 0:
             abc_c_summary = "убыточных товаров не выявлено"
@@ -914,11 +932,11 @@ def compute_wb_finance_prompt_metrics(
             )
         if matrix_etl.oos_critical_sku and matrix_etl.oos_critical_days is not None:
             oos_line = _dedupe_report_noise(
-                f"«{matrix_etl.oos_critical_sku}» закончится через "
-                f"{matrix_etl.oos_critical_days:.0f} дн. (риск OOS)"
+                f"«{matrix_etl.oos_critical_sku}» — "
+                f"обнуление остатков через {matrix_etl.oos_critical_days:.0f} дн."
             )
         elif matrix_etl.oos_forecasts:
-            oos_line = "критических OOS по остаткам не выявлено"
+            oos_line = "критических рисков обнуления остатков не выявлено"
 
     return WbFinancePromptMetrics(
         revenue=revenue_total,
@@ -1329,7 +1347,8 @@ def _format_abc_a_leader_html(prompt_metrics: WbFinancePromptMetrics) -> str:
         )
     ):
         return (
-            "🅰️ Товары-лидеры (Группа А): <i>Лидеры отсутствуют, вся матрица требует санации</i>"
+            "🅰️ <b>Товары-лидеры (Приносят основные деньги):</b> "
+            "<i>Отсутствуют, выручка требует оптимизации</i>"
         )
     label = _escape_verdict(
         _format_sku_label(
@@ -1338,7 +1357,7 @@ def _format_abc_a_leader_html(prompt_metrics: WbFinancePromptMetrics) -> str:
         )
     )
     return (
-        f"🅰️ Товары-лидеры (Группа А): <b>{label}</b> "
+        f"🅰️ <b>Товары-лидеры (Приносят основные деньги):</b> <b>{label}</b> "
         f"(выкуп: <code>{prompt_metrics.abc_a_leader_buyout:.1f}%</code>)"
     )
 
@@ -1351,15 +1370,15 @@ def build_wb_finance_express_html_local(
     score_emoji, score_status = _business_score_band(prompt_metrics.business_score)
     score_reason = _business_score_reason_line(prompt_metrics, wb_metrics)
     lines = [
-        "📊 <b>ФИНАНСОВЫЙ ЭКСПРЕСС-АНАЛИЗ БИЗНЕСА</b>",
+        "📊 <b>ФИНАНСОВЫЙ ЭКСПРЕСС-АНАЛИЗ МАГАЗИНА</b>",
         _FINANCE_SEPARATOR,
         (
-            f"🎯 <b>ИНДЕКС ЗДОРОВЬЯ МАГАЗИНА:</b> {score_emoji} "
+            f"🎯 <b>ИНДЕКС ЗДОРОВЬЯ БИЗНЕСА:</b> {score_emoji} "
             f"<code>{prompt_metrics.business_score:.1f} / 10</code> "
             f"<i>{score_status}</i>"
         ),
         score_reason,
-        "💡 <b>ГЛАВНЫЙ ВЫВОД ИИ:</b>",
+        "💡 <b>ГЛАВНЫЙ АНАЛИТИЧЕСКИЙ ВЫВОД:</b>",
         f"<i>{_escape_verdict(prompt_metrics.verdict)}</i>",
         _FINANCE_SEPARATOR,
         f"💰 <b>ОБЩАЯ ВЫРУЧКА:</b> <code>{_fmt_rub_in_code(prompt_metrics.revenue)} руб.</code>",
@@ -1369,23 +1388,25 @@ def build_wb_finance_express_html_local(
             f"<code>{_fmt_rub_in_code(prompt_metrics.clear_profit)} руб.</code>"
         ),
         (
-            f"Рентабельность по чистой прибыли: "
+            f"Эффективность (рентабельность) чистой прибыли: "
             f"<code>{prompt_metrics.profitability_pct:.1f}%</code>"
         ),
         _FINANCE_SEPARATOR,
-        "📦 <b>ABC-АНАЛИЗ ПРОДАЖ</b>",
+        "📦 <b>РЕЙТИНГ ПРОДАЖ ПО ТОВАРАМ</b>",
         _format_abc_a_leader_html(prompt_metrics),
-        "🅲 <b>Аутсайдеры (Группа С):</b>",
+        "🅲 <b>Товары-аутсайдеры (Слабые продажи или убытки):</b>",
     ]
     for c_line in prompt_metrics.abc_c_summary.splitlines():
-        lines.append(_escape_verdict(c_line))
-    lines.append("📦 <b>Проблемные зоны матрицы:</b>")
+        if c_line.strip():
+            lines.append(_escape_verdict(c_line))
+    lines.append("📦 <b>Проблемные зоны и скрытые убытки:</b>")
     for zone_line in prompt_metrics.matrix_problem_zones_block.splitlines():
-        lines.append(_escape_verdict(zone_line))
+        if zone_line.strip():
+            lines.append(_escape_verdict(zone_line))
     lines.extend(
         [
         _FINANCE_SEPARATOR,
-        "📈 <b>СВЕТОФОР ЗДОРОВЬЯ БИЗНЕСА</b>",
+        "📈 <b>СВЕТОФОР ЭФФЕКТИВНОСТИ</b>",
     ]
     )
     for zone_line in _build_traffic_light_block(wb_metrics, prompt_metrics):
@@ -1393,9 +1414,9 @@ def build_wb_finance_express_html_local(
     lines.extend(
         [
             _FINANCE_SEPARATOR,
-            "💸 <b>КАЛЬКУЛЯТОР УПУЩЕННОЙ ВЫГОДЫ</b>",
+            "💸 <b>КАЛЬКУЛЯТОР ПОТЕРЬ И УПУЩЕННОЙ ВЫГОДЫ</b>",
             (
-                f"Потенциальная упущенная выгода: "
+                f"Потенциально можно вернуть в оборот: "
                 f"<code>{_fmt_rub_in_code(prompt_metrics.fomo_lost_rub)} руб.</code>"
             ),
         ]
@@ -1413,16 +1434,17 @@ def build_wb_finance_express_html_local(
     lines.extend(
         [
             _FINANCE_SEPARATOR,
-            "🛡️ <b>ПРОГНОЗ И КРЭШ-ТЕСТ</b>",
+            "🛡️ <b>ПРОГНОЗ И ОБНУЛЕНИЕ ОСТАТКОВ</b>",
             (
-                f"<i>При сохранении динамики годовой оборот — около "
-                f"<code>{_fmt_rub_in_code(prompt_metrics.year_forecast, decimals=0)} руб.</code>. "
-                f"ДРР {prompt_metrics.adv_load_pct:.1f}%, рентабельность "
-                f"{prompt_metrics.profitability_pct:.1f}%.</i>"
+                f"<i>При сохранении текущего темпа годовой оборот составит около "
+                f"<code>{_fmt_rub_in_code(prompt_metrics.year_forecast, decimals=0)} руб.</code>.</i>"
             ),
-            f"📦 <b>OOS:</b> <i>{_escape_verdict(_dedupe_report_noise(prompt_metrics.oos_forecast_line))}</i>",
+            (
+                f"⚠️ <b>Заканчивается товар:</b> "
+                f"<i>{_escape_verdict(_dedupe_report_noise(prompt_metrics.oos_forecast_line))}</i>"
+            ),
             _FINANCE_SEPARATOR,
-            "📋 <b>СТРАТЕГИЧЕСКИЙ ПЛАН ДЕЙСТВИЙ НА СЕГОДНЯ</b>",
+            "📋 <b>ПЛАН ДЕЙСТВИЙ ДЛЯ ПРЕДПРИНИМАТЕЛЯ НА СЕГОДНЯ</b>",
         ]
     )
     lines.extend(_build_strategic_plan_lines(prompt_metrics, wb_metrics))
@@ -1474,7 +1496,7 @@ def _build_traffic_light_block(
             f"Товары-лидеры группы A — <b>{leader_label}</b>, "
             f"маржа <code>{_fmt_rub_in_code(leader_margin)}</code> руб., "
             f"выкуп <code>{leader_buyout:.1f}%</code>. "
-            "Масштабируйте закуп и рекламу на этот SKU."
+            "Масштабируйте закуп и рекламу на этот артикул."
         )
 
     yellow = "🟡 <b>ЗОНА ВНИМАНИЯ:</b> "
