@@ -38,13 +38,14 @@ def test_logistics_fomo_non_buyouts() -> None:
     assert etl is not None
     assert etl.logistics_fomo_rub > 0
     assert etl.logistics_fomo_items
-    assert etl.reverse_logistics_shop_avg > 0
+    assert etl.reverse_logistics_shop_avg >= 50.0
     assert "Логистика возвратов:" in etl.logistics_fomo_items[0]
-    assert "обратной логистики по литражу" in etl.return_logistics_block
+    assert "Общий убыток на пустых покатушках" in etl.return_logistics_block
+    assert "обратной логистики по литражу" not in etl.return_logistics_block
 
 
-def test_logistics_fomo_uses_real_unit_from_xlsx_not_floor() -> None:
-    """20 ₽ логистики / 20 невыкупов = 1.00 ₽/ед. — не подменять на 50."""
+def test_logistics_fomo_applies_wb_minimum_tariff() -> None:
+    """Малый общий логистический расход не даёт тариф 1 ₽/шт — пол 50 ₽."""
     matrix = [
         [
             "Предмет",
@@ -58,9 +59,10 @@ def test_logistics_fomo_uses_real_unit_from_xlsx_not_floor() -> None:
     ]
     etl = compute_seller_matrix_etl(matrix, revenue_total=10_000.0)
     assert etl is not None
-    assert etl.logistics_fomo_rub == pytest.approx(20.0)
-    assert etl.reverse_logistics_shop_avg == pytest.approx(1.0)
-    assert "× 1.00 руб." in etl.logistics_fomo_items[0]
+    assert etl.logistics_fomo_rub == pytest.approx(20 * 50.0)
+    assert etl.reverse_logistics_shop_avg == pytest.approx(50.0)
+    assert "≈ 1 000.00 руб." in etl.logistics_fomo_items[0]
+    assert "×" not in etl.logistics_fomo_items[0]
 
 
 def test_logistics_fomo_dedicated_return_column() -> None:
@@ -78,9 +80,29 @@ def test_logistics_fomo_dedicated_return_column() -> None:
     ]
     etl = compute_seller_matrix_etl(matrix, revenue_total=50_000.0)
     assert etl is not None
-    # невыкуп = 30-10 = 20; return col 5000/20 = 250
-    assert etl.reverse_logistics_shop_avg == pytest.approx(250.0)
-    assert "× 250.00 руб." in etl.logistics_fomo_items[0]
+    # 5 фактических возвратов; 5000 / 5 = 1000 ₽/шт (выше пола 50)
+    assert etl.reverse_logistics_shop_avg == pytest.approx(1000.0)
+    assert "5 возвратов" in etl.logistics_fomo_items[0]
+    assert "≈ 5 000.00 руб." in etl.logistics_fomo_items[0]
+
+
+def test_returns_qty_capped_by_deliveries() -> None:
+    """Возвраты не могут превышать доставки по SKU."""
+    matrix = [
+        [
+            "Предмет",
+            "Выкупили, шт.",
+            "Доставки, шт.",
+            "Возвраты, шт.",
+            "Логистика, руб.",
+            "К перечислению, руб.",
+        ],
+        ["BAD", "5", "10", "9999", "100", "5000"],
+    ]
+    etl = compute_seller_matrix_etl(matrix, revenue_total=13_195.0)
+    assert etl is not None
+    assert "9999" not in etl.logistics_fomo_items[0]
+    assert "10 возвратов" in etl.logistics_fomo_items[0]
 
 
 def test_sku_catalog_line_format() -> None:

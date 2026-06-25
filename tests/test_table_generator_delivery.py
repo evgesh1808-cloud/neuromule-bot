@@ -62,6 +62,7 @@ async def test_send_chart_then_document_separately() -> None:
 
     assert ok is True
     message.answer_photo.assert_awaited_once()
+    message.answer.assert_not_awaited()
     text_mock.assert_awaited_once()
     assert "ФИНАНСОВЫЙ" in text_mock.await_args.args[1]
     message.answer_document.assert_awaited_once()

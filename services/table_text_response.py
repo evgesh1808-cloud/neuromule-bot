@@ -103,6 +103,24 @@ _PRICE_HINTS = ("цена", "реализац", "рознич")
 _COMMISSION_HINTS = ("вознагражден", "комисс")
 _LOGISTICS_HINTS = ("логистик", "доставк", "хранен")
 _RETURN_LOGISTICS_HINTS = ("возврат", "обратн")
+_RETURN_ID_SKIP = (
+    "srid",
+    "rrid",
+    "rrd",
+    "id ",
+    " id",
+    "номер",
+    "код возврата",
+    "документ",
+    "транзак",
+)
+
+
+def _is_return_id_column(header: str) -> bool:
+    low = (header or "").lower()
+    if any(q in low for q in _QTY_UNIT_HINTS):
+        return False
+    return any(s in low for s in _RETURN_ID_SKIP)
 
 
 def _match_column_index(headers: list[str], hints: tuple[str, ...], *, require_qty: bool = False) -> int | None:
@@ -111,6 +129,8 @@ def _match_column_index(headers: list[str], hints: tuple[str, ...], *, require_q
         if not any(h in low for h in hints):
             continue
         if require_qty and not any(q in low for q in _QTY_UNIT_HINTS):
+            continue
+        if any(h in low for h in _RETURN_QTY_HINTS) and _is_return_id_column(header):
             continue
         return idx
     return None
@@ -345,7 +365,13 @@ def compute_wb_marketplace_metrics(
 
     sales_qty = _sum_numeric_column(matrix, sales_col) if sales_col is not None else 0.0
     deliveries_qty = _sum_numeric_column(matrix, del_col) if del_col is not None else 0.0
-    returns_qty = _sum_numeric_column(matrix, ret_col) if ret_col is not None else 0.0
+    raw_returns = _sum_numeric_column(matrix, ret_col) if ret_col is not None else 0.0
+    returns_qty = raw_returns
+    if returns_qty > 0:
+        if deliveries_qty > 0:
+            returns_qty = min(returns_qty, deliveries_qty)
+        if sales_qty > 0:
+            returns_qty = min(returns_qty, sales_qty * 2.0)
     ordered_qty = _sum_numeric_column(matrix, ordered_col) if ordered_col is not None else 0.0
 
     denom = deliveries_qty + returns_qty

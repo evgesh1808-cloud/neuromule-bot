@@ -316,6 +316,7 @@ async def run_xlsx_fast_path_turn(
     skip_billing: bool = False,
     column_structure_warning: bool = False,
     marketplace_platform: str | None = None,
+    source_file_path: str | None = None,
 ) -> ChatTurnResult:
     """
     Локальный fast-path: Excel → pack без OpenRouter (100% маржа).
@@ -397,6 +398,7 @@ async def run_xlsx_fast_path_turn(
             matrix_rows=worker.rows,
             models=model_chain or None,
             platform=marketplace_platform,
+            file_path=source_file_path,
         )
         if ai_caption:
             from dataclasses import replace

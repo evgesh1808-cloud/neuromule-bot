@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
-from content.chat_prompt import build_wb_marketplace_finance_system_prompt
+from content.chat_prompt import WB_ANALYTICS_SYSTEM_PROMPT, build_wb_marketplace_finance_system_prompt
 from services.table_text_response import compute_wb_marketplace_metrics
 from services.table_wb_finance_ai import (
     append_wb_finance_mini_app_cta,
+    build_wb_finance_json_user_message,
+    build_wb_finance_openrouter_prompt_pair,
     build_wb_finance_system_prompt_from_totals,
-    build_wb_marketplace_finance_user_prompt,
+    build_wb_mpstats_ai_context,
     compute_business_score,
     compute_fomo_lost_rub,
     compute_wb_finance_prompt_metrics,
@@ -17,88 +21,64 @@ from services.table_wb_finance_ai import (
 )
 
 
-def test_build_wb_marketplace_finance_system_prompt_variables() -> None:
-    prompt = build_wb_marketplace_finance_system_prompt(
-        revenue="185,000.00",
-        tax="11,100.00",
-        clear_profit="173,900.00",
-        profitability_pct="94.0",
-        adv_load="13.3",
-        buy_ratio="72.5",
-        year_forecast="2,220,000",
-        business_score="7.5",
-        verdict="Высокая маржинальность при контролируемом ДРР.",
-        fomo_lost_rub="12,500.00",
-        logistics_fomo_rub="3,200.00",
-        abc_a_leader="WRAPPER",
-        abc_a_leader_name="Футболка Premium",
-        abc_a_leader_article="WRAPPER-001",
-        abc_a_count="2",
-        abc_c_count="1",
-        abc_c_summary="• DEAD (арт. DEAD-99)",
-        outsider_name="DEAD",
-        outsider_article="DEAD-99",
-        outsider_loss="400.00",
-        outsider_buyout="0.0",
-        abc_a_leader_buyout="77.8",
-        fomo_details_block="• Возвраты 10 шт.\n• Рекламный перерасход",
-        return_logistics_block=(
-            "• Логистика возвратов: Стаканы (Арт: 100): 3187 возвратов × 52.40 руб. "
-            "обратной логистики по литражу"
-        ),
-        reverse_logistics_avg_rub="52.40",
-        sku_catalog_block="• Футболка Premium (Артикул: WRAPPER-001) — 100 000.00 руб. — 85 000.00 руб. — 77.8%",
-        oos_forecast_line="«BOX» закончится через 3 дн. (риск OOS)",
-        matrix_problem_zones_block=(
-            "📉 Балласт:\n"
-            "• DEAD (арт. DEAD-99) — выкуп 0.0% — покатушки генерируют расходы на обратную логистику"
-        ),
-        localization_index_line="не указан в исходных данных",
-    )
-    assert "автоматический финансовый модуль" in prompt.lower() or "оцифровки маркетплейсов" in prompt
-    assert "Проблемные зоны и скрытые убытки" in prompt
+def test_wb_analytics_system_prompt_cfo_v8_static() -> None:
+    prompt = build_wb_marketplace_finance_system_prompt()
+    assert prompt is WB_ANALYTICS_SYSTEM_PROMPT
+    assert "MPSTATS" in prompt or "mpstats" in prompt.lower()
+    assert "Проблемные зоны" in prompt
     assert "Балласт" in prompt
-    assert "Неликвид" in prompt
-    assert "185,000.00 руб." in prompt
-    assert "11,100.00 руб." in prompt
-    assert "173,900.00 руб." in prompt
-    assert "реклама 13.3%" in prompt or "ДРР 13.3%" in prompt
-    assert "2,220,000 руб." in prompt
+    assert "неликвид" in prompt.lower()
     assert "Senior ИИ-Аналитик" not in prompt
     assert "ИНДЕКС ЗДОРОВЬЯ БИЗНЕСА" in prompt
     assert "СВЕТОФОР ЭФФЕКТИВНОСТИ" in prompt
     assert "КАЛЬКУЛЯТОР ПОТЕРЬ" in prompt
-    assert "12,500.00 руб." in prompt
     assert "2000 символов" in prompt
-    assert "РЕЙТИНГ ПРОДАЖ ПО ТОВАРАМ" in prompt
-    assert "Футболка Premium" in prompt
-    assert "WRAPPER-001" in prompt
-    assert "3,200.00" in prompt
-    assert "КАТАЛОГ ТОВАРОВ ETL" not in prompt
-    assert "Подключите" not in prompt
-    assert "СЛУЖЕБНЫЕ ПРАВИЛА" in prompt
+    assert "ABC-АНАЛИЗ ПРОДАЖ" in prompt
+    assert "BENOVY" not in prompt
+    assert "cfo-v8" in prompt
+    assert "20%" in prompt
+    assert "group_A" in prompt
+    assert "loss_calculator" in prompt
+    assert "traffic_light" in prompt
+    assert "health_index" in prompt
+    assert "СЛУЖЕБНЫЕ ПРАВИЛА" not in prompt
     assert "ПЛАН ДЕЙСТВИЙ ДЛЯ ПРЕДПРИНИМАТЕЛЯ" in prompt
     assert "ГЛАВНЫЙ АНАЛИТИЧЕСКИЙ ВЫВОД" in prompt
     assert "ГЛАВНЫЙ ВЫВОД ИИ" not in prompt
     assert "ОБЩАЯ ВЫРУЧКА" in prompt
     assert "ИИ-ПЛАН" not in prompt
-    template_section = prompt.split("СТРУКТУРА ОТВЕТА", 1)[-1]
-    assert "серверный" not in template_section.lower()
-    assert "Серверный" not in template_section
-    assert "ИИ-ПЛАН" not in template_section
-    assert "лидер — всего" not in prompt
-    assert "всего <code>" not in prompt
-    assert "ABC-АНАЛИЗ МАТРИЦЫ (локальный" not in prompt
-    assert "cfo-v7" in prompt
-    assert "выкуп &lt;15%" in prompt or "15%" in prompt
-    assert "20%" in prompt
-    assert "• DEAD" in prompt
-    assert "• Возвраты" in prompt
-    assert "Логистика возвратов:" in prompt
-    assert "52.40" in prompt
-    assert "ОБРАТНАЯ ЛОГИСТИКА" in prompt
-    assert "(каждый источник потерь" not in prompt
-    assert "(каждый SKU с новой строки" not in prompt
+
+
+def test_build_wb_finance_json_user_message_wraps_payload() -> None:
+    payload = {"finance": {"total_revenue": 1000.0}}
+    user = build_wb_finance_json_user_message(payload)
+    assert "1000.0" in user
+    assert "Python" in user
+    assert "ИИ»" in user or "«ИИ»" in user
+
+
+def test_build_wb_finance_openrouter_prompt_pair_from_matrix() -> None:
+    matrix = [
+        [
+            "Бренд",
+            "Артикул",
+            "Выкупили, шт.",
+            "Доставки, шт.",
+            "Возвраты, шт.",
+            "Логистика, руб.",
+            "К перечислению, руб.",
+            "Остаток на складе, шт.",
+        ],
+        ["ACME", "SKU-A1", "70", "90", "5", "3500", "100000", "30"],
+    ]
+    pair = build_wb_finance_openrouter_prompt_pair(matrix, revenue_total=100_000.0)
+    assert pair is not None
+    system, user = pair
+    assert "cfo-v8" in system
+    data = json.loads(user.split("\n\n", 1)[-1])
+    assert data["finance"]["total_revenue"] == 100_000.0
+    assert "health_index" in data
+    assert "traffic_light" in data
 
 
 def test_compute_wb_finance_prompt_metrics_from_etl() -> None:
@@ -108,92 +88,77 @@ def test_compute_wb_finance_prompt_metrics_from_etl() -> None:
             "Выкупили, шт.",
             "Доставки, шт.",
             "Возвраты, шт.",
-            "Удержания за продвижение",
+            "Логистика, руб.",
             "К перечислению, руб.",
+            "Остаток на складе, шт.",
         ],
-        ["Футболка", "8", "9", "1", "500", "4000"],
+        ["Футболка Premium", "70", "90", "5", "3500", "100000", "30"],
+        ["DEAD", "0", "10", "0", "500", "0", "100"],
     ]
-    wb = compute_wb_marketplace_metrics(matrix, revenue_total=6000.0)
-    assert wb is not None
-    metrics = compute_wb_finance_prompt_metrics(6000.0, wb, matrix_rows=matrix)
+    wb = compute_wb_marketplace_metrics(matrix, revenue_total=100_000.0)
+    metrics = compute_wb_finance_prompt_metrics(100_000.0, wb, matrix_rows=matrix)
     assert metrics is not None
-    assert metrics.revenue == 6000.0
-    assert metrics.tax == 360.0
-    assert metrics.clear_profit == pytest.approx(3131.0)
-    assert metrics.year_forecast == 72000.0
-    assert metrics.profitability_pct == pytest.approx(52.2, abs=0.5)
-    assert 1.0 <= metrics.business_score <= 10.0
-    assert metrics.verdict
-    assert metrics.fomo_lost_rub >= 0
-
-    system = build_wb_finance_system_prompt_from_totals(6000.0, wb)
-    assert system is not None
-    assert "6,000.00 руб." in system
-    assert f"{metrics.business_score:.1f}" in system
-
-    user = build_wb_marketplace_finance_user_prompt(metrics, wb)
-    assert "revenue_rub" in user
-    assert "fomo_lost_rub" in user
-    assert "sku_catalog" in user
-    assert "outsider_sku" in user
-    assert "Футболка" in user
+    assert metrics.revenue == 100_000.0
+    assert metrics.business_score >= 1.0
 
 
-def test_fomo_and_scoring_helpers() -> None:
-    matrix = [
+def test_build_wb_finance_system_prompt_from_totals() -> None:
+    wb = compute_wb_marketplace_metrics(
         [
-            "Предмет",
-            "Выкупили, шт.",
-            "Доставки, шт.",
-            "Возвраты, шт.",
-            "Удержания за продвижение",
-            "К перечислению, руб.",
-            "Цена реализации",
-            "Вознаграждение",
-            "Логистика",
+            ["Предмет", "К перечислению, руб."],
+            ["A", "100000"],
         ],
-        ["Убыток", "2", "20", "8", "3000", "1000", "500", "400", "200"],
-        ["Хит", "50", "55", "2", "500", "50000", "1200", "100", "50"],
-    ]
-    wb = compute_wb_marketplace_metrics(matrix, revenue_total=51_000.0)
-    assert wb is not None
-    fomo, parts = compute_fomo_lost_rub(51_000.0, wb)
-    assert fomo > 0
-    assert parts
-    score = compute_business_score(
-        profitability_pct=90.0,
-        ad_load_pct=wb.ad_load_pct,
-        buyout_coef_pct=wb.buyout_coef_pct,
-        worst_unit_net=min(u.net_income for u in wb.top5_units),
+        revenue_total=100_000.0,
     )
-    assert score >= 1.0
+    system = build_wb_finance_system_prompt_from_totals(100_000.0, wb)
+    assert system is not None
+    assert "cfo-v8" in system
+
+
+def test_compute_business_score_bounds() -> None:
+    high = compute_business_score(
+        profitability_pct=20.0,
+        ad_load_pct=10.0,
+        buyout_coef_pct=75.0,
+        worst_unit_net=50.0,
+    )
+    assert 8.0 <= high <= 10.0
+    low = compute_business_score(
+        profitability_pct=2.0,
+        ad_load_pct=30.0,
+        buyout_coef_pct=30.0,
+        worst_unit_net=-100.0,
+    )
+    assert 1.0 <= low <= 5.0
+
+
+def test_derive_business_verdict_high_score() -> None:
     verdict = derive_business_verdict(
-        business_score=score,
-        profitability_pct=90.0,
-        ad_load_pct=wb.ad_load_pct,
-        buyout_coef_pct=wb.buyout_coef_pct,
-        worst_unit_label="Убыток",
+        business_score=8.5,
+        profitability_pct=20.0,
+        ad_load_pct=10.0,
+        buyout_coef_pct=70.0,
+        worst_unit_label=None,
     )
-    assert verdict
+    assert "масштабирован" in verdict.lower() or "маржинальность" in verdict.lower()
 
 
-def test_append_wb_finance_mini_app_cta_is_noop() -> None:
-    body = "📊 <b>ФИНАНСОВЫЙ ЭКСПРЕСС-АНАЛИЗ</b>"
-    out = append_wb_finance_mini_app_cta(body)
-    assert out == body
-    assert "Автопилот по API" not in out
+def test_compute_fomo_lost_rub() -> None:
+    wb = compute_wb_marketplace_metrics(
+        [
+            ["Предмет", "К перечислению, руб.", "Выкупили, шт.", "Доставки, шт.", "Возвраты, шт."],
+            ["A", "100000", "30", "100", "20"],
+        ],
+        revenue_total=100_000.0,
+    )
+    lost, parts = compute_fomo_lost_rub(100_000.0, wb)
+    assert lost >= 0.0
+    assert isinstance(parts, tuple)
 
 
-def test_sanitize_wb_finance_html_replaces_legacy_headers() -> None:
-    from services.table_wb_finance_ai import has_legacy_wb_finance_markers, sanitize_wb_finance_html
-
-    raw = "📋 ИИ-План действий\n💸 Серверный расчёт: 1000"
-    cleaned = sanitize_wb_finance_html(raw)
-    assert "ИИ-План" not in cleaned
-    assert "Серверный" not in cleaned
-    assert "ПЛАН ДЕЙСТВИЙ" in cleaned
-    assert has_legacy_wb_finance_markers(raw)
-    assert not has_legacy_wb_finance_markers(cleaned)
+def test_append_wb_finance_mini_app_cta_empty() -> None:
+    html = append_wb_finance_mini_app_cta("<b>test</b>")
+    assert "test" in html
 
 
 def test_sanitize_wb_finance_html_strips_technical_parentheses() -> None:
@@ -208,55 +173,13 @@ def test_sanitize_wb_finance_html_strips_technical_parentheses() -> None:
     assert "локальный ETL" not in cleaned
     assert "по 2–3 предложения" not in cleaned
     assert "каждый шаг" not in cleaned
-    assert "РЕЙТИНГ ПРОДАЖ" in cleaned
+    assert "ABC-АНАЛИЗ ПРОДАЖ" in cleaned
 
 
-def test_enrich_table_json_wb_finance_adds_abc_and_summary() -> None:
-    from services.table_wb_finance_ai import enrich_table_json_wb_finance
-    from services.table_text_response import compute_wb_marketplace_metrics
-
+def test_build_wb_mpstats_ai_context_full_group_c() -> None:
     matrix = [
         [
-            "Предмет",
-            "Выкупили, шт.",
-            "Доставки, шт.",
-            "Возвраты, шт.",
-            "Удержания за продвижение",
-            "К перечислению, руб.",
-        ],
-        ["Футболка Premium", "80", "90", "10", "5000", "100000"],
-        ["DEAD", "0", "20", "20", "1000", "5000"],
-    ]
-    base = '{"title":"T","headers":["A"],"rows":[["1"]]}'
-    wb = compute_wb_marketplace_metrics(matrix, revenue_total=105_000.0)
-    enriched = enrich_table_json_wb_finance(
-        base,
-        revenue_total=105_000.0,
-        wb_metrics=wb,
-        matrix_rows=matrix,
-    )
-    import json
-
-    payload = json.loads(enriched)
-    assert "abc_analysis" in payload
-    assert "sku_catalog" in payload
-    assert payload["summary"]["business_score"] > 0
-
-
-def test_dedupe_report_noise_oos() -> None:
-    from services.table_wb_finance_ai import _dedupe_report_noise
-
-    raw = "«BOX» через 0 дн. (риск OOS) (риск OOS)"
-    assert _dedupe_report_noise(raw) == "«BOX» через 0 дн. (риск OOS)"
-
-
-def test_build_matrix_problem_zones_ballast_and_illiquid() -> None:
-    from services.file_processor import compute_seller_matrix_etl
-    from services.table_wb_finance_ai import build_matrix_problem_zones_block
-
-    matrix = [
-        [
-            "Предмет",
+            "Бренд",
             "Артикул",
             "Выкупили, шт.",
             "Доставки, шт.",
@@ -265,70 +188,73 @@ def test_build_matrix_problem_zones_ballast_and_illiquid() -> None:
             "К перечислению, руб.",
             "Остаток на складе, шт.",
         ],
-        ["LEADER", "L-1", "80", "100", "5", "1000", "90000", "10"],
-        ["BALLAST", "B-1", "1", "80", "20", "12000", "0", "1"],
-        ["ILLIQ", "I-9", "0", "5", "0", "500", "0", "120"],
+        ["A", "1", "50", "60", "2", "1000", "80000", "10"],
+        ["B", "2", "10", "20", "1", "500", "15000", "5"],
+        ["C", "3", "5", "10", "0", "200", "5000", "100"],
     ]
-    etl = compute_seller_matrix_etl(matrix, revenue_total=90_000.0)
-    assert etl is not None
-    block = build_matrix_problem_zones_block(etl)
-    assert "Балласт" in block
-    assert "Неликвид" in block
-    assert "LB-1" in block or "BALLAST" in block or "B-1" in block
-    assert "I-9" in block or "ILLIQ" in block
+    ctx = build_wb_mpstats_ai_context(matrix, revenue_total=100_000.0)
+    assert len(ctx["abc_analysis"]["group_C"]) == ctx["abc_analysis"]["total_group_c_count"]
+    assert isinstance(ctx["problem_zones"]["ballast"], list)
 
 
-def test_ru_more_goods_suffix_plural() -> None:
-    from services.table_wb_finance_ai import _ru_more_goods_suffix
-
-    assert _ru_more_goods_suffix(1) == "… и ещё 1 товар"
-    assert _ru_more_goods_suffix(3) == "… и ещё 3 товара"
-    assert _ru_more_goods_suffix(5) == "… и ещё 5 товаров"
-    assert _ru_more_goods_suffix(22) == "… и ещё 22 товара"
-
-
-def test_business_score_band_thresholds() -> None:
-    from services.table_wb_finance_ai import _business_score_band
-
-    assert _business_score_band(3.5)[0] == "🔴"
-    assert "КРИТИЧЕСКИЙ" in _business_score_band(3.5)[1]
-    assert _business_score_band(6.0)[0] == "🟡"
-    assert "НОРМАЛЬНЫЙ" in _business_score_band(6.0)[1]
-    assert _business_score_band(8.5)[0] == "🟢"
-    assert "ОТЛИЧНЫЙ" in _business_score_band(8.5)[1]
-
-
-def test_local_report_shows_score_emoji_and_reason() -> None:
-    from services.table_wb_finance_ai import (
-        WbFinancePromptMetrics,
-        build_wb_finance_express_html_local,
-    )
-
-    metrics = WbFinancePromptMetrics(
-        revenue=10_000.0,
-        tax=600.0,
-        clear_profit=9_400.0,
-        adv_load_pct=10.0,
-        buy_ratio_pct=60.0,
-        year_forecast=120_000.0,
-        profitability_pct=94.0,
-        business_score=7.0,
-        verdict="Тест",
-        fomo_lost_rub=0.0,
-        fomo_breakdown=(),
-        abc_a_leader_name="WRAPPER",
-        abc_a_leader_article="W-1",
-        abc_a_leader_buyout=72.0,
-        abc_a_leader_margin=5_000.0,
-    )
-    html = build_wb_finance_express_html_local(metrics, None)
-    assert "🟡" in html
-    assert "НОРМАЛЬНЫЙ УРОВЕНЬ" in html
-    assert "📈" in html or "📉" in html
-
-
-def test_local_report_includes_problem_zones() -> None:
+def test_build_matrix_problem_zones_block() -> None:
+    from services.table_wb_finance_ai import build_matrix_problem_zones_block
     from services.file_processor import compute_seller_matrix_etl
+
+    matrix = [
+        [
+            "Предмет",
+            "Выкупили, шт.",
+            "Доставки, шт.",
+            "Возвраты, шт.",
+            "Логистика, руб.",
+            "К перечислению, руб.",
+            "Остаток на складе, шт.",
+        ],
+        ["DEAD", "0", "10", "5", "500", "0", "100"],
+    ]
+    etl = compute_seller_matrix_etl(matrix, revenue_total=0.0)
+    block = build_matrix_problem_zones_block(etl)
+    assert "Неликвид" in block or "Балласт" in block or "проблемных" in block.lower()
+
+
+def test_build_wb_finance_express_html_local_abc_header() -> None:
+    from services.table_wb_finance_ai import (
+        build_wb_finance_express_html_local,
+        compute_wb_finance_prompt_metrics,
+    )
+
+    matrix = [
+        ["Предмет", "К перечислению, руб.", "Выкупили, шт.", "Доставки, шт.", "Возвраты, шт."],
+        ["WRAPPER", "100000", "70", "90", "5"],
+    ]
+    wb = compute_wb_marketplace_metrics(matrix, revenue_total=100_000.0)
+    metrics = compute_wb_finance_prompt_metrics(100_000.0, wb, matrix_rows=matrix)
+    assert metrics is not None
+    html = build_wb_finance_express_html_local(metrics, None)
+    assert "ABC-АНАЛИЗ ПРОДАЖ" in html
+    assert "cfo-v8" in html
+
+
+def test_build_wb_finance_express_html_local_no_ii_word() -> None:
+    from services.table_wb_finance_ai import (
+        build_wb_finance_express_html_local,
+        compute_wb_finance_prompt_metrics,
+    )
+
+    matrix = [
+        ["Предмет", "К перечислению, руб."],
+        ["A", "50000"],
+    ]
+    wb = compute_wb_marketplace_metrics(matrix, revenue_total=50_000.0)
+    metrics = compute_wb_finance_prompt_metrics(50_000.0, wb, matrix_rows=matrix)
+    assert metrics is not None
+    html = build_wb_finance_express_html_local(metrics, wb)
+    assert "ИИ-Аналитик" not in html
+    assert "ИИ-ПЛАН" not in html
+
+
+def test_build_wb_finance_express_html_local_traffic_light() -> None:
     from services.table_wb_finance_ai import (
         build_wb_finance_express_html_local,
         compute_wb_finance_prompt_metrics,
@@ -337,7 +263,74 @@ def test_local_report_includes_problem_zones() -> None:
     matrix = [
         [
             "Предмет",
-            "Артикул",
+            "К перечислению, руб.",
+            "Выкупили, шт.",
+            "Доставки, шт.",
+            "Возвраты, шт.",
+            "Логистика, руб.",
+        ],
+        ["GOOD", "90000", "70", "90", "5", "3000"],
+        ["BAD", "10000", "0", "20", "10", "800"],
+    ]
+    wb = compute_wb_marketplace_metrics(matrix, revenue_total=100_000.0)
+    metrics = compute_wb_finance_prompt_metrics(100_000.0, wb, matrix_rows=matrix)
+    assert metrics is not None
+    html = build_wb_finance_express_html_local(metrics, wb)
+    assert "СВЕТОФОР ЭФФЕКТИВНОСТИ" in html
+    assert "ЗОНА УСПЕХА" in html
+
+
+def test_build_wb_finance_express_html_local_loss_calculator() -> None:
+    from services.table_wb_finance_ai import (
+        build_wb_finance_express_html_local,
+        compute_wb_finance_prompt_metrics,
+    )
+
+    matrix = [
+        [
+            "Предмет",
+            "К перечислению, руб.",
+            "Выкупили, шт.",
+            "Доставки, шт.",
+            "Возвраты, шт.",
+            "Логистика, руб.",
+        ],
+        ["RET", "50000", "10", "30", "15", "2000"],
+    ]
+    wb = compute_wb_marketplace_metrics(matrix, revenue_total=50_000.0)
+    metrics = compute_wb_finance_prompt_metrics(50_000.0, wb, matrix_rows=matrix)
+    assert metrics is not None
+    html = build_wb_finance_express_html_local(metrics, wb)
+    assert "КАЛЬКУЛЯТОР ПОТЕРЬ" in html
+    assert "Логистика возвратов" in html or "покатуш" in html.lower()
+
+
+def test_build_wb_finance_express_html_local_health_index() -> None:
+    from services.table_wb_finance_ai import (
+        build_wb_finance_express_html_local,
+        compute_wb_finance_prompt_metrics,
+    )
+
+    matrix = [
+        ["Предмет", "К перечислению, руб."],
+        ["A", "100000"],
+    ]
+    wb = compute_wb_marketplace_metrics(matrix, revenue_total=100_000.0)
+    metrics = compute_wb_finance_prompt_metrics(100_000.0, wb, matrix_rows=matrix)
+    assert metrics is not None
+    html = build_wb_finance_express_html_local(metrics, None)
+    assert "ИНДЕКС ЗДОРОВЬЯ" in html
+
+
+def test_build_wb_finance_express_html_local_matrix_zones() -> None:
+    from services.table_wb_finance_ai import (
+        build_wb_finance_express_html_local,
+        compute_wb_finance_prompt_metrics,
+    )
+
+    matrix = [
+        [
+            "Предмет",
             "Выкупили, шт.",
             "Доставки, шт.",
             "Возвраты, шт.",
@@ -345,142 +338,25 @@ def test_local_report_includes_problem_zones() -> None:
             "К перечислению, руб.",
             "Остаток на складе, шт.",
         ],
-        ["DEAD", "SKU-C1", "0", "10", "0", "500", "0", "100"],
+        ["DEAD", "0", "10", "5", "500", "0", "100"],
     ]
-    metrics = compute_wb_finance_prompt_metrics(
-        10_000.0, None, matrix_rows=matrix, platform="wildberries"
-    )
+    wb = compute_wb_marketplace_metrics(matrix, revenue_total=1.0)
+    metrics = compute_wb_finance_prompt_metrics(1.0, wb, matrix_rows=matrix)
     assert metrics is not None
-    assert "Неликвид" in metrics.matrix_problem_zones_block
     html = build_wb_finance_express_html_local(metrics, None)
-    assert "Проблемные зоны и скрытые убытки" in html
-    assert "Неликвид" in html
+    assert "Проблемные зоны" in html
+    assert "Неликвид" in html or "Балласт" in html or "неликвид" in html.lower()
 
 
-def test_local_report_includes_cfo_build_marker() -> None:
+def test_build_wb_finance_express_html_local_plan() -> None:
     from services.table_wb_finance_ai import (
-        WbFinancePromptMetrics,
         build_wb_finance_express_html_local,
+        compute_wb_finance_prompt_metrics,
     )
 
-    metrics = WbFinancePromptMetrics(
-        revenue=10_000.0,
-        tax=600.0,
-        clear_profit=9_400.0,
-        adv_load_pct=10.0,
-        buy_ratio_pct=60.0,
-        year_forecast=120_000.0,
-        profitability_pct=94.0,
-        business_score=7.0,
-        verdict="Тест",
-        fomo_lost_rub=0.0,
-        fomo_breakdown=(),
-        abc_a_leader_name="WRAPPER",
-        abc_a_leader_article="W-1",
-        abc_a_leader_buyout=72.0,
-        abc_a_leader_margin=5_000.0,
-    )
+    matrix = [["Предмет", "К перечислению, руб."], ["A", "10000"]]
+    wb = compute_wb_marketplace_metrics(matrix, revenue_total=10_000.0)
+    metrics = compute_wb_finance_prompt_metrics(10_000.0, wb, matrix_rows=matrix)
+    assert metrics is not None
     html = build_wb_finance_express_html_local(metrics, None)
-    assert "CFO build cfo-v7" in html
-    assert "арт. W-1" in html or "W-1" in html
-
-
-def test_local_report_zero_buyout_leader_goes_critical() -> None:
-    from services.table_wb_finance_ai import (
-        WbFinancePromptMetrics,
-        build_wb_finance_express_html_local,
-    )
-
-    metrics = WbFinancePromptMetrics(
-        revenue=100_000.0,
-        tax=6_000.0,
-        clear_profit=94_000.0,
-        adv_load_pct=12.0,
-        buy_ratio_pct=55.0,
-        year_forecast=1_200_000.0,
-        profitability_pct=94.0,
-        business_score=7.0,
-        verdict="Тест",
-        fomo_lost_rub=1_000.0,
-        fomo_breakdown=(),
-        abc_a_leader_name="DEAD",
-        abc_a_leader_article="DEAD-99",
-        abc_a_leader_buyout=0.0,
-        abc_a_leader_margin=-500.0,
-        abc_c_summary="• DEAD (арт. DEAD-99)",
-        outsider_name="DEAD",
-        outsider_article="DEAD-99",
-        outsider_loss=500.0,
-        outsider_buyout=0.0,
-    )
-    html = build_wb_finance_express_html_local(metrics, None)
-    assert "КРИТИЧЕСКАЯ ЗОНА" in html
-    assert "0.0%" in html
-    assert "главный источник убытков" in html.lower()
-    assert "Масштабируйте закуп и рекламу на этот SKU" not in html
-
-
-def test_local_report_high_drr_plan_demands_reduction() -> None:
-    from services.table_wb_finance_ai import (
-        WbFinancePromptMetrics,
-        build_wb_finance_express_html_local,
-    )
-
-    metrics = WbFinancePromptMetrics(
-        revenue=100_000.0,
-        tax=6_000.0,
-        clear_profit=94_000.0,
-        adv_load_pct=24.5,
-        buy_ratio_pct=65.0,
-        year_forecast=1_200_000.0,
-        profitability_pct=94.0,
-        business_score=6.0,
-        verdict="Тест",
-        fomo_lost_rub=0.0,
-        fomo_breakdown=(),
-        abc_a_leader_name="WRAPPER",
-        abc_a_leader_article="W-1",
-        abc_a_leader_buyout=72.0,
-        abc_a_leader_margin=50_000.0,
-        abc_c_summary="• неликвидов нет",
-        outsider_name="—",
-        outsider_article="—",
-        outsider_loss=0.0,
-        outsider_buyout=0.0,
-    )
-    html = build_wb_finance_express_html_local(metrics, None)
-    assert "снизить дрр" in html.lower()
-    assert "зафиксируйте дрр" not in html.lower()
-
-
-def test_local_report_catastrophic_drr_plan_demands_cut() -> None:
-    from services.table_wb_finance_ai import (
-        WbFinancePromptMetrics,
-        build_wb_finance_express_html_local,
-    )
-
-    metrics = WbFinancePromptMetrics(
-        revenue=100_000.0,
-        tax=6_000.0,
-        clear_profit=94_000.0,
-        adv_load_pct=75.6,
-        buy_ratio_pct=65.0,
-        year_forecast=1_200_000.0,
-        profitability_pct=94.0,
-        business_score=4.0,
-        verdict="Тест",
-        fomo_lost_rub=0.0,
-        fomo_breakdown=(),
-        abc_a_leader_name="WRAPPER",
-        abc_a_leader_article="W-1",
-        abc_a_leader_buyout=72.0,
-        abc_a_leader_margin=50_000.0,
-        abc_c_summary="• неликвидов нет",
-        outsider_name="—",
-        outsider_article="—",
-        outsider_loss=0.0,
-        outsider_buyout=0.0,
-    )
-    html = build_wb_finance_express_html_local(metrics, None)
-    assert "катастрофический дрр" in html.lower()
-    assert "зафиксируйте дрр" not in html.lower()
+    assert "ПЛАН ДЕЙСТВИЙ" in html

@@ -28,6 +28,53 @@ _HIGH_DRR_PCT = 18.0
 _CRITICAL_BUYOUT_PCT = 5.0
 _SLOW_TURNOVER_DAYS = 45.0
 _ILLIQUID_MIN_STOCK = 1.0
+MIN_REVERSE_LOGISTICS_RUB = 50.0
+
+
+def clamp_shop_returns_qty(
+    returns_qty: float,
+    *,
+    sales_qty: float,
+    deliveries_qty: float,
+) -> float:
+    """Возвраты на уровне магазина: не больше доставок и не больше 2× выкупов."""
+    qty = max(0.0, returns_qty)
+    if qty <= 0:
+        return 0.0
+    if deliveries_qty > 0:
+        qty = min(qty, deliveries_qty)
+    if sales_qty > 0:
+        qty = min(qty, sales_qty * 2.0)
+    return qty
+
+
+def build_mpstats_return_logistics_payload(
+    matrix_etl: object | None,
+    *,
+    revenue_total: float,
+) -> dict[str, Any]:
+    """Готовые строки потерь на обратной логистике для MPSTATS JSON и промпта."""
+    if matrix_etl is None or revenue_total <= 0:
+        return {
+            "total_loss_rub": 0.0,
+            "lines": [],
+            "shop_avg_rub_per_unit": 0.0,
+        }
+    items: list[dict[str, Any]] = []
+    for line in getattr(matrix_etl, "logistics_fomo_items", ()) or ():
+        text = (line or "").strip()
+        if text:
+            items.append({"text": text})
+    block = getattr(matrix_etl, "return_logistics_block", "") or ""
+    lines = [ln.lstrip("• ").strip() for ln in block.splitlines() if ln.strip()]
+    return {
+        "total_loss_rub": round(float(getattr(matrix_etl, "logistics_fomo_rub", 0.0) or 0.0), 2),
+        "lines": items or [{"text": ln} for ln in lines],
+        "shop_avg_rub_per_unit": round(
+            float(getattr(matrix_etl, "reverse_logistics_shop_avg", 0.0) or 0.0), 2
+        ),
+        "min_tariff_rub": MIN_REVERSE_LOGISTICS_RUB,
+    }
 
 
 def _format_sku_label(name: str, article: str) -> str:
@@ -110,17 +157,49 @@ def _classify_group_c_problem_zone(
     return "ballast" if buyout_pct < 55.0 else "illiquid"
 
 
-def _extract_problem_zone_sku_lists(matrix_etl: object | None) -> tuple[list[str], list[str]]:
-    """Списки артикулов балласта и неликвида (до 3 в каждой зоне)."""
+def _parse_return_logistics_from_etl(matrix_etl: object | None) -> dict[str, dict[str, float | int]]:
+    """Парсит готовые строки ETL «Логистика возвратов: …» в словарь по метке SKU."""
+    out: dict[str, dict[str, float | int]] = {}
+    if matrix_etl is None:
+        return out
+    pattern = re.compile(
+        r"Логистика возвратов:\s*(.+?):\s*(\d+)\s*возвратов\.\s*"
+        r"Общий убыток на пустых покатушках:\s*≈\s*([\d\s.,]+)\s*руб",
+        re.IGNORECASE,
+    )
+    block = getattr(matrix_etl, "return_logistics_block", "") or ""
+    for line in block.splitlines():
+        m = pattern.search(line)
+        if not m:
+            continue
+        label = m.group(1).strip()
+        loss_raw = m.group(3).replace(" ", "").replace(",", ".")
+        try:
+            loss = float(loss_raw)
+        except ValueError:
+            loss = 0.0
+        out[label] = {
+            "returns": int(m.group(2)),
+            "loss": round(loss, 2),
+        }
+    return out
+
+
+def _extract_problem_zones_structured(
+    matrix_etl: object | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Полные списки балласта и неликвида для JSON (без усечения)."""
     if matrix_etl is None:
         return [], []
     group_c = getattr(matrix_etl, "abc_group_c", ()) or ()
     if not group_c:
         return [], []
 
+    logistics_map = _parse_return_logistics_from_etl(matrix_etl)
     oos_map = {f.label: f for f in getattr(matrix_etl, "oos_forecasts", ()) or ()}
-    ballast: list[tuple[float, str]] = []
-    illiquid: list[tuple[float, str]] = []
+    catalog = {s.name: s for s in getattr(matrix_etl, "sku_catalog", ()) or ()}
+    ballast: list[dict[str, Any]] = []
+    non_liquid: list[dict[str, Any]] = []
 
     for sku in group_c:
         oos = oos_map.get(sku.name)
@@ -136,16 +215,93 @@ def _extract_problem_zone_sku_lists(matrix_etl: object | None) -> tuple[list[str
             days_until_stockout=days,
         )
         if zone == "illiquid":
-            illiquid.append((stock, label))
+            detail = catalog.get(sku.name)
+            frozen = float(detail.revenue) if detail and detail.revenue > 0 else 0.0
+            non_liquid.append(
+                {
+                    "sku": label,
+                    "stock": int(stock),
+                    "frozen_capital_rub": round(frozen, 2),
+                }
+            )
         else:
-            ballast.append((sku.buyout_pct, label))
+            log = logistics_map.get(label) or logistics_map.get(sku.name) or {}
+            ballast.append(
+                {
+                    "sku": label,
+                    "buyout": round(float(sku.buyout_pct), 1),
+                    "returns": int(log.get("returns", 0)),
+                    "loss": round(float(log.get("loss", 0.0)), 2),
+                }
+            )
 
-    ballast.sort(key=lambda x: x[0])
-    illiquid.sort(key=lambda x: -x[0])
+    ballast.sort(key=lambda x: float(x.get("buyout", 100.0)))
+    non_liquid.sort(key=lambda x: -int(x.get("stock", 0)))
+    return ballast, non_liquid
+
+
+def _extract_problem_zone_sku_lists(matrix_etl: object | None) -> tuple[list[str], list[str]]:
+    """Устаревшая обёртка: метки SKU из структурированных зон."""
+    ballast, non_liquid = _extract_problem_zones_structured(matrix_etl)
     return (
-        [label for _, label in ballast[:3]],
-        [label for _, label in illiquid[:3]],
+        [str(item["sku"]) for item in ballast],
+        [str(item["sku"]) for item in non_liquid],
     )
+
+
+def _build_traffic_light_json(
+    *,
+    group_a: list[str],
+    ballast: list[dict[str, Any]],
+    drr: float,
+    prompt_metrics: WbFinancePromptMetrics | None,
+    wb_metrics: WbMarketplaceMetrics | None,
+) -> dict[str, str]:
+    """Готовые тексты светофора — модель только копирует в HTML."""
+    green_parts: list[str] = []
+    yellow_parts: list[str] = []
+    red_parts: list[str] = []
+
+    if group_a:
+        green_parts.append("Прибыльные лидеры: " + "; ".join(group_a))
+    if prompt_metrics and prompt_metrics.abc_a_leader_name:
+        green_parts.append(
+            f"Лидер «{prompt_metrics.abc_a_leader_name}» "
+            f"(арт. {prompt_metrics.abc_a_leader_article})"
+        )
+
+    if drr > _DRR_WARNING_PCT:
+        yellow_parts.append(
+            f"ДРР {drr:.1f}% — Вы работаете на рекламу, а не на карман."
+        )
+    elif drr > 0:
+        yellow_parts.append(f"ДРР {drr:.1f}% — контролируйте окупаемость рекламы.")
+
+    if prompt_metrics and prompt_metrics.buy_ratio_pct > 0 and prompt_metrics.buy_ratio_pct < 55:
+        yellow_parts.append(f"Выкуп {prompt_metrics.buy_ratio_pct:.1f}% — зона внимания.")
+
+    for item in ballast:
+        red_parts.append(
+            f"«{item['sku']}» — выкуп {item['buyout']}% — "
+            f"убыток на покатушках ≈ {item['loss']} руб."
+        )
+    if prompt_metrics and prompt_metrics.outsider_loss > 0:
+        red_parts.append(
+            f"«{prompt_metrics.outsider_name}» (арт. {prompt_metrics.outsider_article}) — "
+            f"убыток {_fmt_rub_in_code(prompt_metrics.outsider_loss)} руб."
+        )
+    if wb_metrics and wb_metrics.top5_units:
+        worst = min(wb_metrics.top5_units, key=lambda u: u.net_income)
+        if worst.net_income < 0:
+            red_parts.append(
+                f"«{worst.label}» — {_fmt_rub_in_code(worst.net_income)} руб./шт."
+            )
+
+    return {
+        "green": " ".join(green_parts) if green_parts else "критических утечек в лидерах не выявлено",
+        "yellow": " ".join(yellow_parts) if yellow_parts else "показатели в норме",
+        "red": " ".join(red_parts) if red_parts else "критических убытков не выявлено",
+    }
 
 
 def _build_oos_predictions_map(matrix_etl: object | None, *, max_days: int = 7) -> dict[str, int]:
@@ -168,6 +324,431 @@ def _build_oos_predictions_map(matrix_etl: object | None, *, max_days: int = 7) 
         )
         out[key] = max(0, int(days))
     return out
+
+
+_WB_XLSX_HEADER_SCAN_ROWS = 25
+_WB_RETURN_COL_ID_SKIP = (
+    "srid",
+    "rrid",
+    "rrd",
+    " id",
+    "id ",
+    "номер",
+    "код возврата",
+    "документ",
+    "транзак",
+)
+_WB_QTY_MARKERS = ("шт", "кол-во", "количество", "единиц")
+
+
+def _wb_xlsx_is_return_id_header(header: str) -> bool:
+    low = (header or "").lower()
+    if any(q in low for q in _WB_QTY_MARKERS):
+        return False
+    return any(s in low for s in _WB_RETURN_COL_ID_SKIP)
+
+
+def _wb_xlsx_find_col(
+    headers: list[str],
+    keywords: tuple[str, ...],
+    *,
+    require_qty: bool = False,
+    skip_return_ids: bool = False,
+) -> int | None:
+    for idx, header in enumerate(headers):
+        low = (header or "").lower()
+        if not any(k.lower() in low for k in keywords):
+            continue
+        if require_qty and not any(q in low for q in _WB_QTY_MARKERS):
+            continue
+        if skip_return_ids and _wb_xlsx_is_return_id_header(header):
+            continue
+        return idx
+    return None
+
+
+def _wb_xlsx_safe_float(value: object) -> float:
+    if value is None:
+        return 0.0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _wb_xlsx_sku_label(brand: str, article: str) -> str:
+    brand = (brand or "").strip()
+    article = (article or "").strip()
+    if not brand or brand in ("—", "-", "Unknown", "None"):
+        brand = article or "—"
+    if not article or article == brand:
+        return brand
+    return f"{brand} (арт. {article})"
+
+
+def _wb_xlsx_skip_row(brand: str, article: str) -> bool:
+    for label in (brand, article):
+        low = (label or "").strip().lower()
+        if low.startswith(("итого", "всего", "total")):
+            return True
+    if brand in ("None", "", "—", "-") and article in ("None", "", "—", "-"):
+        return True
+    return False
+
+
+def _wb_xlsx_detect_header(sheet: object) -> tuple[int, list[str]] | None:
+    """Ищет строку шапки WB (после преамбули поставщика)."""
+    max_row = min(getattr(sheet, "max_row", 0) or 0, _WB_XLSX_HEADER_SCAN_ROWS)
+    max_col = min(getattr(sheet, "max_column", 0) or 0, 80)
+    revenue_keys = (
+        "к перечислению",
+        "вайлдберриз к перечислению",
+        "продажи",
+        "выруч",
+    )
+    identity_keys = ("бренд", "артикул", "предмет", "наименование", "номенклатур")
+    for row_idx in range(1, max_row + 1):
+        headers = [
+            str(sheet.cell(row=row_idx, column=col).value or "").strip()
+            for col in range(1, max_col + 1)
+        ]
+        if not any(headers):
+            continue
+        has_revenue = any(any(k in (h or "").lower() for k in revenue_keys) for h in headers)
+        has_identity = any(any(k in (h or "").lower() for k in identity_keys) for h in headers)
+        if has_revenue and has_identity:
+            return row_idx, headers
+    return None
+
+
+def _wb_xlsx_return_loss_rub(returns_count: int, delivery_rub: float) -> float:
+    if returns_count <= 0:
+        return 0.0
+    per_unit = delivery_rub / returns_count if delivery_rub > 0 else 0.0
+    unit = max(MIN_REVERSE_LOGISTICS_RUB, per_unit)
+    return round(returns_count * unit, 2)
+
+
+def build_wb_weekly_xlsx_ai_context(file_path: str | Path) -> dict[str, Any] | None:
+    """
+    Парсер еженедельных отчётов Wildberries (openpyxl): агрегация по SKU,
+    валидация возвратов, MPSTATS JSON без галлюцинаций модели.
+    """
+    from pathlib import Path as PathCls
+
+    from openpyxl import load_workbook
+
+    path = PathCls(file_path)
+    if not path.is_file():
+        return None
+
+    wb = load_workbook(path, read_only=True, data_only=True)
+    try:
+        sheet = wb.active
+        detected = _wb_xlsx_detect_header(sheet)
+        if detected is None:
+            return None
+        header_row, headers = detected
+
+        col_brand = _wb_xlsx_find_col(headers, ("бренд", "brand"))
+        col_art = _wb_xlsx_find_col(
+            headers, ("артикул поставщика", "артикул", "vendor", "sku", "barcode")
+        )
+        col_name = _wb_xlsx_find_col(headers, ("предмет", "наименование", "номенклатур", "товар"))
+        col_sales = _wb_xlsx_find_col(
+            headers,
+            (
+                "вайлдберриз к перечислению",
+                "к перечислению за товар",
+                "к перечислению",
+                "продажи",
+                "выруч",
+            ),
+        )
+        col_cost = _wb_xlsx_find_col(headers, ("себестоимость", "закупка"))
+        col_delivery = _wb_xlsx_find_col(
+            headers,
+            ("услуги по доставке", "логистика", "стоимость логистики", "доставк"),
+        )
+        col_returns_qty = _wb_xlsx_find_col(
+            headers,
+            ("количество возвратов", "возврат штук", "возвраты"),
+            require_qty=True,
+            skip_return_ids=True,
+        )
+        if col_returns_qty is None:
+            col_returns_qty = _wb_xlsx_find_col(
+                headers, ("возврат",), require_qty=True, skip_return_ids=True
+            )
+        col_orders_qty = _wb_xlsx_find_col(
+            headers,
+            ("количество заказов", "заказы штук", "заказы", "заказано"),
+            require_qty=True,
+        )
+        if col_orders_qty is None:
+            col_orders_qty = _wb_xlsx_find_col(
+                headers, ("доставк", "выкупили"), require_qty=True
+            )
+        col_ad_spend = _wb_xlsx_find_col(
+            headers, ("расходы на рекламу", "реклама", "внутренняя реклама", "продвижен", "удержан")
+        )
+        col_stock = _wb_xlsx_find_col(headers, ("текущий остаток", "остаток на складе", "остатк"))
+        col_daily_sales = _wb_xlsx_find_col(
+            headers, ("средние продажи в день", "скорость продаж")
+        )
+
+        if col_sales is None:
+            return None
+
+        def cell(row_idx: int, col_idx: int | None) -> object:
+            if col_idx is None:
+                return None
+            return sheet.cell(row=row_idx, column=col_idx + 1).value
+
+        sku_data: dict[str, dict[str, float | int]] = {}
+        max_row = getattr(sheet, "max_row", header_row) or header_row
+
+        for row_idx in range(header_row + 1, max_row + 1):
+            brand = str(cell(row_idx, col_brand) or cell(row_idx, col_name) or "").strip()
+            article = str(cell(row_idx, col_art) or cell(row_idx, col_name) or brand).strip()
+            if _wb_xlsx_skip_row(brand, article):
+                continue
+
+            sku_label = _wb_xlsx_sku_label(brand, article)
+            sales = _wb_xlsx_safe_float(cell(row_idx, col_sales))
+            cost = _wb_xlsx_safe_float(cell(row_idx, col_cost))
+            delivery = abs(_wb_xlsx_safe_float(cell(row_idx, col_delivery)))
+            returns_qty = int(_wb_xlsx_safe_float(cell(row_idx, col_returns_qty)))
+            orders_qty = int(_wb_xlsx_safe_float(cell(row_idx, col_orders_qty)))
+            ad_spend = abs(_wb_xlsx_safe_float(cell(row_idx, col_ad_spend)))
+            stock = int(_wb_xlsx_safe_float(cell(row_idx, col_stock)))
+            daily_sales = _wb_xlsx_safe_float(cell(row_idx, col_daily_sales))
+
+            if sales == 0 and returns_qty == 0 and orders_qty == 0 and stock == 0:
+                continue
+
+            bucket = sku_data.setdefault(
+                sku_label,
+                {
+                    "revenue": 0.0,
+                    "cost": 0.0,
+                    "delivery": 0.0,
+                    "returns_count": 0,
+                    "orders_count": 0,
+                    "ad_spend": 0.0,
+                    "stock": 0,
+                    "daily_sales": 0.0,
+                },
+            )
+            bucket["revenue"] = float(bucket["revenue"]) + sales
+            bucket["cost"] = float(bucket["cost"]) + cost
+            bucket["delivery"] = float(bucket["delivery"]) + delivery
+            bucket["returns_count"] = int(bucket["returns_count"]) + returns_qty
+            bucket["orders_count"] = int(bucket["orders_count"]) + orders_qty
+            bucket["ad_spend"] = float(bucket["ad_spend"]) + ad_spend
+            bucket["stock"] = max(int(bucket["stock"]), stock)
+            bucket["daily_sales"] = max(float(bucket["daily_sales"]), daily_sales)
+
+        if not sku_data:
+            return None
+
+        for metrics in sku_data.values():
+            orders = int(metrics["orders_count"])
+            returns = int(metrics["returns_count"])
+            if orders > 0:
+                metrics["returns_count"] = min(returns, orders)
+            metrics["returns_count"] = int(
+                clamp_shop_returns_qty(
+                    float(metrics["returns_count"]),
+                    sales_qty=float(orders),
+                    deliveries_qty=float(orders),
+                )
+            )
+
+        total_revenue = sum(float(m["revenue"]) for m in sku_data.values())
+        if total_revenue <= 0:
+            return None
+
+        total_ad_spend = sum(float(m["ad_spend"]) for m in sku_data.values())
+        tax_usn = round(total_revenue * _USN_RATE, 2)
+
+        sorted_skus: list[dict[str, Any]] = []
+        total_profit = 0.0
+        return_logistics_lines: list[str] = []
+        total_return_loss = 0.0
+
+        for sku, metrics in sku_data.items():
+            orders_count = int(metrics["orders_count"])
+            returns_count = int(metrics["returns_count"])
+            delivery_rub = float(metrics["delivery"])
+            revenue = float(metrics["revenue"])
+            cost = float(metrics["cost"])
+            ad_spend = float(metrics["ad_spend"])
+
+            total_actions = orders_count + returns_count
+            buyout_rate = (
+                (orders_count / total_actions * 100.0) if total_actions > 0 else 100.0
+            )
+            return_loss_rub = _wb_xlsx_return_loss_rub(returns_count, delivery_rub)
+            total_return_loss += return_loss_rub
+            if returns_count > 0 and return_loss_rub > 0:
+                loss_s = f"{return_loss_rub:,.2f}".replace(",", " ")
+                return_logistics_lines.append(
+                    f"Логистика возвратов: {sku}: {returns_count} возвратов. "
+                    f"Общий убыток на пустых покатушках: ≈ {loss_s} руб."
+                )
+
+            sku_profit = revenue - cost - delivery_rub - (revenue * _USN_RATE) - ad_spend
+            total_profit += sku_profit
+            sorted_skus.append(
+                {
+                    "sku": sku,
+                    "revenue": revenue,
+                    "profit": sku_profit,
+                    "buyout_rate": buyout_rate,
+                    "returns_count": returns_count,
+                    "return_loss_rub": return_loss_rub,
+                    "stock": int(metrics["stock"]),
+                    "daily_sales": float(metrics["daily_sales"]),
+                }
+            )
+
+        sorted_skus.sort(key=lambda x: x["revenue"], reverse=True)
+
+        group_a: list[str] = []
+        group_c: list[str] = []
+        ballast: list[dict[str, Any]] = []
+        non_liquid: list[dict[str, Any]] = []
+        oos_predictions: dict[str, int] = {}
+
+        running_sum = 0.0
+        for item in sorted_skus:
+            running_sum += item["revenue"]
+            if running_sum <= total_revenue * 0.8 and item["profit"] > 0:
+                group_a.append(item["sku"])
+            else:
+                group_c.append(item["sku"])
+
+            if item["buyout_rate"] < _BALLAST_BUYOUT_PCT and item["returns_count"] > 0:
+                ballast.append(
+                    {
+                        "sku": item["sku"],
+                        "buyout": round(item["buyout_rate"], 1),
+                        "returns": item["returns_count"],
+                        "loss": round(item["return_loss_rub"], 2),
+                    }
+                )
+            if item["stock"] > 0 and item["revenue"] == 0:
+                non_liquid.append({"sku": item["sku"], "stock": item["stock"]})
+            if item["daily_sales"] > 0:
+                days_left = int(item["stock"] / item["daily_sales"])
+                if days_left <= 7:
+                    oos_predictions[item["sku"]] = days_left
+
+        drr = (total_ad_spend / total_revenue * 100.0) if total_revenue > 0 else 0.0
+        business_score = 10.0
+        if total_profit <= 0:
+            business_score -= 4.0
+        if ballast:
+            business_score -= 2.0
+        if oos_predictions:
+            business_score -= 1.5
+        if drr > _DRR_WARNING_PCT:
+            business_score -= 1.5
+        business_score = max(1.0, min(10.0, business_score))
+
+        margin_rate = (total_profit / total_revenue * 100.0) if total_revenue > 0 else 0.0
+        shop_avg = (
+            total_return_loss / sum(int(m["returns_count"]) for m in sku_data.values())
+            if sum(int(m["returns_count"]) for m in sku_data.values()) > 0
+            else 0.0
+        )
+        emoji, status = _business_score_band(business_score)
+        verdict = derive_business_verdict(
+            business_score=business_score,
+            profitability_pct=margin_rate,
+            ad_load_pct=drr,
+            buyout_coef_pct=0.0,
+            worst_unit_label=group_c[0] if group_c else None,
+        )
+        reason = (
+            "📉 Балл занижен из-за балласта и возвратов."
+            if ballast
+            else "📈 Операционные показатели в пределах нормы."
+        )
+        traffic_light = {
+            "green": (
+                "Прибыльные лидеры: " + "; ".join(group_a)
+                if group_a
+                else "лидеры не выделены"
+            ),
+            "yellow": (
+                f"ДРР {drr:.1f}% — Вы работаете на рекламу, а не на карман."
+                if drr > _DRR_WARNING_PCT
+                else f"ДРР {drr:.1f}%"
+            ),
+            "red": (
+                "; ".join(
+                    f"«{b['sku']}» — убыток ≈ {b['loss']} руб." for b in ballast
+                )
+                if ballast
+                else "критических убытков не выявлено"
+            ),
+        }
+
+        return {
+            "finance": {
+                "total_revenue": round(total_revenue, 2),
+                "tax_usn": tax_usn,
+                "total_profit": round(total_profit, 2),
+                "margin_rate": round(margin_rate, 1),
+                "drr": round(drr, 1),
+                "business_score": round(business_score, 1),
+            },
+            "health_index": {
+                "score": round(business_score, 1),
+                "emoji": emoji,
+                "status": status,
+                "reason": reason,
+                "verdict": verdict,
+            },
+            "abc_analysis": {
+                "group_A": group_a
+                if group_a
+                else ["Лидеры отсутствуют, вся матрица требует санации"],
+                "group_C": group_c,
+                "total_group_c_count": len(group_c),
+            },
+            "problem_zones": {
+                "ballast": ballast,
+                "non_liquid": non_liquid,
+            },
+            "traffic_light": traffic_light,
+            "loss_calculator": {
+                "return_logistics": {
+                    "total_loss_rub": round(total_return_loss, 2),
+                    "lines": [{"text": ln} for ln in return_logistics_lines],
+                    "shop_avg_rub_per_unit": round(shop_avg, 2),
+                    "min_tariff_rub": MIN_REVERSE_LOGISTICS_RUB,
+                },
+                "fomo_lost_rub": round(total_return_loss, 2),
+            },
+            "oos_predictions": oos_predictions,
+            "year_forecast_rub": round(total_revenue * 52, 0),
+            "localization_index": "не указан в исходных данных",
+            "sku_catalog": [
+                {
+                    "sku": sku,
+                    "revenue": round(float(m["revenue"]), 2),
+                    "returns_count": int(m["returns_count"]),
+                    "orders_count": int(m["orders_count"]),
+                }
+                for sku, m in sku_data.items()
+            ],
+            "parser": "wb_weekly_openpyxl_v1",
+        }
+    finally:
+        wb.close()
 
 
 def build_wb_mpstats_ai_context(
@@ -206,36 +787,106 @@ def build_wb_mpstats_ai_context(
     if not group_a:
         group_a = ["Лидеры отсутствуют, требуется оптимизация"]
 
-    ballast, non_liquid = _extract_problem_zone_sku_lists(etl)
+    ballast, non_liquid = _extract_problem_zones_structured(etl)
     drr = wb_metrics.ad_load_pct if wb_metrics else 0.0
     tax = revenue_total * _USN_RATE
     margin_rate = prompt_metrics.profitability_pct if prompt_metrics else 0.0
     clear_profit = prompt_metrics.clear_profit if prompt_metrics else revenue_total - tax
+    business_score = prompt_metrics.business_score if prompt_metrics else 0.0
+    verdict = prompt_metrics.verdict if prompt_metrics else ""
+    year_forecast = prompt_metrics.year_forecast if prompt_metrics else revenue_total * 12
 
     loc_line = prompt_metrics.localization_index_line if prompt_metrics else "не указан в исходных данных"
+    traffic_light = _build_traffic_light_json(
+        group_a=group_a,
+        ballast=ballast,
+        drr=drr,
+        prompt_metrics=prompt_metrics,
+        wb_metrics=wb_metrics,
+    )
+    emoji, status = _business_score_band(business_score)
+    reason = (
+        _business_score_reason_line(prompt_metrics, wb_metrics)
+        if prompt_metrics
+        else "Причина оценки рассчитана по операционным метрикам."
+    )
 
     return {
+        "parser": "wb_matrix_etl_v1",
         "finance": {
             "total_revenue": round(revenue_total, 2),
             "tax_usn": round(tax, 2),
             "total_profit": round(clear_profit, 2),
             "margin_rate": round(margin_rate, 1),
             "drr": round(drr, 1),
-            "business_score": round(prompt_metrics.business_score, 1) if prompt_metrics else 0.0,
+            "business_score": round(business_score, 1),
+        },
+        "health_index": {
+            "score": round(business_score, 1),
+            "emoji": emoji,
+            "status": status,
+            "reason": reason,
+            "verdict": verdict,
         },
         "abc_analysis": {
             "group_A": group_a,
-            "group_C": group_c_all[:5],
+            "group_C": group_c_all,
             "total_group_c_count": len(group_c_all),
         },
         "problem_zones": {
             "ballast": ballast,
             "non_liquid": non_liquid,
         },
+        "traffic_light": traffic_light,
+        "loss_calculator": {
+            "return_logistics": build_mpstats_return_logistics_payload(
+                etl, revenue_total=revenue_total
+            ),
+            "fomo_lost_rub": round(prompt_metrics.fomo_lost_rub, 2) if prompt_metrics else 0.0,
+        },
         "oos_predictions": _build_oos_predictions_map(etl),
+        "year_forecast_rub": round(year_forecast, 0),
         "localization_index": loc_line,
         "sku_catalog": list(prompt_metrics.sku_catalog_items) if prompt_metrics else [],
     }
+
+
+def resolve_wb_mpstats_context(
+    *,
+    file_path: str | Path | None = None,
+    matrix_rows: list[list[str]] | None = None,
+    revenue_total: float = 0.0,
+    platform: str | None = "wildberries",
+    title: str | None = None,
+) -> dict[str, Any]:
+    """Единая точка: Excel или матрица → MPSTATS JSON-словарь (все расчёты в Python)."""
+    if file_path is not None:
+        raw = prepare_wb_data_for_ai(file_path, platform=platform or "wildberries", title=title)
+        data = json.loads(raw)
+        if isinstance(data, dict) and not data.get("error"):
+            return data
+    if matrix_rows and revenue_total > 0:
+        return build_wb_mpstats_ai_context(
+            matrix_rows,
+            revenue_total=revenue_total,
+            platform=platform,
+        )
+    return {"error": "empty_or_no_revenue"}
+
+
+def build_wb_finance_json_user_message(json_payload: str | dict[str, Any]) -> str:
+    """User-сообщение OpenRouter: только готовый JSON-пакет."""
+    if isinstance(json_payload, dict):
+        body = json.dumps(json_payload, ensure_ascii=False, indent=2)
+    else:
+        body = json_payload.strip()
+    return (
+        "Ниже — подтверждённый JSON-пакет финансовой оцифровки Wildberries. "
+        "Все числа, списки товаров, балласт, неликвид и бизнес-скоринг рассчитаны в Python. "
+        "Строго упакуй JSON в HTML-отчёт по структуре из system prompt. "
+        "Запрещено менять числа, дополнять товары, сокращать списки и использовать слово «ИИ».\n\n"
+        f"{body}"
+    )
 
 
 def prepare_wb_data_for_ai(
@@ -246,6 +897,9 @@ def prepare_wb_data_for_ai(
 ) -> str:
     """
     Считывает Excel Wildberries, считает метрики в стиле MPSTATS и возвращает JSON для OpenRouter.
+
+    Сначала — парсер еженедельного отчёта WB (openpyxl, агрегация по SKU),
+    при неудаче — матричный ETL из preprocess_xlsx_rows.
     """
     from pathlib import Path as PathCls
 
@@ -253,6 +907,12 @@ def prepare_wb_data_for_ai(
     from services.table_xlsx_preprocess import preprocess_xlsx_rows
 
     path = PathCls(file_path)
+
+    if platform in (None, "", "wildberries"):
+        weekly = build_wb_weekly_xlsx_ai_context(path)
+        if weekly is not None:
+            return json.dumps(weekly, ensure_ascii=False, indent=2)
+
     raw_rows = read_xlsx_rows_from_path(path)
     display_title = title or path.stem or "Отчёт WB"
     pre = preprocess_xlsx_rows(raw_rows, title=display_title)
@@ -510,7 +1170,7 @@ _WB_FINANCE_MAX_OUTPUT_TOKENS = 1400
 _WB_FINANCE_TELEGRAM_SOFT_MAX_CHARS = 2000
 _FINANCE_SEPARATOR = "────────────────────────"
 # Меняйте при каждом релизе CFO-шаблона — видно внизу отчёта для проверки деплоя.
-_FINANCE_REPORT_BUILD = "cfo-v7"
+_FINANCE_REPORT_BUILD = "cfo-v8"
 _OLD_FINALE_MARKERS = (
     "Финальный Excel",
     "интерактивный дашборд",
@@ -534,9 +1194,9 @@ _LEGACY_FINANCE_REPLACEMENTS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"ГЛАВНЫЙ\s+ВЫВОД\s+ИИ", re.IGNORECASE), "ГЛАВНЫЙ АНАЛИТИЧЕСКИЙ ВЫВОД"),
     (re.compile(r"ВАЛОВАЯ\s+ВЫРУЧКА", re.IGNORECASE), "ОБЩАЯ ВЫРУЧКА"),
     (re.compile(r"Серверный\s+расч[её]т", re.IGNORECASE), "Потенциально можно вернуть в оборот"),
-    (re.compile(r"ABC[\s\-–—]*АНАЛИЗ\s+ПРОДАЖ", re.IGNORECASE), "РЕЙТИНГ ПРОДАЖ ПО ТОВАРАМ"),
-    (re.compile(r"ABC[\s\-–—]*АНАЛИЗ\s+МАТРИЦЫ\s*\(\s*локальный\s+ETL[^)]*\)", re.IGNORECASE), "РЕЙТИНГ ПРОДАЖ ПО ТОВАРАМ"),
-    (re.compile(r"ABC[\s\-–—]*АНАЛИЗ\s+МАТРИЦЫ", re.IGNORECASE), "РЕЙТИНГ ПРОДАЖ ПО ТОВАРАМ"),
+    (re.compile(r"ABC[\s\-–—]*АНАЛИЗ\s+МАТРИЦЫ\s*\(\s*локальный\s+ETL[^)]*\)", re.IGNORECASE), "ABC-АНАЛИЗ ПРОДАЖ"),
+    (re.compile(r"ABC[\s\-–—]*АНАЛИЗ\s+МАТРИЦЫ", re.IGNORECASE), "ABC-АНАЛИЗ ПРОДАЖ"),
+    (re.compile(r"РЕЙТИНГ\s+ПРОДАЖ\s+ПО\s+ТОВАРАМ", re.IGNORECASE), "ABC-АНАЛИЗ ПРОДАЖ"),
     (re.compile(r"БИЗНЕС-СКОРИНГ\s+МАГАЗИНА", re.IGNORECASE), "ИНДЕКС ЗДОРОВЬЯ БИЗНЕСА"),
     (re.compile(r"ИНДЕКС\s+ЗДОРОВЬЯ\s+МАГАЗИНА", re.IGNORECASE), "ИНДЕКС ЗДОРОВЬЯ БИЗНЕСА"),
     (re.compile(r"СВЕТОФОР\s+ЗДОРОВЬЯ\s+БИЗНЕСА", re.IGNORECASE), "СВЕТОФОР ЭФФЕКТИВНОСТИ"),
@@ -752,13 +1412,19 @@ def compute_fomo_lost_rub(
             )
 
     if wb_metrics.returns_qty > 0 and wb_metrics.deliveries_qty > 0:
-        ret_rate = wb_metrics.returns_qty / wb_metrics.deliveries_qty
-        if ret_rate > 0.12:
-            penalty = revenue_total * ret_rate * 0.08
+        validated_returns = clamp_shop_returns_qty(
+            wb_metrics.returns_qty,
+            sales_qty=wb_metrics.sales_qty,
+            deliveries_qty=wb_metrics.deliveries_qty,
+        )
+        ret_rate = validated_returns / wb_metrics.deliveries_qty
+        if ret_rate > 0.12 and validated_returns > 0:
+            unit = max(MIN_REVERSE_LOGISTICS_RUB, revenue_total * ret_rate * 0.08 / validated_returns)
+            penalty = validated_returns * unit
             if penalty > 30:
                 total += penalty
                 parts.append(
-                    f"возвраты {wb_metrics.returns_qty:.0f} шт. → штрафы/обратная логистика ≈ "
+                    f"возвраты {validated_returns:.0f} шт. → обратная логистика ≈ "
                     f"{_fmt_rub_in_code(penalty)} руб."
                 )
 
@@ -1106,18 +1772,18 @@ def build_wb_marketplace_finance_payload_dict(
 def build_wb_marketplace_finance_user_prompt(
     prompt_metrics: WbFinancePromptMetrics,
     wb_metrics: WbMarketplaceMetrics | None,
+    *,
+    matrix_rows: list[list[str]] | None = None,
 ) -> str:
-    """User-сообщение: расширенный JSON с ETL-метриками для качественного анализа."""
-    payload = build_wb_marketplace_finance_payload_dict(prompt_metrics, wb_metrics)
-    return (
-        "Ниже — подтверждённые финансовые показатели и каталог SKU из отчёта маркетплейса. "
-        "Сформируй экспресс-отчёт строго по структуре из system prompt. "
-        "Числа выручки, налога, прибыли, рентабельности, скоринга, упущенной выгоды, ABC и OOS не меняй. "
-        "Используй точные названия товаров и артикулы из sku_catalog — без обобщений. "
-        "Пиши как финансовый директор, без слов «ИИ», «серверный», «алгоритм». "
-        f"Весь ответ до {_WB_FINANCE_TELEGRAM_SOFT_MAX_CHARS} символов.\n\n"
-        f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
+    """User-сообщение: MPSTATS JSON (все метрики из Python ETL)."""
+    ctx = build_wb_mpstats_ai_context(
+        matrix_rows or [],
+        revenue_total=prompt_metrics.revenue,
+        platform="wildberries",
     )
+    if ctx.get("error"):
+        ctx = build_wb_marketplace_finance_payload_dict(prompt_metrics, wb_metrics)
+    return build_wb_finance_json_user_message(ctx)
 
 
 def build_wb_finance_system_prompt_from_totals(
@@ -1140,17 +1806,22 @@ def build_wb_finance_openrouter_prompt_pair(
     *,
     revenue_total: float,
     wb_metrics: WbMarketplaceMetrics | None = None,
+    file_path: str | Path | None = None,
+    platform: str | None = "wildberries",
 ) -> tuple[str, str] | None:
-    """Пара system + user для OpenRouter после локального ETL матрицы."""
-    if wb_metrics is None:
-        wb_metrics = resolve_wb_metrics_for_rows(matrix_rows, revenue_total)
-    prompt_metrics = compute_wb_finance_prompt_metrics(
-        revenue_total, wb_metrics, matrix_rows=matrix_rows
+    """Пара system + user для OpenRouter: cfo-v8 + MPSTATS JSON из Python."""
+    from content.chat_prompt import WB_ANALYTICS_SYSTEM_PROMPT
+
+    ctx = resolve_wb_mpstats_context(
+        file_path=file_path,
+        matrix_rows=matrix_rows,
+        revenue_total=revenue_total,
+        platform=platform,
     )
-    if prompt_metrics is None:
+    if ctx.get("error"):
         return None
-    system = build_wb_marketplace_finance_system_prompt(**_prompt_kwargs_from_metrics(prompt_metrics))
-    user = build_wb_marketplace_finance_user_prompt(prompt_metrics, wb_metrics)
+    system = WB_ANALYTICS_SYSTEM_PROMPT
+    user = build_wb_finance_json_user_message(ctx)
     return system, user
 
 
@@ -1347,7 +2018,7 @@ def _format_abc_a_leader_html(prompt_metrics: WbFinancePromptMetrics) -> str:
         )
     ):
         return (
-            "🅰️ <b>Товары-лидеры (Приносят основные деньги):</b> "
+            "🅰️ <b>Товары-лидеры (Приносят основные деньги группы А):</b> "
             "<i>Отсутствуют, выручка требует оптимизации</i>"
         )
     label = _escape_verdict(
@@ -1357,7 +2028,7 @@ def _format_abc_a_leader_html(prompt_metrics: WbFinancePromptMetrics) -> str:
         )
     )
     return (
-        f"🅰️ <b>Товары-лидеры (Приносят основные деньги):</b> <b>{label}</b> "
+        f"🅰️ <b>Товары-лидеры (Приносят основные деньги группы А):</b> <b>{label}</b> "
         f"(выкуп: <code>{prompt_metrics.abc_a_leader_buyout:.1f}%</code>)"
     )
 
@@ -1392,14 +2063,14 @@ def build_wb_finance_express_html_local(
             f"<code>{prompt_metrics.profitability_pct:.1f}%</code>"
         ),
         _FINANCE_SEPARATOR,
-        "📦 <b>РЕЙТИНГ ПРОДАЖ ПО ТОВАРАМ</b>",
+        "📦 <b>ABC-АНАЛИЗ ПРОДАЖ</b>",
         _format_abc_a_leader_html(prompt_metrics),
-        "🅲 <b>Товары-аутсайдеры (Слабые продажи или убытки):</b>",
+        "🅲 <b>Товары-аутсайдеры (Слабые продажи группы С):</b>",
     ]
     for c_line in prompt_metrics.abc_c_summary.splitlines():
         if c_line.strip():
             lines.append(_escape_verdict(c_line))
-    lines.append("📦 <b>Проблемные зоны и скрытые убытки:</b>")
+    lines.append("📦 <b>Проблемные зоны и скрытые убытки матрицы:</b>")
     for zone_line in prompt_metrics.matrix_problem_zones_block.splitlines():
         if zone_line.strip():
             lines.append(_escape_verdict(zone_line))
@@ -1603,13 +2274,32 @@ async def generate_wb_finance_consulting_html(
     models: list[str] | None = None,
     http_client: object | None = None,
     platform: str | None = None,
+    file_path: str | Path | None = None,
+    wb_json_str: str | None = None,
 ) -> str | None:
     """
-    CFO-отчёт для wb_ozon_finance — всегда локальный шаблон (без OpenRouter).
-
-    Гарантирует актуальные заголовки и формулировки без риска «старого» текста модели.
+    CFO-отчёт wb_ozon_finance: Python JSON → OpenRouter (упаковка HTML) → fallback локальный шаблон.
     """
-    del settings, models, http_client  # OpenRouter отключён для стабильности отчёта
+    from content.chat_prompt import WB_ANALYTICS_SYSTEM_PROMPT
+
+    ctx: dict[str, Any] | None = None
+    if wb_json_str:
+        try:
+            parsed = json.loads(wb_json_str)
+            if isinstance(parsed, dict) and not parsed.get("error"):
+                ctx = parsed
+        except json.JSONDecodeError:
+            ctx = None
+    if ctx is None:
+        ctx = resolve_wb_mpstats_context(
+            file_path=file_path,
+            matrix_rows=matrix_rows,
+            revenue_total=revenue_total,
+            platform=platform,
+        )
+    if not ctx or ctx.get("error"):
+        ctx = None
+
     if wb_metrics is None and matrix_rows:
         wb_metrics = resolve_wb_metrics_for_rows(
             matrix_rows, revenue_total, platform=platform
@@ -1620,6 +2310,41 @@ async def generate_wb_finance_consulting_html(
         matrix_rows=matrix_rows,
         platform=platform,
     )
+
+    model_chain: list[str] = []
+    if models:
+        model_chain.extend(m for m in models if m and m not in model_chain)
+    for mid in settings.free_models:
+        if mid and mid not in model_chain:
+            model_chain.append(mid)
+
+    if ctx is not None:
+        messages = [
+            {"role": "system", "content": WB_ANALYTICS_SYSTEM_PROMPT},
+            {"role": "user", "content": build_wb_finance_json_user_message(ctx)},
+        ]
+        try:
+            completion = await ask_ai_messages(
+                settings,
+                messages,
+                timeout=settings.openrouter_timeout_sec,
+                max_context_tokens=settings.chat_max_context_tokens_est,
+                char_per_token=settings.chat_char_per_token_est,
+                http_client=http_client,
+                models=model_chain or None,
+                max_tokens=settings.openrouter_premium_max_output_tokens,
+                text_role="table_generator",
+            )
+            raw = sanitize_wb_finance_html(completion.get("content") or "")
+            if raw and "cfo-v8" in raw.lower():
+                return append_wb_finance_mini_app_cta(raw)
+            if raw and not has_legacy_wb_finance_markers(raw):
+                if "cfo-v8" not in raw.lower():
+                    raw = f"{raw}\n\n<i>CFO build {_FINANCE_REPORT_BUILD}</i>"
+                return append_wb_finance_mini_app_cta(raw)
+        except Exception:
+            logger.exception("generate_wb_finance_consulting_html: OpenRouter failed")
+
     if prompt_metrics is None:
         return None
     local = build_wb_finance_express_html_local(prompt_metrics, wb_metrics)

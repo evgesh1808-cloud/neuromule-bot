@@ -492,6 +492,27 @@ _WB_REVENUE_HINTS = ("перечислению", "выруч", "заработо
 _WB_SALES_HINTS = ("выкупили", "реализован", "продаж")
 _WB_DELIVERY_HINTS = ("доставк", "к клиенту")
 _WB_RETURN_HINTS = ("возврат",)
+_WB_RETURN_ID_SKIP = (
+    "srid",
+    "rrid",
+    "rrd",
+    "id ",
+    " id",
+    "номер",
+    "код возврата",
+    "документ",
+    "транзак",
+    "barcode",
+    "штрих",
+)
+
+
+def _is_return_id_column(header: str) -> bool:
+    """Колонки-ID транзакций не считаем количеством возвратов в штуках."""
+    low = (header or "").lower()
+    if any(q in low for q in _WB_QTY_UNIT_HINTS):
+        return False
+    return any(s in low for s in _WB_RETURN_ID_SKIP)
 _WB_COMMISSION_HINTS = ("вознагражден", "комисс")
 _WB_LOGISTICS_HINTS = ("логистик", "доставк", "хранен")
 _WB_AD_HINTS = ("продвижен", "реклам", "удержан")
@@ -573,6 +594,8 @@ def _matrix_col(headers: list[str], hints: tuple[str, ...], *, require_qty: bool
         if not any(h in low for h in hints):
             continue
         if require_qty and not any(q in low for q in _WB_QTY_UNIT_HINTS):
+            continue
+        if any(h in low for h in _WB_RETURN_HINTS) and _is_return_id_column(header):
             continue
         return idx
     return None
@@ -690,29 +713,58 @@ def _matrix_forward_logistics_col(
     return _matrix_col(headers, _WB_LOGISTICS_HINTS)
 
 
-def _non_buyout_qty(bucket: _SkuBucket) -> float:
+def _validated_sku_returns_qty(bucket: _SkuBucket) -> float:
+    """Фактические возвраты в штуках: не больше доставок/заказов по SKU."""
+    raw = max(0.0, bucket.returns_qty)
+    if raw <= 0:
+        return 0.0
+    upper = bucket.deliveries_qty if bucket.deliveries_qty > 0 else 0.0
+    if bucket.sales_qty > 0:
+        if upper <= 0:
+            upper = bucket.sales_qty
+        raw = min(raw, upper)
+    elif upper > 0:
+        raw = min(raw, upper)
+    return raw
+
+
+def _effective_reverse_logistics_qty(bucket: _SkuBucket) -> float:
+    """
+    Штуки для расчёта обратной логистики: приоритет — колонка «Возвраты, шт.»,
+    иначе невыкупы (доставки − выкупы) с тем же потолком по доставкам.
+    """
+    returns = _validated_sku_returns_qty(bucket)
+    if returns > 0:
+        return returns
+    if bucket.deliveries_qty <= 0:
+        return 0.0
     non_buyout = max(0.0, bucket.deliveries_qty - bucket.sales_qty)
-    if non_buyout <= 0 and bucket.returns_qty > 0:
-        non_buyout = bucket.returns_qty
-    return non_buyout
+    return min(non_buyout, bucket.deliveries_qty)
 
 
-def _reverse_logistics_unit_rub(bucket: _SkuBucket, non_buyout: float) -> float:
+def _non_buyout_qty(bucket: _SkuBucket) -> float:
+    """Обратная совместимость: см. :func:`_effective_reverse_logistics_qty`."""
+    return _effective_reverse_logistics_qty(bucket)
+
+
+def _reverse_logistics_unit_rub(bucket: _SkuBucket, qty: float) -> float:
     """
     Средняя стоимость одной обратной логистики для SKU (руб./ед.).
 
-    Приоритет: колонка «логистика возвратов» → доля общей логистики на невыкупы
-    → оценка по общей логистике / невыкупы → дефолт WB (~50 ₽) только без данных.
+    Приоритет: колонка «логистика возвратов» / факт из отчёта → доля общей логистики.
+    Оценочный тариф не ниже базового WB (~50 ₽/шт).
     """
-    if non_buyout <= 0:
+    if qty <= 0:
         return 0.0
     if bucket.return_logistics_rub > 0:
-        return bucket.return_logistics_rub / non_buyout
+        return max(_DEFAULT_REVERSE_LOGISTICS_RUB, bucket.return_logistics_rub / qty)
     if bucket.logistics > 0:
         if bucket.deliveries_qty > 0:
-            return_share = min(1.0, non_buyout / bucket.deliveries_qty)
-            return (bucket.logistics * return_share) / non_buyout
-        return bucket.logistics / non_buyout
+            return_share = min(1.0, qty / bucket.deliveries_qty)
+            unit = (bucket.logistics * return_share) / qty
+        else:
+            unit = bucket.logistics / qty
+        return max(_DEFAULT_REVERSE_LOGISTICS_RUB, unit)
     return _DEFAULT_REVERSE_LOGISTICS_RUB
 
 
@@ -720,13 +772,14 @@ def _format_return_logistics_fomo_line(
     name: str,
     article_id: str,
     *,
-    non_buyout: float,
-    unit_rub: float,
+    returns_count: float,
+    total_loss_rub: float,
 ) -> str:
+    label = f"{name[:28]} ({article_id[:16]})" if article_id and article_id != name else name[:40]
+    loss_s = f"{total_loss_rub:,.2f}".replace(",", " ")
     return (
-        f"Логистика возвратов: {name[:28]} (Арт: {article_id[:16]}): "
-        f"{non_buyout:.0f} возвратов × {unit_rub:.2f} руб. "
-        "обратной логистики по литражу"
+        f"Логистика возвратов: {label}: {returns_count:.0f} возвратов. "
+        f"Общий убыток на пустых покатушках: ≈ {loss_s} руб."
     )
 
 
@@ -877,22 +930,22 @@ def compute_seller_matrix_etl(
     weighted_unit_sum = 0.0
     weighted_unit_qty = 0.0
     for (name, _), b in buckets.items():
-        non_buyout = _non_buyout_qty(b)
-        if non_buyout <= 0:
+        returns_qty = _effective_reverse_logistics_qty(b)
+        if returns_qty <= 0:
             continue
-        unit_log = _reverse_logistics_unit_rub(b, non_buyout)
-        loss = non_buyout * unit_log
+        unit_log = _reverse_logistics_unit_rub(b, returns_qty)
+        loss = returns_qty * unit_log
         if loss > 0:
             logistics_fomo += loss
-            weighted_unit_sum += unit_log * non_buyout
-            weighted_unit_qty += non_buyout
+            weighted_unit_sum += unit_log * returns_qty
+            weighted_unit_qty += returns_qty
             if len(fomo_parts) < 6:
                 fomo_parts.append(
                     _format_return_logistics_fomo_line(
                         name,
                         b.article_id,
-                        non_buyout=non_buyout,
-                        unit_rub=unit_log,
+                        returns_count=returns_qty,
+                        total_loss_rub=loss,
                     )
                 )
     reverse_logistics_shop_avg = (

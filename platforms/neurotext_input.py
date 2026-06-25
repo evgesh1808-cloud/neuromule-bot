@@ -362,8 +362,13 @@ async def handle_neurotext_user_message(
                 return
 
             is_table_xlsx = _is_table_spreadsheet_document(suffix, role_id)
-            if is_table_xlsx:
+            is_wb_finance_subrole = (
+                normalize_table_subrole(table_subrole) == "wb_ozon_finance"
+            )
+            if is_table_xlsx and not is_wb_finance_subrole:
                 status_msg = await _send_table_generator_status(message)
+            elif is_table_xlsx:
+                status_msg = None
             else:
                 status_msg = await message.answer(
                     "📎 <b>Читаю документ…</b>",
@@ -384,6 +389,7 @@ async def handle_neurotext_user_message(
                 )
                 is_csv = suffix == ".csv"
                 title = Path(file_name).stem or "Отчёт NeuroMule"
+                xlsx_source_path: str | None = None
                 try:
                     worker = await run_table_processing_worker_async(
                         file_path,
@@ -392,8 +398,11 @@ async def handle_neurotext_user_message(
                         title=title,
                         marketplace_platform=audit_platform,
                     )
+                    if is_wb_finance_subrole or xlsx_auto_finance:
+                        xlsx_source_path = file_path
                 finally:
-                    Path(file_path).unlink(missing_ok=True)
+                    if xlsx_source_path is None:
+                        Path(file_path).unlink(missing_ok=True)
                 if worker is None or not worker.rows:
                     await status_msg.edit_text("⚠️ Файл пустой или не содержит данных.")
                     return
@@ -456,6 +465,7 @@ async def handle_neurotext_user_message(
                                 prebuilt_worker=worker,
                                 column_structure_warning=column_structure_warning,
                                 marketplace_platform=audit_platform,
+                                source_file_path=xlsx_source_path,
                             )
                         if keep_waiting_state and fast_result.outcome is ChatTurnOutcome.SUCCESS:
                             from platforms.marketplace_audit_flow import is_marketplace_audit_context
@@ -481,6 +491,9 @@ async def handle_neurotext_user_message(
                         logger.exception("xlsx fast-path failed uid=%s", uid)
                         await _clear_table_status_on_failure(status_msg)
                         await _answer_local_pipeline_traceback(message)
+                    finally:
+                        if xlsx_source_path is not None:
+                            Path(xlsx_source_path).unlink(missing_ok=True)
                     return
                 raw_user_text = build_xlsx_api_user_prompt(
                     caption,

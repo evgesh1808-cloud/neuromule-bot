@@ -169,19 +169,28 @@ async def send_table_generator_pack(
     if degradation_notice:
         success_text = f"{success_text}{degradation_notice}"
 
+    detailed_html = (pack.telegram_caption_html or "").strip()
+
     chart_keyboard = table_delivery_keyboard(
         pack.chart_type,
         report_id=report_id,
     )
     photo_msg: Message | None = None
 
-    await _await_with_flood_retry(
-        lambda: message.answer(success_text, parse_mode=ParseMode.HTML)
+    send_detailed = bool(detailed_html) and _should_send_detailed_analysis(
+        table_subrole, audit_platform
     )
-
-    detailed_html = (pack.telegram_caption_html or "").strip()
-    if detailed_html and _should_send_detailed_analysis(table_subrole, audit_platform):
-        await answer_chat_text(message, detailed_html, settings)
+    if send_detailed:
+        report_body = detailed_html
+        if degradation_notice:
+            report_body = f"{degradation_notice}\n\n{report_body}"
+        await answer_chat_text(message, report_body, settings)
+    else:
+        await _await_with_flood_retry(
+            lambda: message.answer(success_text, parse_mode=ParseMode.HTML)
+        )
+        if detailed_html:
+            await answer_chat_text(message, detailed_html, settings)
 
     if pack.chart_png_bytes:
         chart_file = BufferedInputFile(pack.chart_png_bytes, filename="chart.png")
