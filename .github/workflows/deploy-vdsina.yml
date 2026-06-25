@@ -23,6 +23,7 @@ jobs:
             set -e
             DEPLOY_DIR="/root/neuromule-bot"
             REPO_URL="https://github.com/${{ github.repository }}.git"
+            EXPECTED_SHA="${{ github.sha }}"
 
             mkdir -p "${DEPLOY_DIR}"
             cd "${DEPLOY_DIR}"
@@ -34,8 +35,14 @@ jobs:
               git reset --hard origin/main
             fi
 
+            ACTUAL_SHA="$(git rev-parse HEAD)"
+            if [ "${ACTUAL_SHA}" != "${EXPECTED_SHA}" ]; then
+              echo "ERROR: HEAD ${ACTUAL_SHA} != expected ${EXPECTED_SHA}"
+              exit 1
+            fi
+
             find "${DEPLOY_DIR}" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
-            echo "Deploying commit: $(git -C "${DEPLOY_DIR}" log -1 --oneline)"
+            echo "Deploying commit: $(git log -1 --oneline)"
 
             if [ ! -d "venv" ]; then
               python3 -m venv venv
@@ -44,10 +51,18 @@ jobs:
             source venv/bin/activate
             pip install -q -r requirements.txt
 
-            # Жёсткий рестарт: startOrReload иногда оставляет старый Python-код в памяти
-            pm2 delete neuromule-tg neuromule-api neuromule-wb-worker 2>/dev/null || true
+            # Убить дубликаты: два процесса с одним TG-токеном = «старая версия» в чате
+            pm2 stop all 2>/dev/null || true
+            pm2 delete all 2>/dev/null || true
+            pkill -f '[n]euromule-bot.*main.py' 2>/dev/null || true
+            pkill -f '[N]EUROMULE_PLATFORM=telegram' 2>/dev/null || true
+            sleep 2
+
             pm2 start ecosystem.config.cjs --update-env
             pm2 save || true
-            echo "Deployed commit: $(git -C "${DEPLOY_DIR}" log -1 --oneline)"
+
+            sleep 4
+            echo "Deployed commit: $(git log -1 --oneline)"
             echo "UI marker: $(grep -m1 'BTN_REPLY_NEUROTEXT =' content/messages.py || true)"
             pm2 status
+            pm2 logs neuromule-tg --lines 25 --nostream | grep -E 'NeuroMule build|Studio MenuButton|ERROR' || true

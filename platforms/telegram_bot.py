@@ -81,33 +81,15 @@ async def _setup_studio_menu_button(bot: Bot) -> None:
 
 def _log_build_identity() -> None:
     """В логах pm2 видно, какой коммит и UI-метки реально поднялись."""
-    from pathlib import Path
-
     from content import messages as msg
+    from platforms.build_info import get_build_info_text
 
-    root = Path(__file__).resolve().parent.parent
-    rev = "unknown"
-    try:
-        import subprocess
-
-        rev = (
-            subprocess.check_output(
-                ["git", "rev-parse", "--short", "HEAD"],
-                cwd=root,
-                text=True,
-                stderr=subprocess.DEVNULL,
-            )
-            .strip()
-            or "unknown"
-        )
-    except Exception:
-        pass
+    info = get_build_info_text()
     logger.info(
-        "NeuroMule build rev=%s ui=%r table=%r",
-        rev,
-        msg.BTN_REPLY_NEUROTEXT,
-        msg.BTN_TEXT_ROLE_TABLE,
+        "NeuroMule build %s",
+        info.replace("\n", " | ").replace("<b>", "").replace("</b>", "").replace("<code>", "").replace("</code>", ""),
     )
+    logger.info("ui=%r table=%r studio=%r", msg.BTN_REPLY_NEUROTEXT, msg.BTN_TEXT_ROLE_TABLE, msg.BTN_STUDIO_MENU)
 
 
 def build_bot() -> Bot:

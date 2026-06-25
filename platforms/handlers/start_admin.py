@@ -547,6 +547,14 @@ async def _collect_family_members_with_hd(owner_id: int) -> list[tuple[int, str]
 async def cmd_match(message: Message, state: FSMContext) -> None:
     await start_match_flow(message, message.from_user.id, state)
 
+@router.message(Command("version"))
+async def cmd_version(message: Message) -> None:
+    """Текущий git rev и UI-метки — для проверки, что на сервере новый деплой."""
+    from platforms.build_info import get_build_info_text
+
+    await message.answer(get_build_info_text(), parse_mode=ParseMode.HTML)
+
+
 @router.message(Command("admin_stats"))
 async def cmd_admin_stats(message: Message) -> None:
     """Секретный финансовый пульс OpenRouter — только владелец (ADMIN_TELEGRAM_ID)."""
