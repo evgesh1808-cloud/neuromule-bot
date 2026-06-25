@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -385,28 +386,25 @@ async def run_xlsx_fast_path_turn(
             resolve_wb_revenue_total,
         )
 
-        finance_revenue = resolve_wb_revenue_total(
-            calculated_total=float(worker.calculated_total or 0.0),
-            file_path=source_file_path,
-            matrix_rows=worker.rows,
-            platform=marketplace_platform,
-        )
+        finance_revenue = float(worker.calculated_total or 0.0)
+        if finance_revenue <= 0 and source_file_path:
+            finance_revenue = await asyncio.to_thread(
+                resolve_wb_revenue_total,
+                calculated_total=0.0,
+                file_path=source_file_path,
+                matrix_rows=worker.rows,
+                platform=marketplace_platform,
+            )
         if finance_revenue > 0:
             wb_metrics = resolve_wb_metrics_for_rows(
                 worker.rows, finance_revenue, platform=marketplace_platform
             )
-            model_chain: list[str] = []
-            if billing_result and billing_result.plan.model_id:
-                model_chain.append(billing_result.plan.model_id)
-            model_chain.extend(m for m in settings.free_models if m not in model_chain)
             ai_caption = await generate_wb_finance_consulting_html(
                 settings,
                 revenue_total=finance_revenue,
                 wb_metrics=wb_metrics,
                 matrix_rows=worker.rows,
-                models=model_chain or None,
                 platform=marketplace_platform,
-                file_path=source_file_path,
             )
             if ai_caption:
                 worker = replace(

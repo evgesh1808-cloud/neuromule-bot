@@ -254,7 +254,8 @@ async def pick_audit_platform(callback: CallbackQuery, state: FSMContext) -> Non
                 await callback.message.edit_reply_markup(reply_markup=None)
             except TelegramBadRequest:
                 pass
-        await callback.message.answer(instruction, parse_mode=ParseMode.HTML)
+        reply = await callback.message.answer(instruction, parse_mode=ParseMode.HTML)
+        await state.update_data(audit_upload_prompt_message_id=reply.message_id)
 
 
 @router.callback_query(F.data.startswith(msg.CB_TABLE_SUBROLE_PREFIX))

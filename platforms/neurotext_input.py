@@ -400,6 +400,16 @@ async def handle_neurotext_user_message(
                 )
 
             if is_table_xlsx:
+                from platforms.marketplace_audit_flow import (
+                    dismiss_fsm_chat_message,
+                    is_marketplace_audit_context,
+                )
+
+                if is_marketplace_audit_context(await state.get_state(), await state.get_data()):
+                    await dismiss_fsm_chat_message(
+                        state,
+                        chat_id=message.chat.id,
+                    )
                 if not await _table_xlsx_allowed(uid):
                     await _notify_table_status(
                         message,

@@ -2352,16 +2352,21 @@ async def generate_wb_finance_consulting_html(
     wb_json_str: str | None = None,
 ) -> str | None:
     """
-    CFO-отчёт wb_ozon_finance: локальный HTML всегда; OpenRouter — опциональная обёртка.
+    CFO-отчёт wb_ozon_finance: локальный HTML (мгновенно); OpenRouter — только по флагу.
     """
+    import asyncio
+
     from content.chat_prompt import WB_ANALYTICS_SYSTEM_PROMPT
 
-    revenue_total = resolve_wb_revenue_total(
-        calculated_total=revenue_total,
-        file_path=file_path,
-        matrix_rows=matrix_rows,
-        platform=platform,
-    )
+    revenue_total = float(revenue_total or 0.0)
+    if revenue_total <= 0:
+        revenue_total = await asyncio.to_thread(
+            resolve_wb_revenue_total,
+            calculated_total=0.0,
+            file_path=file_path,
+            matrix_rows=matrix_rows,
+            platform=platform,
+        )
     if revenue_total <= 0:
         return None
 
@@ -2370,12 +2375,20 @@ async def generate_wb_finance_consulting_html(
             matrix_rows, revenue_total, platform=platform
         )
 
-    local_html = _build_local_wb_finance_html(
+    local_html = await asyncio.to_thread(
+        _build_local_wb_finance_html,
         revenue_total,
         wb_metrics,
         matrix_rows=matrix_rows,
         platform=platform,
     )
+
+    use_openrouter = bool(
+        getattr(settings, "wb_finance_openrouter_html", False)
+        and settings.openrouter_key
+    )
+    if not use_openrouter:
+        return local_html
 
     ctx: dict[str, Any] | None = None
     if wb_json_str:
@@ -2386,16 +2399,14 @@ async def generate_wb_finance_consulting_html(
         except json.JSONDecodeError:
             ctx = None
     if ctx is None:
-        ctx = resolve_wb_mpstats_context(
+        ctx = await asyncio.to_thread(
+            resolve_wb_mpstats_context,
             file_path=file_path,
             matrix_rows=matrix_rows,
             revenue_total=revenue_total,
             platform=platform,
         )
     if not ctx or ctx.get("error"):
-        ctx = None
-
-    if not settings.openrouter_key or ctx is None:
         return local_html
 
     model_chain: list[str] = []
@@ -2413,7 +2424,7 @@ async def generate_wb_finance_consulting_html(
         completion = await ask_ai_messages(
             settings,
             messages,
-            timeout=min(25.0, settings.openrouter_timeout_sec),
+            timeout=min(12.0, settings.openrouter_timeout_sec),
             max_context_tokens=settings.chat_max_context_tokens_est,
             char_per_token=settings.chat_char_per_token_est,
             http_client=http_client,

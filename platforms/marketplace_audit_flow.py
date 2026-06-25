@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State
 
@@ -12,6 +14,8 @@ from platforms.telegram_states import (
     YandexAuditingStates,
 )
 from services.marketplace_platform import MarketplacePlatformId, normalize_marketplace_platform
+
+logger = logging.getLogger(__name__)
 
 _AUDIT_PLATFORM_STATES: dict[MarketplacePlatformId, State] = {
     "wildberries": WBAuditingStates.wait_for_xlsx,
@@ -28,6 +32,26 @@ AUDIT_FILE_WAITING_STATE_KEYS: frozenset[str] = frozenset(
 def audit_state_for_platform(platform: str | None) -> State:
     pid = normalize_marketplace_platform(platform)
     return _AUDIT_PLATFORM_STATES[pid]
+
+
+async def dismiss_fsm_chat_message(
+    state: FSMContext,
+    *,
+    chat_id: int,
+    data_key: str = "audit_upload_prompt_message_id",
+) -> None:
+    """Удаляет сохранённое в FSM сервисное сообщение (инструкция «загрузите файл»)."""
+    from platforms.handlers import deps
+
+    data = await state.get_data()
+    raw_id = data.get(data_key)
+    if not raw_id:
+        return
+    try:
+        await deps.bot().delete_message(chat_id, int(raw_id))
+    except Exception:
+        logger.debug("dismiss_fsm_chat_message failed key=%s", data_key, exc_info=True)
+    await state.update_data(**{data_key: None})
 
 
 async def activate_marketplace_audit(

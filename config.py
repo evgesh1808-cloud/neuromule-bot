@@ -460,6 +460,11 @@ class Settings(BaseSettings):
     dialog_prune_keep: Annotated[int, _coerce_int(50)] = 50
     chat_rate_limit_per_minute: Annotated[int, _coerce_int(30)] = 30
     openrouter_timeout_sec: Annotated[float, _coerce_float(45.0)] = 45.0
+    # WB CFO: OpenRouter только для HTML-обёртки (по умолчанию локальный отчёт — без задержек).
+    wb_finance_openrouter_html: Annotated[bool, _coerce_bool(False)] = Field(
+        default=False,
+        validation_alias=AliasChoices("WB_FINANCE_OPENROUTER_HTML", "wb_finance_openrouter_html"),
+    )
 
     # Логи: каталог относительно корня проекта (рядом с config.py / .env).
     log_dir: Annotated[str, _nonempty_str("logs")] = "logs"
