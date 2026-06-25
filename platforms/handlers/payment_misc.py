@@ -382,13 +382,13 @@ async def chat_media_neurotext(message: Message, state: FSMContext) -> None:
 
 @router.message(
     StateFilter(None),
-    F.text | REPLY_TO_BOT_FILTER,
+    (F.text & ~F.text.startswith("/")) | REPLY_TO_BOT_FILTER,
 )
 async def chat_handler(message: Message) -> None:
     text = (message.text or "").strip()
     if not has_neurotext_message_input(message):
         return
-    if text.startswith("/") or (text in _reply_menu_button_texts() and not is_reply_to_bot_message(message)):
+    if text in _reply_menu_button_texts() and not is_reply_to_bot_message(message):
         return
 
     uid = message.from_user.id
@@ -451,4 +451,12 @@ async def spreadsheet_document_catch_all(message: Message, state: FSMContext) ->
     from platforms.neurotext_input import handle_neurotext_user_message
 
     await handle_neurotext_user_message(message, state)
+
+
+@router.message(Command("version"))
+async def cmd_version(message: Message) -> None:
+    """Высокий приоритет: payment_misc — последний роутер в register_all."""
+    from platforms.build_info import reply_build_version
+
+    await reply_build_version(message)
 

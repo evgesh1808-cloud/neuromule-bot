@@ -295,12 +295,11 @@ async def handle_neurotext_user_message(
     is_document = bool(message.document)
 
     if not is_photo and not is_document:
-        text = (message.text or "").strip()
-        if text.startswith("/"):
-            cmd = text.split()[0].split("@")[0].lower()
-            if cmd == "/version":
-                from platforms.build_info import reply_build_version
+        from platforms.build_info import reply_build_version, slash_command_base
 
+        cmd = slash_command_base(message.text)
+        if cmd:
+            if cmd == "/version":
                 await reply_build_version(message)
             return
 

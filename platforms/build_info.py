@@ -37,5 +37,17 @@ def get_build_info_text() -> str:
     )
 
 
+def slash_command_base(text: str | None) -> str | None:
+    raw = (text or "").strip()
+    if not raw.startswith("/"):
+        return None
+    return raw.split()[0].split("@")[0].lower()
+
+
+def is_gate_bypass_command(text: str | None) -> bool:
+    """Команды, проходящие TOS/channel/terms gate (диагностика деплоя)."""
+    return slash_command_base(text) in {"/start", "/version"}
+
+
 async def reply_build_version(message: Message) -> None:
     await message.answer(get_build_info_text(), parse_mode=ParseMode.HTML)

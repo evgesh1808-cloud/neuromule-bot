@@ -39,8 +39,9 @@ class TermsGateMiddleware(BaseMiddleware):
         if user is None:
             return await handler(event, data)
         if isinstance(event, types.Message):
-            text = (event.text or "").strip()
-            if text.startswith("/start"):
+            from platforms.build_info import is_gate_bypass_command
+
+            if is_gate_bypass_command(event.text):
                 return await handler(event, data)
         elif isinstance(event, types.CallbackQuery):
             # CB_ACCEPT_LEGAL_TOS (новый TOS-gate, PR-G) ОБЯЗАТЕЛЬНО в
@@ -82,8 +83,9 @@ class ChannelGateMiddleware(BaseMiddleware):
         data: dict[str, Any],
     ) -> Any:
         if isinstance(event, types.Message):
-            text = (event.text or "").strip()
-            if text.startswith("/start"):
+            from platforms.build_info import is_gate_bypass_command
+
+            if is_gate_bypass_command(event.text):
                 return await handler(event, data)
         elif isinstance(event, types.CallbackQuery):
             # CB_ACCEPT_LEGAL_TOS (новый TOS-gate, PR-G) ОБЯЗАТЕЛЬНО в

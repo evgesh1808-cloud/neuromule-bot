@@ -73,8 +73,9 @@ def _tos_gate_text() -> str:
 
 
 def _is_start_command(message: Message) -> bool:
-    text = (message.text or "").strip()
-    return text.startswith("/start")
+    from platforms.build_info import is_gate_bypass_command
+
+    return is_gate_bypass_command(message.text)
 
 
 # Все callback_data, через которые юзер ПРИНИМАЕТ оферту. Любой из них
