@@ -145,6 +145,8 @@ def _build_strategic_plan_lines(
 _WB_FINANCE_MAX_OUTPUT_TOKENS = 1400
 _WB_FINANCE_TELEGRAM_SOFT_MAX_CHARS = 2000
 _FINANCE_SEPARATOR = "────────────────────────"
+# Меняйте при каждом релизе CFO-шаблона — видно внизу отчёта для проверки деплоя.
+_FINANCE_REPORT_BUILD = "3e03739"
 _OLD_FINALE_MARKERS = (
     "Финальный Excel",
     "интерактивный дашборд",
@@ -976,6 +978,7 @@ def build_wb_finance_express_html_local(
         ]
     )
     lines.extend(_build_strategic_plan_lines(prompt_metrics, wb_metrics))
+    lines.append(f"<i>CFO build {_FINANCE_REPORT_BUILD}</i>")
     return append_wb_finance_mini_app_cta("\n".join(lines))
 
 
