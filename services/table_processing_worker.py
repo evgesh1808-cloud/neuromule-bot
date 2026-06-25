@@ -22,6 +22,7 @@ from services.table_number_parse import format_rub_total, prepare_excel_value, s
 from services.table_subrole_types import DEFAULT_TABLE_SUBROLE, TableSubroleId, normalize_table_subrole
 from services.table_text_response import (
     WbMarketplaceMetrics,
+    build_table_one_screen_html,
     build_wb_finance_express_html,
     compute_table_column_metrics,
     compute_wb_marketplace_metrics,
@@ -332,11 +333,39 @@ def _build_telegram_caption(
         return caption
 
     preview_rows = telegram_rows if telegram_rows else pick_telegram_preview_rows(rows)
-    caption = build_wb_telegram_preview_html(
-        rows,
-        title=title,
-        total_rub_override=calculated_total,
-    )
+    caption = ""
+    if subrole_id == "wb_ozon_finance":
+        caption = (
+            build_wb_telegram_preview_html(
+                rows,
+                title=title,
+                total_rub_override=calculated_total,
+            )
+            or ""
+        )
+    if not caption:
+        matrix = normalize_table_rows(rows)
+        if len(matrix) >= 2:
+            import json
+
+            from services.table_json import TableJsonPayload
+
+            headers = [str(c) for c in matrix[0]]
+            data_rows = [[str(c) for c in row] for row in matrix[1:]]
+            payload = TableJsonPayload(
+                title=title,
+                headers=headers,
+                rows=data_rows,
+                raw_json=json.dumps(
+                    {"title": title, "headers": headers, "rows": data_rows},
+                    ensure_ascii=False,
+                ),
+            )
+            caption = build_table_one_screen_html(
+                payload,
+                total_override=calculated_total if calculated_total > 0 else None,
+                table_subrole=subrole_id,
+            )
     if not caption:
         caption = markdown_table_to_telegram_caption(preview_rows, title=title)
         if calculated_total > 0:

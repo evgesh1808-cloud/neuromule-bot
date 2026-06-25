@@ -408,7 +408,13 @@ def _build_pack_from_rows(
             total_override=calculated_total,
             table_subrole=table_subrole,
         )
-    if not caption:
+    elif payload is not None:
+        caption = build_table_one_screen_html(
+            payload,
+            total_override=calculated_total,
+            table_subrole=table_subrole,
+        )
+    if not caption and subrole == "wb_ozon_finance":
         caption = build_wb_telegram_preview_html(
             rows,
             title=title or "Отчёт NeuroMule",

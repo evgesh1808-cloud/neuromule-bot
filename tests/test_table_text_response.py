@@ -174,3 +174,45 @@ def test_compute_table_column_metrics_skips_existing_total_row() -> None:
     assert metrics is not None
     assert metrics.total == 60_000
     assert len(metrics.data_rows) == 1
+
+
+def _wb_sales_rows() -> list[list[str]]:
+    return [
+        [
+            "Бренд",
+            "Наименование",
+            "Выкупили, шт.",
+            "К перечислению за товар, руб.",
+        ],
+        ["ACME", "Стакан керамический большой", "2", "1200.50"],
+        ["ACME", "Стакан керамический большой", "3", "1800.00"],
+        ["ACME", "Кружка путешественника", "1", "950.00"],
+    ]
+
+
+def test_standard_report_on_wb_xlsx_uses_generic_caption() -> None:
+    from services.table_processing_worker import sync_table_processing_from_rows
+
+    result = sync_table_processing_from_rows(
+        _wb_sales_rows(),
+        "standard_report",
+        title="Продажи_август",
+    )
+    assert result is not None
+    caption = result.telegram_caption_html
+    assert "WILDBERRIES" not in caption
+    assert "ФИНАНСОВЫЙ ЭКСПРЕСС-АНАЛИЗ" not in caption
+    assert "ИТОГО" in caption
+
+
+def test_wb_finance_subrole_on_wb_xlsx_uses_express_caption() -> None:
+    from services.table_processing_worker import sync_table_processing_from_rows
+
+    result = sync_table_processing_from_rows(
+        _wb_sales_rows(),
+        "wb_ozon_finance",
+        title="Продажи",
+    )
+    assert result is not None
+    assert "ФИНАНСОВЫЙ ЭКСПРЕСС-АНАЛИЗ" in result.telegram_caption_html
+
