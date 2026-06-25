@@ -35,7 +35,7 @@ def test_build_wb_marketplace_finance_system_prompt_variables() -> None:
         abc_a_leader_article="WRAPPER-001",
         abc_a_count="2",
         abc_c_count="1",
-        abc_c_summary="• DEAD (Арт: DEAD-99)",
+        abc_c_summary="• DEAD (арт. DEAD-99)",
         outsider_name="DEAD",
         outsider_article="DEAD-99",
         outsider_loss="400.00",
@@ -235,6 +235,41 @@ def test_enrich_table_json_wb_finance_adds_abc_and_summary() -> None:
     assert payload["summary"]["business_score"] > 0
 
 
+def test_dedupe_report_noise_oos() -> None:
+    from services.table_wb_finance_ai import _dedupe_report_noise
+
+    raw = "«BOX» через 0 дн. (риск OOS) (риск OOS)"
+    assert _dedupe_report_noise(raw) == "«BOX» через 0 дн. (риск OOS)"
+
+
+def test_local_report_includes_cfo_build_marker() -> None:
+    from services.table_wb_finance_ai import (
+        WbFinancePromptMetrics,
+        build_wb_finance_express_html_local,
+    )
+
+    metrics = WbFinancePromptMetrics(
+        revenue=10_000.0,
+        tax=600.0,
+        clear_profit=9_400.0,
+        adv_load_pct=10.0,
+        buy_ratio_pct=60.0,
+        year_forecast=120_000.0,
+        profitability_pct=94.0,
+        business_score=7.0,
+        verdict="Тест",
+        fomo_lost_rub=0.0,
+        fomo_breakdown=(),
+        abc_a_leader_name="WRAPPER",
+        abc_a_leader_article="W-1",
+        abc_a_leader_buyout=72.0,
+        abc_a_leader_margin=5_000.0,
+    )
+    html = build_wb_finance_express_html_local(metrics, None)
+    assert "CFO build cfo-v4" in html
+    assert "арт. W-1" in html or "W-1" in html
+
+
 def test_local_report_zero_buyout_leader_goes_critical() -> None:
     from services.table_wb_finance_ai import (
         WbFinancePromptMetrics,
@@ -257,7 +292,7 @@ def test_local_report_zero_buyout_leader_goes_critical() -> None:
         abc_a_leader_article="DEAD-99",
         abc_a_leader_buyout=0.0,
         abc_a_leader_margin=-500.0,
-        abc_c_summary="• DEAD (Арт: DEAD-99)",
+        abc_c_summary="• DEAD (арт. DEAD-99)",
         outsider_name="DEAD",
         outsider_article="DEAD-99",
         outsider_loss=500.0,
