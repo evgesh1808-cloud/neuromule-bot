@@ -632,13 +632,4 @@ def build_table_one_screen_html(
             ]
         )
 
-    lines.extend(
-        [
-            "",
-            _SEPARATOR,
-            (
-                "🗂️ <i>Детальная таблица, график и Mini App — в Excel-файле и кнопках ниже.</i>"
-            ),
-        ]
-    )
     return repair_telegram_html("\n".join(lines))

@@ -1,4 +1,4 @@
-"""Доставка отчёта table_generator в Telegram (график + Excel + кнопки)."""
+"""Доставка отчёта table_generator в Telegram (график + Excel, без Mini App в чате)."""
 
 from __future__ import annotations
 
@@ -12,12 +12,9 @@ from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 from aiogram.types import BufferedInputFile, Message
 
-from platforms.table_mini_app_keyboard import (
-    get_table_mini_app_keyboard,
-    table_delivery_keyboard,
-)
-from platforms.telegram_chunks import answer_chat_text
+from platforms.table_mini_app_keyboard import table_delivery_keyboard
 from config import settings
+from content import messages as msg
 from services.table_generator_pack import TABLE_XLSX_FILENAME, TableGeneratorPack, build_table_generator_pack
 from services.table_json import parse_table_json_response
 from services.table_session_cache import TableSession, store_table_session
@@ -25,9 +22,8 @@ from services.telegram_safe_text import _escape_telegram_html, sanitize_telegram
 
 logger = logging.getLogger(__name__)
 
-# Telegram: caption у photo/document — макс. 1024; оставляем запас.
 _CAPTION_SAFE_MAX = 1020
-_DOC_SHORT_CAPTION = "📥 <b>Отчет_Нейросеть.xlsx</b> — полная таблица для Excel и Mini App"
+_DOC_SHORT_CAPTION = "📎 <b>Отчёт NeuroMule.xlsx</b>"
 
 _T = TypeVar("_T")
 
@@ -66,23 +62,7 @@ async def _clear_status_message(status: Message | None) -> None:
 
 def _chart_short_caption(report_title: str) -> str:
     title = _escape_telegram_html((report_title or "отчёт").strip()[:80])
-    return (
-        f"📊 <b>Визуальный анализ продаж WB: {title}</b>\n"
-        f"<i>Инфографика трендов и выручки по ТОП-7 предметам</i>"
-    )
-
-
-async def _send_table_text(message: Message, table_html: str) -> None:
-    """Длинная таблица отдельным текстовым сообщением (без лимита caption 1024)."""
-    try:
-        await _await_with_flood_retry(
-            lambda: answer_chat_text(message, table_html, settings)
-        )
-    except Exception:
-        logger.debug("answer_chat_text failed, plain fallback", exc_info=True)
-        await _await_with_flood_retry(
-            lambda: message.answer(sanitize_telegram_plain_text(table_html))
-        )
+    return f"📊 <b>Визуализация: {title}</b>"
 
 
 async def _send_excel_document(
@@ -90,7 +70,6 @@ async def _send_excel_document(
     xlsx_file: BufferedInputFile,
     *,
     caption: str,
-    reply_markup,
 ) -> None:
     try:
         await _await_with_flood_retry(
@@ -98,7 +77,6 @@ async def _send_excel_document(
                 xlsx_file,
                 caption=caption,
                 parse_mode=ParseMode.HTML,
-                reply_markup=reply_markup,
             )
         )
     except TelegramBadRequest:
@@ -107,7 +85,6 @@ async def _send_excel_document(
             lambda: message.answer_document(
                 xlsx_file,
                 caption=sanitize_telegram_plain_text(caption),
-                reply_markup=reply_markup,
             )
         )
 
@@ -127,9 +104,9 @@ async def send_table_generator_pack(
     audit_platform: str | None = None,
 ) -> bool:
     """
-    Двухэтапная доставка: (1) график с коротким caption, (2) таблица + Excel + WebApp.
+    Доставка: лаконичный статус в чат + график + Excel.
 
-    Если таблица длиннее 1024 символов — текст отдельным сообщением, Excel — следом.
+    Mini App открывается через нативную кнопку «📱 Studio», без inline Web App в сообщениях.
     """
     pack: TableGeneratorPack | None
     if table_worker is not None:
@@ -172,20 +149,23 @@ async def send_table_generator_pack(
     uid = message.from_user.id
     chat_id = message.chat.id
     xlsx_file = BufferedInputFile(pack.xlsx_bytes, filename=TABLE_XLSX_FILENAME)
-    table_caption = pack.telegram_caption_html
-    if degradation_notice and table_caption:
-        table_caption = f"{table_caption}{degradation_notice}"
-    elif degradation_notice:
-        table_caption = degradation_notice.lstrip()
+    success_text = msg.table_processing_success_message(
+        audit_platform=audit_platform,
+        table_subrole=table_subrole,
+    )
+    if degradation_notice:
+        success_text = f"{success_text}{degradation_notice}"
+
     chart_keyboard = table_delivery_keyboard(
         pack.chart_type,
         report_id=report_id,
-        platform=audit_platform,
     )
-    mini_app_keyboard = get_table_mini_app_keyboard(report_id)
     photo_msg: Message | None = None
 
-    # Шаг 1: график — только короткая подпись, без таблицы.
+    await _await_with_flood_retry(
+        lambda: message.answer(success_text, parse_mode=ParseMode.HTML)
+    )
+
     if pack.chart_png_bytes:
         chart_file = BufferedInputFile(pack.chart_png_bytes, filename="chart.png")
         short_caption = _chart_short_caption(report_title)
@@ -207,52 +187,12 @@ async def send_table_generator_pack(
                         reply_markup=chart_keyboard,
                     )
                 )
-                await _await_with_flood_retry(
-                    lambda: message.answer(short_caption, parse_mode=ParseMode.HTML)
-                )
             except TelegramBadRequest:
                 photo_msg = await _await_with_flood_retry(
                     lambda: message.answer_photo(chart_file)
                 )
 
-    # Шаг 2–3: таблица + Excel (+ WebApp на документе).
-    table_fits_caption = len(table_caption) <= _CAPTION_SAFE_MAX
-
-    if table_fits_caption and not pack.chart_png_bytes:
-        try:
-            await _await_with_flood_retry(
-                lambda: message.answer(
-                    table_caption,
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=chart_keyboard,
-                )
-            )
-        except TelegramBadRequest:
-            await _await_with_flood_retry(
-                lambda: message.answer(sanitize_telegram_plain_text(table_caption))
-            )
-        await _send_excel_document(
-            message,
-            xlsx_file,
-            caption=_DOC_SHORT_CAPTION,
-            reply_markup=mini_app_keyboard,
-        )
-    elif table_fits_caption and pack.chart_png_bytes:
-        await _send_excel_document(
-            message,
-            xlsx_file,
-            caption=table_caption,
-            reply_markup=mini_app_keyboard,
-        )
-    else:
-        if table_caption.strip():
-            await _send_table_text(message, table_caption)
-        await _send_excel_document(
-            message,
-            xlsx_file,
-            caption=_DOC_SHORT_CAPTION,
-            reply_markup=mini_app_keyboard,
-        )
+    await _send_excel_document(message, xlsx_file, caption=_DOC_SHORT_CAPTION)
 
     return _cache_session(uid, chat_id, pack, photo_msg, report_id)
 

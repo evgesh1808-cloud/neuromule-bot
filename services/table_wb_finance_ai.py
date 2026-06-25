@@ -10,7 +10,6 @@ from typing import Any, Iterable
 
 from config import Settings
 from content.chat_prompt import build_wb_marketplace_finance_system_prompt
-from content.messages import TXT_WB_FINANCE_MINI_APP_CTA
 from services.ai_text import ask_ai_messages
 from services.table_text_response import (
     WbMarketplaceMetrics,
@@ -882,19 +881,8 @@ def enrich_table_json_wb_finance(
 
 
 def append_wb_finance_mini_app_cta(html: str) -> str:
-    """Добавляет единый CTA про Автопилот API и Mini App (если ещё нет)."""
-    text = (html or "").strip()
-    if any(marker in text for marker in _OLD_FINALE_MARKERS):
-        text = re.sub(
-            r"\n*────────────────────────\n*🗂️.*\Z",
-            "",
-            text,
-            flags=re.DOTALL,
-        ).strip()
-    if "Автопилот по API" in text:
-        return repair_telegram_html(text)
-    block = f"{_FINANCE_SEPARATOR}\n{TXT_WB_FINANCE_MINI_APP_CTA}"
-    return repair_telegram_html(f"{text}\n\n{block}" if text else block)
+    """Раньше добавлял CTA в чат; Studio открывается через MenuButtonWebApp."""
+    return repair_telegram_html((html or "").strip())
 
 
 def build_wb_finance_express_html_local(

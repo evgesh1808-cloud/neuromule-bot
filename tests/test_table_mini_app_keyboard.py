@@ -62,17 +62,11 @@ def test_get_table_mini_app_keyboard_always_with_report_id() -> None:
     assert kb.inline_keyboard[0][0].web_app is not None
 
 
-def test_table_delivery_keyboard_includes_mini_app_row(monkeypatch) -> None:
-    from config import settings
-
-    object.__setattr__(
-        settings,
-        "webapp_table_reports_url",
-        "https://user.github.io/app/?report_id={report_id}",
-    )
+def test_table_delivery_keyboard_chart_row_only() -> None:
     kb = table_delivery_keyboard(ChartType.BAR, report_id=99)
-    assert len(kb.inline_keyboard) == 2
-    assert kb.inline_keyboard[0][0].web_app is not None
+    assert len(kb.inline_keyboard) == 1
+    assert len(kb.inline_keyboard[0]) == 3
+    assert kb.inline_keyboard[0][0].callback_data is not None
 
 
 def test_build_table_mini_app_url_with_platform(monkeypatch) -> None:

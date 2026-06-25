@@ -373,6 +373,7 @@ class Settings(BaseSettings):
     #     в личном кабинете. Если ``is_webapp_enabled=True``, но URL пуст —
     #     бот не падает, а откатывается в текстовый режим (см. тесты).
     is_webapp_enabled: bool = False
+    webapp_studio_url: str | None = None
     webapp_shop_url: str | None = None
     webapp_gallery_url: str | None = None
     # Базовый URL фронта таблиц (GitHub Pages). Плейсхолдер {report_id} или query report_id=.

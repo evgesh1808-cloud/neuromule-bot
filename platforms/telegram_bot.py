@@ -57,6 +57,28 @@ _TELEGRAM_CONNECT_RETRIES = 5
 _TELEGRAM_CONNECT_RETRY_SEC = 5.0
 
 
+async def _setup_studio_menu_button(bot: Bot) -> None:
+    """Нативная кнопка «📱 Studio» слева внизу и «Открыть» справа вверху."""
+    from aiogram.types import MenuButtonWebApp, WebAppInfo
+
+    from content import messages as msg
+    from platforms.telegram_studio import resolve_studio_webapp_url
+
+    url = resolve_studio_webapp_url()
+    if not url:
+        logger.warning(
+            "Studio MenuButtonWebApp skipped: configure WEBAPP_STUDIO_URL or WEBAPP_SHOP_URL"
+        )
+        return
+    await bot.set_chat_menu_button(
+        menu_button=MenuButtonWebApp(
+            text=msg.BTN_STUDIO_MENU,
+            web_app=WebAppInfo(url=url),
+        )
+    )
+    logger.info("Studio MenuButtonWebApp set: %s", url)
+
+
 def _log_build_identity() -> None:
     """В логах pm2 видно, какой коммит и UI-метки реально поднялись."""
     from pathlib import Path
@@ -206,6 +228,7 @@ async def run_telegram() -> None:
     pg_pool = await _maybe_start_pg_pool(dp)
 
     await _wait_telegram_api(bot)
+    await _setup_studio_menu_button(bot)
     print(f"{settings.bot_name} telegram: polling started.")
     try:
         await dp.start_polling(bot)

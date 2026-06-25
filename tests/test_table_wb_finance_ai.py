@@ -169,12 +169,11 @@ def test_fomo_and_scoring_helpers() -> None:
     assert verdict
 
 
-def test_append_wb_finance_mini_app_cta() -> None:
+def test_append_wb_finance_mini_app_cta_is_noop() -> None:
     body = "📊 <b>ФИНАНСОВЫЙ ЭКСПРЕСС-АНАЛИЗ</b>"
     out = append_wb_finance_mini_app_cta(body)
-    assert "Автопилот по API" in out
-    assert "09:00" in out
-    assert "Первые 3 дня" in out
+    assert out == body
+    assert "Автопилот по API" not in out
 
 
 def test_sanitize_wb_finance_html_replaces_legacy_headers() -> None:

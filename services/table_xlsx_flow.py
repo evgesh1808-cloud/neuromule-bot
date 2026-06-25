@@ -290,8 +290,8 @@ def build_wb_telegram_preview_html(
         [
             _SEPARATOR,
             (
-                f"🗂️ <i>Полный отчет со всеми {col_hint} колонками и интерактивные "
-                "графики доступны в прикрепленном файле Excel и внутри WebApp!</i>"
+                f"🗂️ <i>Полный отчёт со всеми {col_hint} колонками — "
+                "в прикреплённом файле Excel.</i>"
             ),
         ]
     )
@@ -409,9 +409,8 @@ async def run_xlsx_fast_path_turn(
             platform=marketplace_platform,
         )
         if ai_caption:
-            from services.table_wb_finance_ai import append_wb_finance_mini_app_cta
+            from dataclasses import replace
 
-            ai_caption = append_wb_finance_mini_app_cta(ai_caption)
             worker = replace(worker, telegram_caption_html=ai_caption)
 
     table_json = rows_to_canonical_table_json(

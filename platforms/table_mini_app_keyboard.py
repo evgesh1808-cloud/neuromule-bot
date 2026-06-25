@@ -117,13 +117,6 @@ def _chart_row(
 def table_delivery_keyboard(
     chart_type: ChartType,
     report_id: int | str | None = None,
-    *,
-    platform: str | None = None,
 ) -> InlineKeyboardMarkup:
-    """Mini App + переключатели типа графика (pie/line/bar)."""
-    rows: list[list[InlineKeyboardButton]] = []
-    mini_row = get_table_mini_app_keyboard(report_id, platform=platform)
-    if mini_row is not None:
-        rows.extend(mini_row.inline_keyboard)
-    rows.append(_chart_row(chart_type, report_id))
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+    """Переключатели типа графика (без inline Web App — Studio в меню чата)."""
+    return InlineKeyboardMarkup(inline_keyboard=[_chart_row(chart_type, report_id)])

@@ -223,13 +223,9 @@ def build_dashboard_text(user: User | None) -> str:
         "🔄 Обновление: Ежедневно\n\n"
         "🔮 Бесплатный совет дня по Дизайну Человека!\n"
         "⚡️ Энергия:     30 запросов в ИИ-Ассистенте (Стандарт)\n"
-        "📸 Изображения: 3 генерации в Imagen 4"
+        "📸 Изображения: 3 генерации в Imagen 4\n"
+        f"{msg.BTN_STUDIO_MENU}: аналитика и отчёты — в меню чата Telegram."
     )
-
-    if settings.is_webapp_enabled:
-        dashboard_content += "\n📱 ИИ-Панель:   Доступна по кнопке 👇"
-    elif user_id in tuple(settings.admin_ids):
-        dashboard_content += "\n📱 ИИ-Панель:   В разработке ⚙️ (Скоро в Web App)"
 
     return (
         "🎉 <b>Доступ к NeuroMule открыт!</b>\n"

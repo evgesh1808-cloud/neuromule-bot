@@ -76,8 +76,7 @@ def test_build_wb_finance_express_html() -> None:
     assert "СВЕТОФОР" in html
     assert "Серверный" not in html
     assert "ИИ-ПЛАН" not in html
-    assert "Автопилот по API" in html
-    assert "интерактивный дашборд" in html
+    assert "интерактивный дашборд" not in html
 
 
 def test_compute_wb_marketplace_metrics_local_features() -> None:

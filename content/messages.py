@@ -257,10 +257,11 @@ BTN_TABLE_CHART_PIE = "🥧 Круговая"
 BTN_TABLE_CHART_LINE = "📈 Линейная"
 BTN_TABLE_CHART_BAR = "📊 Гистограмма"
 BTN_MINI_APP_DASHBOARD = "🚀 Премиум-дашборд ABC"
+BTN_STUDIO_MENU = "📱 Studio"
 BTN_TEXT_ROLE_TABLE = "📊 ИИ-Аналитик (Excel)"
 BTN_TEXT_ROLE_TABLE_LEGACY = "📊 Сквозная аналитика & Дашборд"
 TXT_AI_ANALYST_CARD_TITLE = (
-    "📊 ИИ-Аналитик (Excel) — Автоматическая оцифровка данных и дашборды"
+    "📊 ИИ-Аналитик (Excel) — Автоматическая оцифровка данных и отчёты"
 )
 TXT_AI_ANALYST_ROLE_PHRASE = "роль 📊 ИИ-Аналитик (Excel)"
 BTN_TABLE_SUBROLE_STANDARD = "📊 Базовый отчёт"
@@ -547,7 +548,7 @@ TXT_TABLE_GENERATOR_STATUS = (
 )
 TXT_SPREADSHEET_REQUIRES_ANALYST_ROLE = (
     "⚠️ В режиме <b>⚪ Стандарт</b> и других текстовых ролях Excel-таблицы не разбираются.\n\n"
-    f"Для оцифровки и дашборда выберите <b>{BTN_TEXT_ROLE_TABLE}</b> в меню ролей "
+    f"Для оцифровки выберите <b>{BTN_TEXT_ROLE_TABLE}</b> в меню ролей "
     "и отправьте файл <b>.xlsx</b> или <b>.csv</b>."
 )
 CB_TABLE_SUBROLE_PREFIX = "set_table_subrole:"
@@ -563,12 +564,11 @@ BTN_AUDIT_PLATFORM_YANDEX = "🟡 Яндекс.Маркет"
 BTN_AUDIT_PLATFORM_1C = "🟢 1С / МойСклад"
 TXT_AUDIT_PLATFORM_UPLOAD = (
     "📥 Загрузите и отправьте финансовый отчёт в формате "
-    "<b>.xlsx</b> / <b>.csv</b> для <b>{platform_name}</b>. "
-    "Я проведу экспресс-анализ юнит-экономики и подготовлю премиум-дашборд."
+    "<b>.xlsx</b> / <b>.csv</b> для <b>{platform_name}</b>."
 )
 TXT_TABLE_SUBROLE_MENU = (
     f"{TXT_AI_ANALYST_CARD_TITLE}\n\n"
-    "Выберите тип отчёта — от этого зависит расчёт юнит-экономики и формат дашборда:"
+    "Выберите тип отчёта — от этого зависит расчёт юнит-экономики и формат выгрузки:"
 )
 TXT_TABLE_SUBROLE_READY = (
     "📥 Отлично! Режим выбран. Отправьте ваш .xlsx файл или напишите данные текстом для анализа."
@@ -585,14 +585,32 @@ TXT_TABLE_SUBROLE_WB_OZON = (
     "налог 6% УСН (для ИП), чистую прибыль, рекламную нагрузку и юнит-показатели за 0 рублей.\n\n"
     "<b>Действие:</b> Отправьте ваш .xlsx файл отчета реализации маркетплейса в чат."
 )
-TXT_WB_FINANCE_MINI_APP_CTA = (
-    "💡 <b>Хватит загружать отчёты вручную!</b> Подключите <b>«Автопилот по API»</b> в меню бота. "
-    "Система будет сама каждую ночь оцифровывать ваш бизнес, делать ABC-анализ матрицы "
-    "и присылать этот дашборд ровно в <b>09:00</b> утра, пока вы пьёте кофе. "
-    "<b>Первые 3 дня — бесплатно!</b>\n\n"
-    "Нажмите на кнопку ниже, чтобы открыть интерактивный дашборд Mini App "
-    "с полным ABC-анализом и калькулятором гипотез!"
+TXT_TABLE_SUCCESS_MARKETPLACE = (
+    "✅ Финансовый аудит успешно завершён. "
+    "Данные оцифрованы, показатели юнит-экономики обновлены."
 )
+TXT_TABLE_SUCCESS_GENERAL = (
+    "✅ Таблица успешно обработана. Финансовый отчёт компании обновлён."
+)
+
+
+def table_processing_success_message(
+    *,
+    audit_platform: str | None = None,
+    table_subrole: str | None = None,
+) -> str:
+    """Лаконичный финальный текст после обработки Excel (без CTA в чат)."""
+    from services.table_subrole_types import normalize_table_subrole
+
+    if audit_platform:
+        return TXT_TABLE_SUCCESS_MARKETPLACE
+    subrole = normalize_table_subrole(table_subrole)
+    if subrole == "wb_ozon_finance":
+        return TXT_TABLE_SUCCESS_MARKETPLACE
+    return TXT_TABLE_SUCCESS_GENERAL
+
+
+TXT_WB_FINANCE_MINI_APP_CTA = ""
 TXT_TABLE_SUBROLE_TRAFFIC = (
     "📥 <b>Режим Маркетинга (ROI/CPA) выбран!</b>\n\n"
     "Я рассчитаю сквозную юнит-экономику вашей рекламы (CTR, CPC, CPA, ROI), "
@@ -1530,7 +1548,7 @@ TXT_TARIFFS_MAIN = (
     "• ⚡️ <code>500 ⚡</code> Энергии + <code>10 💎</code> Кристаллов подписки на "
     "30 дней\n"
     "• 🔥 <b>Открыто в пакете:</b> Экспертные роли ИИ, Умная Саммаризация, "
-    f"{TXT_AI_ANALYST_ROLE_PHRASE} (Excel-отчёты и дашборды)!\n"
+    f"{TXT_AI_ANALYST_ROLE_PHRASE} (Excel-отчёты и аналитика)!\n"
     "• 💎 <b>PRO-фото &amp; Медиа-студия:</b> Подкасты (20 💎), Музыка Suno (15 💎), "
     "Видео / Оживление фото (20 💎) и Полный разбор Дизайна Человека (70 💎) не входят "
     "в базовый пакет, но <i>полностью открыты</i> для поштучной оплаты за Кристаллы! "
