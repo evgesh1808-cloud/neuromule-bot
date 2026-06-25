@@ -29,7 +29,6 @@ jobs:
 
             echo "==> Workflow commit: ${EXPECTED_SHA}"
 
-            # Остановить конкурирующие запуски (systemd / другие каталоги)
             for svc in neuromule-bot neuromule_bot; do
               systemctl stop "${svc}" 2>/dev/null || true
               systemctl disable "${svc}" 2>/dev/null || true
@@ -42,7 +41,6 @@ jobs:
             done
             pkill -f '[n]euromule-bot.*main.py' 2>/dev/null || true
             pkill -f '[N]EUROMULE_PLATFORM=telegram' 2>/dev/null || true
-            rm -f "${DEPLOY_DIR}/data/telegram_bot.lock" 2>/dev/null || true
 
             mkdir -p "${DEPLOY_DIR}"
             cd "${DEPLOY_DIR}"
@@ -51,52 +49,15 @@ jobs:
               git clone "${REPO_URL}" .
             fi
 
-            for attempt in 1 2 3; do
-              git fetch origin main && break
-              echo "git fetch retry ${attempt}/3"
-              sleep 3
-            done
-            git reset --hard origin/main
+            rm -f data/telegram_bot.lock 2>/dev/null || true
+            bash scripts/vdsina-update.sh
 
             ACTUAL_SHA="$(git rev-parse HEAD)"
             echo "==> Server HEAD: ${ACTUAL_SHA} ($(git log -1 --oneline))"
             if [ "${ACTUAL_SHA}" != "${EXPECTED_SHA}" ]; then
-              echo "WARN: HEAD != workflow SHA (возможен параллельный push). Продолжаем с origin/main."
-            fi
-
-            if [ ! -f "ecosystem.config.cjs" ]; then
-              echo "ERROR: ecosystem.config.cjs missing after git reset"
-              exit 1
-            fi
-            if ! grep -q reply_build_version platforms/build_info.py 2>/dev/null; then
-              echo "ERROR: platforms/build_info.py без /version — код не обновился"
-              exit 1
-            fi
-
-            find "${DEPLOY_DIR}" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
-
-            if [ ! -d "venv" ]; then
-              python3 -m venv venv
-            fi
-            # shellcheck disable=SC1091
-            source venv/bin/activate
-            pip install -q -r requirements.txt
-
-            pm2 stop all 2>/dev/null || true
-            pm2 delete all 2>/dev/null || true
-            sleep 2
-
-            pm2 start ecosystem.config.cjs --update-env
-            pm2 save || true
-
-            sleep 5
-            pm2 status
-            if ! pm2 pid neuromule-tg >/dev/null 2>&1; then
-              echo "ERROR: neuromule-tg не запустился"
-              pm2 logs neuromule-tg --lines 40 --nostream || true
-              exit 1
+              echo "WARN: HEAD != workflow SHA (возможен параллельный push)."
             fi
 
             echo "==> UI: $(grep -m1 'BTN_REPLY_NEUROTEXT =' content/messages.py || true)"
-            pm2 logs neuromule-tg --lines 30 --nostream | grep -E 'NeuroMule build|polling started|ERROR|Traceback' || true
+            pm2 logs neuromule-tg --lines 20 --nostream | grep -E 'NeuroMule build|polling started|ERROR|Traceback' || true
             echo "==> Deploy OK: $(git rev-parse --short HEAD)"
