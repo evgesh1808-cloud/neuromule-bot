@@ -66,7 +66,7 @@ def _format_sku_bullet_lines(
     if overflow_suffix:
         lines.append(overflow_suffix)
     elif len(batch) > max_items:
-        lines.append(f"и еще {len(batch) - max_items} SKU")
+        lines.append(f"… и ещё {len(batch) - max_items} SKU")
     return "\n".join(lines) if lines else "• убыточных SKU не выявлено"
 
 
@@ -182,7 +182,7 @@ _WB_FINANCE_MAX_OUTPUT_TOKENS = 1400
 _WB_FINANCE_TELEGRAM_SOFT_MAX_CHARS = 2000
 _FINANCE_SEPARATOR = "────────────────────────"
 # Меняйте при каждом релизе CFO-шаблона — видно внизу отчёта для проверки деплоя.
-_FINANCE_REPORT_BUILD = "cfo-v4"
+_FINANCE_REPORT_BUILD = "cfo-v5"
 _OLD_FINALE_MARKERS = (
     "Финальный Excel",
     "интерактивный дашборд",
@@ -298,6 +298,61 @@ def compute_business_score(
         score -= 1.2
 
     return round(max(1.0, min(10.0, score)), 1)
+
+
+def _business_score_band(score: float) -> tuple[str, str]:
+    """Эмодзи и человекочитаемый статус по шкале 1–10."""
+    if score < 5.0:
+        return (
+            "🔴",
+            "КРИТИЧЕСКИЙ УРОВЕНЬ — Бизнес в зоне риска кассового разрыва",
+        )
+    if score < 8.0:
+        return (
+            "🟡",
+            "НОРМАЛЬНЫЙ УРОВЕНЬ — Требуется оптимизация расходов",
+        )
+    return "🟢", "ОТЛИЧНЫЙ УРОВЕНЬ — Эффективное управление"
+
+
+def _business_score_reason_line(
+    prompt_metrics: WbFinancePromptMetrics,
+    wb_metrics: WbMarketplaceMetrics | None,
+) -> str:
+    """Одна строка причины занижения/завышения балла."""
+    reasons_low: list[str] = []
+    reasons_high: list[str] = []
+
+    if prompt_metrics.profitability_pct < 7:
+        reasons_low.append("низкой рентабельности")
+    elif prompt_metrics.profitability_pct >= 18:
+        reasons_high.append("высокой маржинальности")
+
+    if 0 < prompt_metrics.buy_ratio_pct < 45:
+        reasons_low.append("критического выкупа")
+    elif prompt_metrics.buy_ratio_pct >= 72:
+        reasons_high.append("стабильного выкупа")
+
+    if prompt_metrics.adv_load_pct > 20:
+        reasons_low.append("раздутого ДРР")
+    elif 0 < prompt_metrics.adv_load_pct <= 12:
+        reasons_high.append("контролируемой рекламы")
+
+    if prompt_metrics.outsider_loss > 0:
+        reasons_low.append("убыточных SKU")
+
+    if wb_metrics and wb_metrics.top5_units:
+        worst = min(wb_metrics.top5_units, key=lambda u: u.net_income)
+        if worst.net_income < 0:
+            reasons_low.append("убыточных позиций в матрице")
+
+    if prompt_metrics.business_score >= 7.0 and reasons_high:
+        return f"📈 Балл высокий благодаря {', '.join(reasons_high)}."
+    if reasons_low:
+        return f"📉 Балл занижен из-за {', '.join(reasons_low)}."
+    if prompt_metrics.business_score >= 8.0:
+        return "📈 Балл высокий благодаря сбалансированной экономике магазина."
+    return "📉 Балл занижен из-за операционных рисков — нужна оптимизация."
 
 
 def derive_business_verdict(
@@ -613,12 +668,12 @@ def _prompt_kwargs_from_metrics(metrics: WbFinancePromptMetrics) -> dict[str, st
     }
 
 
-def build_wb_marketplace_finance_user_prompt(
+def build_wb_marketplace_finance_payload_dict(
     prompt_metrics: WbFinancePromptMetrics,
     wb_metrics: WbMarketplaceMetrics | None,
-) -> str:
-    """User-сообщение: расширенный JSON с ETL-метриками для качественного анализа."""
-    top5 = []
+) -> dict[str, Any]:
+    """JSON-словарь user-сообщения для OpenRouter (wb_ozon_finance)."""
+    top5: list[dict[str, Any]] = []
     traffic_light: dict[str, str] = {}
     if wb_metrics:
         top5 = [
@@ -655,7 +710,7 @@ def build_wb_marketplace_finance_user_prompt(
                     f"Выкуп {wb_metrics.buyout_coef_pct:.1f}% — критическая зона возвратов."
                 )
 
-    payload: dict[str, Any] = {
+    return {
         "etl_source": "wb_ozon_finance_report",
         "revenue_rub": round(prompt_metrics.revenue, 2),
         "tax_usn_6pct_rub": round(prompt_metrics.tax, 2),
@@ -695,6 +750,14 @@ def build_wb_marketplace_finance_user_prompt(
         "traffic_light_hints": traffic_light,
         "local_insights": list(wb_metrics.insight_lines) if wb_metrics else [],
     }
+
+
+def build_wb_marketplace_finance_user_prompt(
+    prompt_metrics: WbFinancePromptMetrics,
+    wb_metrics: WbMarketplaceMetrics | None,
+) -> str:
+    """User-сообщение: расширенный JSON с ETL-метриками для качественного анализа."""
+    payload = build_wb_marketplace_finance_payload_dict(prompt_metrics, wb_metrics)
     return (
         "Ниже — подтверждённые финансовые показатели и каталог SKU из отчёта маркетплейса. "
         "Сформируй экспресс-отчёт строго по структуре из system prompt. "
@@ -952,13 +1015,17 @@ def build_wb_finance_express_html_local(
     wb_metrics: WbMarketplaceMetrics | None,
 ) -> str:
     """Премиальный локальный отчёт (0 ₽) — тот же стиль, что и консалтинг CFO."""
+    score_emoji, score_status = _business_score_band(prompt_metrics.business_score)
+    score_reason = _business_score_reason_line(prompt_metrics, wb_metrics)
     lines = [
         "📊 <b>ФИНАНСОВЫЙ ЭКСПРЕСС-АНАЛИЗ БИЗНЕСА</b>",
         _FINANCE_SEPARATOR,
         (
-            f"🎯 <b>БИЗНЕС-СКОРИНГ МАГАЗИНА:</b> "
-            f"<code>{prompt_metrics.business_score:.1f} / 10</code>"
+            f"🎯 <b>БИЗНЕС-СКОРИНГ МАГАЗИНА:</b> {score_emoji} "
+            f"<code>{prompt_metrics.business_score:.1f} / 10</code> "
+            f"<i>{score_status}</i>"
         ),
+        score_reason,
         "💡 <b>КЛЮЧЕВОЙ БИЗНЕС-ВЕРДИКТ:</b>",
         f"<i>{_escape_verdict(prompt_metrics.verdict)}</i>",
         _FINANCE_SEPARATOR,

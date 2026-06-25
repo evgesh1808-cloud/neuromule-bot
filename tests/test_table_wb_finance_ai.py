@@ -242,6 +242,46 @@ def test_dedupe_report_noise_oos() -> None:
     assert _dedupe_report_noise(raw) == "«BOX» через 0 дн. (риск OOS)"
 
 
+def test_business_score_band_thresholds() -> None:
+    from services.table_wb_finance_ai import _business_score_band
+
+    assert _business_score_band(3.5)[0] == "🔴"
+    assert "КРИТИЧЕСКИЙ" in _business_score_band(3.5)[1]
+    assert _business_score_band(6.0)[0] == "🟡"
+    assert "НОРМАЛЬНЫЙ" in _business_score_band(6.0)[1]
+    assert _business_score_band(8.5)[0] == "🟢"
+    assert "ОТЛИЧНЫЙ" in _business_score_band(8.5)[1]
+
+
+def test_local_report_shows_score_emoji_and_reason() -> None:
+    from services.table_wb_finance_ai import (
+        WbFinancePromptMetrics,
+        build_wb_finance_express_html_local,
+    )
+
+    metrics = WbFinancePromptMetrics(
+        revenue=10_000.0,
+        tax=600.0,
+        clear_profit=9_400.0,
+        adv_load_pct=10.0,
+        buy_ratio_pct=60.0,
+        year_forecast=120_000.0,
+        profitability_pct=94.0,
+        business_score=7.0,
+        verdict="Тест",
+        fomo_lost_rub=0.0,
+        fomo_breakdown=(),
+        abc_a_leader_name="WRAPPER",
+        abc_a_leader_article="W-1",
+        abc_a_leader_buyout=72.0,
+        abc_a_leader_margin=5_000.0,
+    )
+    html = build_wb_finance_express_html_local(metrics, None)
+    assert "🟡" in html
+    assert "НОРМАЛЬНЫЙ УРОВЕНЬ" in html
+    assert "📈" in html or "📉" in html
+
+
 def test_local_report_includes_cfo_build_marker() -> None:
     from services.table_wb_finance_ai import (
         WbFinancePromptMetrics,
@@ -266,7 +306,7 @@ def test_local_report_includes_cfo_build_marker() -> None:
         abc_a_leader_margin=5_000.0,
     )
     html = build_wb_finance_express_html_local(metrics, None)
-    assert "CFO build cfo-v4" in html
+    assert "CFO build cfo-v5" in html
     assert "арт. W-1" in html or "W-1" in html
 
 
