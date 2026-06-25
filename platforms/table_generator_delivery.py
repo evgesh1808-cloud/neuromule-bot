@@ -13,6 +13,7 @@ from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 from aiogram.types import BufferedInputFile, Message
 
 from platforms.table_mini_app_keyboard import table_delivery_keyboard
+from platforms.telegram_chunks import answer_chat_text
 from config import settings
 from content import messages as msg
 from services.table_generator_pack import TABLE_XLSX_FILENAME, TableGeneratorPack, build_table_generator_pack
@@ -63,6 +64,18 @@ async def _clear_status_message(status: Message | None) -> None:
 def _chart_short_caption(report_title: str) -> str:
     title = _escape_telegram_html((report_title or "отчёт").strip()[:80])
     return f"📊 <b>Визуализация: {title}</b>"
+
+
+def _should_send_detailed_analysis(
+    table_subrole: str | None,
+    audit_platform: str | None,
+) -> bool:
+    """Развёрнутый HTML-отчёт в чат — для маркетплейсов и WB/Ozon."""
+    if audit_platform:
+        return True
+    from services.table_subrole_types import normalize_table_subrole
+
+    return normalize_table_subrole(table_subrole) == "wb_ozon_finance"
 
 
 async def _send_excel_document(
@@ -165,6 +178,10 @@ async def send_table_generator_pack(
     await _await_with_flood_retry(
         lambda: message.answer(success_text, parse_mode=ParseMode.HTML)
     )
+
+    detailed_html = (pack.telegram_caption_html or "").strip()
+    if detailed_html and _should_send_detailed_analysis(table_subrole, audit_platform):
+        await answer_chat_text(message, detailed_html, settings)
 
     if pack.chart_png_bytes:
         chart_file = BufferedInputFile(pack.chart_png_bytes, filename="chart.png")

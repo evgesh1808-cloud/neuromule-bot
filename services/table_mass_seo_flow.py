@@ -11,6 +11,7 @@ from services import metrics
 from services.ai_text import ask_ai_messages
 from services.billing import billing
 from services.billing.store import refund_charge
+from services.dialog_sanitize import compact_table_history_from_json
 from services.dialog_write_worker import commit_assistant_turn_queued
 from services.rate_limit_service import allow_request, rollback_last
 from services.repository import dialog_append, insert_table_report
@@ -159,7 +160,11 @@ async def run_mass_seo_xlsx_turn(
 
     dialog_text = f"[📝 SEO Excel {file_name}]"
     await dialog_append(user_id, "user", dialog_text)
-    await commit_assistant_turn_queued(user_id, table_json, settings.dialog_prune_keep)
+    await commit_assistant_turn_queued(
+        user_id,
+        compact_table_history_from_json(table_json, table_subrole="table_generator"),
+        settings.dialog_prune_keep,
+    )
     report_id = await insert_table_report(user_id, table_json)
     conv.schedule_memory_refresh(settings, user_id)
     metrics.incr("table.xlsx.mass_seo", {"outcome": "success"})

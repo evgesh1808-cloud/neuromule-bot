@@ -18,19 +18,22 @@ def test_normalize_assistant_text_empty() -> None:
 
 
 def test_resolve_fast_path_assistant_text_fallback() -> None:
-    text = _resolve_fast_path_assistant_text(None, title="WB", rows=[])
-    assert text
-    data = json.loads(text)
-    assert data["fast_path"] is True
-    assert data["title"] == "WB"
+    text = _resolve_fast_path_assistant_text(
+        None,
+        title="WB",
+        rows=[],
+        table_subrole="wb_ozon_finance",
+    )
+    assert "WB/Ozon" in text
+    assert "WB" in text
 
 
 def test_resolve_fast_path_assistant_text_from_rows() -> None:
     rows = [["Месяц", "Сумма"], ["Янв", "100"]]
     text = _resolve_fast_path_assistant_text(None, title="Отчёт", rows=rows)
-    data = json.loads(text)
-    assert data["headers"] == ["Месяц", "Сумма"]
-    assert data["rows"] == [["Янв", "100"]]
+    assert "Отчёт" in text
+    assert "1 строк" in text
+    assert not text.startswith("{")
 
 
 @pytest.mark.asyncio

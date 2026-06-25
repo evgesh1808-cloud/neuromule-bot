@@ -18,6 +18,7 @@ from config import Settings
 from services import conversation as conv
 from services import metrics
 from services.ai_text import StreamCallback, ask_ai_messages, estimate_messages_prompt_tokens
+from services.dialog_sanitize import compact_table_history_from_json
 from services.dialog_write_worker import commit_assistant_turn_queued
 from services.neurotext_media import build_openrouter_user_content
 from services.rate_limit_service import allow_request, rollback_last
@@ -249,7 +250,13 @@ async def run_chat_turn(
         text_role=effective_role,
     )
 
-    est_tokens = estimate_messages_prompt_tokens(payload, settings=settings)
+    def _estimate_payload_tokens(msgs: list) -> int:
+        return estimate_messages_prompt_tokens(msgs, settings=settings)
+
+    est_tokens = _estimate_payload_tokens(payload)
+    while est_tokens > settings.chat_max_context_tokens_est and len(payload) > 2:
+        payload.pop(1)
+        est_tokens = _estimate_payload_tokens(payload)
     if est_tokens > settings.chat_max_context_tokens_est:
         await dialog_pop_last_for_user(user_id)
         if charge_id:
@@ -335,7 +342,11 @@ async def run_chat_turn(
                 raise ValueError("invalid or empty table JSON")
 
             ai_insights = extract_table_ai_insights(raw_answer)
-            await commit_assistant_turn_queued(user_id, table_json, settings.dialog_prune_keep)
+            await commit_assistant_turn_queued(
+                user_id,
+                compact_table_history_from_json(table_json, table_subrole=effective_role),
+                settings.dialog_prune_keep,
+            )
             report_id = await insert_table_report(user_id, table_json)
             conv.schedule_memory_refresh(settings, user_id)
             _record_chat_success_billing(

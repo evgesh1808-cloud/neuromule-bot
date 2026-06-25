@@ -14,6 +14,7 @@ from content.chat_prompt import build_system_prompt
 from services import conversation as conv
 from services import metrics
 from services.ai_text import ask_ai_messages
+from services.dialog_sanitize import compact_table_history_from_json
 from services.dialog_write_worker import commit_assistant_turn_queued
 from services.repository import dialog_append, dialog_pop_last_for_user, get_persistent_memory, insert_table_report
 from services.table_json import canonicalize_table_json
@@ -53,42 +54,31 @@ def _resolve_fast_path_assistant_text(
     *,
     title: str,
     rows: list[list[str]],
+    table_subrole: str | None = None,
 ) -> str:
     """
-    Текст для ``dialog_messages.content`` в локальном fast-path.
+    Короткая запись в ``dialog_messages`` — не весь JSON таблицы.
 
-    Никогда не возвращает пустую строку — только канонический JSON или метаданные.
+    Полные данные хранятся в ``table_reports`` и уходят в Telegram отдельным отчётом.
     """
-    if table_json and str(table_json).strip():
-        return str(table_json).strip()
-    try:
-        if rows:
-            headers = [str(c).strip() for c in rows[0]]
-            data_rows = [[str(c).strip() for c in row] for row in rows[1:]]
-            if headers and any(headers) and data_rows:
-                blob = json.dumps(
-                    {
-                        "title": title or "Отчёт NeuroMule",
-                        "headers": headers,
-                        "rows": data_rows,
-                    },
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
-                canonical = canonicalize_table_json(blob)
-                if canonical:
-                    return canonical
-                return blob
-    except Exception:
-        logger.debug("fast path assistant JSON snapshot failed", exc_info=True)
-    return json.dumps(
-        {
-            "title": title or "Отчёт NeuroMule",
-            "fast_path": True,
-            "note": _FAST_PATH_ASSISTANT_FALLBACK,
-            "row_count": max(len(rows) - 1, 0),
-        },
-        ensure_ascii=False,
+    from services.dialog_sanitize import compact_table_history_note
+
+    row_count = max(len(rows) - 1, 0) if rows else 0
+    report_title = title or "Отчёт NeuroMule"
+    if table_json:
+        try:
+            data = json.loads(table_json)
+            if isinstance(data, dict):
+                report_title = str(data.get("title") or report_title)
+                data_rows = data.get("rows")
+                if isinstance(data_rows, list):
+                    row_count = len(data_rows)
+        except json.JSONDecodeError:
+            pass
+    return compact_table_history_note(
+        title=report_title,
+        row_count=row_count,
+        table_subrole=table_subrole,
     )
 
 
@@ -432,6 +422,7 @@ async def run_xlsx_fast_path_turn(
         table_json,
         title=worker.title,
         rows=worker.rows,
+        table_subrole=subrole,
     )
     if not table_json:
         table_json = assistant_dialog_text
@@ -594,7 +585,11 @@ async def run_table_json_deepseek_fallback(
             raise ValueError("deepseek fallback: invalid table JSON")
 
         ai_insights = extract_table_ai_insights(content)
-        await commit_assistant_turn_queued(user_id, table_json, settings.dialog_prune_keep)
+        await commit_assistant_turn_queued(
+            user_id,
+            compact_table_history_from_json(table_json, table_subrole="table_generator"),
+            settings.dialog_prune_keep,
+        )
         report_id = await insert_table_report(user_id, table_json)
         conv.schedule_memory_refresh(settings, user_id)
         metrics.incr("table.xlsx.deepseek_fallback", {"outcome": "success"})

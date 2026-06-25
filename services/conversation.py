@@ -12,6 +12,7 @@ import logging
 from config import Settings
 from content.chat_prompt import build_memory_update_prompt, build_system_prompt
 from services import repository as repo
+from services.dialog_sanitize import sanitize_dialog_content_for_chat
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,7 @@ async def build_openrouter_messages(
     out: list[dict[str, str]] = [{"role": "system", "content": system}]
     for role, content in rows:
         if role in ("user", "assistant"):
-            out.append({"role": role, "content": content})
+            out.append({"role": role, "content": sanitize_dialog_content_for_chat(content)})
     return out
 
 
