@@ -139,8 +139,11 @@ async def build_neurotext_intro(user_id: int, active_role_id: str = "standard") 
     free_text_limit = catalog.daily_free_energy
     photo_limit = catalog.free_imagen_daily_limit
 
+    from content.messages import TXT_AI_ASSISTANT_CARD_TITLE
+
     lines = [
         header,
+        TXT_AI_ASSISTANT_CARD_TITLE,
         f"🎭 Режим: <b>[ {role_label} ]</b> ➔ {cost_line}",
         "",
     ]

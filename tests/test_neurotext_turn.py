@@ -44,6 +44,8 @@ async def test_intro_free_has_base_header(repo_module) -> None:
     text = await build_neurotext_intro(uid, "standard")
     assert "Базовая версия" in text
     assert "NeuroMule" in text
+    assert "ИИ-Ассистент" in text
+    assert "Мультимодальный чат" in text
     assert "Стандарт" in text
     assert "💎" in text
 

@@ -170,7 +170,7 @@ async def text_role_process(message: Message, state: FSMContext) -> None:
 @router.message(UserFlow.waiting_for_text_prompt)
 async def text_role_unsupported(message: Message) -> None:
     await message.answer(
-        "📝 В Нейротексте можно отправить <b>текст</b>, <b>фото</b> "
+        "🤖 В ИИ-Ассистенте можно отправить <b>текст</b>, <b>фото</b> "
         "или файл <b>.txt / .csv / .pdf / .docx</b>.",
         parse_mode=ParseMode.HTML,
     )

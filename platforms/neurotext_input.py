@@ -75,16 +75,6 @@ def _document_suffix(file_name: str | None) -> str:
     return Path((file_name or "document").strip()).suffix.lower()
 
 
-def _is_bare_xlsx_document(message: Message) -> bool:
-    """``.xlsx`` без пользовательской подписи — всегда локальный fast-path."""
-    if not message.document:
-        return False
-    return (
-        _document_suffix(message.document.file_name) == ".xlsx"
-        and not _normalize_document_caption(message)
-    )
-
-
 async def _table_xlsx_allowed(user_id: int) -> bool:
     if billing_bypass(user_id):
         return True
@@ -122,8 +112,23 @@ async def _send_table_generator_status(message: Message) -> Message:
     )
 
 
-def _is_table_spreadsheet_document(suffix: str, role_id: str, *, bare_xlsx: bool) -> bool:
-    return is_spreadsheet_suffix(suffix) and (bare_xlsx or role_id == "table_generator")
+def _is_table_spreadsheet_document(suffix: str, role_id: str) -> bool:
+    """Табличный пайплайн только в роли table_generator (ИИ-Аналитик Excel)."""
+    return is_spreadsheet_suffix(suffix) and role_id == "table_generator"
+
+
+async def _reply_spreadsheet_requires_analyst_role(
+    message: Message,
+    status_msg: Message | None,
+) -> None:
+    text = msg.TXT_SPREADSHEET_REQUIRES_ANALYST_ROLE
+    if status_msg is not None:
+        try:
+            await status_msg.edit_text(text, parse_mode=ParseMode.HTML)
+            return
+        except Exception:
+            pass
+    await message.answer(text, parse_mode=ParseMode.HTML)
 
 
 def _use_table_api_path(caption: str, table_subrole: str) -> bool:
@@ -311,12 +316,6 @@ async def handle_neurotext_user_message(
             )
             xlsx_auto_finance = True
 
-    # Bare .xlsx без caption → табличный fast-path (standard_report), не WB-аудит.
-    if _is_bare_xlsx_document(message):
-        data_now = await state.get_data()
-        if not is_marketplace_audit_context(await state.get_state(), data_now):
-            await state.update_data(text_role="table_generator")
-
     await ensure_neurotext_waiting_state(state)
     data = await state.get_data()
     role_id = str(data.get("text_role") or "standard").strip().lower()
@@ -341,19 +340,18 @@ async def handle_neurotext_user_message(
             suffix = _document_suffix(file_name)
             caption = _normalize_document_caption(message)
             logger.warning(
-                "Excel received: role=%s, suffix=%s, caption=%r, file=%s, uid=%s",
+                "document received role=%s, suffix=%s, caption=%r, file=%s, uid=%s",
                 role_id,
                 suffix,
                 caption,
                 file_name,
                 uid,
             )
-            bare_xlsx = suffix == ".xlsx" and not caption
-            if bare_xlsx:
-                role_id = "table_generator"
-                await state.update_data(text_role="table_generator")
+            if is_spreadsheet_suffix(suffix) and role_id != "table_generator":
+                await _reply_spreadsheet_requires_analyst_role(message, None)
+                return
 
-            is_table_xlsx = _is_table_spreadsheet_document(suffix, role_id, bare_xlsx=bare_xlsx)
+            is_table_xlsx = _is_table_spreadsheet_document(suffix, role_id)
             if is_table_xlsx:
                 status_msg = await _send_table_generator_status(message)
             else:
@@ -365,7 +363,7 @@ async def handle_neurotext_user_message(
             if is_table_xlsx:
                 if not await _table_xlsx_allowed(uid):
                     await status_msg.edit_text(
-                        "⛔ Редактирование Excel доступно с тарифа <b>MINI</b> и выше. "
+                        f"⛔ {msg.TXT_AI_ANALYST_ROLE_PHRASE} доступна с тарифа <b>MINI</b> и выше. "
                         "Открой «🚀 Тарифы» для подключения.",
                         parse_mode=ParseMode.HTML,
                     )
@@ -399,7 +397,7 @@ async def handle_neurotext_user_message(
                     use_local = True
                     column_structure_warning = bool(preparse.rows)
                 else:
-                    use_local = xlsx_auto_finance or bare_xlsx or not _use_table_api_path(
+                    use_local = xlsx_auto_finance or not _use_table_api_path(
                         caption, table_subrole
                     )
                 if table_subrole == "mass_seo_generation":
@@ -515,18 +513,15 @@ async def handle_neurotext_user_message(
                     await status_msg.delete()
                 except Exception:
                     pass
-                if suffix == ".xlsx":
-                    await message.answer(
-                        "⚠️ Файлы <b>.xlsx</b> с подписью принимаются только в роли "
-                        "<b>📊 Таблицы</b>. Отправьте файл без подписи для быстрого отчёта "
-                        "или выберите роль Таблицы в меню.",
-                        parse_mode=ParseMode.HTML,
-                    )
+                if suffix in (".xlsx", ".csv"):
+                    await _reply_spreadsheet_requires_analyst_role(message, status_msg)
                 else:
                     await message.answer(
                         "⚠️ Поддерживаются документы "
                         "<b>.txt</b>, <b>.csv</b>, <b>.pdf</b>, <b>.docx</b> "
-                        "и <b>.xlsx</b> (только в роли Таблицы).",
+                        "и <b>.xlsx</b> (только в <b>{}</b>).".format(
+                            msg.TXT_AI_ANALYST_ROLE_PHRASE,
+                        ),
                         parse_mode=ParseMode.HTML,
                     )
                 return
@@ -586,7 +581,7 @@ async def handle_neurotext_user_message(
         await message.answer(
             "⚠️ Поддерживаются документы "
             "<b>.txt</b>, <b>.csv</b>, <b>.pdf</b>, <b>.docx</b> "
-            "и <b>.xlsx</b> (только в роли Таблицы).",
+            "и <b>.xlsx</b> (только в <b>{}</b>).".format(msg.TXT_AI_ANALYST_ROLE_PHRASE),
             parse_mode=ParseMode.HTML,
         )
         return

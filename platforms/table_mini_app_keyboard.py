@@ -13,7 +13,7 @@ _DEFAULT_MINI_APP_TEMPLATE = (
     "https://your-user.github.io/neuromule-table/?report_id={report_id}"
 )
 # Версия UI — сбрасывает кэш Telegram WebApp при обновлении дашборда.
-_MINI_APP_UI_VERSION = "20260527e"
+_MINI_APP_UI_VERSION = "20260527f"
 
 
 def build_table_mini_app_url(

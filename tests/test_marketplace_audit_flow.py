@@ -22,6 +22,7 @@ def test_marketplace_audit_platform_keyboard_layout() -> None:
         for row in kb.inline_keyboard
         for btn in row
     ]
+    assert msg.TXT_AI_ANALYST_CARD_TITLE in msg.TXT_AUDIT_PLATFORM_MENU
     assert msg.TXT_AUDIT_PLATFORM_MENU
     assert f"{msg.CB_AUDIT_PLATFORM_PREFIX}wildberries" in callbacks
     assert f"{msg.CB_AUDIT_PLATFORM_PREFIX}ozon" in callbacks

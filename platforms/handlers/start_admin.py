@@ -452,7 +452,7 @@ async def _admin_set_simulated_tariff(message: Message, tariff: str) -> None:
     await set_user_tariff(uid, tariff)
     await message.answer(
         f"✅ Тестовый тариф: <b>{tariff}</b>\n\n"
-        "UI Нейротекста и ограничения ролей — как у выбранного тарифа.\n"
+        "UI ИИ-Ассистента и ограничения ролей — как у выбранного тарифа.\n"
         "Списание ⚡/💎 не происходит, если в .env включён <code>GOD_MODE_ENABLED=1</code> "
         "и ваш ID в <code>ADMIN_IDS</code>.\n\n"
         "Команды: /set_free · /set_mini · /set_smart · /set_ultra",

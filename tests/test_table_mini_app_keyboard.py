@@ -21,7 +21,7 @@ def test_build_table_mini_app_url_with_placeholder(monkeypatch) -> None:
     )
     object.__setattr__(settings, "mini_app_api_base_url", "")
     assert build_table_mini_app_url(42) == (
-        "https://user.github.io/neuromule/?report_id=42&ui_v=20260527e"
+        "https://user.github.io/neuromule/?report_id=42&ui_v=20260527f"
     )
 
 
@@ -35,7 +35,7 @@ def test_build_table_mini_app_url_appends_query(monkeypatch) -> None:
     )
     object.__setattr__(settings, "mini_app_api_base_url", "")
     assert build_table_mini_app_url(7) == (
-        "https://user.github.io/neuromule/index.html?report_id=7&ui_v=20260527e"
+        "https://user.github.io/neuromule/index.html?report_id=7&ui_v=20260527f"
     )
 
 
@@ -51,7 +51,7 @@ def test_build_table_mini_app_url_appends_api_base(monkeypatch) -> None:
     assert (
         build_table_mini_app_url(42)
         == "https://user.github.io/neuromule/?report_id=42"
-        "&api_base=https://api.example.com&ui_v=20260527e"
+        "&api_base=https://api.example.com&ui_v=20260527f"
     )
 
 
