@@ -112,6 +112,30 @@ async def _send_table_generator_status(message: Message) -> Message:
     )
 
 
+async def _send_wb_finance_processing_status(message: Message) -> Message:
+    """Короткий статус WB-аудита (без лишнего баннера перед отчётом)."""
+    return await flood_safe_answer(
+        message,
+        "⏳ <b>Оцифровываю финансовый отчёт…</b>",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def _notify_table_status(
+    message: Message,
+    status_msg: Message | None,
+    text: str,
+) -> None:
+    """Редактирует статус или шлёт новое сообщение, если статуса не было."""
+    if status_msg is not None:
+        try:
+            await status_msg.edit_text(text, parse_mode=ParseMode.HTML)
+            return
+        except Exception:
+            logger.debug("status_msg.edit_text failed", exc_info=True)
+    await message.answer(text, parse_mode=ParseMode.HTML)
+
+
 def _is_table_spreadsheet_document(suffix: str, role_id: str) -> bool:
     """Табличный пайплайн только в роли table_generator (ИИ-Аналитик Excel)."""
     return is_spreadsheet_suffix(suffix) and role_id == "table_generator"
@@ -368,7 +392,7 @@ async def handle_neurotext_user_message(
             if is_table_xlsx and not is_wb_finance_subrole:
                 status_msg = await _send_table_generator_status(message)
             elif is_table_xlsx:
-                status_msg = None
+                status_msg = await _send_wb_finance_processing_status(message)
             else:
                 status_msg = await message.answer(
                     "📎 <b>Читаю документ…</b>",
@@ -377,10 +401,11 @@ async def handle_neurotext_user_message(
 
             if is_table_xlsx:
                 if not await _table_xlsx_allowed(uid):
-                    await status_msg.edit_text(
+                    await _notify_table_status(
+                        message,
+                        status_msg,
                         f"⛔ {msg.TXT_AI_ANALYST_ROLE_PHRASE} доступна с тарифа <b>MINI</b> и выше. "
                         "Открой «🚀 Тарифы» для подключения.",
-                        parse_mode=ParseMode.HTML,
                     )
                     return
                 file_path = await asyncio.wait_for(
@@ -404,7 +429,11 @@ async def handle_neurotext_user_message(
                     if xlsx_source_path is None:
                         Path(file_path).unlink(missing_ok=True)
                 if worker is None or not worker.rows:
-                    await status_msg.edit_text("⚠️ Файл пустой или не содержит данных.")
+                    await _notify_table_status(
+                        message,
+                        status_msg,
+                        "⚠️ Файл пустой или не содержит данных.",
+                    )
                     return
                 rows = worker.rows
                 xlsx_fallback_rows = rows
