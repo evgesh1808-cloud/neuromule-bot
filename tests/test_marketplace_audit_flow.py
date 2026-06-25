@@ -7,6 +7,7 @@ from platforms.marketplace_audit_flow import (
     activate_marketplace_audit,
     audit_state_for_platform,
     is_audit_file_waiting_state,
+    is_marketplace_audit_context,
 )
 from platforms.telegram_keyboards import create_marketplace_audit_platform_keyboard
 from platforms.telegram_states import OzonAuditingStates, WBAuditingStates
@@ -39,6 +40,19 @@ def test_audit_state_mapping() -> None:
     assert audit_state_for_platform("wildberries") is WBAuditingStates.wait_for_xlsx
     assert audit_state_for_platform("ozon") is OzonAuditingStates.wait_for_xlsx
     assert is_audit_file_waiting_state(WBAuditingStates.wait_for_xlsx.state)
+    assert not is_audit_file_waiting_state("UserFlow:waiting_for_text_prompt")
+    assert is_marketplace_audit_context(
+        WBAuditingStates.wait_for_xlsx.state,
+        {"audit_platform": "wildberries"},
+    )
+    assert not is_marketplace_audit_context(
+        "UserFlow:waiting_for_text_prompt",
+        {"text_role": "standard"},
+    )
+    assert is_marketplace_audit_context(
+        "UserFlow:waiting_for_text_prompt",
+        {"text_role": "standard", "audit_platform": "ozon"},
+    )
 
 
 def test_platform_etl_1c_cost_column() -> None:

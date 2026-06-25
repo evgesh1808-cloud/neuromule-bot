@@ -33,9 +33,16 @@ class _StubCallback:
 
 
 class _StubMessage:
-    def __init__(self, uid: int, text: str = "hello") -> None:
+    def __init__(
+        self,
+        uid: int,
+        text: str = "hello",
+        *,
+        document: Any | None = None,
+    ) -> None:
         self.from_user = _StubUser(uid)
         self.text = text
+        self.document = document
 
 
 # Подделываем isinstance: aiogram-типы у нас не импортированы в этом наборе.
@@ -118,6 +125,30 @@ async def test_admin_moderation_callback_is_never_throttled() -> None:
     data = f"{msg.CB_GALLERY_APPROVE_PREFIX}task_42"
     cb1 = _StubCallback(uid=1, data=data)
     cb2 = _StubCallback(uid=1, data=data)
+    assert await mw(_noop_handler, cb1, {}) == "executed"
+    assert await mw(_noop_handler, cb2, {}) == "executed"
+
+
+@pytest.mark.asyncio
+async def test_document_message_is_never_throttled() -> None:
+    from types import SimpleNamespace
+
+    mw = ThrottlingMiddleware(cooldown=2.0)
+    doc = SimpleNamespace(file_name="report.xlsx")
+    msg1 = _StubMessage(uid=42, document=doc)
+    msg2 = _StubMessage(uid=42, document=doc)
+    assert await mw(_noop_handler, msg1, {}) == "executed"
+    assert await mw(_noop_handler, msg2, {}) == "executed"
+
+
+@pytest.mark.asyncio
+async def test_audit_platform_callback_is_never_throttled() -> None:
+    from content import messages as msg
+
+    mw = ThrottlingMiddleware(cooldown=2.0)
+    data = f"{msg.CB_AUDIT_PLATFORM_PREFIX}wildberries"
+    cb1 = _StubCallback(uid=42, data=data)
+    cb2 = _StubCallback(uid=42, data=data)
     assert await mw(_noop_handler, cb1, {}) == "executed"
     assert await mw(_noop_handler, cb2, {}) == "executed"
 

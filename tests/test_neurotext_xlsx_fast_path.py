@@ -96,3 +96,6 @@ async def test_bare_xlsx_uses_fast_path_when_fsm_role_is_standard() -> None:
     fast_mock.assert_awaited_once()
     chat_mock.assert_not_awaited()
     state.update_data.assert_any_await(text_role="table_generator")
+    call_kwargs = fast_mock.await_args.kwargs
+    assert call_kwargs.get("table_subrole") != "wb_ozon_finance"
+    assert call_kwargs.get("marketplace_platform") is None

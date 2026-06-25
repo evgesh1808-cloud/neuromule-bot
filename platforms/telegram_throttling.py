@@ -81,6 +81,11 @@ def _is_table_chart_callback(event: TelegramObject) -> bool:
     return data.startswith(msg.CB_TABLE_CHART_PREFIX) or data.startswith(msg.CB_WB_CHART_PREFIX)
 
 
+def _is_document_message(event: TelegramObject) -> bool:
+    """Таблицы и документы не режем cooldown — иначе xlsx «пропадает» без ответа."""
+    return isinstance(event, Message) and bool(getattr(event, "document", None))
+
+
 def _is_whitelisted_callback(event: TelegramObject) -> bool:
     if _is_table_chart_callback(event):
         return True
@@ -88,6 +93,8 @@ def _is_whitelisted_callback(event: TelegramObject) -> bool:
         return False
     data = (event.data or "").strip()
     if data in WHITELISTED_CALLBACK_DATA:
+        return True
+    if data.startswith(msg.CB_AUDIT_PLATFORM_PREFIX):
         return True
     # Префиксы админ-модерации / TOS-навигации тоже выводим из-под
     # троттлинга (это редкие события, не атакующая поверхность).
@@ -121,6 +128,9 @@ class ThrottlingMiddleware(BaseMiddleware):
         if _is_whitelisted_callback(event):
             return await handler(event, data)
 
+        if _is_document_message(event):
+            return await handler(event, data)
+
         user_id = _user_id_of(event)
         if user_id is None:
             return await handler(event, data)
@@ -142,8 +152,11 @@ class ThrottlingMiddleware(BaseMiddleware):
                     await event.answer(DEFAULT_ALERT_TEXT, show_alert=False)
                 except Exception:
                     logger.debug("throttle: callback.answer failed", exc_info=True)
-            # Для Message не отвечаем явно: спамящий FREE-юзер просто
-            # не получит лишних эхо-сообщений (и так шумно в чате).
+            elif isinstance(event, Message):
+                try:
+                    await event.answer(DEFAULT_ALERT_TEXT, parse_mode="HTML")
+                except Exception:
+                    logger.debug("throttle: message.answer failed", exc_info=True)
             return None
 
         _LAST_CALL_AT[user_id] = now

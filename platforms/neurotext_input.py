@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import traceback
 from pathlib import Path
@@ -297,22 +298,24 @@ async def handle_neurotext_user_message(
         await send_neurotext_role_menu(message, state)
         return
 
-    # .xlsx/.csv в режиме аудита площадки → wb_ozon_finance + fast-path с формулой площадки.
+    # Финансовый аудит площадки — только после выбора WB/Ozon/…, не в любой роли Нейротекста.
     if is_document and _document_suffix(message.document.file_name) in (".xlsx", ".csv"):
-        from platforms.marketplace_audit_flow import is_audit_file_waiting_state
+        from platforms.marketplace_audit_flow import is_marketplace_audit_context
 
         current_state = await state.get_state()
         data_pre = await state.get_data()
-        if is_audit_file_waiting_state(current_state) or data_pre.get("audit_platform"):
+        if is_marketplace_audit_context(current_state, data_pre):
             await state.update_data(
                 text_role="table_generator",
                 table_subrole="wb_ozon_finance",
             )
             xlsx_auto_finance = True
 
-    # Bare .xlsx без caption — до ensure_neurotext, иначе FSM сбросит роль в standard.
+    # Bare .xlsx без caption → табличный fast-path (standard_report), не WB-аудит.
     if _is_bare_xlsx_document(message):
-        await state.update_data(text_role="table_generator")
+        data_now = await state.get_data()
+        if not is_marketplace_audit_context(await state.get_state(), data_now):
+            await state.update_data(text_role="table_generator")
 
     await ensure_neurotext_waiting_state(state)
     data = await state.get_data()
@@ -367,7 +370,10 @@ async def handle_neurotext_user_message(
                         parse_mode=ParseMode.HTML,
                     )
                     return
-                file_path = await download_telegram_document_to_path(deps.bot(), doc)
+                file_path = await asyncio.wait_for(
+                    download_telegram_document_to_path(deps.bot(), doc),
+                    timeout=120.0,
+                )
                 is_csv = suffix == ".csv"
                 title = Path(file_name).stem or "Отчёт NeuroMule"
                 try:
@@ -444,11 +450,11 @@ async def handle_neurotext_user_message(
                                 marketplace_platform=audit_platform,
                             )
                         if keep_waiting_state and fast_result.outcome is ChatTurnOutcome.SUCCESS:
-                            from platforms.marketplace_audit_flow import is_audit_file_waiting_state
+                            from platforms.marketplace_audit_flow import is_marketplace_audit_context
 
-                            if not (
-                                is_audit_file_waiting_state(await state.get_state())
-                                or audit_platform
+                            if not is_marketplace_audit_context(
+                                await state.get_state(),
+                                await state.get_data(),
                             ):
                                 await state.set_state(UserFlow.waiting_for_text_prompt)
                             if fast_result.effective_text_role:
@@ -549,6 +555,26 @@ async def handle_neurotext_user_message(
             quoted_text, user_text = resolve_neurotext_quote_input(message)
             raw_user_text = build_quoted_user_prompt(user_text, quoted_text)
             dialog_text = user_text[: settings.chat_max_message_chars] if quoted_text else None
+    except asyncio.TimeoutError:
+        logger.warning("telegram document download timeout uid=%s", uid)
+        if status_msg is not None:
+            try:
+                await status_msg.edit_text(
+                    "⚠️ <b>Не удалось скачать файл</b> (таймаут). "
+                    "Попробуйте ещё раз или отправьте файл без подписи.",
+                    parse_mode=ParseMode.HTML,
+                )
+            except Exception:
+                await message.answer(
+                    "⚠️ Не удалось скачать файл с серверов Telegram. Попробуйте ещё раз.",
+                    parse_mode=ParseMode.HTML,
+                )
+        else:
+            await message.answer(
+                "⚠️ Не удалось скачать файл с серверов Telegram. Попробуйте ещё раз.",
+                parse_mode=ParseMode.HTML,
+            )
+        return
     except DocumentTooBigError as exc:
         file_name = message.document.file_name if message.document else None
         await message.answer(

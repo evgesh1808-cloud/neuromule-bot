@@ -67,6 +67,22 @@ def _probe_local_http_proxy() -> str | None:
     return None
 
 
+def _probe_proxy_reachable(url: str, timeout_sec: float = 0.35) -> bool:
+    """Проверка, что локальный SOCKS/HTTP-прокси реально слушает порт."""
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port
+    if port is None:
+        port = 1080 if parsed.scheme.startswith("socks") else 8080
+    try:
+        with socket.create_connection((host, port), timeout=timeout_sec):
+            return True
+    except OSError:
+        return False
+
+
 def resolve_telegram_proxy_url(explicit: str | None = None) -> str | None:
     """Прокси для Bot session: .env → env → системный прокси Windows → локальный порт VPN."""
     candidates: list[tuple[str, str]] = [
@@ -82,6 +98,13 @@ def resolve_telegram_proxy_url(explicit: str | None = None) -> str | None:
         if not raw:
             continue
         url = _normalize_proxy_url(raw)
+        if not _probe_proxy_reachable(url):
+            logger.warning(
+                "Telegram proxy: %s → %s недоступен, пропускаем",
+                source,
+                _redact_proxy_url(url),
+            )
+            continue
         logger.info("Telegram proxy: %s → %s", source, _redact_proxy_url(url))
         return url
     auto = _probe_local_http_proxy()

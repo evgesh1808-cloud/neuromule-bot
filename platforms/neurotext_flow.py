@@ -29,13 +29,13 @@ from services.use_cases.neurotext_turn import (
 
 async def ensure_neurotext_waiting_state(state: FSMContext) -> None:
     """Вход в «Нейротекст»: FSM ждёт текст/файл; audit-состояния площадок не сбрасываем."""
-    from platforms.marketplace_audit_flow import is_audit_file_waiting_state
+    from platforms.marketplace_audit_flow import is_marketplace_audit_context
 
     data = await state.get_data()
     if not data.get("text_role"):
         await state.update_data(text_role="standard")
     current = await state.get_state()
-    if is_audit_file_waiting_state(current) or data.get("audit_platform"):
+    if is_marketplace_audit_context(current, data):
         return
     await state.set_state(UserFlow.waiting_for_text_prompt)
 
@@ -161,7 +161,14 @@ async def handle_neurotext_role_pick(
     if await _handle_role_pick_locked(callback, pick, tariffs_keyboard=tariffs_keyboard):
         return
 
-    await state.update_data(text_role=pick.role_id)
+    if pick.role_id == "table_generator":
+        await state.update_data(text_role=pick.role_id)
+    else:
+        await state.update_data(
+            text_role=pick.role_id,
+            table_subrole=None,
+            audit_platform=None,
+        )
 
     if pick.role_id == "table_generator":
         await handle_show_table_subcategories(callback, state, tariffs_keyboard=tariffs_keyboard, answered=True)

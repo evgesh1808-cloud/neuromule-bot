@@ -437,3 +437,25 @@ async def chat_handler(message: Message) -> None:
         return
     await message.answer(msg.TXT_GEN_JOB_FAILED)
 
+
+@router.message(F.document)
+async def spreadsheet_document_catch_all(message: Message, state: FSMContext) -> None:
+    """xlsx/csv, если FSM сброшен (рестарт pm2): обычный отчёт, не WB-аудит."""
+    doc = message.document
+    if doc is None:
+        return
+    suffix = Path((doc.file_name or "document").strip()).suffix.lower()
+    if suffix not in (".xlsx", ".csv"):
+        return
+
+    from platforms.neurotext_input import handle_neurotext_user_message
+
+    data = await state.get_data()
+    if not data.get("audit_platform"):
+        await state.update_data(
+            text_role="table_generator",
+            table_subrole="standard_report",
+            audit_platform=None,
+        )
+    await handle_neurotext_user_message(message, state)
+

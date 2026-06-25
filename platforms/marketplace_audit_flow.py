@@ -8,7 +8,6 @@ from aiogram.fsm.state import State
 from platforms.telegram_states import (
     OneCAuditingStates,
     OzonAuditingStates,
-    UserFlow,
     WBAuditingStates,
     YandexAuditingStates,
 )
@@ -48,11 +47,19 @@ async def activate_marketplace_audit(
 
 
 def is_audit_file_waiting_state(state_key: str | None) -> bool:
+    """Только FSM ожидания файла после выбора площадки (не общий Нейротекст)."""
     if not state_key:
         return False
-    if state_key in AUDIT_FILE_WAITING_STATE_KEYS:
+    return state_key in AUDIT_FILE_WAITING_STATE_KEYS
+
+
+def is_marketplace_audit_context(
+    state_key: str | None,
+    data: dict[str, object] | None,
+) -> bool:
+    """Финансовый аудит площадки: явный audit_platform или FSM wait_for_xlsx."""
+    if is_audit_file_waiting_state(state_key):
         return True
-    return state_key in (
-        UserFlow.waiting_for_text_prompt.state,
-        str(UserFlow.waiting_for_text_prompt),
-    )
+    if not data:
+        return False
+    return bool(data.get("audit_platform"))
