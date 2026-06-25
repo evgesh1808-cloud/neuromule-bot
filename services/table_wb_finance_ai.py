@@ -474,6 +474,24 @@ def compute_wb_finance_prompt_metrics(
                 }
                 for s in matrix_etl.sku_catalog[:20]
             )
+            gross_net = sum(s.net_profit for s in matrix_etl.sku_catalog)
+            clear_profit = round(gross_net - tax, 2)
+            profitability = (
+                (clear_profit / revenue_total * 100.0) if revenue_total > 0 else 0.0
+            )
+            business_score = compute_business_score(
+                profitability_pct=profitability,
+                ad_load_pct=adv_load,
+                buyout_coef_pct=buy_ratio,
+                worst_unit_net=worst_unit.net_income if worst_unit else None,
+            )
+            verdict = derive_business_verdict(
+                business_score=business_score,
+                profitability_pct=profitability,
+                ad_load_pct=adv_load,
+                buyout_coef_pct=buy_ratio,
+                worst_unit_label=worst_label,
+            )
         if matrix_etl.oos_critical_sku and matrix_etl.oos_critical_days is not None:
             oos_line = (
                 f"«{matrix_etl.oos_critical_sku}» закончится через "
@@ -1059,9 +1077,14 @@ def _build_traffic_light_block(
                 f"«{worst.label}» убыточен "
                 f"(<code>{_fmt_rub_in_code(worst.net_income)}</code>/шт.)."
             )
-    if prompt_metrics.adv_load_pct > _HIGH_DRR_PCT and not leader_is_critical:
+    if prompt_metrics.adv_load_pct >= 30:
         red_parts.append(
-            f"ДРР <code>{prompt_metrics.adv_load_pct:.1f}%</code> — реклама съедает прибыль."
+            f"Катастрофический ДРР <code>{prompt_metrics.adv_load_pct:.1f}%</code> — "
+            "реклама съедает чистую прибыль быстрее, чем растёт выручка."
+        )
+    elif prompt_metrics.adv_load_pct > _HIGH_DRR_PCT:
+        red_parts.append(
+            f"ДРР <code>{prompt_metrics.adv_load_pct:.1f}%</code> — срочно режьте рекламный бюджет."
         )
     if not red_parts:
         red += "критических утечек не зафиксировано — держите фокус на жёлтой зоне."

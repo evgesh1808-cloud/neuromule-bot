@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from content.chat_prompt import build_wb_marketplace_finance_system_prompt
 from services.table_text_response import compute_wb_marketplace_metrics
 from services.table_wb_finance_ai import (
@@ -109,9 +111,9 @@ def test_compute_wb_finance_prompt_metrics_from_etl() -> None:
     assert metrics is not None
     assert metrics.revenue == 6000.0
     assert metrics.tax == 360.0
-    assert metrics.clear_profit == 5640.0
+    assert metrics.clear_profit == pytest.approx(3131.0)
     assert metrics.year_forecast == 72000.0
-    assert metrics.profitability_pct == 94.0
+    assert metrics.profitability_pct == pytest.approx(52.2, abs=0.5)
     assert 1.0 <= metrics.business_score <= 10.0
     assert metrics.verdict
     assert metrics.fomo_lost_rub >= 0
