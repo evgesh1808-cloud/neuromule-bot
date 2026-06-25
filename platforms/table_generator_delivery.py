@@ -102,6 +102,47 @@ async def _send_excel_document(
         )
 
 
+def _ensure_wb_finance_caption(
+    pack: object,
+    *,
+    table_worker: object | None,
+    audit_platform: str | None,
+) -> str:
+    """Последний рубеж: локальный CFO-отчёт, если caption пустой."""
+    html = (getattr(pack, "telegram_caption_html", None) or "").strip()
+    if html and "ФИНАНСОВЫЙ" in html.upper():
+        return html
+    worker = table_worker
+    if worker is None:
+        return html
+    rows = getattr(worker, "rows", None)
+    total = float(getattr(worker, "calculated_total", 0) or 0)
+    if not rows:
+        return html
+    from services.table_wb_finance_ai import (
+        _build_local_wb_finance_html,
+        resolve_wb_revenue_total,
+    )
+
+    revenue = resolve_wb_revenue_total(
+        calculated_total=total,
+        matrix_rows=rows,
+        platform=audit_platform,
+    )
+    if revenue <= 0:
+        return html
+    from services.table_wb_finance_ai import resolve_wb_metrics_for_rows
+
+    wb_metrics = resolve_wb_metrics_for_rows(rows, revenue, platform=audit_platform)
+    built = _build_local_wb_finance_html(
+        revenue,
+        wb_metrics,
+        matrix_rows=rows,
+        platform=audit_platform,
+    )
+    return built or html
+
+
 async def send_table_generator_pack(
     message: Message,
     raw_json: str,
@@ -170,6 +211,12 @@ async def send_table_generator_pack(
         success_text = f"{success_text}{degradation_notice}"
 
     detailed_html = (pack.telegram_caption_html or "").strip()
+    if not detailed_html and _should_send_detailed_analysis(table_subrole, audit_platform):
+        detailed_html = _ensure_wb_finance_caption(
+            pack,
+            table_worker=table_worker,
+            audit_platform=audit_platform,
+        )
 
     chart_keyboard = table_delivery_keyboard(
         pack.chart_type,
@@ -185,6 +232,13 @@ async def send_table_generator_pack(
         if degradation_notice:
             report_body = f"{degradation_notice}\n\n{report_body}"
         await answer_chat_text(message, report_body, settings)
+    elif _should_send_detailed_analysis(table_subrole, audit_platform) and not detailed_html:
+        await _await_with_flood_retry(
+            lambda: message.answer(
+                msg.TXT_TABLE_AI_FAILED_NO_ROWS,
+                parse_mode=ParseMode.HTML,
+            )
+        )
     else:
         await _await_with_flood_retry(
             lambda: message.answer(success_text, parse_mode=ParseMode.HTML)

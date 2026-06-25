@@ -851,6 +851,70 @@ def build_wb_mpstats_ai_context(
     }
 
 
+def resolve_wb_revenue_total(
+    *,
+    calculated_total: float,
+    file_path: str | Path | None = None,
+    matrix_rows: list[list[str]] | None = None,
+    platform: str | None = "wildberries",
+) -> float:
+    """Выручка для CFO: worker → openpyxl JSON → preprocess матрицы."""
+    if calculated_total > 0:
+        return float(calculated_total)
+    if file_path is not None:
+        try:
+            raw = prepare_wb_data_for_ai(file_path, platform=platform or "wildberries")
+            data = json.loads(raw)
+            rev = float((data.get("finance") or {}).get("total_revenue") or 0.0)
+            if rev > 0:
+                return rev
+        except Exception:
+            logger.debug("resolve_wb_revenue_total: file parse failed", exc_info=True)
+    if matrix_rows:
+        from services.table_xlsx_preprocess import preprocess_xlsx_rows
+
+        pre = preprocess_xlsx_rows(matrix_rows, title="WB")
+        if pre.revenue_total > 0:
+            return float(pre.revenue_total)
+    return 0.0
+
+
+def _is_publishable_wb_finance_html(html: str) -> bool:
+    """Ответ OpenRouter пригоден к показу (не пустой и похож на CFO-отчёт)."""
+    sample = (html or "").strip()
+    if len(sample) < 80:
+        return False
+    low = sample.lower()
+    return (
+        "финансовый экспресс" in low
+        or "abc-анализ" in low
+        or "индекс здоровья" in low
+    )
+
+
+def _build_local_wb_finance_html(
+    revenue_total: float,
+    wb_metrics: WbMarketplaceMetrics | None,
+    *,
+    matrix_rows: list[list[str]] | None = None,
+    platform: str | None = None,
+) -> str | None:
+    """Гарантированный локальный CFO-отчёт (без OpenRouter)."""
+    if revenue_total <= 0:
+        return None
+    prompt_metrics = compute_wb_finance_prompt_metrics(
+        revenue_total,
+        wb_metrics,
+        matrix_rows=matrix_rows,
+        platform=platform,
+    )
+    if prompt_metrics is None:
+        return None
+    return append_wb_finance_mini_app_cta(
+        build_wb_finance_express_html_local(prompt_metrics, wb_metrics)
+    )
+
+
 def resolve_wb_mpstats_context(
     *,
     file_path: str | Path | None = None,
@@ -861,16 +925,26 @@ def resolve_wb_mpstats_context(
 ) -> dict[str, Any]:
     """Единая точка: Excel или матрица → MPSTATS JSON-словарь (все расчёты в Python)."""
     if file_path is not None:
-        raw = prepare_wb_data_for_ai(file_path, platform=platform or "wildberries", title=title)
-        data = json.loads(raw)
-        if isinstance(data, dict) and not data.get("error"):
-            return data
-    if matrix_rows and revenue_total > 0:
-        return build_wb_mpstats_ai_context(
-            matrix_rows,
-            revenue_total=revenue_total,
-            platform=platform,
-        )
+        try:
+            raw = prepare_wb_data_for_ai(file_path, platform=platform or "wildberries", title=title)
+            data = json.loads(raw)
+            if isinstance(data, dict) and not data.get("error"):
+                return data
+        except Exception:
+            logger.exception("resolve_wb_mpstats_context: prepare_wb_data_for_ai failed")
+    rev = float(revenue_total or 0.0)
+    if matrix_rows and len(matrix_rows) >= 2:
+        if rev <= 0:
+            from services.table_xlsx_preprocess import preprocess_xlsx_rows
+
+            pre = preprocess_xlsx_rows(matrix_rows, title=title or "WB")
+            rev = float(pre.revenue_total or 0.0)
+        if rev > 0:
+            return build_wb_mpstats_ai_context(
+                matrix_rows,
+                revenue_total=rev,
+                platform=platform,
+            )
     return {"error": "empty_or_no_revenue"}
 
 
@@ -2278,9 +2352,30 @@ async def generate_wb_finance_consulting_html(
     wb_json_str: str | None = None,
 ) -> str | None:
     """
-    CFO-отчёт wb_ozon_finance: Python JSON → OpenRouter (упаковка HTML) → fallback локальный шаблон.
+    CFO-отчёт wb_ozon_finance: локальный HTML всегда; OpenRouter — опциональная обёртка.
     """
     from content.chat_prompt import WB_ANALYTICS_SYSTEM_PROMPT
+
+    revenue_total = resolve_wb_revenue_total(
+        calculated_total=revenue_total,
+        file_path=file_path,
+        matrix_rows=matrix_rows,
+        platform=platform,
+    )
+    if revenue_total <= 0:
+        return None
+
+    if wb_metrics is None and matrix_rows:
+        wb_metrics = resolve_wb_metrics_for_rows(
+            matrix_rows, revenue_total, platform=platform
+        )
+
+    local_html = _build_local_wb_finance_html(
+        revenue_total,
+        wb_metrics,
+        matrix_rows=matrix_rows,
+        platform=platform,
+    )
 
     ctx: dict[str, Any] | None = None
     if wb_json_str:
@@ -2300,16 +2395,8 @@ async def generate_wb_finance_consulting_html(
     if not ctx or ctx.get("error"):
         ctx = None
 
-    if wb_metrics is None and matrix_rows:
-        wb_metrics = resolve_wb_metrics_for_rows(
-            matrix_rows, revenue_total, platform=platform
-        )
-    prompt_metrics = compute_wb_finance_prompt_metrics(
-        revenue_total,
-        wb_metrics,
-        matrix_rows=matrix_rows,
-        platform=platform,
-    )
+    if not settings.openrouter_key or ctx is None:
+        return local_html
 
     model_chain: list[str] = []
     if models:
@@ -2318,37 +2405,34 @@ async def generate_wb_finance_consulting_html(
         if mid and mid not in model_chain:
             model_chain.append(mid)
 
-    if ctx is not None:
-        messages = [
-            {"role": "system", "content": WB_ANALYTICS_SYSTEM_PROMPT},
-            {"role": "user", "content": build_wb_finance_json_user_message(ctx)},
-        ]
-        try:
-            completion = await ask_ai_messages(
-                settings,
-                messages,
-                timeout=settings.openrouter_timeout_sec,
-                max_context_tokens=settings.chat_max_context_tokens_est,
-                char_per_token=settings.chat_char_per_token_est,
-                http_client=http_client,
-                models=model_chain or None,
-                max_tokens=settings.openrouter_premium_max_output_tokens,
-                text_role="table_generator",
-            )
-            raw = sanitize_wb_finance_html(completion.get("content") or "")
-            if raw and "cfo-v8" in raw.lower():
-                return append_wb_finance_mini_app_cta(raw)
-            if raw and not has_legacy_wb_finance_markers(raw):
-                if "cfo-v8" not in raw.lower():
-                    raw = f"{raw}\n\n<i>CFO build {_FINANCE_REPORT_BUILD}</i>"
-                return append_wb_finance_mini_app_cta(raw)
-        except Exception:
-            logger.exception("generate_wb_finance_consulting_html: OpenRouter failed")
+    messages = [
+        {"role": "system", "content": WB_ANALYTICS_SYSTEM_PROMPT},
+        {"role": "user", "content": build_wb_finance_json_user_message(ctx)},
+    ]
+    try:
+        completion = await ask_ai_messages(
+            settings,
+            messages,
+            timeout=min(25.0, settings.openrouter_timeout_sec),
+            max_context_tokens=settings.chat_max_context_tokens_est,
+            char_per_token=settings.chat_char_per_token_est,
+            http_client=http_client,
+            models=model_chain or None,
+            max_tokens=settings.openrouter_premium_max_output_tokens,
+            text_role="table_generator",
+        )
+        raw = sanitize_wb_finance_html(completion.get("content") or "")
+        if _is_publishable_wb_finance_html(raw):
+            if "cfo-v8" not in raw.lower():
+                raw = f"{raw}\n\n<i>CFO build {_FINANCE_REPORT_BUILD}</i>"
+            return append_wb_finance_mini_app_cta(raw)
+        logger.warning(
+            "generate_wb_finance_consulting_html: OpenRouter HTML rejected, using local fallback"
+        )
+    except Exception:
+        logger.exception("generate_wb_finance_consulting_html: OpenRouter failed")
 
-    if prompt_metrics is None:
-        return None
-    local = build_wb_finance_express_html_local(prompt_metrics, wb_metrics)
-    return append_wb_finance_mini_app_cta(local)
+    return local_html
 
 
 def resolve_wb_metrics_for_rows(

@@ -376,34 +376,44 @@ async def run_xlsx_fast_path_turn(
         return ChatTurnResult(outcome=ChatTurnOutcome.AI_FAILED)
 
     wb_metrics = None
-    if subrole == "wb_ozon_finance" and worker.calculated_total > 0:
+    if subrole == "wb_ozon_finance":
         from dataclasses import replace
 
         from services.table_wb_finance_ai import (
             generate_wb_finance_consulting_html,
             resolve_wb_metrics_for_rows,
+            resolve_wb_revenue_total,
         )
 
-        wb_metrics = resolve_wb_metrics_for_rows(
-            worker.rows, worker.calculated_total, platform=marketplace_platform
-        )
-        model_chain: list[str] = []
-        if billing_result and billing_result.plan.model_id:
-            model_chain.append(billing_result.plan.model_id)
-        model_chain.extend(m for m in settings.free_models if m not in model_chain)
-        ai_caption = await generate_wb_finance_consulting_html(
-            settings,
-            revenue_total=worker.calculated_total,
-            wb_metrics=wb_metrics,
-            matrix_rows=worker.rows,
-            models=model_chain or None,
-            platform=marketplace_platform,
+        finance_revenue = resolve_wb_revenue_total(
+            calculated_total=float(worker.calculated_total or 0.0),
             file_path=source_file_path,
+            matrix_rows=worker.rows,
+            platform=marketplace_platform,
         )
-        if ai_caption:
-            from dataclasses import replace
-
-            worker = replace(worker, telegram_caption_html=ai_caption)
+        if finance_revenue > 0:
+            wb_metrics = resolve_wb_metrics_for_rows(
+                worker.rows, finance_revenue, platform=marketplace_platform
+            )
+            model_chain: list[str] = []
+            if billing_result and billing_result.plan.model_id:
+                model_chain.append(billing_result.plan.model_id)
+            model_chain.extend(m for m in settings.free_models if m not in model_chain)
+            ai_caption = await generate_wb_finance_consulting_html(
+                settings,
+                revenue_total=finance_revenue,
+                wb_metrics=wb_metrics,
+                matrix_rows=worker.rows,
+                models=model_chain or None,
+                platform=marketplace_platform,
+                file_path=source_file_path,
+            )
+            if ai_caption:
+                worker = replace(
+                    worker,
+                    telegram_caption_html=ai_caption,
+                    calculated_total=finance_revenue,
+                )
 
     table_json = rows_to_canonical_table_json(
         worker.rows,
