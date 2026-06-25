@@ -43,7 +43,7 @@ from typing import Final
 from aiogram import Bot, F, Router, types
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
-from aiogram.filters import CommandStart
+from aiogram.filters import Command, CommandStart
 from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -240,6 +240,14 @@ def build_dashboard_text(user: User | None) -> str:
 # ─────────────────────────── Router ───────────────────────────────────────
 
 router = Router(name="start_onboarding")
+
+
+@router.message(Command("version"))
+async def cmd_version(message: Message) -> None:
+    """Диагностика деплоя — первый роутер, чтобы не уходило в ИИ-Ассистент."""
+    from platforms.build_info import reply_build_version
+
+    await reply_build_version(message)
 
 
 @router.message(CommandStart())

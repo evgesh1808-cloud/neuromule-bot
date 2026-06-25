@@ -293,6 +293,17 @@ async def handle_neurotext_user_message(
     """Единая точка: текст, фото или документ → ``run_chat_turn``."""
     is_photo = bool(message.photo)
     is_document = bool(message.document)
+
+    if not is_photo and not is_document:
+        text = (message.text or "").strip()
+        if text.startswith("/"):
+            cmd = text.split()[0].split("@")[0].lower()
+            if cmd == "/version":
+                from platforms.build_info import reply_build_version
+
+                await reply_build_version(message)
+            return
+
     xlsx_auto_finance = False
 
     if (

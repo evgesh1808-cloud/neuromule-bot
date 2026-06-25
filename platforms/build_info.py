@@ -4,16 +4,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from aiogram.enums import ParseMode
+from aiogram.types import Message
 
-def get_build_info_text() -> str:
-    from content import messages as msg
 
+def _git_rev_short() -> str:
     root = Path(__file__).resolve().parent.parent
-    rev = "unknown"
     try:
         import subprocess
 
-        rev = (
+        return (
             subprocess.check_output(
                 ["git", "rev-parse", "--short", "HEAD"],
                 cwd=root,
@@ -24,11 +24,18 @@ def get_build_info_text() -> str:
             or "unknown"
         )
     except Exception:
-        pass
+        return "unknown"
+
+
+def get_build_info_text() -> str:
+    from content import messages as msg
+
+    rev = _git_rev_short()
     return (
-        f"🛠 <b>NeuroMule build</b>\n"
-        f"<code>rev={rev}</code>\n"
-        f"ui={msg.BTN_REPLY_NEUROTEXT!r}\n"
-        f"table={msg.BTN_TEXT_ROLE_TABLE!r}\n"
-        f"studio={msg.BTN_STUDIO_MENU!r}"
+        f"🛠 <b>NeuroMule</b> <code>{rev}</code>\n"
+        f"{msg.BTN_REPLY_NEUROTEXT} · {msg.BTN_TEXT_ROLE_TABLE}"
     )
+
+
+async def reply_build_version(message: Message) -> None:
+    await message.answer(get_build_info_text(), parse_mode=ParseMode.HTML)

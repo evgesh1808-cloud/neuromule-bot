@@ -550,9 +550,9 @@ async def cmd_match(message: Message, state: FSMContext) -> None:
 @router.message(Command("version"))
 async def cmd_version(message: Message) -> None:
     """Текущий git rev и UI-метки — для проверки, что на сервере новый деплой."""
-    from platforms.build_info import get_build_info_text
+    from platforms.build_info import reply_build_version
 
-    await message.answer(get_build_info_text(), parse_mode=ParseMode.HTML)
+    await reply_build_version(message)
 
 
 @router.message(Command("admin_stats"))
