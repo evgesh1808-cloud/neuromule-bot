@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from services.file_processor import compute_seller_matrix_etl
 
 
@@ -35,7 +37,50 @@ def test_logistics_fomo_non_buyouts() -> None:
     etl = compute_seller_matrix_etl(_sample_matrix(), revenue_total=115_000.0)
     assert etl is not None
     assert etl.logistics_fomo_rub > 0
-    assert "невыкуп" in etl.logistics_fomo_detail.lower() or "Логистика" in etl.logistics_fomo_detail
+    assert etl.logistics_fomo_items
+    assert etl.reverse_logistics_shop_avg > 0
+    assert "Логистика возвратов:" in etl.logistics_fomo_items[0]
+    assert "обратной логистики по литражу" in etl.return_logistics_block
+
+
+def test_logistics_fomo_uses_real_unit_from_xlsx_not_floor() -> None:
+    """20 ₽ логистики / 20 невыкупов = 1.00 ₽/ед. — не подменять на 50."""
+    matrix = [
+        [
+            "Предмет",
+            "Выкупили, шт.",
+            "Доставки, шт.",
+            "Возвраты, шт.",
+            "Логистика, руб.",
+            "К перечислению, руб.",
+        ],
+        ["CHEAP", "0", "20", "0", "20", "0"],
+    ]
+    etl = compute_seller_matrix_etl(matrix, revenue_total=10_000.0)
+    assert etl is not None
+    assert etl.logistics_fomo_rub == pytest.approx(20.0)
+    assert etl.reverse_logistics_shop_avg == pytest.approx(1.0)
+    assert "× 1.00 руб." in etl.logistics_fomo_items[0]
+
+
+def test_logistics_fomo_dedicated_return_column() -> None:
+    matrix = [
+        [
+            "Предмет",
+            "Выкупили, шт.",
+            "Доставки, шт.",
+            "Возвраты, шт.",
+            "Логистика, руб.",
+            "Логистика возвратов, руб.",
+            "К перечислению, руб.",
+        ],
+        ["Стаканы", "10", "30", "5", "1000", "5000", "50000"],
+    ]
+    etl = compute_seller_matrix_etl(matrix, revenue_total=50_000.0)
+    assert etl is not None
+    # невыкуп = 30-10 = 20; return col 5000/20 = 250
+    assert etl.reverse_logistics_shop_avg == pytest.approx(250.0)
+    assert "× 250.00 руб." in etl.logistics_fomo_items[0]
 
 
 def test_sku_catalog_line_format() -> None:

@@ -13,10 +13,14 @@ _DEFAULT_MINI_APP_TEMPLATE = (
     "https://your-user.github.io/neuromule-table/?report_id={report_id}"
 )
 # Версия UI — сбрасывает кэш Telegram WebApp при обновлении дашборда.
-_MINI_APP_UI_VERSION = "20260527d"
+_MINI_APP_UI_VERSION = "20260527e"
 
 
-def build_table_mini_app_url(report_id: int | str) -> str:
+def build_table_mini_app_url(
+    report_id: int | str,
+    *,
+    platform: str | None = None,
+) -> str:
     """
     URL Mini App с актуальным ``report_id`` из SQLite.
 
@@ -44,10 +48,28 @@ def build_table_mini_app_url(report_id: int | str) -> str:
     if "ui_v=" not in url:
         joiner = "&" if "?" in url else "?"
         url = f"{url}{joiner}ui_v={_MINI_APP_UI_VERSION}"
+    if platform:
+        from services.marketplace_platform import normalize_marketplace_platform
+
+        platform_key = normalize_marketplace_platform(platform)
+        api_map = {
+            "wildberries": "wildberries",
+            "ozon": "ozon",
+            "yandex": "yandex",
+            "1c": "1c",
+        }
+        platform_api = api_map.get(platform_key, "wildberries")
+        if "platform=" not in url:
+            joiner = "&" if "?" in url else "?"
+            url = f"{url}{joiner}platform={platform_api}"
     return url
 
 
-def get_table_mini_app_keyboard(report_id: int | str | None) -> InlineKeyboardMarkup | None:
+def get_table_mini_app_keyboard(
+    report_id: int | str | None,
+    *,
+    platform: str | None = None,
+) -> InlineKeyboardMarkup | None:
     """Кнопка Web App — премиальный дашборд ABC и What-If."""
     if report_id is None:
         return None
@@ -56,7 +78,7 @@ def get_table_mini_app_keyboard(report_id: int | str | None) -> InlineKeyboardMa
             [
                 InlineKeyboardButton(
                     text=msg.BTN_MINI_APP_DASHBOARD,
-                    web_app=WebAppInfo(url=build_table_mini_app_url(report_id)),
+                    web_app=WebAppInfo(url=build_table_mini_app_url(report_id, platform=platform)),
                 )
             ]
         ]
@@ -95,10 +117,12 @@ def _chart_row(
 def table_delivery_keyboard(
     chart_type: ChartType,
     report_id: int | str | None = None,
+    *,
+    platform: str | None = None,
 ) -> InlineKeyboardMarkup:
     """Mini App + переключатели типа графика (pie/line/bar)."""
     rows: list[list[InlineKeyboardButton]] = []
-    mini_row = get_table_mini_app_keyboard(report_id)
+    mini_row = get_table_mini_app_keyboard(report_id, platform=platform)
     if mini_row is not None:
         rows.extend(mini_row.inline_keyboard)
     rows.append(_chart_row(chart_type, report_id))

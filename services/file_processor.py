@@ -470,7 +470,21 @@ async def extract_text_from_document(
 # ─── Локальный ETL товарной матрицы (ABC / FOMO логистики / OOS) ───────────
 
 _TOP_A_SHARE = 0.20
-_OOS_RISK_DAYS = 7.0
+_OOS_RISK_DAYS = 7
+_DEFAULT_REVERSE_LOGISTICS_RUB = 50.0
+_RETURN_LOGISTICS_COL_HINTS: tuple[tuple[str, ...], ...] = (
+    ("обратн", "логистик"),
+    ("обратн", "перевоз"),
+    ("обратн", "доставк"),
+    ("логистик", "возврат"),
+    ("перевоз", "возврат"),
+    ("издерж", "возврат"),
+)
+_RETURN_LOGISTICS_PHRASES: tuple[str, ...] = (
+    "обратная логистика",
+    "логистика возврат",
+    "логистика по возврат",
+)
 _WB_LABEL_HINTS = ("предмет", "артикул", "наименование", "номенклатур", "бренд")
 _WB_NAME_HINTS = ("предмет", "наименование", "номенклатур", "бренд", "товар")
 _WB_ARTICLE_HINTS = ("артикул", "sku", "nm id", "nmid", "vendor", "код товара", "barcode", "штрих")
@@ -546,6 +560,9 @@ class SellerMatrixEtl:
     oos_forecasts: tuple[MatrixOosForecast, ...]
     oos_critical_sku: str | None
     oos_critical_days: float | None
+    logistics_fomo_items: tuple[str, ...] = ()
+    reverse_logistics_shop_avg: float = 0.0
+    return_logistics_block: str = ""
     sku_catalog: tuple[MatrixSkuDetail, ...] = ()
     outsider_sku: MatrixSkuDetail | None = None
 
@@ -607,14 +624,16 @@ class _SkuBucket:
     commission: float = 0.0
     logistics: float = 0.0
     ad_cost: float = 0.0
+    extra_cost: float = 0.0
     sales_qty: float = 0.0
     deliveries_qty: float = 0.0
     returns_qty: float = 0.0
     stock_qty: float = 0.0
+    return_logistics_rub: float = 0.0
 
     @property
     def net_profit(self) -> float:
-        return self.revenue - self.commission - self.logistics - self.ad_cost
+        return self.revenue - self.commission - self.logistics - self.ad_cost - self.extra_cost
 
     @property
     def unit_logistics(self) -> float:
@@ -643,39 +662,125 @@ class _SkuBucket:
         )
 
 
+def _matrix_return_logistics_cols(headers: list[str]) -> list[int]:
+    """Колонки затрат именно на обратную логистику / возвраты (WB xlsx)."""
+    cols: list[int] = []
+    for idx, header in enumerate(headers):
+        low = (header or "").lower()
+        if any(phrase in low for phrase in _RETURN_LOGISTICS_PHRASES):
+            cols.append(idx)
+            continue
+        if all(any(h in low for h in group) for group in _RETURN_LOGISTICS_COL_HINTS):
+            cols.append(idx)
+    return cols
+
+
+def _matrix_forward_logistics_col(
+    headers: list[str],
+    return_log_cols: list[int],
+) -> int | None:
+    """Общая колонка логистики без признаков возврата."""
+    for idx, header in enumerate(headers):
+        if idx in return_log_cols:
+            continue
+        low = (header or "").lower()
+        if any(h in low for h in ("логистик", "доставк", "хранен", "перевоз")):
+            if "возврат" not in low and "обратн" not in low:
+                return idx
+    return _matrix_col(headers, _WB_LOGISTICS_HINTS)
+
+
+def _non_buyout_qty(bucket: _SkuBucket) -> float:
+    non_buyout = max(0.0, bucket.deliveries_qty - bucket.sales_qty)
+    if non_buyout <= 0 and bucket.returns_qty > 0:
+        non_buyout = bucket.returns_qty
+    return non_buyout
+
+
+def _reverse_logistics_unit_rub(bucket: _SkuBucket, non_buyout: float) -> float:
+    """
+    Средняя стоимость одной обратной логистики для SKU (руб./ед.).
+
+    Приоритет: колонка «логистика возвратов» → доля общей логистики на невыкупы
+    → оценка по общей логистике / невыкупы → дефолт WB (~50 ₽) только без данных.
+    """
+    if non_buyout <= 0:
+        return 0.0
+    if bucket.return_logistics_rub > 0:
+        return bucket.return_logistics_rub / non_buyout
+    if bucket.logistics > 0:
+        if bucket.deliveries_qty > 0:
+            return_share = min(1.0, non_buyout / bucket.deliveries_qty)
+            return (bucket.logistics * return_share) / non_buyout
+        return bucket.logistics / non_buyout
+    return _DEFAULT_REVERSE_LOGISTICS_RUB
+
+
+def _format_return_logistics_fomo_line(
+    name: str,
+    article_id: str,
+    *,
+    non_buyout: float,
+    unit_rub: float,
+) -> str:
+    return (
+        f"Логистика возвратов: {name[:28]} (Арт: {article_id[:16]}): "
+        f"{non_buyout:.0f} возвратов × {unit_rub:.2f} руб. "
+        "обратной логистики по литражу"
+    )
+
+
 def compute_seller_matrix_etl(
     rows: list[list[str]],
     *,
     revenue_total: float = 0.0,
+    platform: str | None = None,
 ) -> SellerMatrixEtl | None:
     """
     ABC по чистой прибыли SKU, FOMO логистики невыкупов, прогноз OOS.
 
     ``rows`` — матрица ``[headers, *data]`` из xlsx/csv (см. :func:`read_xlsx_rows_from_path`).
+    ``platform`` — wildberries | ozon | yandex | 1c (формула P&L площадки).
     """
+    from services.marketplace_platform import get_marketplace_profile, normalize_marketplace_platform
+
     if not rows or len(rows) < 2:
         return None
 
+    profile = get_marketplace_profile(platform)
+    platform_id = normalize_marketplace_platform(platform)
+
     headers = [str(h).strip() for h in rows[0]]
     name_col, article_col = _matrix_name_and_article_cols(headers)
-    rev_col = _matrix_col(headers, _WB_REVENUE_HINTS)
-    sales_col = _matrix_col(headers, _WB_SALES_HINTS, require_qty=True)
+    rev_col = _matrix_col(headers, profile.revenue_hints)
+    sales_col = _matrix_col(headers, profile.sales_hints, require_qty=True)
     if sales_col is None:
-        sales_col = _matrix_col(headers, _WB_SALES_HINTS)
-    del_col = _matrix_col(headers, _WB_DELIVERY_HINTS, require_qty=True)
+        sales_col = _matrix_col(headers, profile.sales_hints)
+    del_col = _matrix_col(headers, profile.delivery_hints, require_qty=True)
     if del_col is None:
-        del_col = _matrix_col(headers, _WB_DELIVERY_HINTS)
-    ret_col = _matrix_col(headers, _WB_RETURN_HINTS, require_qty=True)
+        del_col = _matrix_col(headers, profile.delivery_hints)
+    ret_col = _matrix_col(headers, profile.return_hints, require_qty=True)
     if ret_col is None:
-        ret_col = _matrix_col(headers, _WB_RETURN_HINTS)
-    comm_col = _matrix_col(headers, _WB_COMMISSION_HINTS)
-    log_col = _matrix_col(headers, _WB_LOGISTICS_HINTS)
+        ret_col = _matrix_col(headers, profile.return_hints)
+    comm_col = _matrix_col(headers, profile.commission_hints)
+    return_log_cols = _matrix_return_logistics_cols(headers)
+    log_col = _matrix_forward_logistics_col(headers, return_log_cols)
+    if log_col is None:
+        log_col = _matrix_col(headers, profile.logistics_hints)
     ad_cols = [
         idx
         for idx, h in enumerate(headers)
-        if any(x in (h or "").lower() for x in _WB_AD_HINTS)
+        if any(x in (h or "").lower() for x in profile.ad_hints)
     ]
-    stock_col = _matrix_col(headers, _WB_STOCK_HINTS)
+    extra_cols = [
+        idx
+        for idx, h in enumerate(headers)
+        if any(x in (h or "").lower() for x in profile.extra_deduction_hints)
+        and idx not in ad_cols
+        and idx != comm_col
+        and idx != log_col
+    ]
+    stock_col = _matrix_col(headers, profile.stock_hints)
 
     buckets: dict[tuple[str, str], _SkuBucket] = {}
     for row in rows[1:]:
@@ -698,9 +803,15 @@ def compute_seller_matrix_etl(
             bucket.commission += abs(safe_float(row[comm_col]))
         if log_col is not None and log_col < len(row):
             bucket.logistics += abs(safe_float(row[log_col]))
+        for rl_col in return_log_cols:
+            if rl_col < len(row):
+                bucket.return_logistics_rub += abs(safe_float(row[rl_col]))
         for ac in ad_cols:
             if ac < len(row):
                 bucket.ad_cost += abs(safe_float(row[ac]))
+        for ec in extra_cols:
+            if ec < len(row):
+                bucket.extra_cost += abs(safe_float(row[ec]))
         if stock_col is not None and stock_col < len(row):
             bucket.stock_qty += max(0.0, safe_float(row[stock_col]))
 
@@ -760,30 +871,42 @@ def compute_seller_matrix_etl(
             abc_group="C",
         )
 
-    # FOMO: логистика невыкупленных (доставки − выкупы) × юнит-логистика
+    # FOMO: обратная логистика невыкупов — реальная средняя стоимость из xlsx
     logistics_fomo = 0.0
     fomo_parts: list[str] = []
+    weighted_unit_sum = 0.0
+    weighted_unit_qty = 0.0
     for (name, _), b in buckets.items():
-        non_buyout = max(0.0, b.deliveries_qty - b.sales_qty)
-        if non_buyout <= 0 and b.returns_qty > 0:
-            non_buyout = b.returns_qty
+        non_buyout = _non_buyout_qty(b)
         if non_buyout <= 0:
             continue
-        unit_log = b.unit_logistics
-        if unit_log <= 0 and b.logistics > 0:
-            unit_log = b.logistics / max(non_buyout, 1.0)
+        unit_log = _reverse_logistics_unit_rub(b, non_buyout)
         loss = non_buyout * unit_log
-        if loss > 1.0:
+        if loss > 0:
             logistics_fomo += loss
-            if len(fomo_parts) < 3:
+            weighted_unit_sum += unit_log * non_buyout
+            weighted_unit_qty += non_buyout
+            if len(fomo_parts) < 6:
                 fomo_parts.append(
-                    f"«{name[:28]}» (Арт: {b.article_id[:16]}): {non_buyout:.0f} невыкуп. × "
-                    f"{unit_log:.0f} руб. логистики"
+                    _format_return_logistics_fomo_line(
+                        name,
+                        b.article_id,
+                        non_buyout=non_buyout,
+                        unit_rub=unit_log,
+                    )
                 )
-    logistics_detail = (
-        "Логистика невыкупленных: " + "; ".join(fomo_parts)
+    reverse_logistics_shop_avg = (
+        weighted_unit_sum / weighted_unit_qty if weighted_unit_qty > 0 else 0.0
+    )
+    return_logistics_block = (
+        "\n".join(f"• {line}" for line in fomo_parts)
         if fomo_parts
-        else "Существенных потерь на логистике невыкупов не выявлено."
+        else "• существенных потерь на обратной логистике не выявлено"
+    )
+    logistics_detail = (
+        "Логистика возвратов: " + "; ".join(fomo_parts)
+        if fomo_parts
+        else "Существенных потерь на обратной логистике не выявлено."
     )
 
     # OOS: остаток / (продажи за период / 7 дней)
@@ -822,6 +945,9 @@ def compute_seller_matrix_etl(
         abc_a_leader=abc_leader,
         logistics_fomo_rub=round(logistics_fomo, 2),
         logistics_fomo_detail=logistics_detail,
+        logistics_fomo_items=tuple(fomo_parts),
+        reverse_logistics_shop_avg=round(reverse_logistics_shop_avg, 2),
+        return_logistics_block=return_logistics_block,
         oos_forecasts=tuple(oos_list),
         oos_critical_sku=oos_sku,
         oos_critical_days=oos_days,

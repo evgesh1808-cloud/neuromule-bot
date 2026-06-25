@@ -325,6 +325,7 @@ async def run_xlsx_fast_path_turn(
     prebuilt_worker: object | None = None,
     skip_billing: bool = False,
     column_structure_warning: bool = False,
+    marketplace_platform: str | None = None,
 ) -> ChatTurnResult:
     """
     Локальный fast-path: Excel → pack без OpenRouter (100% маржа).
@@ -375,6 +376,7 @@ async def run_xlsx_fast_path_turn(
             preprocessed.rows,
             subrole,
             title=preprocessed.title,
+            marketplace_platform=marketplace_platform,
         )
     if worker is None:
         if charge_id:
@@ -391,7 +393,9 @@ async def run_xlsx_fast_path_turn(
             resolve_wb_metrics_for_rows,
         )
 
-        wb_metrics = resolve_wb_metrics_for_rows(worker.rows, worker.calculated_total)
+        wb_metrics = resolve_wb_metrics_for_rows(
+            worker.rows, worker.calculated_total, platform=marketplace_platform
+        )
         model_chain: list[str] = []
         if billing_result and billing_result.plan.model_id:
             model_chain.append(billing_result.plan.model_id)
@@ -402,6 +406,7 @@ async def run_xlsx_fast_path_turn(
             wb_metrics=wb_metrics,
             matrix_rows=worker.rows,
             models=model_chain or None,
+            platform=marketplace_platform,
         )
         if ai_caption:
             from services.table_wb_finance_ai import append_wb_finance_mini_app_cta
@@ -422,6 +427,7 @@ async def run_xlsx_fast_path_turn(
             revenue_total=worker.calculated_total,
             wb_metrics=wb_metrics,
             matrix_rows=worker.rows,
+            platform=marketplace_platform,
         )
     assistant_dialog_text = _resolve_fast_path_assistant_text(
         table_json,

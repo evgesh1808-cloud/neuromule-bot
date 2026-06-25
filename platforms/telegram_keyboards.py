@@ -224,6 +224,51 @@ def create_table_subroles_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def create_marketplace_audit_platform_keyboard() -> InlineKeyboardMarkup:
+    """Шаг 2: выбор площадки для сквозной аналитики и финансового аудита."""
+    p = msg.CB_AUDIT_PLATFORM_PREFIX
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=msg.BTN_AUDIT_PLATFORM_WB,
+                    callback_data=f"{p}wildberries",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=msg.BTN_AUDIT_PLATFORM_OZON,
+                    callback_data=f"{p}ozon",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=msg.BTN_AUDIT_PLATFORM_YANDEX,
+                    callback_data=f"{p}yandex",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=msg.BTN_AUDIT_PLATFORM_1C,
+                    callback_data=f"{p}1c",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📋 Другие типы отчёта",
+                    callback_data=f"{msg.CB_TABLE_SUBROLE_PREFIX}__menu__",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⬅️ Назад в меню ролей",
+                    callback_data=msg.CB_BACK_TO_ROLES_MENU,
+                ),
+            ],
+        ]
+    )
+
+
 LIFESTYLE_SUBROLES: tuple[tuple[str, str], ...] = (
     ("📱 Блогер", "blogger_content"),
     ("🧠 ИИ-Коуч", "psychologist_coach"),

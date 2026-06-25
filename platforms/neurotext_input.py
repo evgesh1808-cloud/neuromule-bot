@@ -194,6 +194,7 @@ async def _reply_chat_turn_result(
     prefer_table_error: bool = False,
     status_message: Message | None = None,
     table_subrole: str | None = None,
+    audit_platform: str | None = None,
 ) -> None:
     if result.outcome is ChatTurnOutcome.SUCCESS:
         if result.user_notice:
@@ -216,6 +217,7 @@ async def _reply_chat_turn_result(
                         table_worker=result.table_worker,
                         seo_xlsx_bytes=result.table_seo_xlsx_bytes,
                         degradation_notice=result.table_degradation_notice,
+                        audit_platform=audit_platform,
                     )
                 except Exception:
                     logger.exception(
@@ -295,14 +297,13 @@ async def handle_neurotext_user_message(
         await send_neurotext_role_menu(message, state)
         return
 
-    # Интеллектуальный авто-свитч: .xlsx в waiting → table_generator + wb_ozon_finance + local fast-path.
-    if is_document and _document_suffix(message.document.file_name) == ".xlsx":
+    # .xlsx/.csv в режиме аудита площадки → wb_ozon_finance + fast-path с формулой площадки.
+    if is_document and _document_suffix(message.document.file_name) in (".xlsx", ".csv"):
+        from platforms.marketplace_audit_flow import is_audit_file_waiting_state
+
         current_state = await state.get_state()
-        waiting = current_state in (
-            UserFlow.waiting_for_text_prompt,
-            UserFlow.waiting_for_text_prompt.state,
-        )
-        if waiting:
+        data_pre = await state.get_data()
+        if is_audit_file_waiting_state(current_state) or data_pre.get("audit_platform"):
             await state.update_data(
                 text_role="table_generator",
                 table_subrole="wb_ozon_finance",
@@ -317,6 +318,7 @@ async def handle_neurotext_user_message(
     data = await state.get_data()
     role_id = str(data.get("text_role") or "standard").strip().lower()
     table_subrole = normalize_table_subrole(data.get("table_subrole"))
+    audit_platform = data.get("audit_platform")
     uid = message.from_user.id
 
     user_image_data_url: str | None = None
@@ -374,6 +376,7 @@ async def handle_neurotext_user_message(
                         table_subrole,
                         is_csv,
                         title=title,
+                        marketplace_platform=audit_platform,
                     )
                 finally:
                     Path(file_path).unlink(missing_ok=True)
@@ -438,9 +441,16 @@ async def handle_neurotext_user_message(
                                 table_subrole=table_subrole,
                                 prebuilt_worker=worker,
                                 column_structure_warning=column_structure_warning,
+                                marketplace_platform=audit_platform,
                             )
                         if keep_waiting_state and fast_result.outcome is ChatTurnOutcome.SUCCESS:
-                            await state.set_state(UserFlow.waiting_for_text_prompt)
+                            from platforms.marketplace_audit_flow import is_audit_file_waiting_state
+
+                            if not (
+                                is_audit_file_waiting_state(await state.get_state())
+                                or audit_platform
+                            ):
+                                await state.set_state(UserFlow.waiting_for_text_prompt)
                             if fast_result.effective_text_role:
                                 await state.update_data(text_role=fast_result.effective_text_role)
                         await _reply_chat_turn_result(
@@ -451,6 +461,7 @@ async def handle_neurotext_user_message(
                             prefer_table_error=True,
                             status_message=status_msg,
                             table_subrole=table_subrole,
+                            audit_platform=audit_platform,
                         )
                     except Exception:
                         logger.exception("xlsx fast-path failed uid=%s", uid)

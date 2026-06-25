@@ -54,7 +54,15 @@ from platforms.telegram_keyboards import (
     terms_accept_keyboard,
     text_role_menu,
 )
-from platforms.telegram_states import AdminStates, FeedbackStates, UserFlow
+from platforms.telegram_states import (
+    AdminStates,
+    FeedbackStates,
+    OneCAuditingStates,
+    OzonAuditingStates,
+    UserFlow,
+    WBAuditingStates,
+    YandexAuditingStates,
+)
 from platforms.telegram_utils import (
     HelpInstructionWordFilter,
     _extract_ticket_user_id,
@@ -166,6 +174,20 @@ async def text_role_unsupported(message: Message) -> None:
         "или файл <b>.txt / .csv / .pdf / .docx</b>.",
         parse_mode=ParseMode.HTML,
     )
+
+
+@router.message(
+    WBAuditingStates.wait_for_xlsx,
+    OzonAuditingStates.wait_for_xlsx,
+    YandexAuditingStates.wait_for_xlsx,
+    OneCAuditingStates.wait_for_xlsx,
+    F.document | F.text,
+)
+async def marketplace_audit_file_process(message: Message, state: FSMContext) -> None:
+    """Финансовый аудит площадки: ожидание .xlsx / .csv."""
+    from platforms.neurotext_input import handle_neurotext_user_message
+
+    await handle_neurotext_user_message(message, state, keep_waiting_state=True)
 
 @router.message(UserFlow.waiting_for_photo, F.text)
 async def photo_process(message: Message, state: FSMContext) -> None:

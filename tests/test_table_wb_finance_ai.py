@@ -40,6 +40,11 @@ def test_build_wb_marketplace_finance_system_prompt_variables() -> None:
         outsider_buyout="0.0",
         abc_a_leader_buyout="77.8",
         fomo_details_block="• Возвраты 10 шт.\n• Рекламный перерасход",
+        return_logistics_block=(
+            "• Логистика возвратов: Стаканы (Арт: 100): 3187 возвратов × 52.40 руб. "
+            "обратной логистики по литражу"
+        ),
+        reverse_logistics_avg_rub="52.40",
         sku_catalog_block="• Футболка Premium (Артикул: WRAPPER-001) — 100 000.00 руб. — 85 000.00 руб. — 77.8%",
         oos_forecast_line="«BOX» закончится через 3 дн. (риск OOS)",
     )
@@ -54,7 +59,7 @@ def test_build_wb_marketplace_finance_system_prompt_variables() -> None:
     assert "СВЕТОФОР ЗДОРОВЬЯ" in prompt
     assert "КАЛЬКУЛЯТОР УПУЩЕННОЙ ВЫГОДЫ" in prompt
     assert "12,500.00 руб." in prompt
-    assert "2200 символов" in prompt
+    assert "2000 символов" in prompt
     assert "ABC-АНАЛИЗ" in prompt
     assert "Футболка Premium" in prompt
     assert "WRAPPER-001" in prompt
@@ -79,6 +84,11 @@ def test_build_wb_marketplace_finance_system_prompt_variables() -> None:
     assert "зафиксировать ДРР" in prompt  # в блоке запретов
     assert "• DEAD" in prompt
     assert "• Возвраты" in prompt
+    assert "Логистика возвратов:" in prompt
+    assert "52.40" in prompt
+    assert "ОБРАТНАЯ ЛОГИСТИКА ПО SKU" in prompt
+    assert "(каждый источник потерь" not in prompt
+    assert "(каждый SKU с новой строки" not in prompt
 
 
 def test_compute_wb_finance_prompt_metrics_from_etl() -> None:
@@ -177,6 +187,21 @@ def test_sanitize_wb_finance_html_replaces_legacy_headers() -> None:
     assert not has_legacy_wb_finance_markers(cleaned)
 
 
+def test_sanitize_wb_finance_html_strips_technical_parentheses() -> None:
+    from services.table_wb_finance_ai import sanitize_wb_finance_html
+
+    raw = (
+        "📦 ABC-АНАЛИЗ МАТРИЦЫ (локальный ETL, не пересчитывай)\n"
+        "🟢 ЗОНА УСПЕХА (по 2–3 предложения на зону, без воды)\n"
+        "📋 ПЛАН (каждый шаг — 1 предложение)"
+    )
+    cleaned = sanitize_wb_finance_html(raw)
+    assert "локальный ETL" not in cleaned
+    assert "по 2–3 предложения" not in cleaned
+    assert "каждый шаг" not in cleaned
+    assert "ABC-АНАЛИЗ МАТРИЦЫ" in cleaned
+
+
 def test_enrich_table_json_wb_finance_adds_abc_and_summary() -> None:
     from services.table_wb_finance_ai import enrich_table_json_wb_finance
     from services.table_text_response import compute_wb_marketplace_metrics
@@ -240,6 +265,7 @@ def test_local_report_zero_buyout_leader_goes_critical() -> None:
     html = build_wb_finance_express_html_local(metrics, None)
     assert "КРИТИЧЕСКАЯ ЗОНА" in html
     assert "0.0%" in html
+    assert "главный источник убытков" in html.lower()
     assert "Масштабируйте закуп и рекламу на этот SKU" not in html
 
 
@@ -273,4 +299,37 @@ def test_local_report_high_drr_plan_demands_reduction() -> None:
     )
     html = build_wb_finance_express_html_local(metrics, None)
     assert "снизить дрр" in html.lower()
-    assert "Зафиксируйте ДРР" not in html
+    assert "зафиксируйте дрр" not in html.lower()
+
+
+def test_local_report_catastrophic_drr_plan_demands_cut() -> None:
+    from services.table_wb_finance_ai import (
+        WbFinancePromptMetrics,
+        build_wb_finance_express_html_local,
+    )
+
+    metrics = WbFinancePromptMetrics(
+        revenue=100_000.0,
+        tax=6_000.0,
+        clear_profit=94_000.0,
+        adv_load_pct=75.6,
+        buy_ratio_pct=65.0,
+        year_forecast=1_200_000.0,
+        profitability_pct=94.0,
+        business_score=4.0,
+        verdict="Тест",
+        fomo_lost_rub=0.0,
+        fomo_breakdown=(),
+        abc_a_leader_name="WRAPPER",
+        abc_a_leader_article="W-1",
+        abc_a_leader_buyout=72.0,
+        abc_a_leader_margin=50_000.0,
+        abc_c_summary="• неликвидов нет",
+        outsider_name="—",
+        outsider_article="—",
+        outsider_loss=0.0,
+        outsider_buyout=0.0,
+    )
+    html = build_wb_finance_express_html_local(metrics, None)
+    assert "катастрофический дрр" in html.lower()
+    assert "зафиксируйте дрр" not in html.lower()

@@ -231,11 +231,44 @@ async def back_to_roles_menu(callback: CallbackQuery, state: FSMContext) -> None
     await handle_back_to_roles_menu(callback, state)
 
 
+@router.callback_query(F.data.startswith(msg.CB_AUDIT_PLATFORM_PREFIX))
+async def pick_audit_platform(callback: CallbackQuery, state: FSMContext) -> None:
+    """Выбор площадки → FSM ожидания файла и инструкция загрузки."""
+    from platforms.marketplace_audit_flow import activate_marketplace_audit
+    from services.marketplace_platform import VALID_MARKETPLACE_PLATFORMS
+
+    platform_raw = (callback.data or "").removeprefix(msg.CB_AUDIT_PLATFORM_PREFIX).strip().lower()
+    if platform_raw not in VALID_MARKETPLACE_PLATFORMS:
+        await callback.answer("Неизвестная площадка.", show_alert=True)
+        return
+
+    await callback.answer()
+    await activate_marketplace_audit(state, platform=platform_raw)
+    instruction = msg.audit_platform_upload_instruction(platform_raw)
+
+    if callback.message:
+        try:
+            await callback.message.delete()
+        except TelegramBadRequest:
+            try:
+                await callback.message.edit_reply_markup(reply_markup=None)
+            except TelegramBadRequest:
+                pass
+        await callback.message.answer(instruction, parse_mode=ParseMode.HTML)
+
+
 @router.callback_query(F.data.startswith(msg.CB_TABLE_SUBROLE_PREFIX))
 async def pick_table_subrole(callback: CallbackQuery, state: FSMContext) -> None:
     """Выбор под-режима table_generator → инструкция и ожидание файла/текста."""
-    await callback.answer()
     subrole_id = (callback.data or "").removeprefix(msg.CB_TABLE_SUBROLE_PREFIX).strip().lower()
+
+    if subrole_id == "__menu__":
+        from platforms.neurotext_flow import handle_show_table_subrole_menu
+
+        await handle_show_table_subrole_menu(callback, state)
+        return
+
+    await callback.answer()
     from services.table_subrole_types import VALID_TABLE_SUBROLES, normalize_table_subrole
 
     if subrole_id not in VALID_TABLE_SUBROLES:
@@ -246,6 +279,7 @@ async def pick_table_subrole(callback: CallbackQuery, state: FSMContext) -> None
     await state.update_data(
         text_role="table_generator",
         table_subrole=normalized,
+        audit_platform=None,
     )
     await state.set_state(UserFlow.waiting_for_text_prompt)
 

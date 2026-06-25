@@ -154,20 +154,30 @@ def _pick_wb_label_column(headers: list[str]) -> int:
 def _aggregate_top5_units(
     matrix: list[list[str]],
     headers: list[str],
+    *,
+    platform: str | None = None,
 ) -> tuple[WbUnitTopRow, ...]:
     """TOP-5 товаров по выручке: цена продажи, юнит-логистика, чистый доход на 1 шт."""
+    from services.marketplace_platform import get_marketplace_profile
+
     if len(matrix) < 2:
         return ()
 
+    profile = get_marketplace_profile(platform)
     label_col = _pick_wb_label_column(headers)
-    rev_col = _match_column_index(headers, _REVENUE_HINTS)
-    qty_col = _match_column_index(headers, _SALES_QTY_HINTS, require_qty=True)
+    rev_col = _match_column_index(headers, profile.revenue_hints)
+    qty_col = _match_column_index(headers, profile.sales_hints, require_qty=True)
     if qty_col is None:
-        qty_col = _match_column_index(headers, _SALES_QTY_HINTS)
+        qty_col = _match_column_index(headers, profile.sales_hints)
     price_col = _match_column_index(headers, _PRICE_HINTS)
-    comm_col = _match_column_index(headers, _COMMISSION_HINTS)
-    log_col = _match_column_index(headers, _LOGISTICS_HINTS)
+    comm_col = _match_column_index(headers, profile.commission_hints)
+    log_col = _match_column_index(headers, profile.logistics_hints)
     ret_log_col = _match_column_index(headers, _RETURN_LOGISTICS_HINTS)
+    extra_cols = [
+        idx
+        for idx, h in enumerate(headers)
+        if any(x in (h or "").lower() for x in profile.extra_deduction_hints)
+    ]
 
     @dataclass
     class _Agg:
@@ -175,6 +185,7 @@ def _aggregate_top5_units(
         qty: float = 0.0
         commission: float = 0.0
         logistics: float = 0.0
+        extra: float = 0.0
         price_sum: float = 0.0
         price_count: int = 0
 
@@ -198,6 +209,9 @@ def _aggregate_top5_units(
         agg.qty += qty
         agg.commission += abs(comm)
         agg.logistics += abs(log_d) + abs(log_r)
+        for ec in extra_cols:
+            if ec < len(row):
+                agg.extra += abs(safe_float(row[ec]))
 
     ranked = sorted(buckets.items(), key=lambda item: item[1].revenue, reverse=True)[:5]
     out: list[WbUnitTopRow] = []
@@ -211,7 +225,8 @@ def _aggregate_top5_units(
         )
         unit_logistics = agg.logistics / agg.qty if agg.qty > 0 else 0.0
         unit_commission = agg.commission / agg.qty if agg.qty > 0 else 0.0
-        net_income = sale_price - unit_commission - unit_logistics
+        unit_extra = agg.extra / agg.qty if agg.qty > 0 else 0.0
+        net_income = sale_price - unit_commission - unit_logistics - unit_extra
         out.append(
             WbUnitTopRow(
                 label=label[:48],
@@ -296,23 +311,34 @@ def compute_wb_marketplace_metrics(
     matrix: list[list[str]],
     *,
     revenue_total: float,
+    platform: str | None = None,
 ) -> WbMarketplaceMetrics | None:
     """Реклама, юнит TOP-5 и коэффициент выкупа — только Python, 0 ₽ на ИИ."""
+    from services.marketplace_platform import get_marketplace_profile
+
     if not matrix or len(matrix) < 2 or revenue_total <= 0:
         return None
 
+    profile = get_marketplace_profile(platform)
     headers = matrix[0]
     total_ad = _sum_promo_advertising_columns(matrix, headers)
+    for idx, header in enumerate(headers):
+        low = (header or "").lower()
+        if any(h in low for h in profile.extra_deduction_hints):
+            if any(h in low for h in profile.ad_hints) or any(
+                x in low for x in ("буст", "boost", "реклам", "продвижен", "трафарет")
+            ):
+                total_ad += _sum_numeric_column(matrix, idx)
 
-    sales_col = _match_column_index(headers, _SALES_QTY_HINTS, require_qty=True)
+    sales_col = _match_column_index(headers, profile.sales_hints, require_qty=True)
     if sales_col is None:
-        sales_col = _match_column_index(headers, _SALES_QTY_HINTS)
-    del_col = _match_column_index(headers, _DELIVERY_QTY_HINTS, require_qty=True)
+        sales_col = _match_column_index(headers, profile.sales_hints)
+    del_col = _match_column_index(headers, profile.delivery_hints, require_qty=True)
     if del_col is None:
-        del_col = _match_column_index(headers, _DELIVERY_QTY_HINTS)
-    ret_col = _match_column_index(headers, _RETURN_QTY_HINTS, require_qty=True)
+        del_col = _match_column_index(headers, profile.delivery_hints)
+    ret_col = _match_column_index(headers, profile.return_hints, require_qty=True)
     if ret_col is None:
-        ret_col = _match_column_index(headers, _RETURN_QTY_HINTS)
+        ret_col = _match_column_index(headers, profile.return_hints)
     ordered_col = _match_column_index(headers, _ORDERED_QTY_HINTS, require_qty=True)
     if ordered_col is None:
         ordered_col = _match_column_index(headers, _ORDERED_QTY_HINTS)
@@ -332,7 +358,7 @@ def compute_wb_marketplace_metrics(
 
     ad_load_pct = (total_ad / revenue_total * 100.0) if revenue_total > 0 and total_ad > 0 else 0.0
     unit_revenue = (revenue_total / sales_qty) if sales_qty > 0 else 0.0
-    top5_units = _aggregate_top5_units(matrix, headers)
+    top5_units = _aggregate_top5_units(matrix, headers, platform=platform)
 
     insight_lines = _build_wb_insight_lines(
         ad_load_pct=ad_load_pct,
@@ -359,6 +385,7 @@ def build_wb_finance_express_html(
     *,
     wb_metrics: WbMarketplaceMetrics | None = None,
     matrix_rows: list[list[str]] | None = None,
+    platform: str | None = None,
 ) -> str:
     """
     Локальный fallback для под-режима ``wb_ozon_finance`` (если ИИ недоступен).
@@ -374,7 +401,7 @@ def build_wb_finance_express_html(
     )
 
     prompt_metrics = compute_wb_finance_prompt_metrics(
-        calculated_total, wb_metrics, matrix_rows=matrix_rows
+        calculated_total, wb_metrics, matrix_rows=matrix_rows, platform=platform
     )
     if prompt_metrics is None:
         return ""

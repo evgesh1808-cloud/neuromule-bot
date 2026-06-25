@@ -54,6 +54,9 @@ def _expand_fomo_breakdown(parts: tuple[str, ...]) -> tuple[str, ...]:
             continue
         if chunk.startswith("Логистика невыкупленных:"):
             chunk = chunk.removeprefix("Логистика невыкупленных:").strip()
+        if chunk.startswith("Логистика возвратов:"):
+            expanded.append(chunk)
+            continue
         if "; " in chunk:
             expanded.extend(p.strip() for p in chunk.split("; ") if p.strip())
         else:
@@ -110,7 +113,13 @@ def _build_strategic_plan_lines(
             f"выкуп <code>{prompt_metrics.abc_a_leader_buyout:.1f}%</code> — сначала карточка и логистика."
         )
 
-    if prompt_metrics.adv_load_pct > _HIGH_DRR_PCT:
+    if prompt_metrics.adv_load_pct >= 30:
+        lines.append(
+            f"<b>2.</b> Катастрофический ДРР <code>{prompt_metrics.adv_load_pct:.1f}%</code> — "
+            "немедленно режьте рекламный бюджет минимум вдвое, отключите все неокупаемые кампании "
+            "и пересоберите семантику под маржинальные SKU."
+        )
+    elif prompt_metrics.adv_load_pct > _HIGH_DRR_PCT:
         lines.append(
             f"<b>2.</b> Срочно <b>снизить ДРР</b> с <code>{prompt_metrics.adv_load_pct:.1f}%</code> "
             "до 12–15%: отключите неокупаемые кампании, сузьте ключевые слова и ставки."
@@ -134,7 +143,7 @@ def _build_strategic_plan_lines(
     )
     return lines
 _WB_FINANCE_MAX_OUTPUT_TOKENS = 1400
-_WB_FINANCE_TELEGRAM_SOFT_MAX_CHARS = 2200
+_WB_FINANCE_TELEGRAM_SOFT_MAX_CHARS = 2000
 _FINANCE_SEPARATOR = "────────────────────────"
 _OLD_FINALE_MARKERS = (
     "Финальный Excel",
@@ -157,6 +166,17 @@ _LEGACY_FINANCE_REPLACEMENTS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"ИИ[\s\-–—]*Инсайт", re.IGNORECASE), "КЛЮЧЕВОЙ БИЗНЕС-ВЕРДИКТ"),
     (re.compile(r"Серверный\s+расч[её]т", re.IGNORECASE), "Потенциальная упущенная выгода"),
     (re.compile(r"ABC[\s\-–—]*АНАЛИЗ\s+МАТРИЦЫ\s*\(\s*локальный\s+ETL[^)]*\)", re.IGNORECASE), "ABC-АНАЛИЗ МАТРИЦЫ"),
+)
+_TECH_HINT_PAREN_RE = re.compile(
+    r"\(\s*[^)]*(?:"
+    r"локальный\s+ETL|не\s+пересчитывай|"
+    r"по\s+2[–\-]3\s+предложен|"
+    r"каждый\s+шаг|каждый\s+SKU|каждый\s+источник|"
+    r"маркер\s+«•»|"
+    r"без\s+воды|"
+    r"строго\s+из\s+шаблона"
+    r")[^)]*\)",
+    re.IGNORECASE,
 )
 
 
@@ -196,6 +216,8 @@ class WbFinancePromptMetrics:
     sales_qty: float = 0.0
     returns_qty: float = 0.0
     deliveries_qty: float = 0.0
+    reverse_logistics_shop_avg: float = 0.0
+    return_logistics_block: str = "• существенных потерь на обратной логистике не выявлено"
 
 
 def compute_business_score(
@@ -332,6 +354,7 @@ def compute_wb_finance_prompt_metrics(
     wb_metrics: WbMarketplaceMetrics | None = None,
     *,
     matrix_rows: list[list[str]] | None = None,
+    platform: str | None = None,
 ) -> WbFinancePromptMetrics | None:
     """Собирает переменные ETL для system/user prompt и локального fallback."""
     if revenue_total <= 0:
@@ -340,7 +363,11 @@ def compute_wb_finance_prompt_metrics(
     from services.file_processor import compute_seller_matrix_etl
 
     matrix_etl = (
-        compute_seller_matrix_etl(matrix_rows, revenue_total=revenue_total)
+        compute_seller_matrix_etl(
+            matrix_rows,
+            revenue_total=revenue_total,
+            platform=platform,
+        )
         if matrix_rows
         else None
     )
@@ -386,13 +413,22 @@ def compute_wb_finance_prompt_metrics(
     sku_catalog_lines: tuple[str, ...] = ()
     sku_catalog_items: tuple[dict[str, Any], ...] = ()
     oos_line = "данных по остаткам недостаточно"
+    reverse_logistics_shop_avg = 0.0
+    return_logistics_block = "• существенных потерь на обратной логистике не выявлено"
     if matrix_etl:
         logistics_fomo = matrix_etl.logistics_fomo_rub
+        reverse_logistics_shop_avg = matrix_etl.reverse_logistics_shop_avg
+        return_logistics_block = matrix_etl.return_logistics_block
         if matrix_etl.logistics_fomo_rub > 0:
             fomo_rub = round(fomo_rub + logistics_fomo, 2)
-            fomo_parts = _expand_fomo_breakdown(
-                (*fomo_parts, matrix_etl.logistics_fomo_detail)
-            )
+            if matrix_etl.logistics_fomo_items:
+                fomo_parts = _expand_fomo_breakdown(
+                    (*fomo_parts, *matrix_etl.logistics_fomo_items)
+                )
+            else:
+                fomo_parts = _expand_fomo_breakdown(
+                    (*fomo_parts, matrix_etl.logistics_fomo_detail)
+                )
         if matrix_etl.abc_group_a:
             leader = matrix_etl.abc_group_a[0]
             abc_a_leader = leader.name
@@ -479,6 +515,8 @@ def compute_wb_finance_prompt_metrics(
         sales_qty=wb_metrics.sales_qty if wb_metrics else 0.0,
         returns_qty=wb_metrics.returns_qty if wb_metrics else 0.0,
         deliveries_qty=wb_metrics.deliveries_qty if wb_metrics else 0.0,
+        reverse_logistics_shop_avg=reverse_logistics_shop_avg,
+        return_logistics_block=return_logistics_block,
     )
 
 
@@ -513,6 +551,8 @@ def _prompt_kwargs_from_metrics(metrics: WbFinancePromptMetrics) -> dict[str, st
         "abc_a_leader_buyout": f"{metrics.abc_a_leader_buyout:.1f}",
         "sku_catalog_block": catalog_block,
         "fomo_details_block": _format_fomo_details_block(metrics.fomo_breakdown),
+        "return_logistics_block": metrics.return_logistics_block,
+        "reverse_logistics_avg_rub": f"{metrics.reverse_logistics_shop_avg:.2f}",
         "oos_forecast_line": metrics.oos_forecast_line,
     }
 
@@ -657,7 +697,10 @@ def sanitize_wb_finance_html(html: str) -> str:
     text = (html or "").strip()
     for pattern, replacement in _LEGACY_FINANCE_REPLACEMENTS:
         text = pattern.sub(replacement, text)
-    return text
+    text = _TECH_HINT_PAREN_RE.sub("", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
 
 
 def _abc_sku_to_dict(sku: object, group: str) -> dict[str, Any]:
@@ -685,10 +728,14 @@ def build_wb_finance_mini_app_extensions(
     wb_metrics: WbMarketplaceMetrics | None,
     *,
     matrix_rows: list[list[str]] | None,
+    platform: str | None = None,
 ) -> dict[str, Any] | None:
     """Расширения table_raw_json для Mini App (ABC, SKU, summary)."""
+    from services.marketplace_platform import normalize_marketplace_platform
+
+    platform_id = normalize_marketplace_platform(platform)
     prompt_metrics = compute_wb_finance_prompt_metrics(
-        revenue_total, wb_metrics, matrix_rows=matrix_rows
+        revenue_total, wb_metrics, matrix_rows=matrix_rows, platform=platform_id
     )
     if prompt_metrics is None:
         return None
@@ -696,7 +743,11 @@ def build_wb_finance_mini_app_extensions(
     from services.file_processor import compute_seller_matrix_etl
 
     matrix_etl = (
-        compute_seller_matrix_etl(matrix_rows, revenue_total=revenue_total)
+        compute_seller_matrix_etl(
+            matrix_rows,
+            revenue_total=revenue_total,
+            platform=platform_id,
+        )
         if matrix_rows
         else None
     )
@@ -757,6 +808,7 @@ def build_wb_finance_mini_app_extensions(
     sku_catalog = list(prompt_metrics.sku_catalog_items)
     return {
         "source": "wb_ozon_finance_xlsx",
+        "platform": platform_id,
         "abc_analysis": {
             "group_a": group_a,
             "group_b": group_b,
@@ -784,12 +836,16 @@ def enrich_table_json_wb_finance(
     revenue_total: float,
     wb_metrics: WbMarketplaceMetrics | None = None,
     matrix_rows: list[list[str]] | None = None,
+    platform: str | None = None,
 ) -> str:
     """Дополняет канонический JSON отчёта полями для Mini App дашборда."""
     from services.table_json import canonicalize_table_json
 
     extensions = build_wb_finance_mini_app_extensions(
-        revenue_total, wb_metrics, matrix_rows=matrix_rows
+        revenue_total,
+        wb_metrics,
+        matrix_rows=matrix_rows,
+        platform=platform,
     )
     if not extensions:
         return table_json
@@ -978,10 +1034,17 @@ def _build_traffic_light_block(
     red = "🔴 <b>КРИТИЧЕСКАЯ ЗОНА:</b> "
     red_parts: list[str] = []
     if leader_is_critical:
-        red_parts.append(
-            f"<b>{leader_name}</b> (Арт: <code>{leader_art}</code>) — выкуп "
-            f"<code>{leader_buyout:.1f}%</code>: нельзя масштабировать, сначала карточка и логистика."
-        )
+        if leader_buyout < _CRITICAL_BUYOUT_PCT:
+            red_parts.append(
+                f"<b>{leader_name}</b> (Арт: <code>{leader_art}</code>) — "
+                f"главный источник убытков: выкуп <code>{leader_buyout:.1f}%</code>, "
+                "масштабирование запрещено."
+            )
+        else:
+            red_parts.append(
+                f"<b>{leader_name}</b> (Арт: <code>{leader_art}</code>) — выкуп "
+                f"<code>{leader_buyout:.1f}%</code>: нельзя масштабировать, сначала карточка и логистика."
+            )
     if prompt_metrics.outsider_name not in ("—", "") and prompt_metrics.outsider_loss > 0:
         red_parts.append(
             f"Аутсайдер <b>{_escape_verdict(prompt_metrics.outsider_name)}</b> "
@@ -1016,6 +1079,7 @@ async def generate_wb_finance_consulting_html(
     matrix_rows: list[list[str]] | None = None,
     models: list[str] | None = None,
     http_client: object | None = None,
+    platform: str | None = None,
 ) -> str | None:
     """
     CFO-отчёт для wb_ozon_finance — всегда локальный шаблон (без OpenRouter).
@@ -1024,9 +1088,14 @@ async def generate_wb_finance_consulting_html(
     """
     del settings, models, http_client  # OpenRouter отключён для стабильности отчёта
     if wb_metrics is None and matrix_rows:
-        wb_metrics = resolve_wb_metrics_for_rows(matrix_rows, revenue_total)
+        wb_metrics = resolve_wb_metrics_for_rows(
+            matrix_rows, revenue_total, platform=platform
+        )
     prompt_metrics = compute_wb_finance_prompt_metrics(
-        revenue_total, wb_metrics, matrix_rows=matrix_rows
+        revenue_total,
+        wb_metrics,
+        matrix_rows=matrix_rows,
+        platform=platform,
     )
     if prompt_metrics is None:
         return None
@@ -1037,6 +1106,10 @@ async def generate_wb_finance_consulting_html(
 def resolve_wb_metrics_for_rows(
     rows: list[list[str]],
     revenue_total: float,
+    *,
+    platform: str | None = None,
 ) -> WbMarketplaceMetrics | None:
-    """Локальные метрики WB/Ozon для промпта и fallback."""
-    return compute_wb_marketplace_metrics(rows, revenue_total=revenue_total)
+    """Локальные метрики маркетплейса для промпта и fallback."""
+    return compute_wb_marketplace_metrics(
+        rows, revenue_total=revenue_total, platform=platform
+    )

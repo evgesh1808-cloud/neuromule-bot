@@ -539,6 +539,20 @@ TXT_TABLE_GENERATOR_STATUS = (
     "Пожалуйста, подождите."
 )
 CB_TABLE_SUBROLE_PREFIX = "set_table_subrole:"
+CB_AUDIT_PLATFORM_PREFIX = "audit_platform:"
+TXT_AUDIT_PLATFORM_MENU = (
+    "🔌 <b>Выберите канал продаж или учётную систему</b> "
+    "для проведения финансового аудита:"
+)
+BTN_AUDIT_PLATFORM_WB = "🟣 Wildberries"
+BTN_AUDIT_PLATFORM_OZON = "🔵 Ozon"
+BTN_AUDIT_PLATFORM_YANDEX = "🟡 Яндекс.Маркет"
+BTN_AUDIT_PLATFORM_1C = "🟢 1С / МойСклад"
+TXT_AUDIT_PLATFORM_UPLOAD = (
+    "📥 Загрузите и отправьте финансовый отчёт в формате "
+    "<b>.xlsx</b> / <b>.csv</b> для <b>{platform_name}</b>. "
+    "Я проведу экспресс-анализ юнит-экономики и подготовлю премиум-дашборд."
+)
 TXT_TABLE_SUBROLE_MENU = (
     "📊 <b>Сквозная аналитика маркетплейсов</b>\n\n"
     "Выберите тип отчёта — от этого зависит расчёт юнит-экономики и формат дашборда:"
@@ -593,6 +607,15 @@ def table_subrole_instruction(subrole_id: str) -> str:
 
     sid = normalize_table_subrole(subrole_id)
     return _TABLE_SUBROLE_INSTRUCTIONS.get(sid, TXT_TABLE_SUBROLE_READY)
+
+
+def audit_platform_upload_instruction(platform: str) -> str:
+    """Инструкция после выбора площадки для финансового аудита."""
+    from services.marketplace_platform import platform_display_name
+
+    return TXT_AUDIT_PLATFORM_UPLOAD.format(
+        platform_name=platform_display_name(platform),
+    )
 
 
 TXT_TABLE_AI_DEGRADATION_NOTICE = (

@@ -313,13 +313,19 @@ def _build_telegram_caption(
     subrole_id: TableSubroleId,
     calculated_total: float,
     telegram_rows: list[list[str]] | None,
+    marketplace_platform: str | None = None,
 ) -> str:
     if subrole_id == "wb_ozon_finance" and calculated_total > 0:
-        wb_metrics = compute_wb_marketplace_metrics(rows, revenue_total=calculated_total)
+        wb_metrics = compute_wb_marketplace_metrics(
+            rows,
+            revenue_total=calculated_total,
+            platform=marketplace_platform,
+        )
         caption = build_wb_finance_express_html(
             calculated_total,
             wb_metrics=wb_metrics,
             matrix_rows=rows,
+            platform=marketplace_platform,
         )
         if len(caption) > _CAPTION_MAX:
             caption = caption[: _CAPTION_MAX - 1] + "…"
@@ -353,6 +359,7 @@ def sync_table_processing_worker(
     is_csv: bool,
     *,
     title: str | None = None,
+    marketplace_platform: str | None = None,
 ) -> TableWorkerResult | None:
     """
     Синхронный CPU-bound воркер: чтение файла, предобработка, Excel, график, caption.
@@ -379,6 +386,7 @@ def sync_table_processing_worker(
         subrole_id=sid,
         calculated_total=calculated_total,
         telegram_rows=pre.telegram_rows,
+        marketplace_platform=marketplace_platform,
     )
     chart_png, resolved = render_chart_png_bytes(matrix, context_text=pre.title)
 
@@ -398,6 +406,7 @@ def sync_table_processing_from_rows(
     subrole_id: str,
     *,
     title: str = "Отчёт NeuroMule",
+    marketplace_platform: str | None = None,
 ) -> TableWorkerResult | None:
     """Воркер без файла (уже загруженные строки)."""
     sid = normalize_table_subrole(subrole_id)
@@ -415,6 +424,7 @@ def sync_table_processing_from_rows(
         subrole_id=sid,
         calculated_total=calculated_total,
         telegram_rows=pre.telegram_rows,
+        marketplace_platform=marketplace_platform,
     )
     chart_png, resolved = render_chart_png_bytes(matrix, context_text=pre.title)
     return TableWorkerResult(
@@ -434,6 +444,7 @@ async def run_table_processing_worker_async(
     is_csv: bool,
     *,
     title: str | None = None,
+    marketplace_platform: str | None = None,
 ) -> TableWorkerResult | None:
     loop = asyncio.get_running_loop()
     async with table_jobs_semaphore:
@@ -444,6 +455,7 @@ async def run_table_processing_worker_async(
                 subrole_id,
                 is_csv,
                 title=title,
+                marketplace_platform=marketplace_platform,
             ),
         )
 
@@ -453,10 +465,16 @@ async def run_table_processing_from_rows_async(
     subrole_id: str,
     *,
     title: str = "Отчёт NeuroMule",
+    marketplace_platform: str | None = None,
 ) -> TableWorkerResult | None:
     loop = asyncio.get_running_loop()
     async with table_jobs_semaphore:
         return await loop.run_in_executor(
             None,
-            lambda: sync_table_processing_from_rows(rows, subrole_id, title=title),
+            lambda: sync_table_processing_from_rows(
+                rows,
+                subrole_id,
+                title=title,
+                marketplace_platform=marketplace_platform,
+            ),
         )

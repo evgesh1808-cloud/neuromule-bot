@@ -124,6 +124,7 @@ async def send_table_generator_pack(
     table_worker: object | None = None,
     seo_xlsx_bytes: bytes | None = None,
     degradation_notice: str | None = None,
+    audit_platform: str | None = None,
 ) -> bool:
     """
     Двухэтапная доставка: (1) график с коротким caption, (2) таблица + Excel + WebApp.
@@ -176,7 +177,11 @@ async def send_table_generator_pack(
         table_caption = f"{table_caption}{degradation_notice}"
     elif degradation_notice:
         table_caption = degradation_notice.lstrip()
-    chart_keyboard = table_delivery_keyboard(pack.chart_type, report_id=report_id)
+    chart_keyboard = table_delivery_keyboard(
+        pack.chart_type,
+        report_id=report_id,
+        platform=audit_platform,
+    )
     mini_app_keyboard = get_table_mini_app_keyboard(report_id)
     photo_msg: Message | None = None
 

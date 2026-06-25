@@ -47,3 +47,27 @@ class AdminStates(StatesGroup):
 class FeedbackStates(StatesGroup):
     waiting_support_message = State("wait_support_message")
     waiting_for_user_question = waiting_support_message  # legacy alias
+
+
+class WBAuditingStates(StatesGroup):
+    """Ожидание финансового отчёта Wildberries."""
+
+    wait_for_xlsx = State()
+
+
+class OzonAuditingStates(StatesGroup):
+    """Ожидание финансового отчёта Ozon."""
+
+    wait_for_xlsx = State()
+
+
+class YandexAuditingStates(StatesGroup):
+    """Ожидание финансового отчёта Яндекс.Маркет."""
+
+    wait_for_xlsx = State()
+
+
+class OneCAuditingStates(StatesGroup):
+    """Ожидание выгрузки 1С / МойСклад."""
+
+    wait_for_xlsx = State()
