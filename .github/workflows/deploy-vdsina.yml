@@ -45,24 +45,8 @@ jobs:
             source venv/bin/activate
             pip install -q -r requirements.txt
 
-            if pm2 describe neuromule-tg >/dev/null 2>&1; then
-              pm2 restart neuromule-tg --update-env
-            else
-              pm2 start main.py --name neuromule-tg --interpreter venv/bin/python --cwd "${DEPLOY_DIR}"
-            fi
-
-            if pm2 describe neuromule-api >/dev/null 2>&1; then
-              pm2 restart neuromule-api --update-env
-            else
-              NEUROMULE_PLATFORM=api pm2 start main.py --name neuromule-api --interpreter venv/bin/python --cwd "${DEPLOY_DIR}"
-            fi
-
-            if pm2 describe neuromule-wb-worker >/dev/null 2>&1; then
-              pm2 restart neuromule-wb-worker --update-env
-            else
-              NEUROMULE_PLATFORM=wb_worker pm2 start main.py --name neuromule-wb-worker --interpreter venv/bin/python --cwd "${DEPLOY_DIR}"
-            fi
-
+            # ecosystem.config.cjs фиксирует NEUROMULE_PLATFORM на каждый процесс
+            pm2 startOrReload ecosystem.config.cjs --update-env
             pm2 save || true
             echo "Deployed commit: $(git -C "${DEPLOY_DIR}" log -1 --oneline)"
             echo "Expected finance build marker: 3e03739 (grep in new xlsx report)"
