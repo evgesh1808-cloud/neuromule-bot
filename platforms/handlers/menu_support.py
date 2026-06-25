@@ -196,7 +196,7 @@ async def open_hd_legacy_label(message: Message) -> None:
     await _open_hd_section(message)
 
 
-@router.message(F.text == msg.BTN_REPLY_NEUROTEXT)
+@router.message(F.text.in_({msg.BTN_REPLY_NEUROTEXT, msg.BTN_REPLY_NEUROTEXT_LEGACY}))
 async def reply_create_neurotext(message: Message, state: FSMContext) -> None:
     await send_neurotext_role_menu(message, state)
 

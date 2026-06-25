@@ -57,6 +57,37 @@ _TELEGRAM_CONNECT_RETRIES = 5
 _TELEGRAM_CONNECT_RETRY_SEC = 5.0
 
 
+def _log_build_identity() -> None:
+    """В логах pm2 видно, какой коммит и UI-метки реально поднялись."""
+    from pathlib import Path
+
+    from content import messages as msg
+
+    root = Path(__file__).resolve().parent.parent
+    rev = "unknown"
+    try:
+        import subprocess
+
+        rev = (
+            subprocess.check_output(
+                ["git", "rev-parse", "--short", "HEAD"],
+                cwd=root,
+                text=True,
+                stderr=subprocess.DEVNULL,
+            )
+            .strip()
+            or "unknown"
+        )
+    except Exception:
+        pass
+    logger.info(
+        "NeuroMule build rev=%s ui=%r table=%r",
+        rev,
+        msg.BTN_REPLY_NEUROTEXT,
+        msg.BTN_TEXT_ROLE_TABLE,
+    )
+
+
 def build_bot() -> Bot:
     """Bot с опциональным прокси (``TELEGRAM_PROXY_URL``, HTTPS_PROXY, системный Windows)."""
     proxy = resolve_telegram_proxy_url(getattr(settings, "telegram_proxy_url", None))
@@ -167,6 +198,8 @@ async def run_telegram() -> None:
         _asyncio.create_task(serve_metrics(port=_metrics_port))
 
     bot, dp = build_dispatcher()
+
+    _log_build_identity()
 
     # PR-P Phase 1a · опциональный PG-пул. Без DSN ничего не делаем —
     # production остаётся на SQLite, side-effect на existing-флоу нулевой.

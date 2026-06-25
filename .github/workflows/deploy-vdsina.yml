@@ -35,7 +35,6 @@ jobs:
             fi
 
             find "${DEPLOY_DIR}" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
-            DEPLOYED_COMMIT="$(git -C "${DEPLOY_DIR}" rev-parse --short HEAD)"
             echo "Deploying commit: $(git -C "${DEPLOY_DIR}" log -1 --oneline)"
 
             if [ ! -d "venv" ]; then
@@ -45,8 +44,10 @@ jobs:
             source venv/bin/activate
             pip install -q -r requirements.txt
 
-            # ecosystem.config.cjs фиксирует NEUROMULE_PLATFORM на каждый процесс
-            pm2 startOrReload ecosystem.config.cjs --update-env
+            # Жёсткий рестарт: startOrReload иногда оставляет старый Python-код в памяти
+            pm2 delete neuromule-tg neuromule-api neuromule-wb-worker 2>/dev/null || true
+            pm2 start ecosystem.config.cjs --update-env
             pm2 save || true
             echo "Deployed commit: $(git -C "${DEPLOY_DIR}" log -1 --oneline)"
-            echo "Expected finance build marker: 3e03739 (grep in new xlsx report)"
+            echo "UI marker: $(grep -m1 'BTN_REPLY_NEUROTEXT =' content/messages.py || true)"
+            pm2 status

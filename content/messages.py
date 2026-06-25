@@ -258,6 +258,7 @@ BTN_TABLE_CHART_LINE = "📈 Линейная"
 BTN_TABLE_CHART_BAR = "📊 Гистограмма"
 BTN_MINI_APP_DASHBOARD = "🚀 Премиум-дашборд ABC"
 BTN_TEXT_ROLE_TABLE = "📊 ИИ-Аналитик (Excel)"
+BTN_TEXT_ROLE_TABLE_LEGACY = "📊 Сквозная аналитика & Дашборд"
 TXT_AI_ANALYST_CARD_TITLE = (
     "📊 ИИ-Аналитик (Excel) — Автоматическая оцифровка данных и дашборды"
 )
@@ -279,6 +280,7 @@ BTN_SUPPORT_LEGACY2 = "🙋‍♂️ FAQ / Поддержка"
 
 # Reply-подменю «🎨 Создать»
 BTN_REPLY_NEUROTEXT = "🤖 ИИ-Ассистент"
+BTN_REPLY_NEUROTEXT_LEGACY = "📝 Нейротекст"
 TXT_AI_ASSISTANT_CARD_TITLE = "🤖 ИИ-Ассистент — Мультимодальный чат"
 BTN_REPLY_IMAGE = "🖼 Изображение"
 BTN_REPLY_ANIMATE = "✨ Оживить фото"
