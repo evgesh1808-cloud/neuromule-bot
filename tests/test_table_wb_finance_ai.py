@@ -33,11 +33,13 @@ def test_build_wb_marketplace_finance_system_prompt_variables() -> None:
         abc_a_leader_article="WRAPPER-001",
         abc_a_count="2",
         abc_c_count="1",
-        abc_c_summary="DEAD (Арт: DEAD-99)",
+        abc_c_summary="• DEAD (Арт: DEAD-99)",
         outsider_name="DEAD",
         outsider_article="DEAD-99",
         outsider_loss="400.00",
         outsider_buyout="0.0",
+        abc_a_leader_buyout="77.8",
+        fomo_details_block="• Возвраты 10 шт.\n• Рекламный перерасход",
         sku_catalog_block="• Футболка Premium (Артикул: WRAPPER-001) — 100 000.00 руб. — 85 000.00 руб. — 77.8%",
         oos_forecast_line="«BOX» закончится через 3 дн. (риск OOS)",
     )
@@ -71,6 +73,12 @@ def test_build_wb_marketplace_finance_system_prompt_variables() -> None:
     assert "лидер — всего" not in prompt
     assert "всего <code>" not in prompt
     assert "ABC-АНАЛИЗ МАТРИЦЫ (локальный" not in prompt
+    assert "ПОРОГ ВЫКУПА" in prompt
+    assert "выкуп < 40%" in prompt or "выкуп SKU < 40%" in prompt
+    assert "СНИЗИТЬ рекламные расходы" in prompt
+    assert "зафиксировать ДРР" in prompt  # в блоке запретов
+    assert "• DEAD" in prompt
+    assert "• Возвраты" in prompt
 
 
 def test_compute_wb_finance_prompt_metrics_from_etl() -> None:
@@ -199,3 +207,70 @@ def test_enrich_table_json_wb_finance_adds_abc_and_summary() -> None:
     assert "abc_analysis" in payload
     assert "sku_catalog" in payload
     assert payload["summary"]["business_score"] > 0
+
+
+def test_local_report_zero_buyout_leader_goes_critical() -> None:
+    from services.table_wb_finance_ai import (
+        WbFinancePromptMetrics,
+        build_wb_finance_express_html_local,
+    )
+
+    metrics = WbFinancePromptMetrics(
+        revenue=100_000.0,
+        tax=6_000.0,
+        clear_profit=94_000.0,
+        adv_load_pct=12.0,
+        buy_ratio_pct=55.0,
+        year_forecast=1_200_000.0,
+        profitability_pct=94.0,
+        business_score=7.0,
+        verdict="Тест",
+        fomo_lost_rub=1_000.0,
+        fomo_breakdown=(),
+        abc_a_leader_name="DEAD",
+        abc_a_leader_article="DEAD-99",
+        abc_a_leader_buyout=0.0,
+        abc_a_leader_margin=-500.0,
+        abc_c_summary="• DEAD (Арт: DEAD-99)",
+        outsider_name="DEAD",
+        outsider_article="DEAD-99",
+        outsider_loss=500.0,
+        outsider_buyout=0.0,
+    )
+    html = build_wb_finance_express_html_local(metrics, None)
+    assert "КРИТИЧЕСКАЯ ЗОНА" in html
+    assert "0.0%" in html
+    assert "Масштабируйте закуп и рекламу на этот SKU" not in html
+
+
+def test_local_report_high_drr_plan_demands_reduction() -> None:
+    from services.table_wb_finance_ai import (
+        WbFinancePromptMetrics,
+        build_wb_finance_express_html_local,
+    )
+
+    metrics = WbFinancePromptMetrics(
+        revenue=100_000.0,
+        tax=6_000.0,
+        clear_profit=94_000.0,
+        adv_load_pct=24.5,
+        buy_ratio_pct=65.0,
+        year_forecast=1_200_000.0,
+        profitability_pct=94.0,
+        business_score=6.0,
+        verdict="Тест",
+        fomo_lost_rub=0.0,
+        fomo_breakdown=(),
+        abc_a_leader_name="WRAPPER",
+        abc_a_leader_article="W-1",
+        abc_a_leader_buyout=72.0,
+        abc_a_leader_margin=50_000.0,
+        abc_c_summary="• неликвидов нет",
+        outsider_name="—",
+        outsider_article="—",
+        outsider_loss=0.0,
+        outsider_buyout=0.0,
+    )
+    html = build_wb_finance_express_html_local(metrics, None)
+    assert "снизить дрр" in html.lower()
+    assert "Зафиксируйте ДРР" not in html

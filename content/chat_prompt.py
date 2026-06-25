@@ -255,15 +255,20 @@ WB_MARKETPLACE_FINANCE_SYSTEM_PROMPT_TEMPLATE = """\
 {sku_catalog_block}
 
 СЛУЖЕБНЫЕ ПРАВИЛА (соблюдай, но не выводи пользователю):
-- ABC уже посчитан; лидер A: «{abc_a_leader_name}» (арт. {abc_a_leader_article}).
+- ABC уже посчитан; лидер A: «{abc_a_leader_name}» (арт. {abc_a_leader_article}), выкуп лидера A: {abc_a_leader_buyout}%.
 - Аутсайдер: «{outsider_name}» (арт. {outsider_article}), убыток {outsider_loss} руб., выкуп {outsider_buyout}%.
+- ПОРОГ ВЫКУПА: если выкуп SKU < 40% (или ≈0%) — этот SKU ЗАПРЕЩЕНО ставить в 🟢 Зону успеха и советовать масштабировать. Такой SKU автоматически в 🔴 Критической зоне с конкретным артикулом.
+- ДРР магазина: {adv_load}%. Если ДРР > 18% — в Плане действий шаг 2 ОБЯЗАН требовать СНИЗИТЬ рекламные расходы, отключить неокупаемые кампании и оптимизировать ключевые слова. Запрещено писать «зафиксировать ДРР» на высоком уровне.
 - Светофор: 2–3 предложения на зону; в каждой — конкретный SKU с артикулом.
-- 🟢 Успех: масштабировать лидера A; ДРР {adv_load}%, выкуп {buy_ratio}%.
-- 🟡 Внимание: SKU на грани + один шаг (цена, карточка, логистика).
-- 🔴 Критика: «Аутсайдер: [Название] (Артикул: [ID]) принёс убыток [X] руб. из-за выкупа [Y]%».
-- Упущенная выгода: до 2 предложений + сумма {fomo_lost_rub} руб.; назови товар.
+- 🟢 Успех: только SKU с выкупом ≥ 40% и положительной маржой; масштабирование закупа/рекламы.
+- 🟡 Внимание: SKU на грани + один шаг (цена, карточка, логистика, ДРР).
+- 🔴 Критика: низкий выкуп, убыточный SKU, раздутый ДРР — с артикулом и цифрой убытка/выкупа.
+- Упущенная выгода: сумма {fomo_lost_rub} руб.; детали списком «•» (см. ниже), без перечислений через «;» в одну строку.
 - Прогноз: 2 предложения (оборот ~{year_forecast} руб.; риски при ДРР {adv_load}%).
 - План: 3 шага по 1 предложению, привязка к товару: «Шаг N: Для [Название] (арт. [ID]) …».
+
+ДЕТАЛИЗАЦИЯ УПУЩЕННОЙ ВЫГОДЫ (выводи как есть, по строкам):
+{fomo_details_block}
 
 СТРУКТУРА ОТВЕТА (строго в этом порядке, разделитель ──────────────────────── между блоками):
 
@@ -281,8 +286,9 @@ WB_MARKETPLACE_FINANCE_SYSTEM_PROMPT_TEMPLATE = """\
 ────────────────────────
 
 📦 ABC-АНАЛИЗ МАТРИЦЫ:
-🅰️ Лидер группы A: <b>{abc_a_leader_name}</b> (Артикул: <code>{abc_a_leader_article}</code>)
-🅲 Группа C: {abc_c_summary}
+🅰️ Лидер группы A: <b>{abc_a_leader_name}</b> (Артикул: <code>{abc_a_leader_article}</code>, выкуп: <code>{abc_a_leader_buyout}%</code>)
+🅲 Группа C (каждый SKU с новой строки, маркер «•»):
+{abc_c_summary}
 
 📈 СВЕТОФОР ЗДОРОВЬЯ БИЗНЕСА:
 
@@ -294,6 +300,8 @@ WB_MARKETPLACE_FINANCE_SYSTEM_PROMPT_TEMPLATE = """\
 
 💸 КАЛЬКУЛЯТОР УПУЩЕННОЙ ВЫГОДЫ:
 Потенциальная упущенная выгода: <code>{fomo_lost_rub} руб.</code>
+(каждый источник потерь — с новой строки, маркер «•»):
+{fomo_details_block}
 
 🛡️ ПРОГНОЗ И КРЭШ-ТЕСТ:
 
@@ -328,6 +336,8 @@ def build_wb_marketplace_finance_system_prompt(
     outsider_article: str,
     outsider_loss: str,
     outsider_buyout: str,
+    abc_a_leader_buyout: str,
+    fomo_details_block: str,
     sku_catalog_block: str,
     oos_forecast_line: str,
 ) -> str:
@@ -354,6 +364,8 @@ def build_wb_marketplace_finance_system_prompt(
         outsider_article=outsider_article,
         outsider_loss=outsider_loss,
         outsider_buyout=outsider_buyout,
+        abc_a_leader_buyout=abc_a_leader_buyout,
+        fomo_details_block=fomo_details_block,
         sku_catalog_block=sku_catalog_block,
         oos_forecast_line=oos_forecast_line,
     )

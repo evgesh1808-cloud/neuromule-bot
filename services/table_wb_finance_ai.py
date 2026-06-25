@@ -6,7 +6,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Iterable
 
 from config import Settings
 from content.chat_prompt import build_wb_marketplace_finance_system_prompt
@@ -22,7 +22,117 @@ from services.telegram_safe_text import repair_telegram_html
 logger = logging.getLogger(__name__)
 
 _USN_RATE = 0.06
-_WB_FINANCE_AI_TEMPERATURE = 0.45
+_LOW_BUYOUT_PCT = 40.0
+_HIGH_DRR_PCT = 18.0
+_CRITICAL_BUYOUT_PCT = 5.0
+
+
+def _format_sku_bullet_lines(
+    items: Iterable[tuple[str, str]],
+    *,
+    max_items: int = 5,
+    overflow_suffix: str | None = None,
+) -> str:
+    """Список SKU маркерами «•», по одному на строку."""
+    lines: list[str] = []
+    batch = list(items)
+    for name, article in batch[:max_items]:
+        lines.append(f"• {name} (Арт: {article})")
+    if overflow_suffix:
+        lines.append(overflow_suffix)
+    elif len(batch) > max_items:
+        lines.append(f"• … и ещё {len(batch) - max_items} SKU")
+    return "\n".join(lines) if lines else "• убыточных SKU не выявлено"
+
+
+def _expand_fomo_breakdown(parts: tuple[str, ...]) -> tuple[str, ...]:
+    """Разбивает строки с «;» на отдельные пункты для маркированного списка."""
+    expanded: list[str] = []
+    for part in parts:
+        chunk = (part or "").strip()
+        if not chunk:
+            continue
+        if chunk.startswith("Логистика невыкупленных:"):
+            chunk = chunk.removeprefix("Логистика невыкупленных:").strip()
+        if "; " in chunk:
+            expanded.extend(p.strip() for p in chunk.split("; ") if p.strip())
+        else:
+            expanded.append(chunk)
+    return tuple(expanded)
+
+
+def _leader_buyout_is_healthy(buyout_pct: float) -> bool:
+    return buyout_pct >= _LOW_BUYOUT_PCT
+
+
+def _format_fomo_details_block(parts: tuple[str, ...]) -> str:
+    expanded = _expand_fomo_breakdown(parts)
+    if not expanded:
+        return "• критических зон упущенной выгоды не выявлено"
+    return "\n".join(f"• {p}" for p in expanded[:6])
+
+
+def _build_strategic_plan_lines(
+    prompt_metrics: WbFinancePromptMetrics,
+    wb_metrics: WbMarketplaceMetrics | None,
+) -> list[str]:
+    """Три шага плана с учётом выкупа лидера и уровня ДРР."""
+    leader_name = _escape_verdict(prompt_metrics.abc_a_leader_name)
+    leader_art = _escape_verdict(prompt_metrics.abc_a_leader_article)
+    lines: list[str] = []
+
+    if _leader_buyout_is_healthy(prompt_metrics.abc_a_leader_buyout):
+        lines.append(
+            f"<b>1.</b> Усилить закуп и рекламу на <b>{leader_name}</b> "
+            f"(арт. <code>{leader_art}</code>) — лидер A с выкупом "
+            f"<code>{prompt_metrics.abc_a_leader_buyout:.1f}%</code>."
+        )
+    elif wb_metrics and wb_metrics.top5_units:
+        scale_candidate = None
+        for unit in sorted(wb_metrics.top5_units, key=lambda u: u.net_income, reverse=True):
+            if unit.net_income > 0:
+                scale_candidate = unit
+                break
+        if scale_candidate:
+            lines.append(
+                f"<b>1.</b> Масштабируйте <b>{_escape_verdict(scale_candidate.label)}</b> "
+                f"(маржа <code>{_fmt_rub_in_code(scale_candidate.net_income)}</code>/шт.) — "
+                f"лидер A с выкупом <code>{prompt_metrics.abc_a_leader_buyout:.1f}%</code> "
+                "в критической зоне."
+            )
+        else:
+            lines.append(
+                "<b>1.</b> Не масштабируйте SKU с нулевым выкупом — сначала поднимите конверсию карточки."
+            )
+    else:
+        lines.append(
+            f"<b>1.</b> Не масштабируйте <b>{leader_name}</b> (арт. <code>{leader_art}</code>): "
+            f"выкуп <code>{prompt_metrics.abc_a_leader_buyout:.1f}%</code> — сначала карточка и логистика."
+        )
+
+    if prompt_metrics.adv_load_pct > _HIGH_DRR_PCT:
+        lines.append(
+            f"<b>2.</b> Срочно <b>снизить ДРР</b> с <code>{prompt_metrics.adv_load_pct:.1f}%</code> "
+            "до 12–15%: отключите неокупаемые кампании, сузьте ключевые слова и ставки."
+        )
+    elif prompt_metrics.outsider_name not in ("—", "") and prompt_metrics.outsider_loss > 0:
+        out_name = _escape_verdict(prompt_metrics.outsider_name)
+        out_art = _escape_verdict(prompt_metrics.outsider_article)
+        lines.append(
+            f"<b>2.</b> Для <b>{out_name}</b> (арт. <code>{out_art}</code>) поднимите цену "
+            f"или остановите рекламу — убыток "
+            f"<code>{_fmt_rub_in_code(prompt_metrics.outsider_loss)}</code> руб."
+        )
+    else:
+        lines.append(
+            f"<b>2.</b> Держите ДРР не выше <code>15%</code> — еженедельно чистите неокупаемые ключи."
+        )
+
+    lines.append(
+        f"<b>3.</b> Контролируйте остатки по рисковым SKU: "
+        f"<i>{_escape_verdict(prompt_metrics.oos_forecast_line)}</i>"
+    )
+    return lines
 _WB_FINANCE_MAX_OUTPUT_TOKENS = 1400
 _WB_FINANCE_TELEGRAM_SOFT_MAX_CHARS = 2200
 _FINANCE_SEPARATOR = "────────────────────────"
@@ -278,9 +388,11 @@ def compute_wb_finance_prompt_metrics(
     oos_line = "данных по остаткам недостаточно"
     if matrix_etl:
         logistics_fomo = matrix_etl.logistics_fomo_rub
-        if logistics_fomo > 0:
+        if matrix_etl.logistics_fomo_rub > 0:
             fomo_rub = round(fomo_rub + logistics_fomo, 2)
-            fomo_parts = (*fomo_parts, matrix_etl.logistics_fomo_detail)
+            fomo_parts = _expand_fomo_breakdown(
+                (*fomo_parts, matrix_etl.logistics_fomo_detail)
+            )
         if matrix_etl.abc_group_a:
             leader = matrix_etl.abc_group_a[0]
             abc_a_leader = leader.name
@@ -296,11 +408,10 @@ def compute_wb_finance_prompt_metrics(
         abc_a_count = len(matrix_etl.abc_group_a)
         abc_c_count = len(matrix_etl.abc_group_c)
         if matrix_etl.abc_group_c:
-            abc_c_summary = ", ".join(
-                f"{s.name} (Арт: {s.article_id})" for s in matrix_etl.abc_group_c[:3]
+            abc_c_summary = _format_sku_bullet_lines(
+                [(s.name, s.article_id) for s in matrix_etl.abc_group_c],
+                max_items=5,
             )
-            if abc_c_count > 3:
-                abc_c_summary += f" и ещё {abc_c_count - 3}"
         elif abc_c_count == 0:
             abc_c_summary = "убыточных SKU не выявлено"
         if matrix_etl.outsider_sku:
@@ -399,7 +510,9 @@ def _prompt_kwargs_from_metrics(metrics: WbFinancePromptMetrics) -> dict[str, st
         "outsider_article": metrics.outsider_article,
         "outsider_loss": _fmt_rub_in_code(metrics.outsider_loss),
         "outsider_buyout": f"{metrics.outsider_buyout:.1f}",
+        "abc_a_leader_buyout": f"{metrics.abc_a_leader_buyout:.1f}",
         "sku_catalog_block": catalog_block,
+        "fomo_details_block": _format_fomo_details_block(metrics.fomo_breakdown),
         "oos_forecast_line": metrics.oos_forecast_line,
     }
 
@@ -741,12 +854,16 @@ def build_wb_finance_express_html_local(
             f"🅰️ Лидер группы A: <b>{_escape_verdict(prompt_metrics.abc_a_leader_name)}</b> "
             f"(Артикул: <code>{_escape_verdict(prompt_metrics.abc_a_leader_article)}</code>)"
         ),
-        (
-            f"🅲 Группа C: <i>{_escape_verdict(prompt_metrics.abc_c_summary)}</i>"
-        ),
+        "🅲 <b>Группа C:</b>",
+    ]
+    for c_line in prompt_metrics.abc_c_summary.splitlines():
+        lines.append(_escape_verdict(c_line))
+    lines.extend(
+        [
         _FINANCE_SEPARATOR,
         "📈 <b>СВЕТОФОР ЗДОРОВЬЯ БИЗНЕСА</b>",
     ]
+    )
     for zone_line in _build_traffic_light_block(wb_metrics, prompt_metrics):
         lines.append(zone_line)
     lines.extend(
@@ -759,13 +876,12 @@ def build_wb_finance_express_html_local(
             ),
         ]
     )
-    if prompt_metrics.fomo_breakdown:
-        for part in prompt_metrics.fomo_breakdown:
-            lines.append(f"<i>• {part}</i>")
+    fomo_items = _expand_fomo_breakdown(prompt_metrics.fomo_breakdown)
+    if fomo_items:
+        for part in fomo_items:
+            lines.append(f"• {_escape_verdict(part)}")
     else:
-        lines.append(
-            "<i>Критических зон упущенной выгоды не выявлено — удерживайте текущую дисциплину.</i>"
-        )
+        lines.append("• критических зон упущенной выгоды не выявлено")
     lines.append(
         f"<i>Исправление выявленных зон вернёт в оборот до "
         f"<code>{_fmt_rub_in_code(prompt_metrics.fomo_lost_rub)} руб.</code></i>"
@@ -783,29 +899,9 @@ def build_wb_finance_express_html_local(
             f"📦 <b>OOS:</b> <i>{_escape_verdict(prompt_metrics.oos_forecast_line)}</i>",
             _FINANCE_SEPARATOR,
             "📋 <b>СТРАТЕГИЧЕСКИЙ ПЛАН ДЕЙСТВИЙ НА СЕГОДНЯ</b>",
-            (
-                f"<b>1.</b> Усилить закуп и рекламу на <b>{leader_name}</b> "
-                f"(арт. <code>{leader_art}</code>) — главный драйвер маржи."
-            ),
         ]
     )
-    if prompt_metrics.outsider_name not in ("—", "") and prompt_metrics.outsider_loss > 0:
-        out_name = _escape_verdict(prompt_metrics.outsider_name)
-        out_art = _escape_verdict(prompt_metrics.outsider_article)
-        lines.append(
-            f"<b>2.</b> Для <b>{out_name}</b> (арт. <code>{out_art}</code>) поднимите цену "
-            f"или остановите рекламу — убыток "
-            f"<code>{_fmt_rub_in_code(prompt_metrics.outsider_loss)}</code> руб."
-        )
-    else:
-        lines.append(
-            f"<b>2.</b> Зафиксируйте ДРР на уровне "
-            f"<code>{prompt_metrics.adv_load_pct:.1f}%</code> — не раздувайте рекламу без окупаемости."
-        )
-    lines.append(
-        f"<b>3.</b> Контролируйте остатки по рисковым SKU: "
-        f"<i>{_escape_verdict(prompt_metrics.oos_forecast_line)}</i>"
-    )
+    lines.extend(_build_strategic_plan_lines(prompt_metrics, wb_metrics))
     return append_wb_finance_mini_app_cta("\n".join(lines))
 
 
@@ -822,29 +918,54 @@ def _build_traffic_light_block(
     """🟢🟡🔴 блоки для локального fallback."""
     leader_name = _escape_verdict(prompt_metrics.abc_a_leader_name)
     leader_art = _escape_verdict(prompt_metrics.abc_a_leader_article)
-    green = f"🟢 <b>ЗОНА УСПЕХА:</b> Лидер группы A — <b>{leader_name}</b> (Арт: <code>{leader_art}</code>), "
-    if prompt_metrics.abc_a_leader_margin > 0:
+    leader_buyout = prompt_metrics.abc_a_leader_buyout
+    leader_is_critical = not _leader_buyout_is_healthy(leader_buyout)
+
+    green = "🟢 <b>ЗОНА УСПЕХА:</b> "
+    if leader_is_critical:
+        if wb_metrics and wb_metrics.top5_units:
+            healthy = [
+                u for u in wb_metrics.top5_units
+                if u.net_income > 0
+            ]
+            if healthy:
+                best = max(healthy, key=lambda u: u.net_income)
+                green += (
+                    f"Масштабируйте <b>{_escape_verdict(best.label)}</b> "
+                    f"(<code>{_fmt_rub_in_code(best.net_income)}</code>/шт.) — "
+                    "единственный здоровый драйвер маржи."
+                )
+            else:
+                green += "сначала восстановите выкуп и маржу — масштабировать пока нечего."
+        else:
+            green += (
+                "сначала поднимите выкуп по карточкам — масштабирование отложите."
+            )
+    elif prompt_metrics.abc_a_leader_margin > 0:
         green += (
+            f"Лидер группы A — <b>{leader_name}</b> (Арт: <code>{leader_art}</code>), "
             f"маржа <code>{_fmt_rub_in_code(prompt_metrics.abc_a_leader_margin)}</code> руб., "
-            f"выкуп <code>{prompt_metrics.abc_a_leader_buyout:.1f}%</code>. "
-            f"Масштабируйте закуп и рекламу на этот SKU."
-        )
-    elif wb_metrics and wb_metrics.top5_units:
-        best = max(wb_metrics.top5_units, key=lambda u: u.net_income)
-        green += (
-            f"«{best.label}» даёт <code>{_fmt_rub_in_code(best.net_income)}</code>/шт. "
+            f"выкуп <code>{leader_buyout:.1f}%</code>. "
             "Масштабируйте закуп и рекламу на этот SKU."
         )
     else:
-        green += "базовая экономика позволяет тестировать масштабирование лидеров."
+        green += (
+            f"Лидер A <b>{leader_name}</b> (Арт: <code>{leader_art}</code>) — "
+            f"выкуп <code>{leader_buyout:.1f}%</code> под контролем."
+        )
 
-    yellow = f"🟡 <b>ЗОНА ВНИМАНИЯ:</b> "
-    if wb_metrics and 45 <= wb_metrics.buyout_coef_pct < 65:
+    yellow = "🟡 <b>ЗОНА ВНИМАНИЯ:</b> "
+    if wb_metrics and prompt_metrics.adv_load_pct > _HIGH_DRR_PCT:
+        yellow += (
+            f"ДРР <code>{prompt_metrics.adv_load_pct:.1f}%</code> выше нормы — "
+            "сузьте ключевые слова и отключите слабые кампании."
+        )
+    elif wb_metrics and 45 <= wb_metrics.buyout_coef_pct < 65:
         yellow += (
             f"выкуп <code>{wb_metrics.buyout_coef_pct:.1f}%</code> — подтяните инфографику, "
             "отзывы и размерную сетку."
         )
-    elif wb_metrics and 12 < wb_metrics.ad_load_pct <= 22:
+    elif wb_metrics and 12 < wb_metrics.ad_load_pct <= _HIGH_DRR_PCT:
         yellow += (
             f"реклама <code>{wb_metrics.ad_load_pct:.1f}%</code> — еженедельно отключайте "
             "кампании с ДРР выше целевого."
@@ -855,35 +976,34 @@ def _build_traffic_light_block(
         )
 
     red = "🔴 <b>КРИТИЧЕСКАЯ ЗОНА:</b> "
+    red_parts: list[str] = []
+    if leader_is_critical:
+        red_parts.append(
+            f"<b>{leader_name}</b> (Арт: <code>{leader_art}</code>) — выкуп "
+            f"<code>{leader_buyout:.1f}%</code>: нельзя масштабировать, сначала карточка и логистика."
+        )
     if prompt_metrics.outsider_name not in ("—", "") and prompt_metrics.outsider_loss > 0:
-        red += (
-            f"Аутсайдер: <b>{_escape_verdict(prompt_metrics.outsider_name)}</b> "
-            f"(Артикул: <code>{_escape_verdict(prompt_metrics.outsider_article)}</code>) "
-            f"принёс убыток <code>{_fmt_rub_in_code(prompt_metrics.outsider_loss)}</code> руб. "
-            f"из-за выкупа <code>{prompt_metrics.outsider_buyout:.1f}%</code>."
+        red_parts.append(
+            f"Аутсайдер <b>{_escape_verdict(prompt_metrics.outsider_name)}</b> "
+            f"(Арт: <code>{_escape_verdict(prompt_metrics.outsider_article)}</code>) — убыток "
+            f"<code>{_fmt_rub_in_code(prompt_metrics.outsider_loss)}</code> руб., "
+            f"выкуп <code>{prompt_metrics.outsider_buyout:.1f}%</code>."
         )
     elif wb_metrics and wb_metrics.top5_units:
         worst = min(wb_metrics.top5_units, key=lambda u: u.net_income)
         if worst.net_income < 0:
-            red += (
+            red_parts.append(
                 f"«{worst.label}» убыточен "
-                f"(<code>{_fmt_rub_in_code(worst.net_income)}</code>/шт.) — "
-                "вымывает оборотные средства и кассу."
+                f"(<code>{_fmt_rub_in_code(worst.net_income)}</code>/шт.)."
             )
-        elif wb_metrics.buyout_coef_pct > 0 and wb_metrics.buyout_coef_pct < 45:
-            red += (
-                f"выкуп <code>{wb_metrics.buyout_coef_pct:.1f}%</code> — возвраты и покатушки "
-                "бьют по марже сильнее рекламы."
-            )
-        elif wb_metrics.ad_load_pct > 25:
-            red += (
-                f"ДРР <code>{wb_metrics.ad_load_pct:.1f}%</code> — реклама съедает "
-                "чистую прибыль быстрее, чем растёт выручка."
-            )
-        else:
-            red += "критических утечек не зафиксировано — держите фокус на жёлтой зоне."
+    if prompt_metrics.adv_load_pct > _HIGH_DRR_PCT and not leader_is_critical:
+        red_parts.append(
+            f"ДРР <code>{prompt_metrics.adv_load_pct:.1f}%</code> — реклама съедает прибыль."
+        )
+    if not red_parts:
+        red += "критических утечек не зафиксировано — держите фокус на жёлтой зоне."
     else:
-        red += "загрузите полный отчёт реализации для детекции убыточных SKU."
+        red += " ".join(red_parts)
 
     return [green, "", yellow, "", red]
 
