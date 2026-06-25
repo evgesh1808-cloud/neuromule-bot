@@ -21,9 +21,13 @@ from services.telegram_safe_text import repair_telegram_html
 logger = logging.getLogger(__name__)
 
 _USN_RATE = 0.06
+_BALLAST_BUYOUT_PCT = 15.0
+_DRR_WARNING_PCT = 20.0
 _LOW_BUYOUT_PCT = 40.0
 _HIGH_DRR_PCT = 18.0
 _CRITICAL_BUYOUT_PCT = 5.0
+_SLOW_TURNOVER_DAYS = 45.0
+_ILLIQUID_MIN_STOCK = 1.0
 
 
 def _format_sku_label(name: str, article: str) -> str:
@@ -52,6 +56,320 @@ def _dedupe_report_noise(text: str) -> str:
     return cleaned.strip()
 
 
+def _ru_more_goods_suffix(count: int) -> str:
+    """«… и ещё N товара/товаров» с правильным склонением."""
+    n = abs(int(count))
+    if n % 10 == 1 and n % 100 != 11:
+        word = "товар"
+    elif n % 10 in (2, 3, 4) and n % 100 not in (12, 13, 14):
+        word = "товара"
+    else:
+        word = "товаров"
+    return f"… и ещё {n} {word}"
+
+
+def _classify_group_c_problem_zone(
+    buyout_pct: float,
+    revenue: float,
+    *,
+    stock_qty: float,
+    sales_qty: float,
+    days_until_stockout: float | None,
+) -> str:
+    """«ballast» — низкий выкуп; «illiquid» — залежалый остаток без спроса."""
+    if buyout_pct < _BALLAST_BUYOUT_PCT and sales_qty > 0:
+        return "ballast"
+    if sales_qty <= 0 and stock_qty >= _ILLIQUID_MIN_STOCK:
+        return "illiquid"
+    if (
+        revenue <= 0
+        and stock_qty >= _ILLIQUID_MIN_STOCK
+        and buyout_pct <= _CRITICAL_BUYOUT_PCT
+    ):
+        return "illiquid"
+    if (
+        days_until_stockout is not None
+        and days_until_stockout > _SLOW_TURNOVER_DAYS
+        and sales_qty > 0
+        and stock_qty >= _ILLIQUID_MIN_STOCK
+    ):
+        return "illiquid"
+    if buyout_pct < _BALLAST_BUYOUT_PCT:
+        return "ballast"
+    if revenue <= 0 and buyout_pct < 55.0:
+        return "ballast"
+    return "ballast" if buyout_pct < 55.0 else "illiquid"
+
+
+def _extract_problem_zone_sku_lists(matrix_etl: object | None) -> tuple[list[str], list[str]]:
+    """Списки артикулов балласта и неликвида (до 3 в каждой зоне)."""
+    if matrix_etl is None:
+        return [], []
+    group_c = getattr(matrix_etl, "abc_group_c", ()) or ()
+    if not group_c:
+        return [], []
+
+    oos_map = {f.label: f for f in getattr(matrix_etl, "oos_forecasts", ()) or ()}
+    ballast: list[tuple[float, str]] = []
+    illiquid: list[tuple[float, str]] = []
+
+    for sku in group_c:
+        oos = oos_map.get(sku.name)
+        stock = float(oos.stock_qty) if oos else 0.0
+        sales = float(oos.sales_period_qty) if oos else 0.0
+        days = oos.days_until_stockout if oos else None
+        label = _format_sku_label(sku.name, sku.article_id)
+        zone = _classify_group_c_problem_zone(
+            sku.buyout_pct,
+            sku.revenue,
+            stock_qty=stock,
+            sales_qty=sales,
+            days_until_stockout=days,
+        )
+        if zone == "illiquid":
+            illiquid.append((stock, label))
+        else:
+            ballast.append((sku.buyout_pct, label))
+
+    ballast.sort(key=lambda x: x[0])
+    illiquid.sort(key=lambda x: -x[0])
+    return (
+        [label for _, label in ballast[:3]],
+        [label for _, label in illiquid[:3]],
+    )
+
+
+def _build_oos_predictions_map(matrix_etl: object | None, *, max_days: int = 7) -> dict[str, int]:
+    """Критические OOS: дней до обнуления остатка (≤ max_days)."""
+    if matrix_etl is None:
+        return {}
+    catalog = {s.name: s for s in getattr(matrix_etl, "sku_catalog", ()) or ()}
+    out: dict[str, int] = {}
+    for forecast in getattr(matrix_etl, "oos_forecasts", ()) or ():
+        days = forecast.days_until_stockout
+        if days is None or days > max_days:
+            continue
+        if forecast.stock_qty <= 0 and forecast.sales_period_qty <= 0:
+            continue
+        detail = catalog.get(forecast.label)
+        key = (
+            _format_sku_label(detail.name, detail.article_id)
+            if detail
+            else forecast.label
+        )
+        out[key] = max(0, int(days))
+    return out
+
+
+def build_wb_mpstats_ai_context(
+    matrix_rows: list[list[str]],
+    *,
+    revenue_total: float,
+    platform: str | None = "wildberries",
+) -> dict[str, Any]:
+    """
+    MPSTATS-стиль JSON для OpenRouter: финансы, ABC, проблемные зоны, OOS.
+
+    Использует локальный ETL (openpyxl → матрица), без pandas.
+    """
+    from services.file_processor import compute_seller_matrix_etl
+
+    if revenue_total <= 0 or not matrix_rows or len(matrix_rows) < 2:
+        return {"error": "empty_or_no_revenue"}
+
+    etl = compute_seller_matrix_etl(matrix_rows, revenue_total=revenue_total, platform=platform)
+    wb_metrics = resolve_wb_metrics_for_rows(matrix_rows, revenue_total, platform=platform)
+    prompt_metrics = compute_wb_finance_prompt_metrics(
+        revenue_total,
+        wb_metrics,
+        matrix_rows=matrix_rows,
+        platform=platform,
+    )
+
+    group_a: list[str] = []
+    group_c_all: list[str] = []
+    if etl:
+        group_a = [_format_sku_label(s.name, s.article_id) for s in etl.abc_group_a]
+        group_c_all = [_format_sku_label(s.name, s.article_id) for s in etl.abc_group_c]
+    if not group_a and revenue_total > 0 and etl and etl.sku_catalog:
+        leader = max(etl.sku_catalog, key=lambda s: s.revenue)
+        group_a = [_format_sku_label(leader.name, leader.article_id)]
+    if not group_a:
+        group_a = ["Лидеры отсутствуют, требуется оптимизация"]
+
+    ballast, non_liquid = _extract_problem_zone_sku_lists(etl)
+    drr = wb_metrics.ad_load_pct if wb_metrics else 0.0
+    tax = revenue_total * _USN_RATE
+    margin_rate = prompt_metrics.profitability_pct if prompt_metrics else 0.0
+    clear_profit = prompt_metrics.clear_profit if prompt_metrics else revenue_total - tax
+
+    loc_line = prompt_metrics.localization_index_line if prompt_metrics else "не указан в исходных данных"
+
+    return {
+        "finance": {
+            "total_revenue": round(revenue_total, 2),
+            "tax_usn": round(tax, 2),
+            "total_profit": round(clear_profit, 2),
+            "margin_rate": round(margin_rate, 1),
+            "drr": round(drr, 1),
+            "business_score": round(prompt_metrics.business_score, 1) if prompt_metrics else 0.0,
+        },
+        "abc_analysis": {
+            "group_A": group_a,
+            "group_C": group_c_all[:5],
+            "total_group_c_count": len(group_c_all),
+        },
+        "problem_zones": {
+            "ballast": ballast,
+            "non_liquid": non_liquid,
+        },
+        "oos_predictions": _build_oos_predictions_map(etl),
+        "localization_index": loc_line,
+        "sku_catalog": list(prompt_metrics.sku_catalog_items) if prompt_metrics else [],
+    }
+
+
+def prepare_wb_data_for_ai(
+    file_path: str | Path,
+    *,
+    platform: str = "wildberries",
+    title: str | None = None,
+) -> str:
+    """
+    Считывает Excel Wildberries, считает метрики в стиле MPSTATS и возвращает JSON для OpenRouter.
+    """
+    from pathlib import Path as PathCls
+
+    from services.file_processor import read_xlsx_rows_from_path
+    from services.table_xlsx_preprocess import preprocess_xlsx_rows
+
+    path = PathCls(file_path)
+    raw_rows = read_xlsx_rows_from_path(path)
+    display_title = title or path.stem or "Отчёт WB"
+    pre = preprocess_xlsx_rows(raw_rows, title=display_title)
+    context = build_wb_mpstats_ai_context(
+        pre.rows,
+        revenue_total=float(pre.revenue_total or 0.0),
+        platform=platform,
+    )
+    return json.dumps(context, ensure_ascii=False, indent=2)
+
+
+def _format_sku_bullet_lines(
+    buyout_pct: float,
+    revenue: float,
+    *,
+    stock_qty: float,
+    sales_qty: float,
+    days_until_stockout: float | None,
+) -> str:
+    """«ballast» — низкий выкуп; «illiquid» — залежалый остаток без спроса."""
+    if buyout_pct < _BALLAST_BUYOUT_PCT and sales_qty > 0:
+        return "ballast"
+    if sales_qty <= 0 and stock_qty >= _ILLIQUID_MIN_STOCK:
+        return "illiquid"
+    if (
+        revenue <= 0
+        and stock_qty >= _ILLIQUID_MIN_STOCK
+        and buyout_pct <= _CRITICAL_BUYOUT_PCT
+    ):
+        return "illiquid"
+    if (
+        days_until_stockout is not None
+        and days_until_stockout > _SLOW_TURNOVER_DAYS
+        and sales_qty > 0
+        and stock_qty >= _ILLIQUID_MIN_STOCK
+    ):
+        return "illiquid"
+    if buyout_pct < _BALLAST_BUYOUT_PCT:
+        return "ballast"
+    if revenue <= 0 and buyout_pct < 55.0:
+        return "ballast"
+    return "ballast" if buyout_pct < 55.0 else "illiquid"
+
+
+def _ballast_reason(buyout_pct: float) -> str:
+    return (
+        f"выкуп {buyout_pct:.1f}% (менее {_BALLAST_BUYOUT_PCT:.0f}%) — "
+        "покатушки и пустая обратная логистика съедают маржу"
+    )
+
+
+def _illiquid_reason(
+    *,
+    stock_qty: float,
+    sales_qty: float,
+    days_until_stockout: float | None,
+    revenue: float,
+) -> str:
+    if sales_qty <= 0 and stock_qty > 0:
+        stock_s = f"{stock_qty:.0f}".replace(",", " ")
+        return f"нет продаж за период, на складе {stock_s} шт. — капитал заморожен"
+    if days_until_stockout is not None and days_until_stockout > _SLOW_TURNOVER_DAYS:
+        return (
+            f"медленная оборачиваемость (~{days_until_stockout:.0f} дн. запаса), "
+            f"выручка {_fmt_rub_in_code(revenue)} руб."
+        )
+    stock_s = f"{stock_qty:.0f}".replace(",", " ")
+    return f"залежалый остаток ({stock_s} шт.) без достаточного спроса"
+
+
+def build_matrix_problem_zones_block(matrix_etl: object | None) -> str:
+    """Текст подсказки ETL: балласт и неликвид из группы C."""
+    if matrix_etl is None:
+        return "проблемных зон в группе C не выявлено"
+    group_c = getattr(matrix_etl, "abc_group_c", ()) or ()
+    if not group_c:
+        return "проблемных зон в группе C не выявлено"
+
+    oos_map = {f.label: f for f in getattr(matrix_etl, "oos_forecasts", ()) or ()}
+    ballast: list[tuple[float, str, str]] = []
+    illiquid: list[tuple[float, str, str]] = []
+
+    for sku in group_c:
+        oos = oos_map.get(sku.name)
+        stock = float(oos.stock_qty) if oos else 0.0
+        sales = float(oos.sales_period_qty) if oos else 0.0
+        days = oos.days_until_stockout if oos else None
+        label = _format_sku_label(sku.name, sku.article_id)
+        zone = _classify_group_c_problem_zone(
+            sku.buyout_pct,
+            sku.revenue,
+            stock_qty=stock,
+            sales_qty=sales,
+            days_until_stockout=days,
+        )
+        if zone == "illiquid":
+            illiquid.append(
+                (
+                    stock,
+                    label,
+                    _illiquid_reason(
+                        stock_qty=stock,
+                        sales_qty=sales,
+                        days_until_stockout=days,
+                        revenue=sku.revenue,
+                    ),
+                )
+            )
+        else:
+            ballast.append((sku.buyout_pct, label, _ballast_reason(sku.buyout_pct)))
+
+    ballast.sort(key=lambda x: x[0])
+    illiquid.sort(key=lambda x: -x[0])
+
+    lines: list[str] = []
+    if ballast:
+        lines.append("📉 Балласт:")
+        for _, label, reason in ballast[:2]:
+            lines.append(f"• {label} — {reason}")
+    if illiquid:
+        lines.append("❄️ Неликвид:")
+        for _, label, reason in illiquid[:2]:
+            lines.append(f"• {label} — {reason}")
+    return "\n".join(lines) if lines else "проблемных зон в группе C не выявлено"
+
+
 def _format_sku_bullet_lines(
     items: Iterable[tuple[str, str]],
     *,
@@ -66,8 +384,8 @@ def _format_sku_bullet_lines(
     if overflow_suffix:
         lines.append(overflow_suffix)
     elif len(batch) > max_items:
-        lines.append(f"… и ещё {len(batch) - max_items} SKU")
-    return "\n".join(lines) if lines else "• убыточных SKU не выявлено"
+        lines.append(_ru_more_goods_suffix(len(batch) - max_items))
+    return "\n".join(lines) if lines else "• убыточных товаров не выявлено"
 
 
 def _expand_fomo_breakdown(parts: tuple[str, ...]) -> tuple[str, ...]:
@@ -182,7 +500,7 @@ _WB_FINANCE_MAX_OUTPUT_TOKENS = 1400
 _WB_FINANCE_TELEGRAM_SOFT_MAX_CHARS = 2000
 _FINANCE_SEPARATOR = "────────────────────────"
 # Меняйте при каждом релизе CFO-шаблона — видно внизу отчёта для проверки деплоя.
-_FINANCE_REPORT_BUILD = "cfo-v5"
+_FINANCE_REPORT_BUILD = "cfo-v6"
 _OLD_FINALE_MARKERS = (
     "Финальный Excel",
     "интерактивный дашборд",
@@ -201,9 +519,13 @@ _LEGACY_FINANCE_MARKERS = (
 )
 _LEGACY_FINANCE_REPLACEMENTS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"ИИ[\s\-–—]*План\s*действий", re.IGNORECASE), "СТРАТЕГИЧЕСКИЙ ПЛАН ДЕЙСТВИЙ НА СЕГОДНЯ"),
-    (re.compile(r"ИИ[\s\-–—]*Инсайт", re.IGNORECASE), "КЛЮЧЕВОЙ БИЗНЕС-ВЕРДИКТ"),
+    (re.compile(r"ИИ[\s\-–—]*Инсайт", re.IGNORECASE), "ГЛАВНЫЙ ВЫВОД ИИ"),
+    (re.compile(r"КЛЮЧЕВОЙ\s+БИЗНЕС-ВЕРДИКТ", re.IGNORECASE), "ГЛАВНЫЙ ВЫВОД ИИ"),
+    (re.compile(r"ВАЛОВАЯ\s+ВЫРУЧКА", re.IGNORECASE), "ОБЩАЯ ВЫРУЧКА"),
     (re.compile(r"Серверный\s+расч[её]т", re.IGNORECASE), "Потенциальная упущенная выгода"),
-    (re.compile(r"ABC[\s\-–—]*АНАЛИЗ\s+МАТРИЦЫ\s*\(\s*локальный\s+ETL[^)]*\)", re.IGNORECASE), "ABC-АНАЛИЗ МАТРИЦЫ"),
+    (re.compile(r"ABC[\s\-–—]*АНАЛИЗ\s+МАТРИЦЫ\s*\(\s*локальный\s+ETL[^)]*\)", re.IGNORECASE), "ABC-АНАЛИЗ ПРОДАЖ"),
+    (re.compile(r"ABC[\s\-–—]*АНАЛИЗ\s+МАТРИЦЫ", re.IGNORECASE), "ABC-АНАЛИЗ ПРОДАЖ"),
+    (re.compile(r"БИЗНЕС-СКОРИНГ\s+МАГАЗИНА", re.IGNORECASE), "ИНДЕКС ЗДОРОВЬЯ МАГАЗИНА"),
 )
 _TECH_HINT_PAREN_RE = re.compile(
     r"\(\s*[^)]*(?:"
@@ -256,6 +578,8 @@ class WbFinancePromptMetrics:
     deliveries_qty: float = 0.0
     reverse_logistics_shop_avg: float = 0.0
     return_logistics_block: str = "• существенных потерь на обратной логистике не выявлено"
+    matrix_problem_zones_block: str = "проблемных зон в группе C не выявлено"
+    localization_index_line: str = "не указан в исходных данных"
 
 
 def compute_business_score(
@@ -305,7 +629,7 @@ def _business_score_band(score: float) -> tuple[str, str]:
     if score < 5.0:
         return (
             "🔴",
-            "КРИТИЧЕСКИЙ УРОВЕНЬ — Бизнес в зоне риска кассового разрыва",
+            "КРИТИЧЕСКИЙ УРОВЕНЬ — Высокий риск кассового разрыва",
         )
     if score < 8.0:
         return (
@@ -499,6 +823,8 @@ def compute_wb_finance_prompt_metrics(
     abc_a_count = 0
     abc_c_count = 0
     abc_c_summary = "нет"
+    matrix_problem_zones_block = "проблемных зон в группе C не выявлено"
+    localization_index_line = "не указан в исходных данных"
     outsider_name = "—"
     outsider_article = "—"
     outsider_loss = 0.0
@@ -542,7 +868,8 @@ def compute_wb_finance_prompt_metrics(
                 max_items=5,
             )
         elif abc_c_count == 0:
-            abc_c_summary = "убыточных SKU не выявлено"
+            abc_c_summary = "убыточных товаров не выявлено"
+        matrix_problem_zones_block = build_matrix_problem_zones_block(matrix_etl)
         if matrix_etl.outsider_sku:
             outsider_name = matrix_etl.outsider_sku.name
             outsider_article = matrix_etl.outsider_sku.article_id
@@ -615,6 +942,8 @@ def compute_wb_finance_prompt_metrics(
         abc_a_count=abc_a_count,
         abc_c_count=abc_c_count,
         abc_c_summary=abc_c_summary,
+        matrix_problem_zones_block=matrix_problem_zones_block,
+        localization_index_line=localization_index_line,
         outsider_name=outsider_name,
         outsider_article=outsider_article,
         outsider_loss=outsider_loss,
@@ -655,6 +984,7 @@ def _prompt_kwargs_from_metrics(metrics: WbFinancePromptMetrics) -> dict[str, st
         "abc_a_count": str(metrics.abc_a_count),
         "abc_c_count": str(metrics.abc_c_count),
         "abc_c_summary": metrics.abc_c_summary,
+        "matrix_problem_zones_block": metrics.matrix_problem_zones_block,
         "outsider_name": metrics.outsider_name,
         "outsider_article": metrics.outsider_article,
         "outsider_loss": _fmt_rub_in_code(metrics.outsider_loss),
@@ -665,6 +995,7 @@ def _prompt_kwargs_from_metrics(metrics: WbFinancePromptMetrics) -> dict[str, st
         "return_logistics_block": metrics.return_logistics_block,
         "reverse_logistics_avg_rub": f"{metrics.reverse_logistics_shop_avg:.2f}",
         "oos_forecast_line": metrics.oos_forecast_line,
+        "localization_index_line": metrics.localization_index_line,
     }
 
 
@@ -730,6 +1061,8 @@ def build_wb_marketplace_finance_payload_dict(
             "group_a_count": prompt_metrics.abc_a_count,
             "group_c_count": prompt_metrics.abc_c_count,
             "group_c_summary": prompt_metrics.abc_c_summary,
+            "matrix_problem_zones": prompt_metrics.matrix_problem_zones_block,
+            "localization_index": prompt_metrics.localization_index_line,
         },
         "outsider_sku": {
             "name": prompt_metrics.outsider_name,
@@ -996,7 +1329,7 @@ def _format_abc_a_leader_html(prompt_metrics: WbFinancePromptMetrics) -> str:
         )
     ):
         return (
-            "🅰️ Лидер группы A: <i>Лидеры отсутствуют, вся матрица требует санации</i>"
+            "🅰️ Товары-лидеры (Группа А): <i>Лидеры отсутствуют, вся матрица требует санации</i>"
         )
     label = _escape_verdict(
         _format_sku_label(
@@ -1005,7 +1338,7 @@ def _format_abc_a_leader_html(prompt_metrics: WbFinancePromptMetrics) -> str:
         )
     )
     return (
-        f"🅰️ Лидер группы A: <b>{label}</b> "
+        f"🅰️ Товары-лидеры (Группа А): <b>{label}</b> "
         f"(выкуп: <code>{prompt_metrics.abc_a_leader_buyout:.1f}%</code>)"
     )
 
@@ -1021,15 +1354,15 @@ def build_wb_finance_express_html_local(
         "📊 <b>ФИНАНСОВЫЙ ЭКСПРЕСС-АНАЛИЗ БИЗНЕСА</b>",
         _FINANCE_SEPARATOR,
         (
-            f"🎯 <b>БИЗНЕС-СКОРИНГ МАГАЗИНА:</b> {score_emoji} "
+            f"🎯 <b>ИНДЕКС ЗДОРОВЬЯ МАГАЗИНА:</b> {score_emoji} "
             f"<code>{prompt_metrics.business_score:.1f} / 10</code> "
             f"<i>{score_status}</i>"
         ),
         score_reason,
-        "💡 <b>КЛЮЧЕВОЙ БИЗНЕС-ВЕРДИКТ:</b>",
+        "💡 <b>ГЛАВНЫЙ ВЫВОД ИИ:</b>",
         f"<i>{_escape_verdict(prompt_metrics.verdict)}</i>",
         _FINANCE_SEPARATOR,
-        f"💰 <b>ВАЛОВАЯ ВЫРУЧКА:</b> <code>{_fmt_rub_in_code(prompt_metrics.revenue)} руб.</code>",
+        f"💰 <b>ОБЩАЯ ВЫРУЧКА:</b> <code>{_fmt_rub_in_code(prompt_metrics.revenue)} руб.</code>",
         f"📉 <b>НАЛОГ УСН (6%):</b> <code>{_fmt_rub_in_code(prompt_metrics.tax)} руб.</code>",
         (
             f"💵 <b>ЧИСТАЯ ПРИБЫЛЬ:</b> "
@@ -1040,12 +1373,15 @@ def build_wb_finance_express_html_local(
             f"<code>{prompt_metrics.profitability_pct:.1f}%</code>"
         ),
         _FINANCE_SEPARATOR,
-        "📦 <b>ABC-АНАЛИЗ МАТРИЦЫ</b>",
+        "📦 <b>ABC-АНАЛИЗ ПРОДАЖ</b>",
         _format_abc_a_leader_html(prompt_metrics),
-        "🅲 <b>Группа C:</b>",
+        "🅲 <b>Аутсайдеры (Группа С):</b>",
     ]
     for c_line in prompt_metrics.abc_c_summary.splitlines():
         lines.append(_escape_verdict(c_line))
+    lines.append("📦 <b>Проблемные зоны матрицы:</b>")
+    for zone_line in prompt_metrics.matrix_problem_zones_block.splitlines():
+        lines.append(_escape_verdict(zone_line))
     lines.extend(
         [
         _FINANCE_SEPARATOR,
@@ -1135,32 +1471,54 @@ def _build_traffic_light_block(
             )
     else:
         green += (
-            f"Лидер группы A — <b>{leader_label}</b>, "
+            f"Товары-лидеры группы A — <b>{leader_label}</b>, "
             f"маржа <code>{_fmt_rub_in_code(leader_margin)}</code> руб., "
             f"выкуп <code>{leader_buyout:.1f}%</code>. "
             "Масштабируйте закуп и рекламу на этот SKU."
         )
 
     yellow = "🟡 <b>ЗОНА ВНИМАНИЯ:</b> "
-    if wb_metrics and prompt_metrics.adv_load_pct > _HIGH_DRR_PCT:
-        yellow += (
-            f"ДРР <code>{prompt_metrics.adv_load_pct:.1f}%</code> выше нормы — "
-            "сузьте ключевые слова и отключите слабые кампании."
+    yellow_parts: list[str] = []
+    if prompt_metrics.adv_load_pct >= _DRR_WARNING_PCT:
+        ad_cost = prompt_metrics.total_ad_cost
+        loss_hint = (
+            f" — потери на рекламу <code>{_fmt_rub_in_code(ad_cost)}</code> руб."
+            if ad_cost > 0
+            else ""
+        )
+        yellow_parts.append(
+            f"ДРР <code>{prompt_metrics.adv_load_pct:.1f}%</code> выше 20%: "
+            f"работаете на рекламу, а не на карман{loss_hint}."
+        )
+    loc_line = (prompt_metrics.localization_index_line or "").lower()
+    if any(
+        token in loc_line
+        for token in ("низк", "ниже", "плох", "критич", "0.", "1.", "2.", "3.")
+    ) and "не указан" not in loc_line:
+        yellow_parts.append(
+            "низкий индекс локализации — распределите остатки на Казань, "
+            "Краснодар и Электросталь, чтобы снизить логистику WB."
         )
     elif wb_metrics and 45 <= wb_metrics.buyout_coef_pct < 65:
-        yellow += (
+        yellow_parts.append(
             f"выкуп <code>{wb_metrics.buyout_coef_pct:.1f}%</code> — подтяните инфографику, "
             "отзывы и размерную сетку."
         )
+    elif wb_metrics and prompt_metrics.adv_load_pct > _HIGH_DRR_PCT:
+        yellow_parts.append(
+            f"ДРР <code>{prompt_metrics.adv_load_pct:.1f}%</code> выше нормы — "
+            "сузьте ключевые слова и отключите слабые кампании."
+        )
     elif wb_metrics and 12 < wb_metrics.ad_load_pct <= _HIGH_DRR_PCT:
-        yellow += (
+        yellow_parts.append(
             f"реклама <code>{wb_metrics.ad_load_pct:.1f}%</code> — еженедельно отключайте "
             "кампании с ДРР выше целевого."
         )
-    else:
-        yellow += (
+    if not yellow_parts:
+        yellow_parts.append(
             "контролируйте оборачиваемость и не раздувайте склад неликвидом без спроса."
         )
+    yellow += " ".join(yellow_parts)
 
     red = "🔴 <b>КРИТИЧЕСКАЯ ЗОНА:</b> "
     red_parts: list[str] = []

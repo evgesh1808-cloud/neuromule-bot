@@ -49,7 +49,16 @@ def test_build_wb_marketplace_finance_system_prompt_variables() -> None:
         reverse_logistics_avg_rub="52.40",
         sku_catalog_block="• Футболка Premium (Артикул: WRAPPER-001) — 100 000.00 руб. — 85 000.00 руб. — 77.8%",
         oos_forecast_line="«BOX» закончится через 3 дн. (риск OOS)",
+        matrix_problem_zones_block=(
+            "📉 Балласт:\n"
+            "• DEAD (арт. DEAD-99) — выкуп 0.0% — покатушки генерируют расходы на обратную логистику"
+        ),
+        localization_index_line="не указан в исходных данных",
     )
+    assert "MPSTATS" in prompt
+    assert "Проблемные зоны матрицы" in prompt
+    assert "Балласт" in prompt
+    assert "Неликвид" in prompt
     assert "185,000.00 руб." in prompt
     assert "11,100.00 руб." in prompt
     assert "173,900.00 руб." in prompt
@@ -57,12 +66,12 @@ def test_build_wb_marketplace_finance_system_prompt_variables() -> None:
     assert "2,220,000 руб." in prompt
     assert "Senior ИИ-Аналитик" not in prompt
     assert "финансовый директор" in prompt
-    assert "БИЗНЕС-СКОРИНГ МАГАЗИНА" in prompt
+    assert "ИНДЕКС ЗДОРОВЬЯ МАГАЗИНА" in prompt
     assert "СВЕТОФОР ЗДОРОВЬЯ" in prompt
     assert "КАЛЬКУЛЯТОР УПУЩЕННОЙ ВЫГОДЫ" in prompt
     assert "12,500.00 руб." in prompt
     assert "2000 символов" in prompt
-    assert "ABC-АНАЛИЗ" in prompt
+    assert "ABC-АНАЛИЗ ПРОДАЖ" in prompt
     assert "Футболка Premium" in prompt
     assert "WRAPPER-001" in prompt
     assert "3,200.00" in prompt
@@ -70,25 +79,23 @@ def test_build_wb_marketplace_finance_system_prompt_variables() -> None:
     assert "Подключите" not in prompt
     assert "СЛУЖЕБНЫЕ ПРАВИЛА" in prompt
     assert "СТРАТЕГИЧЕСКИЙ ПЛАН ДЕЙСТВИЙ НА СЕГОДНЯ" in prompt
-    assert "КЛЮЧЕВОЙ БИЗНЕС-ВЕРДИКТ" in prompt
+    assert "ГЛАВНЫЙ ВЫВОД ИИ" in prompt
+    assert "ОБЩАЯ ВЫРУЧКА" in prompt
     assert "ИИ-ПЛАН" not in prompt
     template_section = prompt.split("СТРУКТУРА ОТВЕТА", 1)[-1]
     assert "серверный" not in template_section.lower()
     assert "Серверный" not in template_section
-    assert " ИИ" not in template_section
-    assert "ИИ-" not in template_section
+    assert "ИИ-ПЛАН" not in template_section
     assert "лидер — всего" not in prompt
     assert "всего <code>" not in prompt
     assert "ABC-АНАЛИЗ МАТРИЦЫ (локальный" not in prompt
-    assert "ПОРОГ ВЫКУПА" in prompt
-    assert "выкуп < 40%" in prompt or "выкуп SKU < 40%" in prompt
-    assert "СНИЗИТЬ рекламные расходы" in prompt
-    assert "зафиксировать ДРР" in prompt  # в блоке запретов
+    assert "выкуп &lt;15%" in prompt or "15%" in prompt
+    assert "20%" in prompt
     assert "• DEAD" in prompt
     assert "• Возвраты" in prompt
     assert "Логистика возвратов:" in prompt
     assert "52.40" in prompt
-    assert "ОБРАТНАЯ ЛОГИСТИКА ПО SKU" in prompt
+    assert "ОБРАТНАЯ ЛОГИСТИКА" in prompt
     assert "(каждый источник потерь" not in prompt
     assert "(каждый SKU с новой строки" not in prompt
 
@@ -200,7 +207,7 @@ def test_sanitize_wb_finance_html_strips_technical_parentheses() -> None:
     assert "локальный ETL" not in cleaned
     assert "по 2–3 предложения" not in cleaned
     assert "каждый шаг" not in cleaned
-    assert "ABC-АНАЛИЗ МАТРИЦЫ" in cleaned
+    assert "ABC-АНАЛИЗ ПРОДАЖ" in cleaned
 
 
 def test_enrich_table_json_wb_finance_adds_abc_and_summary() -> None:
@@ -240,6 +247,43 @@ def test_dedupe_report_noise_oos() -> None:
 
     raw = "«BOX» через 0 дн. (риск OOS) (риск OOS)"
     assert _dedupe_report_noise(raw) == "«BOX» через 0 дн. (риск OOS)"
+
+
+def test_build_matrix_problem_zones_ballast_and_illiquid() -> None:
+    from services.file_processor import compute_seller_matrix_etl
+    from services.table_wb_finance_ai import build_matrix_problem_zones_block
+
+    matrix = [
+        [
+            "Предмет",
+            "Артикул",
+            "Выкупили, шт.",
+            "Доставки, шт.",
+            "Возвраты, шт.",
+            "Логистика, руб.",
+            "К перечислению, руб.",
+            "Остаток на складе, шт.",
+        ],
+        ["LEADER", "L-1", "80", "100", "5", "1000", "90000", "10"],
+        ["BALLAST", "B-1", "1", "80", "20", "12000", "0", "1"],
+        ["ILLIQ", "I-9", "0", "5", "0", "500", "0", "120"],
+    ]
+    etl = compute_seller_matrix_etl(matrix, revenue_total=90_000.0)
+    assert etl is not None
+    block = build_matrix_problem_zones_block(etl)
+    assert "📉 Балласт" in block
+    assert "❄️ Неликвид" in block
+    assert "LB-1" in block or "BALLAST" in block or "B-1" in block
+    assert "I-9" in block or "ILLIQ" in block
+
+
+def test_ru_more_goods_suffix_plural() -> None:
+    from services.table_wb_finance_ai import _ru_more_goods_suffix
+
+    assert _ru_more_goods_suffix(1) == "… и ещё 1 товар"
+    assert _ru_more_goods_suffix(3) == "… и ещё 3 товара"
+    assert _ru_more_goods_suffix(5) == "… и ещё 5 товаров"
+    assert _ru_more_goods_suffix(22) == "… и ещё 22 товара"
 
 
 def test_business_score_band_thresholds() -> None:
@@ -282,6 +326,36 @@ def test_local_report_shows_score_emoji_and_reason() -> None:
     assert "📈" in html or "📉" in html
 
 
+def test_local_report_includes_problem_zones() -> None:
+    from services.file_processor import compute_seller_matrix_etl
+    from services.table_wb_finance_ai import (
+        build_wb_finance_express_html_local,
+        compute_wb_finance_prompt_metrics,
+    )
+
+    matrix = [
+        [
+            "Предмет",
+            "Артикул",
+            "Выкупили, шт.",
+            "Доставки, шт.",
+            "Возвраты, шт.",
+            "Логистика, руб.",
+            "К перечислению, руб.",
+            "Остаток на складе, шт.",
+        ],
+        ["DEAD", "SKU-C1", "0", "10", "0", "500", "0", "100"],
+    ]
+    metrics = compute_wb_finance_prompt_metrics(
+        10_000.0, None, matrix_rows=matrix, platform="wildberries"
+    )
+    assert metrics is not None
+    assert "Неликвид" in metrics.matrix_problem_zones_block
+    html = build_wb_finance_express_html_local(metrics, None)
+    assert "Проблемные зоны матрицы" in html
+    assert "❄️ Неликвид" in html
+
+
 def test_local_report_includes_cfo_build_marker() -> None:
     from services.table_wb_finance_ai import (
         WbFinancePromptMetrics,
@@ -306,7 +380,7 @@ def test_local_report_includes_cfo_build_marker() -> None:
         abc_a_leader_margin=5_000.0,
     )
     html = build_wb_finance_express_html_local(metrics, None)
-    assert "CFO build cfo-v5" in html
+    assert "CFO build cfo-v6" in html
     assert "арт. W-1" in html or "W-1" in html
 
 

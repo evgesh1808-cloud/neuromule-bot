@@ -611,3 +611,10 @@ async def run_table_json_deepseek_fallback(
         metrics.incr("table.xlsx.deepseek_fallback", {"outcome": "invalid_json"})
         await dialog_pop_last_for_user(user_id)
         return ChatTurnResult(outcome=ChatTurnOutcome.TABLE_JSON_INVALID)
+
+
+def prepare_wb_data_for_ai(file_path: str, *, platform: str = "wildberries") -> str:
+    """Excel WB → MPSTATS JSON для OpenRouter (обёртка над table_wb_finance_ai)."""
+    from services.table_wb_finance_ai import prepare_wb_data_for_ai as _prepare
+
+    return _prepare(file_path, platform=platform)
