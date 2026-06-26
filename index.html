@@ -1,0 +1,1773 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
+    <title>NeuroMule — ИИ-Аналитик (Excel)</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        :root {
+            --accent: #8B3FFD;
+            --accent-soft: rgba(139, 63, 253, 0.14);
+            --accent-glow: rgba(139, 63, 253, 0.28);
+            --radius: 14px;
+            --radius-sm: 10px;
+            --shadow: 0 6px 28px rgba(0, 0, 0, 0.1);
+            --transition: 0.2s cubic-bezier(0.25, 0.1, 0.25, 1);
+            --pie-commission: #8B3FFD;
+            --pie-logistics: #007AFF;
+            --pie-penalties: #FF3B30;
+            --pie-cogs: #FF9500;
+            color-scheme: light dark;
+        }
+
+        * {
+            box-sizing: border-box;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        html { scroll-behavior: smooth; }
+
+        body {
+            margin: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background: var(--tg-theme-bg-color, #f2f2f7);
+            color: var(--tg-theme-text-color, #1c1c1e);
+            padding: 14px 16px calc(28px + env(safe-area-inset-bottom));
+            -webkit-font-smoothing: antialiased;
+            overflow-x: hidden;
+        }
+
+        body.platform-wb     { --accent: #8B3FFD; --accent-soft: rgba(139, 63, 253, 0.14); --accent-glow: rgba(139, 63, 253, 0.28); }
+        body.platform-ozon   { --accent: #005BFF; --accent-soft: rgba(0, 91, 255, 0.14);   --accent-glow: rgba(0, 91, 255, 0.28); }
+        body.platform-yandex { --accent: #E6A800; --accent-soft: rgba(255, 204, 0, 0.18); --accent-glow: rgba(255, 204, 0, 0.32); }
+        body.platform-1c     { --accent: #2DBE60; --accent-soft: rgba(45, 190, 96, 0.14);  --accent-glow: rgba(45, 190, 96, 0.28); }
+
+        .app-shell { max-width: 520px; margin: 0 auto; }
+
+        .header { margin-bottom: 18px; }
+        .header h1 {
+            margin: 0 0 4px;
+            font-size: 1.4rem;
+            font-weight: 700;
+            letter-spacing: -0.025em;
+            line-height: 1.2;
+        }
+        .header p {
+            margin: 0;
+            font-size: 0.88rem;
+            color: var(--tg-theme-hint-color, #8e8e93);
+            line-height: 1.4;
+        }
+
+        .card {
+            background: var(--tg-theme-secondary-bg-color, #ffffff);
+            border-radius: var(--radius);
+            padding: 16px;
+            margin-bottom: 14px;
+            box-shadow: var(--shadow);
+            border: 1px solid color-mix(in srgb, var(--tg-theme-hint-color, #8e8e93) 12%, transparent);
+        }
+
+        .card-title {
+            margin: 0 0 14px;
+            font-size: 1rem;
+            font-weight: 650;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            line-height: 1.3;
+        }
+
+        .score-banner {
+            background: linear-gradient(135deg, var(--accent-soft), transparent 70%);
+            border: 1px solid var(--accent);
+            border-radius: var(--radius);
+            padding: 18px 16px;
+            margin-bottom: 14px;
+            text-align: center;
+            box-shadow: 0 4px 20px var(--accent-glow);
+        }
+
+        .score-banner-label {
+            font-size: 0.78rem;
+            font-weight: 600;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            color: var(--tg-theme-hint-color, #8e8e93);
+            margin-bottom: 6px;
+        }
+
+        .score-banner-value {
+            font-size: 1.65rem;
+            font-weight: 800;
+            color: var(--accent);
+            font-variant-numeric: tabular-nums;
+            letter-spacing: -0.02em;
+        }
+
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-bottom: 14px;
+        }
+
+        .metric-card {
+            background: var(--tg-theme-secondary-bg-color, #ffffff);
+            border-radius: var(--radius);
+            padding: 14px;
+            border: 1px solid color-mix(in srgb, var(--tg-theme-hint-color, #8e8e93) 10%, transparent);
+            transition: border-color var(--transition);
+        }
+
+        .metric-label {
+            font-size: 0.72rem;
+            font-weight: 500;
+            color: var(--tg-theme-hint-color, #8e8e93);
+            margin-bottom: 6px;
+            line-height: 1.3;
+        }
+
+        .metric-value {
+            font-size: 1.05rem;
+            font-weight: 700;
+            font-variant-numeric: tabular-nums;
+            color: var(--accent);
+            line-height: 1.2;
+        }
+
+        .metric-value.positive { color: #34c759; }
+        .metric-value.negative { color: #ff3b30; }
+
+        /* ── Pie chart ─────────────────────────────────────── */
+        .finance-visual {
+            display: flex;
+            gap: 16px;
+            align-items: center;
+            flex-wrap: wrap;
+            margin-bottom: 14px;
+        }
+
+        .pie-wrap {
+            position: relative;
+            width: 132px;
+            height: 132px;
+            flex-shrink: 0;
+        }
+
+        .pie-ring {
+            width: 132px;
+            height: 132px;
+            border-radius: 50%;
+            background: conic-gradient(
+                var(--pie-commission) 0deg,
+                var(--pie-commission) var(--seg-commission, 90deg),
+                var(--pie-logistics) var(--seg-commission, 90deg),
+                var(--pie-logistics) var(--seg-logistics, 180deg),
+                var(--pie-penalties) var(--seg-logistics, 180deg),
+                var(--pie-penalties) var(--seg-penalties, 252deg),
+                var(--pie-cogs) var(--seg-penalties, 252deg),
+                var(--pie-cogs) 360deg
+            );
+            box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tg-theme-hint-color, #8e8e93) 15%, transparent);
+        }
+
+        .pie-hole {
+            position: absolute;
+            inset: 22px;
+            border-radius: 50%;
+            background: var(--tg-theme-secondary-bg-color, #ffffff);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.68rem;
+            font-weight: 600;
+            color: var(--tg-theme-hint-color, #8e8e93);
+            text-align: center;
+            line-height: 1.25;
+            padding: 4px;
+        }
+
+        .pie-legend {
+            flex: 1;
+            min-width: 140px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .pie-legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.78rem;
+            line-height: 1.3;
+        }
+
+        .pie-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+
+        .pie-legend-item span:last-child {
+            margin-left: auto;
+            font-weight: 650;
+            font-variant-numeric: tabular-nums;
+            color: var(--tg-theme-text-color, #1c1c1e);
+        }
+
+        /* ── Traffic light ─────────────────────────────────── */
+        .traffic-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 8px;
+            margin-bottom: 14px;
+        }
+
+        .traffic-card {
+            border-radius: var(--radius-sm);
+            padding: 12px 14px;
+            border: 1px solid transparent;
+            font-size: 0.82rem;
+            line-height: 1.45;
+        }
+
+        .traffic-card strong {
+            display: block;
+            font-size: 0.88rem;
+            margin-bottom: 4px;
+        }
+
+        .traffic-card.zone-green {
+            background: rgba(52, 199, 89, 0.12);
+            border-color: rgba(52, 199, 89, 0.35);
+            color: #248a3d;
+        }
+
+        .traffic-card.zone-yellow {
+            background: rgba(255, 204, 0, 0.14);
+            border-color: rgba(255, 204, 0, 0.4);
+            color: #9a7b00;
+        }
+
+        .traffic-card.zone-red {
+            background: rgba(255, 59, 48, 0.12);
+            border-color: rgba(255, 59, 48, 0.35);
+            color: #d70015;
+        }
+
+        /* ── Platform nav ──────────────────────────────────── */
+        .platform-scroll {
+            display: flex;
+            gap: 8px;
+            overflow-x: auto;
+            padding-bottom: 6px;
+            margin-bottom: 16px;
+            scrollbar-width: none;
+            -webkit-overflow-scrolling: touch;
+        }
+
+        .platform-scroll::-webkit-scrollbar { display: none; }
+
+        .platform-btn {
+            flex: 0 0 auto;
+            border: 1px solid color-mix(in srgb, var(--tg-theme-hint-color, #8e8e93) 22%, transparent);
+            background: var(--tg-theme-secondary-bg-color, #ffffff);
+            color: var(--tg-theme-text-color, #1c1c1e);
+            border-radius: 999px;
+            padding: 10px 16px;
+            font-size: 0.84rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform var(--transition), background var(--transition), border-color var(--transition), color var(--transition);
+            white-space: nowrap;
+        }
+
+        .platform-btn.active {
+            background: var(--accent-soft);
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+
+        .platform-btn:active { transform: scale(0.96); }
+
+        /* ── Form controls ─────────────────────────────────── */
+        .field-label {
+            display: block;
+            font-size: 0.8rem;
+            font-weight: 500;
+            color: var(--tg-theme-hint-color, #8e8e93);
+            margin-bottom: 6px;
+        }
+
+        .text-input {
+            width: 100%;
+            border: 1px solid color-mix(in srgb, var(--tg-theme-hint-color, #8e8e93) 28%, transparent);
+            border-radius: var(--radius-sm);
+            padding: 12px 14px;
+            font-size: 0.95rem;
+            background: var(--tg-theme-bg-color, #f2f2f7);
+            color: var(--tg-theme-text-color, #1c1c1e);
+            margin-bottom: 12px;
+            transition: border-color var(--transition);
+        }
+
+        .text-input:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+
+        .text-input::placeholder { color: var(--tg-theme-hint-color, #8e8e93); }
+
+        .token-mask {
+            font-size: 0.78rem;
+            color: var(--tg-theme-hint-color, #8e8e93);
+            margin: -6px 0 12px;
+        }
+
+        .toggle-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 14px;
+            padding: 4px 0;
+        }
+
+        .toggle-label {
+            font-size: 0.9rem;
+            font-weight: 500;
+            flex: 1;
+            line-height: 1.35;
+        }
+
+        .switch {
+            position: relative;
+            width: 51px;
+            height: 31px;
+            flex-shrink: 0;
+        }
+
+        .switch input { opacity: 0; width: 0; height: 0; }
+
+        .slider {
+            position: absolute;
+            inset: 0;
+            cursor: pointer;
+            background: color-mix(in srgb, var(--tg-theme-hint-color, #8e8e93) 35%, transparent);
+            border-radius: 999px;
+            transition: background var(--transition);
+        }
+
+        .slider::before {
+            content: "";
+            position: absolute;
+            height: 27px;
+            width: 27px;
+            left: 2px;
+            bottom: 2px;
+            background: #fff;
+            border-radius: 50%;
+            transition: transform var(--transition);
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+        }
+
+        .switch input:checked + .slider { background: var(--accent); }
+        .switch input:checked + .slider::before { transform: translateX(20px); }
+        .switch input:disabled + .slider { opacity: 0.42; cursor: not-allowed; }
+
+        .btn-primary {
+            width: 100%;
+            border: none;
+            border-radius: var(--radius);
+            padding: 14px 18px;
+            font-size: 1rem;
+            font-weight: 650;
+            cursor: pointer;
+            background: var(--tg-theme-button-color, var(--accent));
+            color: var(--tg-theme-button-text-color, #ffffff);
+            transition: opacity var(--transition), transform 0.1s ease;
+        }
+
+        .btn-primary:active { transform: scale(0.98); }
+        .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .btn-ghost {
+            width: 100%;
+            margin-top: 6px;
+            border: 1px solid color-mix(in srgb, var(--tg-theme-hint-color, #8e8e93) 25%, transparent);
+            border-radius: var(--radius);
+            padding: 13px;
+            background: transparent;
+            color: var(--tg-theme-text-color, #1c1c1e);
+            font-size: 0.95rem;
+            font-weight: 500;
+            cursor: pointer;
+        }
+
+        /* ── ABC tabs ──────────────────────────────────────── */
+        .abc-tabs {
+            display: flex;
+            gap: 6px;
+            margin-bottom: 14px;
+            overflow-x: auto;
+            scrollbar-width: none;
+            -webkit-overflow-scrolling: touch;
+        }
+
+        .abc-tabs::-webkit-scrollbar { display: none; }
+
+        .abc-tab {
+            flex: 1 0 auto;
+            min-width: 0;
+            border: none;
+            border-radius: var(--radius-sm);
+            padding: 10px 8px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            line-height: 1.25;
+            cursor: pointer;
+            background: color-mix(in srgb, var(--tg-theme-hint-color, #8e8e93) 10%, transparent);
+            color: var(--tg-theme-text-color, #1c1c1e);
+            transition: background var(--transition), color var(--transition);
+        }
+
+        .abc-tab.active-a { background: rgba(52, 199, 89, 0.18); color: #248a3d; }
+        .abc-tab.active-b { background: rgba(255, 204, 0, 0.2);  color: #b8860b; }
+        .abc-tab.active-c { background: rgba(255, 59, 48, 0.16); color: #d70015; }
+
+        .sku-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            min-height: 60px;
+        }
+
+        .sku-card {
+            background: var(--tg-theme-bg-color, #f2f2f7);
+            border-radius: var(--radius-sm);
+            padding: 14px;
+            border: 1px solid color-mix(in srgb, var(--tg-theme-hint-color, #8e8e93) 10%, transparent);
+            transition: border-color var(--transition), box-shadow var(--transition);
+        }
+
+        .sku-card.risk {
+            border-color: rgba(255, 59, 48, 0.35);
+            box-shadow: 0 0 0 1px rgba(255, 59, 48, 0.08);
+        }
+
+        .sku-header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+
+        .sku-name {
+            font-size: 0.92rem;
+            font-weight: 650;
+            line-height: 1.3;
+            margin: 0 0 3px;
+        }
+
+        .sku-article {
+            font-size: 0.75rem;
+            color: var(--tg-theme-hint-color, #8e8e93);
+            font-family: ui-monospace, "SF Mono", Menlo, monospace;
+        }
+
+        .sku-badge {
+            font-size: 0.72rem;
+            font-weight: 700;
+            padding: 4px 8px;
+            border-radius: 6px;
+            background: var(--accent-soft);
+            color: var(--accent);
+            white-space: nowrap;
+        }
+
+        .sku-badge.alert {
+            background: rgba(255, 59, 48, 0.14);
+            color: #ff3b30;
+        }
+
+        .sku-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 8px 10px;
+        }
+
+        .sku-field-label {
+            font-size: 0.65rem;
+            color: var(--tg-theme-hint-color, #8e8e93);
+            margin-bottom: 2px;
+        }
+
+        .sku-field-value {
+            font-size: 0.8rem;
+            font-weight: 600;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .sku-field-value.danger { color: #ff3b30; }
+        .sku-field-value.success { color: #34c759; }
+
+        .fomo-row {
+            margin-top: 10px;
+            padding-top: 10px;
+            border-top: 1px dashed rgba(255, 59, 48, 0.25);
+            font-size: 0.8rem;
+            font-weight: 600;
+            color: #ff3b30;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        /* ── What-If ───────────────────────────────────────── */
+        .range-block { margin-bottom: 18px; }
+
+        .range-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            font-size: 0.88rem;
+            margin-bottom: 10px;
+            gap: 8px;
+        }
+
+        .range-header span:first-child { flex: 1; line-height: 1.3; }
+
+        .range-header span:last-child {
+            font-weight: 700;
+            font-variant-numeric: tabular-nums;
+            color: var(--accent);
+            flex-shrink: 0;
+        }
+
+        input[type="range"] {
+            width: 100%;
+            height: 6px;
+            -webkit-appearance: none;
+            appearance: none;
+            background: color-mix(in srgb, var(--tg-theme-hint-color, #8e8e93) 25%, transparent);
+            border-radius: 999px;
+            outline: none;
+            cursor: pointer;
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            background: var(--accent);
+            box-shadow: 0 2px 8px var(--accent-glow);
+            cursor: pointer;
+        }
+
+        input[type="range"]::-moz-range-thumb {
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            background: var(--accent);
+            border: none;
+            box-shadow: 0 2px 8px var(--accent-glow);
+            cursor: pointer;
+        }
+
+        .whatif-result {
+            margin-top: 4px;
+            padding: 14px;
+            border-radius: var(--radius-sm);
+            background: var(--accent-soft);
+            font-size: 0.9rem;
+            line-height: 1.5;
+            font-weight: 500;
+        }
+
+        .whatif-result em {
+            font-style: normal;
+            font-weight: 700;
+            color: var(--accent);
+        }
+
+        /* ── Skeletons ─────────────────────────────────────── */
+        @keyframes shimmer {
+            0%   { background-position: 200% 0; }
+            100% { background-position: -200% 0; }
+        }
+
+        .skeleton {
+            background: linear-gradient(
+                90deg,
+                color-mix(in srgb, var(--tg-theme-hint-color, #8e8e93) 8%, transparent) 25%,
+                color-mix(in srgb, var(--tg-theme-hint-color, #8e8e93) 18%, transparent) 50%,
+                color-mix(in srgb, var(--tg-theme-hint-color, #8e8e93) 8%, transparent) 75%
+            );
+            background-size: 200% 100%;
+            animation: shimmer 1.3s infinite ease-in-out;
+            border-radius: var(--radius-sm);
+        }
+
+        .skeleton-banner { height: 72px; margin-bottom: 14px; border-radius: var(--radius); }
+        .skeleton-metric { height: 68px; }
+        .skeleton-pie { width: 132px; height: 132px; border-radius: 50%; flex-shrink: 0; }
+        .skeleton-traffic { height: 64px; margin-bottom: 8px; }
+        .skeleton-sku { height: 140px; margin-bottom: 10px; }
+        .skeleton-line { height: 14px; margin-bottom: 8px; }
+
+        .toast {
+            position: fixed;
+            left: 16px;
+            right: 16px;
+            bottom: calc(18px + env(safe-area-inset-bottom));
+            padding: 13px 16px;
+            border-radius: var(--radius);
+            background: var(--tg-theme-secondary-bg-color, #ffffff);
+            border: 1px solid color-mix(in srgb, var(--tg-theme-hint-color, #8e8e93) 20%, transparent);
+            font-size: 0.88rem;
+            line-height: 1.4;
+            box-shadow: var(--shadow);
+            transform: translateY(130%);
+            opacity: 0;
+            transition: transform 0.28s ease, opacity 0.28s ease;
+            z-index: 200;
+            max-width: 520px;
+            margin: 0 auto;
+        }
+
+        .toast.visible { transform: translateY(0); opacity: 1; }
+        .toast.error { border-color: rgba(255, 59, 48, 0.45); color: #ff3b30; }
+
+        .empty-hint {
+            font-size: 0.85rem;
+            color: var(--tg-theme-hint-color, #8e8e93);
+            text-align: center;
+            padding: 24px 10px;
+            line-height: 1.45;
+        }
+
+        .hidden { display: none !important; }
+    </style>
+</head>
+<body class="platform-wb">
+    <div class="app-shell">
+        <header class="header">
+            <h1>Привет, <span id="username">Селлер</span>!</h1>
+            <p>NeuroMule — ИИ-Аналитик (Excel): дашборды и юнит-экономика</p>
+        </header>
+
+        <!-- 1. Автопилот WB API -->
+        <section class="card" id="autopilot-card">
+            <h2 class="card-title">🚀 Автопилот NeuroMule</h2>
+            <label class="field-label" for="wb-api-key">WB API Key</label>
+            <input type="password" id="wb-api-key" class="text-input"
+                   placeholder="Вставьте ключ Statistics API Wildberries" autocomplete="off">
+            <p class="token-mask" id="token-mask"></p>
+            <div class="toggle-row">
+                <span class="toggle-label">Ежедневная оцифровка (50 💎/сутки)</span>
+                <label class="switch" aria-label="Ежедневная оцифровка">
+                    <input type="checkbox" id="wb-toggle" disabled>
+                    <span class="slider"></span>
+                </label>
+            </div>
+            <button type="button" class="btn-primary" id="wb-save-btn">Сохранить</button>
+        </section>
+
+        <!-- 2. Каналы продаж -->
+        <nav class="platform-scroll" id="platform-nav" aria-label="Каналы продаж">
+            <button type="button" class="platform-btn active" data-platform="wildberries">🟣 Wildberries</button>
+            <button type="button" class="platform-btn" data-platform="ozon">🔵 Ozon</button>
+            <button type="button" class="platform-btn" data-platform="yandex">🟡 Яндекс.Маркет</button>
+            <button type="button" class="platform-btn" data-platform="1c">🟢 1С / МойСклад</button>
+        </nav>
+
+        <!-- 3. Скелетоны загрузки -->
+        <div id="score-skeleton" class="skeleton skeleton-banner"></div>
+        <div id="metrics-skeleton" class="metrics-grid">
+            <div class="metric-card skeleton skeleton-metric"></div>
+            <div class="metric-card skeleton skeleton-metric"></div>
+            <div class="metric-card skeleton skeleton-metric"></div>
+            <div class="metric-card skeleton skeleton-metric"></div>
+        </div>
+        <div id="visual-skeleton" class="card">
+            <div class="skeleton skeleton-line" style="width:60%"></div>
+            <div style="display:flex;gap:16px;margin-top:12px">
+                <div class="skeleton skeleton-pie"></div>
+                <div style="flex:1">
+                    <div class="skeleton skeleton-line"></div>
+                    <div class="skeleton skeleton-line"></div>
+                    <div class="skeleton skeleton-line"></div>
+                    <div class="skeleton skeleton-line"></div>
+                </div>
+            </div>
+        </div>
+        <div id="traffic-skeleton">
+            <div class="skeleton skeleton-traffic"></div>
+            <div class="skeleton skeleton-traffic"></div>
+            <div class="skeleton skeleton-traffic"></div>
+        </div>
+
+        <!-- 3. Бизнес-скоринг -->
+        <div id="score-live" class="score-banner hidden">
+            <div class="score-banner-label">🎯 Бизнес-скоринг магазина</div>
+            <div class="score-banner-value" id="metric-score">— / 10</div>
+        </div>
+
+        <!-- 4. Финансовые метрики -->
+        <div id="metrics-live" class="metrics-grid hidden">
+            <div class="metric-card">
+                <div class="metric-label">💰 Валовая выручка</div>
+                <div class="metric-value" id="metric-revenue">—</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">📉 Налог УСН (6%)</div>
+                <div class="metric-value" id="metric-tax">—</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">📊 Расходы</div>
+                <div class="metric-value" id="metric-expenses">—</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">💵 Чистая прибыль</div>
+                <div class="metric-value positive" id="metric-profit">—</div>
+            </div>
+        </div>
+
+        <!-- 5. Pie chart расходов -->
+        <section class="card hidden" id="pie-card">
+            <h2 class="card-title">🥧 Структура расходов</h2>
+            <div class="finance-visual">
+                <div class="pie-wrap">
+                    <div class="pie-ring" id="pie-ring"></div>
+                    <div class="pie-hole" id="pie-center">расходы</div>
+                </div>
+                <div class="pie-legend" id="pie-legend"></div>
+            </div>
+        </section>
+
+        <!-- 6. Финансовый светофор -->
+        <section class="card hidden" id="traffic-card">
+            <h2 class="card-title">📈 Финансовый светофор</h2>
+            <div class="traffic-grid" id="traffic-grid"></div>
+        </section>
+
+        <!-- 7. ABC / Юнит-экономика -->
+        <section class="card" id="abc-card">
+            <h2 class="card-title">📦 Юнит-экономика и ABC-анализ</h2>
+            <div class="abc-tabs" id="abc-tabs">
+                <button type="button" class="abc-tab active-a" data-abc="a">🟢 Группа А — Локомотивы</button>
+                <button type="button" class="abc-tab" data-abc="b">🟡 Группа В</button>
+                <button type="button" class="abc-tab" data-abc="c">🔴 Группа С — Неликвид</button>
+            </div>
+            <div id="abc-skeleton">
+                <div class="skeleton skeleton-sku"></div>
+                <div class="skeleton skeleton-sku"></div>
+            </div>
+            <div class="sku-list hidden" id="sku-list"></div>
+        </section>
+
+        <!-- 8. What-If калькулятор -->
+        <section class="card" id="whatif-card">
+            <h2 class="card-title">🧮 Инвестиционное моделирование</h2>
+            <div class="range-block">
+                <div class="range-header">
+                    <span>Процент выкупа</span>
+                    <span id="buyout-val">65%</span>
+                </div>
+                <input type="range" id="buyout-range" min="0" max="100" value="65" step="1"
+                       aria-label="Процент выкупа">
+            </div>
+            <div class="range-block">
+                <div class="range-header">
+                    <span>Доля рекламы (ДРР)</span>
+                    <span id="drr-val">15%</span>
+                </div>
+                <input type="range" id="drr-range" min="0" max="50" value="15" step="1"
+                       aria-label="Доля рекламных расходов">
+            </div>
+            <div class="whatif-result" id="whatif-result">
+                Двигайте ползунки, чтобы смоделировать влияние на юнит-экономику и чистую прибыль.
+            </div>
+        </section>
+
+        <button type="button" class="btn-ghost" id="close-btn">Закрыть Mini App</button>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+    <script>
+    (function () {
+        "use strict";
+
+        const tg = window.Telegram && window.Telegram.WebApp;
+        const DEFAULT_API_BASE = "https://hosted-by-vdsina.ru";
+        const USN_RATE = 0.06;
+        const LOW_BUYOUT_PCT = 40;
+        const HIGH_DRR_PCT = 18;
+
+        const PLATFORMS = {
+            wildberries: { bodyClass: "platform-wb", api: "wildberries" },
+            ozon:        { bodyClass: "platform-ozon", api: "ozon" },
+            yandex:      { bodyClass: "platform-yandex", api: "yandex" },
+            "1c":        { bodyClass: "platform-1c", api: "1c" },
+        };
+
+        const state = {
+            apiBase: "",
+            reportId: null,
+            platform: "wildberries",
+            abcTab: "a",
+            report: null,
+            skuItems: [],
+            oosMap: {},
+            expenseBreakdown: { commission: 0, logistics: 0, penalties: 0, cogs: 0 },
+            baseBuyout: 65,
+            baseDrr: 15,
+            baseProfit: 0,
+            baseRevenue: 0,
+            baseExpenses: 0,
+            businessScore: 0,
+            reverseLogisticsAvg: 50,
+            loading: false,
+        };
+
+        function $(id) { return document.getElementById(id); }
+
+        /* ── Telegram WebApp SDK & theme ───────────────────── */
+        function applyTelegramTheme() {
+            if (!tg) return;
+            tg.ready();
+            tg.expand();
+            if (typeof tg.enableClosingConfirmation === "function") {
+                tg.enableClosingConfirmation();
+            }
+            const p = tg.themeParams || {};
+            const root = document.documentElement;
+            const map = {
+                "--tg-theme-bg-color": p.bg_color,
+                "--tg-theme-text-color": p.text_color,
+                "--tg-theme-hint-color": p.hint_color,
+                "--tg-theme-link-color": p.link_color,
+                "--tg-theme-button-color": p.button_color,
+                "--tg-theme-button-text-color": p.button_text_color,
+                "--tg-theme-secondary-bg-color": p.secondary_bg_color,
+                "--tg-theme-header-bg-color": p.header_bg_color,
+                "--tg-theme-accent-text-color": p.accent_text_color,
+                "--tg-theme-section-bg-color": p.section_bg_color,
+                "--tg-theme-section-header-text-color": p.section_header_text_color,
+                "--tg-theme-subtitle-text-color": p.subtitle_text_color,
+                "--tg-theme-destructive-text-color": p.destructive_text_color,
+            };
+            Object.keys(map).forEach(function (key) {
+                if (map[key]) root.style.setProperty(key, map[key]);
+            });
+            if (tg.colorScheme === "dark") {
+                document.documentElement.style.colorScheme = "dark";
+            } else {
+                document.documentElement.style.colorScheme = "light";
+            }
+            const user = tg.initDataUnsafe && tg.initDataUnsafe.user;
+            if (user && user.first_name) {
+                $("username").textContent = user.first_name;
+            }
+        }
+
+        /* ── Utils ───────────────────────────────────────────── */
+        function showToast(message, isError) {
+            const el = $("toast");
+            el.textContent = message;
+            el.classList.toggle("error", !!isError);
+            el.classList.add("visible");
+            clearTimeout(showToast._t);
+            showToast._t = setTimeout(function () { el.classList.remove("visible"); }, 3400);
+        }
+
+        function authHeaders() {
+            return {
+                Authorization: "tma " + (tg && tg.initData ? tg.initData : ""),
+                "Content-Type": "application/json",
+            };
+        }
+
+        function resolveApiBase() {
+            const params = new URLSearchParams(window.location.search);
+            const fromQuery = (params.get("api_base") || "").trim().replace(/\/$/, "");
+            if (fromQuery) return fromQuery;
+            const host = (window.location.hostname || "").toLowerCase();
+            if (host === "localhost" || host === "127.0.0.1") {
+                const port = window.location.port;
+                if (port === "8000" || port === "8080") {
+                    return window.location.origin;
+                }
+            }
+            return DEFAULT_API_BASE;
+        }
+
+        function resolveReportId() {
+            const raw = (new URLSearchParams(window.location.search).get("report_id") || "").trim();
+            return raw && /^\d+$/.test(raw) ? raw : null;
+        }
+
+        function resolveInitialPlatform() {
+            const raw = (new URLSearchParams(window.location.search).get("platform") || "").trim().toLowerCase();
+            if (raw === "wb") return "wildberries";
+            if (PLATFORMS[raw]) return raw;
+            return "wildberries";
+        }
+
+        function formatRub(value) {
+            const n = Number(value) || 0;
+            return n.toLocaleString("ru-RU", { maximumFractionDigits: 0 }) + " ₽";
+        }
+
+        function formatPct(value) {
+            return (Number(value) || 0).toFixed(1) + "%";
+        }
+
+        function escapeHtml(value) {
+            return String(value)
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;");
+        }
+
+        function parseNum(cell) {
+            if (cell == null || cell === "") return 0;
+            return parseFloat(String(cell).replace(/\s/g, "").replace(",", ".")) || 0;
+        }
+
+        function isBalanceError(detail) {
+            const s = String(detail || "").toLowerCase();
+            return s.includes("insufficient") || s.includes("баланс") ||
+                   s.includes("кристалл") || s.includes("💎") || s.includes("crystals");
+        }
+
+        function findCol(headers, patterns, exclude) {
+            for (let idx = 0; idx < headers.length; idx++) {
+                const low = String(headers[idx] || "").toLowerCase();
+                if (exclude && exclude.some(function (e) { return low.includes(e); })) continue;
+                if (patterns.some(function (p) { return low.includes(p); })) return idx;
+            }
+            return -1;
+        }
+
+        /* ── Platform tabs ─────────────────────────────────── */
+        function setPlatform(platformKey) {
+            state.platform = platformKey;
+            const cfg = PLATFORMS[platformKey] || PLATFORMS.wildberries;
+            document.body.className = cfg.bodyClass;
+            document.querySelectorAll(".platform-btn").forEach(function (btn) {
+                btn.classList.toggle("active", btn.dataset.platform === platformKey);
+            });
+        }
+
+        /* ── Skeleton loading ────────────────────────────────── */
+        function showDashboardSkeleton(show) {
+            $("score-skeleton").classList.toggle("hidden", !show);
+            $("metrics-skeleton").classList.toggle("hidden", !show);
+            $("visual-skeleton").classList.toggle("hidden", !show);
+            $("traffic-skeleton").classList.toggle("hidden", !show);
+            $("score-live").classList.toggle("hidden", show);
+            $("metrics-live").classList.toggle("hidden", show);
+            $("pie-card").classList.toggle("hidden", show);
+            $("traffic-card").classList.toggle("hidden", show);
+            showAbcSkeleton(show);
+        }
+
+        function showAbcSkeleton(show) {
+            $("abc-skeleton").classList.toggle("hidden", !show);
+            $("sku-list").classList.toggle("hidden", show);
+        }
+
+        /* ── Data normalization ──────────────────────────────── */
+        function buildOosMap(oosList) {
+            const map = {};
+            (oosList || []).forEach(function (item) {
+                [
+                    (item.sku || "").toLowerCase(),
+                    (item.name || "").toLowerCase(),
+                    (item.article_id || "").toLowerCase(),
+                ].filter(Boolean).forEach(function (k) { map[k] = item; });
+            });
+            return map;
+        }
+
+        function normalizeSkuItem(raw, group) {
+            const name = raw.name || raw.label || "—";
+            const article = raw.article_id || raw.article || raw.sku || raw.nm_id || "—";
+            const revenue = Number(raw.revenue != null ? raw.revenue : raw.revenue_rub || raw.retail_amount) || 0;
+            const margin = Number(
+                raw.margin != null ? raw.margin :
+                raw.margin_rub != null ? raw.margin_rub :
+                raw.net_profit != null ? raw.net_profit :
+                raw.net_income_per_unit
+            ) || 0;
+            const commission = Number(raw.commission != null ? raw.commission : raw.commission_rub) || 0;
+            const logistics = Number(raw.logistics != null ? raw.logistics : raw.logistics_cost) ||
+                (revenue > 0 ? revenue * 0.08 : 0);
+            const penalties = Number(
+                raw.penalties != null ? raw.penalties :
+                raw.fines != null ? raw.fines :
+                raw.extra_cost != null ? raw.extra_cost : 0
+            ) || 0;
+            const adCost = Number(raw.ad_cost != null ? raw.ad_cost : raw.advertising) ||
+                (revenue > 0 ? revenue * (state.baseDrr / 100) : 0);
+            let cost = Number(raw.cost != null ? raw.cost : raw.cogs) || 0;
+            if (!cost && revenue > 0) {
+                cost = Math.max(0, revenue - margin - logistics - adCost - commission - penalties);
+            }
+            const buyout = Number(raw.buyout_pct != null ? raw.buyout_pct : raw.buyout) || state.baseBuyout;
+            const reverseUnit = Number(raw.reverse_logistics_unit_rub) || state.reverseLogisticsAvg;
+            const roi = cost > 0 ? (margin / cost) * 100 : 0;
+            return {
+                name: name,
+                article: String(article),
+                revenue: revenue,
+                margin: margin,
+                commission: commission,
+                logistics: logistics,
+                penalties: penalties,
+                adCost: adCost,
+                cost: cost,
+                buyout: buyout,
+                roi: roi,
+                reverseUnit: reverseUnit,
+                abc_group: raw.abc_group || group || "B",
+                baseMargin: margin,
+                baseLogistics: logistics,
+                baseAdCost: adCost,
+                basePenalties: penalties,
+            };
+        }
+
+        function deriveSkuItems(payload) {
+            const catalog = payload.sku_catalog;
+            if (Array.isArray(catalog) && catalog.length) {
+                return catalog.map(function (item) {
+                    return normalizeSkuItem(item, item.abc_group);
+                });
+            }
+
+            const abc = payload.abc_analysis;
+            if (abc) {
+                const items = [];
+                ["a", "b", "c"].forEach(function (g) {
+                    (abc["group_" + g] || []).forEach(function (item) {
+                        items.push(normalizeSkuItem(item, g.toUpperCase()));
+                    });
+                });
+                if (items.length) return items;
+            }
+
+            const headers = payload.headers || [];
+            const rows = payload.rows || [];
+            if (!headers.length || !rows.length) return [];
+
+            const nameIdx = findCol(headers, ["товар", "предмет", "наимен"]);
+            const skuIdx = findCol(headers, ["sku", "артикул"]);
+            const revIdx = findCol(headers, ["выруч", "перечисл"]);
+            const marginIdx = findCol(headers, ["марж", "прибыл"]);
+            const commIdx = findCol(headers, ["вознагражден", "комисс"]);
+            const logIdx = findCol(headers, ["логистик", "доставк", "хранен"], ["возврат", "обратн"]);
+            const penIdx = findCol(headers, ["штраф", "удержан", "компенсац"]);
+            const abcIdx = findCol(headers, ["abc"]);
+
+            return rows.map(function (row) {
+                const name = row[nameIdx >= 0 ? nameIdx : 1] || row[0] || "—";
+                if (!name || /итого/i.test(String(name))) return null;
+                return normalizeSkuItem({
+                    name: name,
+                    sku: skuIdx >= 0 ? row[skuIdx] : "",
+                    revenue: revIdx >= 0 ? parseNum(row[revIdx]) : 0,
+                    margin: marginIdx >= 0 ? parseNum(row[marginIdx]) : 0,
+                    commission: commIdx >= 0 ? parseNum(row[commIdx]) : 0,
+                    logistics: logIdx >= 0 ? parseNum(row[logIdx]) : 0,
+                    penalties: penIdx >= 0 ? parseNum(row[penIdx]) : 0,
+                    abc_group: abcIdx >= 0 ? row[abcIdx] : "B",
+                }, abcIdx >= 0 ? row[abcIdx] : "B");
+            }).filter(Boolean);
+        }
+
+        function deriveAbcGroups() {
+            const groups = { a: [], b: [], c: [] };
+            state.skuItems.forEach(function (item) {
+                const g = String(item.abc_group || "B").toUpperCase();
+                if (g === "A") groups.a.push(item);
+                else if (g === "C") groups.c.push(item);
+                else groups.b.push(item);
+            });
+            if (!groups.a.length && !groups.b.length && !groups.c.length) {
+                const sorted = state.skuItems.slice().sort(function (a, b) {
+                    return b.margin - a.margin;
+                });
+                const topN = Math.max(1, Math.ceil(sorted.length * 0.2));
+                groups.a = sorted.slice(0, topN);
+                groups.c = sorted.filter(function (i) { return i.margin <= 0; });
+                const aSet = new Set(groups.a);
+                const cSet = new Set(groups.c);
+                groups.b = sorted.filter(function (i) {
+                    return !aSet.has(i) && !cSet.has(i);
+                });
+            }
+            return groups;
+        }
+
+        function computeBusinessScore(revenue, profit, buyout, drr) {
+            if (revenue <= 0) return 5.0;
+            const marginPct = (profit / revenue) * 100;
+            let score = 5.0;
+            if (marginPct >= 25) score += 2.0;
+            else if (marginPct >= 15) score += 1.2;
+            else if (marginPct >= 5) score += 0.5;
+            else if (marginPct < 0) score -= 2.0;
+            if (buyout >= 70) score += 1.0;
+            else if (buyout >= 55) score += 0.4;
+            else score -= 0.6;
+            if (drr <= 12) score += 0.8;
+            else if (drr <= 20) score += 0.2;
+            else score -= 0.5;
+            return Math.min(10, Math.max(1, Math.round(score * 10) / 10));
+        }
+
+        function extractFinancials(payload) {
+            const summary = payload.summary || {};
+            let revenue = Number(summary.revenue || summary.revenue_rub || payload.revenue_rub) || 0;
+            let profit = Number(summary.net_profit || summary.clear_profit) || 0;
+
+            if (!revenue && state.skuItems.length) {
+                revenue = state.skuItems.reduce(function (s, i) { return s + i.revenue; }, 0);
+            }
+            if (!profit && state.skuItems.length) {
+                profit = state.skuItems.reduce(function (s, i) { return s + i.margin; }, 0);
+            }
+
+            const tax = revenue * USN_RATE;
+            const marginPct = revenue > 0 ? (profit / revenue) * 100 : 0;
+            const expenses = Math.max(0, revenue - profit);
+
+            const buyout = Number(summary.buyout_coef_pct || summary.buyout_pct) || state.baseBuyout;
+            const drr = Number(summary.ad_load_pct || summary.drr_pct) || state.baseDrr;
+            const score = Number(summary.business_score) ||
+                computeBusinessScore(revenue, profit, buyout, drr);
+
+            if (summary.reverse_logistics_shop_avg) {
+                state.reverseLogisticsAvg = Number(summary.reverse_logistics_shop_avg) || state.reverseLogisticsAvg;
+            }
+            if (payload.reverse_logistics_shop_avg) {
+                state.reverseLogisticsAvg = Number(payload.reverse_logistics_shop_avg) || state.reverseLogisticsAvg;
+            }
+
+            return {
+                revenue: revenue,
+                tax: tax,
+                profit: profit,
+                expenses: expenses,
+                marginPct: marginPct,
+                buyout: buyout,
+                drr: drr,
+                score: score,
+            };
+        }
+
+        function extractExpenseBreakdown(payload, fin) {
+            const summary = payload.summary || {};
+            let commission = Math.abs(Number(summary.commission || summary.commission_rub) || 0);
+            let logistics = Math.abs(Number(summary.logistics || summary.logistics_rub) || 0);
+            let penalties = Math.abs(Number(summary.penalties || summary.fines_rub) || 0);
+            let cogs = Math.abs(Number(summary.cogs || summary.cost_rub) || 0);
+
+            if (state.skuItems.length) {
+                if (!commission) {
+                    commission = state.skuItems.reduce(function (s, i) { return s + Math.abs(i.commission); }, 0);
+                }
+                if (!logistics) {
+                    logistics = state.skuItems.reduce(function (s, i) { return s + Math.abs(i.baseLogistics); }, 0);
+                }
+                if (!penalties) {
+                    penalties = state.skuItems.reduce(function (s, i) { return s + Math.abs(i.basePenalties); }, 0);
+                }
+                if (!cogs) {
+                    cogs = state.skuItems.reduce(function (s, i) { return s + Math.abs(i.cost); }, 0);
+                }
+            }
+
+            const headers = payload.headers || [];
+            const rows = payload.rows || [];
+            if (headers.length && rows.length) {
+                const commIdx = findCol(headers, ["вознагражден", "комисс"]);
+                const logIdx = findCol(headers, ["логистик", "доставк"], ["возврат"]);
+                const penIdx = findCol(headers, ["штраф", "удержан"]);
+                if (!commission && commIdx >= 0) {
+                    commission = rows.reduce(function (s, r) { return s + Math.abs(parseNum(r[commIdx])); }, 0);
+                }
+                if (!logistics && logIdx >= 0) {
+                    logistics = rows.reduce(function (s, r) { return s + Math.abs(parseNum(r[logIdx])); }, 0);
+                }
+                if (!penalties && penIdx >= 0) {
+                    penalties = rows.reduce(function (s, r) { return s + Math.abs(parseNum(r[penIdx])); }, 0);
+                }
+            }
+
+            const adSpend = fin.revenue * (fin.drr / 100);
+            let totalParts = commission + logistics + penalties + cogs + adSpend;
+            if (totalParts <= 0 && fin.expenses > 0) {
+                commission = fin.expenses * 0.28;
+                logistics = fin.expenses * 0.22;
+                penalties = fin.expenses * 0.06;
+                cogs = fin.expenses * 0.34;
+                totalParts = commission + logistics + penalties + cogs + adSpend;
+            }
+            if (totalParts <= 0) {
+                totalParts = 1;
+            }
+
+            return {
+                commission: commission + adSpend * 0.35,
+                logistics: logistics,
+                penalties: penalties,
+                cogs: cogs + adSpend * 0.65,
+                total: commission + logistics + penalties + cogs + adSpend,
+            };
+        }
+
+        /* ── What-If: reverse logistics recalc ───────────────── */
+        function simulateSkuMargin(item, buyout, drr) {
+            const buyoutRatio = Math.max(0.01, buyout / 100);
+            const baseBuyoutRatio = Math.max(0.01, state.baseBuyout / 100);
+            const baseNonBuyout = Math.max(0, 1 - baseBuyoutRatio);
+            const newNonBuyout = Math.max(0, 1 - buyoutRatio);
+            const extraReturns = Math.max(0, newNonBuyout - baseNonBuyout);
+
+            const deliveries = item.revenue > 0 && baseBuyoutRatio > 0
+                ? item.revenue / baseBuyoutRatio
+                : item.revenue;
+            const returnLogisticsCost = extraReturns * deliveries * item.reverseUnit;
+
+            const logisticsAdj = item.baseLogistics + returnLogisticsCost;
+            const adAdj = item.revenue * (drr / 100);
+            const margin = item.revenue - item.cost - logisticsAdj - adAdj -
+                item.commission - item.basePenalties;
+            const roi = item.cost > 0 ? (margin / item.cost) * 100 : 0;
+            return {
+                margin: margin,
+                logistics: logisticsAdj,
+                adCost: adAdj,
+                roi: roi,
+            };
+        }
+
+        function recalcWhatIf() {
+            const buyout = Number($("buyout-range").value);
+            const drr = Number($("drr-range").value);
+            $("buyout-val").textContent = buyout + "%";
+            $("drr-val").textContent = drr + "%";
+
+            let projectedProfit = 0;
+            state.skuItems.forEach(function (item) {
+                projectedProfit += simulateSkuMargin(item, buyout, drr).margin;
+            });
+
+            if (!state.skuItems.length) {
+                const revenue = state.baseRevenue || state.baseProfit * 10 || 100000;
+                const buyoutDelta = ((buyout - state.baseBuyout) / 100) * revenue * 0.12;
+                const drrDelta = ((state.baseDrr - drr) / 100) * revenue;
+                const returnDelta = ((state.baseBuyout - buyout) / 100) * revenue *
+                    (state.reverseLogisticsAvg / Math.max(revenue, 1)) * 0.5;
+                projectedProfit = state.baseProfit + buyoutDelta + drrDelta - returnDelta;
+            }
+
+            const gain = projectedProfit - state.baseProfit;
+            const sign = gain >= 0 ? "+" : "−";
+            const projectedScore = computeBusinessScore(
+                state.baseRevenue || projectedProfit * 10,
+                projectedProfit,
+                buyout,
+                drr
+            );
+
+            $("metric-score").textContent = projectedScore.toFixed(1) + " / 10";
+            const profitEl = $("metric-profit");
+            profitEl.textContent = formatRub(projectedProfit);
+            profitEl.classList.toggle("negative", projectedProfit < 0);
+            profitEl.classList.toggle("positive", projectedProfit >= 0);
+
+            $("whatif-result").innerHTML =
+                "<em>При этих показателях ваша прибыль " +
+                (gain >= 0 ? "вырастет" : "снизится") +
+                " на " + sign + formatRub(Math.abs(gain)) + "!</em> " +
+                "Прогноз чистой прибыли: <em>" + formatRub(projectedProfit) + "</em>. " +
+                "Бизнес-скоринг: <em>" + projectedScore.toFixed(1) + " / 10</em>.";
+
+            renderSkuList();
+        }
+
+        /* ── Render ──────────────────────────────────────────── */
+        function renderMetrics(fin) {
+            const hi = state.report && state.report.health_index;
+            if (hi && hi.score != null) {
+                const emoji = hi.emoji || "🎯";
+                $("metric-score").textContent =
+                    emoji + " " + Number(hi.score).toFixed(1) + " / 10";
+            } else {
+                $("metric-score").textContent = fin.score.toFixed(1) + " / 10";
+            }
+            $("metric-revenue").textContent = formatRub(fin.revenue);
+            $("metric-tax").textContent = formatRub(fin.tax);
+            $("metric-expenses").textContent = formatRub(fin.expenses);
+            const profitEl = $("metric-profit");
+            profitEl.textContent = formatRub(fin.profit);
+            profitEl.classList.toggle("negative", fin.profit < 0);
+            profitEl.classList.toggle("positive", fin.profit >= 0);
+
+            state.baseProfit = fin.profit;
+            state.baseRevenue = fin.revenue;
+            state.baseExpenses = fin.expenses;
+            state.businessScore = fin.score;
+            state.baseBuyout = fin.buyout;
+            state.baseDrr = fin.drr;
+
+            $("buyout-range").value = Math.round(fin.buyout);
+            $("drr-range").value = Math.min(50, Math.round(fin.drr));
+            $("buyout-val").textContent = Math.round(fin.buyout) + "%";
+            $("drr-val").textContent = Math.min(50, Math.round(fin.drr)) + "%";
+        }
+
+        function renderPieChart(breakdown) {
+            const total = breakdown.total || 1;
+            const slices = [
+                { key: "commission", label: "Комиссия", color: "var(--pie-commission)", value: breakdown.commission },
+                { key: "logistics", label: "Логистика", color: "var(--pie-logistics)", value: breakdown.logistics },
+                { key: "penalties", label: "Штрафы", color: "var(--pie-penalties)", value: breakdown.penalties },
+                { key: "cogs", label: "Себестоимость", color: "var(--pie-cogs)", value: breakdown.cogs },
+            ];
+
+            let angle = 0;
+            const ring = $("pie-ring");
+            slices.forEach(function (slice) {
+                const pct = (slice.value / total) * 360;
+                ring.style.setProperty("--seg-" + slice.key, (angle + pct) + "deg");
+                angle += pct;
+            });
+
+            $("pie-center").textContent = formatRub(total).replace(" ₽", "\n₽");
+
+            const legend = $("pie-legend");
+            legend.innerHTML = slices.map(function (slice) {
+                const share = total > 0 ? (slice.value / total) * 100 : 0;
+                return (
+                    '<div class="pie-legend-item">' +
+                        '<span class="pie-dot" style="background:' + slice.color + '"></span>' +
+                        '<span>' + slice.label + ' (' + share.toFixed(0) + '%)</span>' +
+                        '<span>' + formatRub(slice.value) + '</span>' +
+                    '</div>'
+                );
+            }).join("");
+        }
+
+        function renderTrafficLight(fin) {
+            const tl = state.report && state.report.traffic_light;
+            const grid = $("traffic-grid");
+            if (tl && (tl.green || tl.yellow || tl.red)) {
+                const zones = [];
+                if (tl.green) {
+                    zones.push({ cls: "zone-green", title: "🟢 Зона успеха", text: tl.green });
+                }
+                if (tl.yellow) {
+                    zones.push({ cls: "zone-yellow", title: "🟡 Зона внимания", text: tl.yellow });
+                }
+                if (tl.red) {
+                    zones.push({ cls: "zone-red", title: "🔴 Критическая зона", text: tl.red });
+                }
+                grid.innerHTML = zones.map(function (z) {
+                    return '<div class="traffic-card ' + z.cls + '"><strong>' + z.title +
+                        '</strong> ' + escapeHtml(z.text) + '</div>';
+                }).join("");
+                return;
+            }
+
+            const groups = deriveAbcGroups();
+            const drr = Number($("drr-range").value) || fin.drr;
+
+            const greenItems = groups.a.filter(function (i) {
+                return i.buyout >= LOW_BUYOUT_PCT && i.margin > 0;
+            });
+            const redItems = state.skuItems.filter(function (i) {
+                return i.buyout < LOW_BUYOUT_PCT || i.margin <= 0;
+            });
+            const yellowItems = state.skuItems.filter(function (i) {
+                return i.buyout >= LOW_BUYOUT_PCT && i.margin > 0 &&
+                    !greenItems.some(function (g) { return g.article === i.article; }) &&
+                    (i.buyout < 55 || i.roi < 30);
+            });
+
+            function skuLine(item) {
+                return escapeHtml(item.name) + " (арт. " + escapeHtml(item.article) + ", выкуп " +
+                    formatPct(item.buyout) + ")";
+            }
+
+            const grid = $("traffic-grid");
+            const zones = [];
+
+            if (greenItems.length) {
+                zones.push({
+                    cls: "zone-green",
+                    title: "🟢 Зона успеха",
+                    text: greenItems.slice(0, 2).map(skuLine).join("; ") +
+                        (greenItems.length > 2 ? " и ещё " + (greenItems.length - 2) + " SKU" : "") +
+                        " — масштабируйте закуп и рекламу.",
+                });
+            } else {
+                zones.push({
+                    cls: "zone-green",
+                    title: "🟢 Зона успеха",
+                    text: "Нет SKU с выкупом ≥ " + LOW_BUYOUT_PCT + "% и положительной маржой.",
+                });
+            }
+
+            if (yellowItems.length || (drr > HIGH_DRR_PCT && drr <= 30)) {
+                const parts = [];
+                if (yellowItems.length) {
+                    parts.push(yellowItems.slice(0, 2).map(skuLine).join("; "));
+                }
+                if (drr > HIGH_DRR_PCT) {
+                    parts.push("ДРР " + formatPct(drr) + " — оптимизируйте рекламные кампании.");
+                }
+                zones.push({
+                    cls: "zone-yellow",
+                    title: "🟡 Зона внимания",
+                    text: parts.join(" ") || "Пограничные SKU — проверьте цену и карточку.",
+                });
+            }
+
+            if (redItems.length || drr >= 30) {
+                const parts = [];
+                if (redItems.length) {
+                    parts.push(redItems.slice(0, 2).map(skuLine).join("; "));
+                }
+                if (drr >= 30) {
+                    parts.push("Катастрофический ДРР " + formatPct(drr) + "% — режьте рекламу немедленно.");
+                }
+                zones.push({
+                    cls: "zone-red",
+                    title: "🔴 Критическая зона",
+                    text: parts.join(" ") || "Убыточные SKU требуют срочных действий.",
+                });
+            }
+
+            grid.innerHTML = zones.map(function (z) {
+                return '<div class="traffic-card ' + z.cls + '"><strong>' + z.title + '</strong>' + z.text + '</div>';
+            }).join("");
+        }
+
+        function renderSkuList() {
+            const groups = deriveAbcGroups();
+            const tab = state.abcTab;
+            const list = tab === "a" ? groups.a : tab === "b" ? groups.b : groups.c;
+            const container = $("sku-list");
+            const buyout = Number($("buyout-range").value);
+            const drr = Number($("drr-range").value);
+            container.innerHTML = "";
+
+            if (!list.length) {
+                container.innerHTML =
+                    '<p class="empty-hint">Нет товаров в этой группе для выбранной площадки.<br>' +
+                    'Загрузите отчёт в боте или подключите Автопилот.</p>';
+                return;
+            }
+
+            list.forEach(function (item) {
+                const sim = simulateSkuMargin(item, buyout, drr);
+                const oos = state.oosMap[item.article.toLowerCase()] ||
+                            state.oosMap[item.name.toLowerCase()] || null;
+                const fomo = oos ? Number(oos.fomo_lost_rub) || 0 : 0;
+                const isGroupC = tab === "c";
+                const isRisk = isGroupC && (fomo > 0 || item.margin <= 0 ||
+                    (oos && oos.risk_out_of_stock));
+
+                const card = document.createElement("article");
+                card.className = "sku-card" + (isRisk ? " risk" : "");
+
+                let fomoHtml = "";
+                if (isGroupC && (fomo > 0 || sim.margin < 0)) {
+                    const loss = fomo > 0 ? fomo : Math.abs(sim.margin);
+                    fomoHtml =
+                        '<div class="fomo-row">🚨 Упущенная выгода: ' + formatRub(loss) + '</div>';
+                }
+
+                card.innerHTML =
+                    '<div class="sku-header">' +
+                        '<div>' +
+                            '<div class="sku-name">' + escapeHtml(item.name) +
+                            (isRisk ? ' 🚨' : '') + '</div>' +
+                            '<div class="sku-article">Арт: ' + escapeHtml(item.article) + '</div>' +
+                        '</div>' +
+                        '<span class="sku-badge' + (isRisk ? ' alert' : '') + '">' +
+                            'Группа ' + escapeHtml(item.abc_group) +
+                        '</span>' +
+                    '</div>' +
+                    '<div class="sku-grid">' +
+                        '<div><div class="sku-field-label">Себестоимость</div>' +
+                            '<div class="sku-field-value">' + formatRub(item.cost) + '</div></div>' +
+                        '<div><div class="sku-field-label">Логистика</div>' +
+                            '<div class="sku-field-value">' + formatRub(sim.logistics) + '</div></div>' +
+                        '<div><div class="sku-field-label">Штрафы</div>' +
+                            '<div class="sku-field-value' + (item.penalties > 0 ? ' danger' : '') + '">' +
+                            formatRub(item.penalties) + '</div></div>' +
+                        '<div><div class="sku-field-label">Маржа</div>' +
+                            '<div class="sku-field-value ' + (sim.margin >= 0 ? 'success' : 'danger') + '">' +
+                            formatRub(sim.margin) + '</div></div>' +
+                        '<div><div class="sku-field-label">ROI</div>' +
+                            '<div class="sku-field-value">' + formatPct(sim.roi) + '</div></div>' +
+                        '<div><div class="sku-field-label">Выкуп</div>' +
+                            '<div class="sku-field-value">' + formatPct(item.buyout) + '</div></div>' +
+                    '</div>' + fomoHtml;
+
+                container.appendChild(card);
+            });
+
+            const agg = state.report && state.report.matrix_aggregation;
+            if (agg) {
+                let tailHtml = "";
+                if (tab === "a" && agg.tail_a_count > 0) {
+                    tailHtml = "<p class=\"empty-hint\"><i>…и ещё " + agg.tail_a_count +
+                        " успешных товаров группы А</i></p>";
+                } else if (tab === "c" && agg.tail_c_count > 0) {
+                    tailHtml = "<p class=\"empty-hint\"><i>…и ещё " + agg.tail_c_count +
+                        " товаров с низким спросом (суммарная выручка: " +
+                        formatRub(agg.tail_c_revenue_rub || 0) + ")</i></p>";
+                } else if (tab === "b" && agg.tail_ballast_count > 0) {
+                    tailHtml = "<p class=\"empty-hint\"><i>Оставшиеся " + agg.tail_ballast_count +
+                        " товаров-балласта: убыток на покатушках " +
+                        formatRub(agg.tail_ballast_loss_rub || 0) + "</i></p>";
+                }
+                if (tailHtml) {
+                    container.insertAdjacentHTML("beforeend", tailHtml);
+                }
+            }
+        }
+
+        function applyReport(payload) {
+            state.report = payload;
+            state.oosMap = buildOosMap(payload.out_of_stock_forecast || []);
+            state.skuItems = deriveSkuItems(payload);
+            const fin = extractFinancials(payload);
+            state.expenseBreakdown = extractExpenseBreakdown(payload, fin);
+            renderMetrics(fin);
+            renderPieChart(state.expenseBreakdown);
+            renderTrafficLight(fin);
+            showDashboardSkeleton(false);
+            renderSkuList();
+            recalcWhatIf();
+        }
+
+        /* ── API (VDSina FastAPI) ───────────────────────────── */
+        async function apiFetch(path, options) {
+            if (!state.apiBase) throw new Error("api_base не задан");
+            const response = await fetch(state.apiBase + path, Object.assign({
+                credentials: "include",
+                headers: authHeaders(),
+            }, options || {}));
+            return response;
+        }
+
+        async function loadWbStatus() {
+            try {
+                const response = await apiFetch("/api/v1/wb/status", { method: "GET" });
+                if (!response.ok) return;
+                const data = await response.json();
+                const toggle = $("wb-toggle");
+                toggle.disabled = !data.has_token;
+                toggle.checked = !!data.enabled;
+                if (data.token_mask) {
+                    $("token-mask").textContent = "Сохранённый ключ: " + data.token_mask;
+                }
+            } catch (e) {
+                console.warn("wb status", e);
+            }
+        }
+
+        async function saveWbSetup() {
+            const token = ($("wb-api-key").value || "").trim();
+            if (token.length < 8) {
+                showToast("Введите корректный WB API Key (мин. 8 символов)", true);
+                return;
+            }
+            const btn = $("wb-save-btn");
+            const toggle = $("wb-toggle");
+            btn.disabled = true;
+            try {
+                const response = await apiFetch("/api/v1/wb/setup", {
+                    method: "POST",
+                    body: JSON.stringify({
+                        api_token: token,
+                        enabled: toggle.checked,
+                    }),
+                });
+                const data = await response.json().catch(function () { return {}; });
+                if (!response.ok) {
+                    if (response.status === 402 || isBalanceError(data.detail)) {
+                        toggle.checked = false;
+                    }
+                    throw new Error(data.detail || "Ошибка сохранения");
+                }
+                toggle.disabled = false;
+                if (data.token_mask) {
+                    $("token-mask").textContent = "Сохранённый ключ: " + data.token_mask;
+                }
+                $("wb-api-key").value = "";
+                showToast("API Key сохранён. Автопилот готов к работе.");
+            } catch (e) {
+                showToast(e.message || "Сеть недоступна", true);
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        async function toggleWbMonitoring(enabled) {
+            const toggle = $("wb-toggle");
+            const prev = !enabled;
+            toggle.disabled = true;
+            try {
+                const response = await apiFetch("/api/v1/wb/toggle", {
+                    method: "POST",
+                    body: JSON.stringify({ enabled: enabled }),
+                });
+                const data = await response.json().catch(function () { return {}; });
+                if (!response.ok) {
+                    toggle.checked = prev;
+                    const detail = data.detail || "";
+                    if (response.status === 402 || isBalanceError(detail)) {
+                        showToast("Недостаточно 💎 на балансе. Пополните кристаллы в боте.", true);
+                    } else {
+                        showToast(detail || "Не удалось переключить мониторинг", true);
+                    }
+                    return;
+                }
+                showToast(data.billing_note || (enabled ? "Оцифровка включена" : "Оцифровка выключена"));
+            } catch (e) {
+                toggle.checked = prev;
+                showToast(e.message || "Ошибка сети", true);
+            } finally {
+                toggle.disabled = false;
+            }
+        }
+
+        async function loadReport() {
+            if (state.loading) return;
+            state.loading = true;
+            showDashboardSkeleton(true);
+
+            try {
+                const platformApi = (PLATFORMS[state.platform] || PLATFORMS.wildberries).api;
+                let url;
+                if (state.reportId) {
+                    url = "/api/v1/reports/" + encodeURIComponent(state.reportId) +
+                        "?platform=" + encodeURIComponent(platformApi);
+                } else {
+                    url = "/api/v1/reports/latest?platform=" + encodeURIComponent(platformApi);
+                }
+                const response = await apiFetch(url, { method: "GET" });
+
+                if (response.status === 401) {
+                    showToast("Сессия недействительна. Перезапустите Mini App.", true);
+                    return;
+                }
+                if (response.status === 404) {
+                    showToast(
+                        state.reportId
+                            ? "Отчёт не найден"
+                            : "Загрузите Excel-отчёт в боте — пока нет сохранённых данных",
+                        true
+                    );
+                    return;
+                }
+                if (!response.ok) {
+                    throw new Error("HTTP " + response.status);
+                }
+
+                const body = await response.json();
+                if (body.report_id != null) {
+                    state.reportId = String(body.report_id);
+                }
+                const payload = body.table_raw_json || body;
+
+                if (state.platform !== "wildberries" && payload.source === "wb_api_nightly_worker") {
+                    showToast("Для этой площадки пока демо — показаны данные WB.", false);
+                }
+
+                applyReport(payload);
+            } catch (e) {
+                console.error(e);
+                showToast("Не удалось загрузить отчёт с " + state.apiBase, true);
+                showDashboardSkeleton(false);
+            } finally {
+                state.loading = false;
+            }
+        }
+
+        /* ── Event bindings ─────────────────────────────────── */
+        function bindAbcTabs() {
+            document.querySelectorAll(".abc-tab").forEach(function (btn) {
+                btn.addEventListener("click", function () {
+                    state.abcTab = btn.dataset.abc || "a";
+                    document.querySelectorAll(".abc-tab").forEach(function (b) {
+                        b.classList.remove("active-a", "active-b", "active-c");
+                    });
+                    const cls = state.abcTab === "a" ? "active-a" :
+                                state.abcTab === "b" ? "active-b" : "active-c";
+                    btn.classList.add(cls);
+                    renderSkuList();
+                });
+            });
+        }
+
+        function bindPlatforms() {
+            document.querySelectorAll(".platform-btn").forEach(function (btn) {
+                btn.addEventListener("click", function () {
+                    const key = btn.dataset.platform || "wildberries";
+                    setPlatform(key);
+                    loadReport();
+                });
+            });
+        }
+
+        function init() {
+            if (!tg) {
+                showToast("Откройте страницу из Telegram Mini App", true);
+            } else {
+                applyTelegramTheme();
+            }
+
+            state.apiBase = resolveApiBase();
+            state.reportId = resolveReportId();
+            setPlatform(resolveInitialPlatform());
+
+            bindPlatforms();
+            bindAbcTabs();
+
+            $("wb-save-btn").addEventListener("click", saveWbSetup);
+            $("wb-toggle").addEventListener("change", function (e) {
+                toggleWbMonitoring(e.target.checked);
+            });
+            $("buyout-range").addEventListener("input", recalcWhatIf);
+            $("drr-range").addEventListener("input", recalcWhatIf);
+            $("close-btn").addEventListener("click", function () {
+                if (tg) tg.close();
+            });
+
+            loadWbStatus();
+            loadReport();
+        }
+
+        init();
+    })();
+    </script>
+</body>
+</html>
