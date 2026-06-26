@@ -120,10 +120,16 @@ def find_revenue_column_index(headers: list[str]) -> int | None:
 
 def compute_marketplace_revenue_total(rows: list[list[str]]) -> float:
     """Локальная сумма по колонке «К перечислению…» без OpenRouter."""
+    from services.wb_transaction_parse import aggregate_wb_transactions, is_wb_transaction_report
+
     matrix = normalize_table_rows(rows)
     if len(matrix) < 2:
         return 0.0
     headers = matrix[0]
+    if is_wb_transaction_report(headers):
+        tx = aggregate_wb_transactions(matrix)
+        if tx is not None and tx.revenue_from_sales > 0:
+            return tx.revenue_from_sales
     col = find_revenue_column_index(headers)
     if col is None:
         return 0.0
@@ -133,7 +139,9 @@ def compute_marketplace_revenue_total(rows: list[list[str]]) -> float:
         if label.startswith("итого") or label.startswith("всего"):
             continue
         if col < len(row):
-            total += safe_float(row[col])
+            val = safe_float(row[col])
+            if val > 0:
+                total += val
     return total
 
 

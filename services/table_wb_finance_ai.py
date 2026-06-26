@@ -111,11 +111,9 @@ def _dedupe_report_noise(text: str) -> str:
 
 def _sku_label_is_valid(name: str, article: str) -> bool:
     """Строка с пустым прочерком вместо имени не выводится в отчёт."""
-    n = (name or "").strip()
-    a = (article or "").strip()
-    if n in ("—", "-", "–") and a in ("—", "-", "–", ""):
-        return False
-    return bool(n and n not in ("—", "-", "–")) or bool(a and a not in ("—", "-", "–"))
+    from services.wb_transaction_parse import is_valid_wb_sku
+
+    return is_valid_wb_sku(name, article)
 
 
 def _ru_more_goods_suffix(count: int) -> str:
@@ -281,6 +279,8 @@ def _collect_etl_dynamic_slices(
 
     group_a_items: list[dict[str, Any]] = []
     for sku in getattr(matrix_etl, "abc_group_a", ()) or ():
+        if not _sku_label_is_valid(sku.name, sku.article_id):
+            continue
         detail = catalog_map.get(sku.name)
         oos = oos_map.get(sku.name)
         sales_qty = float(detail.sales_qty) if detail and detail.sales_qty > 0 else 0.0
@@ -300,6 +300,8 @@ def _collect_etl_dynamic_slices(
 
     loss_items: list[dict[str, Any]] = []
     for detail in getattr(matrix_etl, "sku_catalog", ()) or ():
+        if not _sku_label_is_valid(detail.name, detail.article_id):
+            continue
         if detail.net_profit >= 0:
             continue
         oos = oos_map.get(detail.name)
@@ -425,6 +427,8 @@ def aggregate_matrix_display(matrix_etl: object | None) -> WbFinanceMatrixAggreg
     )
     abc_a_lines: list[str] = []
     for sku in group_a_sorted[:_TOP_GROUP_A_DISPLAY]:
+        if not _sku_label_is_valid(sku.name, sku.article_id):
+            continue
         detail = catalog_map.get(sku.name)
         oos = oos_map.get(sku.name)
         sales_qty = float(detail.sales_qty) if detail and detail.sales_qty > 0 else 0.0
@@ -446,6 +450,8 @@ def aggregate_matrix_display(matrix_etl: object | None) -> WbFinanceMatrixAggreg
     )
     abc_c_lines: list[str] = []
     for sku in group_c_sorted[:_TOP_GROUP_C_DISPLAY]:
+        if not _sku_label_is_valid(sku.name, sku.article_id):
+            continue
         label = _format_sku_label(sku.name, sku.article_id)
         abc_c_lines.append(
             f"• {_escape_verdict(label)} — выручка "
@@ -1153,6 +1159,9 @@ def build_wb_mpstats_ai_context(
             "total_revenue": round(revenue_total, 2),
             "tax_usn": round(tax, 2),
             "total_profit": round(clear_profit, 2),
+            "operational_profit": round(prompt_metrics.operational_profit, 2) if prompt_metrics else 0.0,
+            "storage_cost": round(prompt_metrics.storage_cost, 2) if prompt_metrics else 0.0,
+            "credit_deductions": round(prompt_metrics.credit_deductions, 2) if prompt_metrics else 0.0,
             "margin_rate": round(margin_rate, 1),
             "drr": round(drr, 1),
             "business_score": round(business_score, 1),
@@ -1620,6 +1629,9 @@ class WbFinancePromptMetrics:
     sku_catalog_items: tuple[dict[str, Any], ...] = ()
     oos_forecast_line: str = "данных по остаткам недостаточно"
     total_ad_cost: float = 0.0
+    storage_cost: float = 0.0
+    credit_deductions: float = 0.0
+    operational_profit: float = 0.0
     sales_qty: float = 0.0
     returns_qty: float = 0.0
     deliveries_qty: float = 0.0
@@ -1850,8 +1862,31 @@ def compute_wb_finance_prompt_metrics(
         if matrix_rows
         else None
     )
+    storage_cost = wb_metrics.storage_cost if wb_metrics else 0.0
+    credit_deductions = wb_metrics.credit_deductions if wb_metrics else 0.0
+    ad_cost = wb_metrics.total_advertising_cost if wb_metrics else 0.0
+    logistics_cost = wb_metrics.logistics_cost if wb_metrics else 0.0
+    commission_cost = wb_metrics.commission_cost if wb_metrics else 0.0
+    other_deductions = wb_metrics.other_deductions if wb_metrics else 0.0
+    cost_of_goods = 0.0
+    if matrix_etl:
+        for detail in matrix_etl.sku_catalog:
+            if detail.sales_qty > 0 and detail.unit_cost_rub > 0:
+                cost_of_goods += detail.unit_cost_rub * detail.sales_qty
+            elif detail.unit_cost_rub > 0:
+                cost_of_goods += detail.unit_cost_rub
     tax = revenue_total * _USN_RATE
-    clear_profit = revenue_total - tax
+    operational_profit = (
+        revenue_total
+        - cost_of_goods
+        - storage_cost
+        - ad_cost
+        - logistics_cost
+        - commission_cost
+        - other_deductions
+        - tax
+    )
+    clear_profit = operational_profit - credit_deductions
     profitability = (clear_profit / revenue_total * 100.0) if revenue_total > 0 else 0.0
     adv_load = wb_metrics.ad_load_pct if wb_metrics else 0.0
     buy_ratio = wb_metrics.buyout_coef_pct if wb_metrics else 0.0
@@ -1874,6 +1909,11 @@ def compute_wb_finance_prompt_metrics(
         buyout_coef_pct=buy_ratio,
         worst_unit_label=worst_label,
     )
+    if clear_profit < 0 and operational_profit > 0 and credit_deductions > 0:
+        verdict = (
+            "Убыток вызван удержанием по кредиту. "
+            "Операционная прибыль от продаж при этом положительна."
+        )
     fomo_rub, fomo_parts = compute_fomo_lost_rub(revenue_total, wb_metrics)
     logistics_fomo = 0.0
     abc_a_leader = "—"
@@ -1964,6 +2004,7 @@ def compute_wb_finance_prompt_metrics(
             sku_catalog_lines = tuple(agg.abc_a_display_lines) + tuple(
                 s.catalog_line()
                 for s in matrix_etl.sku_catalog[:_TOP_GROUP_A_DISPLAY]
+                if _sku_label_is_valid(s.name, s.article_id)
             )
             sku_catalog_items = tuple(
                 {
@@ -1975,9 +2016,23 @@ def compute_wb_finance_prompt_metrics(
                     "abc_group": s.abc_group,
                 }
                 for s in matrix_etl.sku_catalog
+                if _sku_label_is_valid(s.name, s.article_id)
             )
-            gross_net = sum(s.net_profit for s in matrix_etl.sku_catalog)
-            clear_profit = round(gross_net - tax, 2)
+            cost_of_goods = sum(
+                (d.unit_cost_rub * d.sales_qty if d.sales_qty > 0 else d.unit_cost_rub)
+                for d in matrix_etl.sku_catalog
+            )
+            operational_profit = (
+                revenue_total
+                - cost_of_goods
+                - storage_cost
+                - ad_cost
+                - logistics_cost
+                - commission_cost
+                - other_deductions
+                - tax
+            )
+            clear_profit = round(operational_profit - credit_deductions, 2)
             profitability = (
                 (clear_profit / revenue_total * 100.0) if revenue_total > 0 else 0.0
             )
@@ -1994,6 +2049,11 @@ def compute_wb_finance_prompt_metrics(
                 buyout_coef_pct=buy_ratio,
                 worst_unit_label=worst_label,
             )
+            if clear_profit < 0 and operational_profit > 0 and credit_deductions > 0:
+                verdict = (
+                    "Убыток вызван удержанием по кредиту. "
+                    "Операционная прибыль от продаж при этом положительна."
+                )
         if matrix_etl.oos_critical_sku and matrix_etl.oos_critical_days is not None:
             oos_line = _dedupe_report_noise(
                 f"«{matrix_etl.oos_critical_sku}» — "
@@ -2042,7 +2102,10 @@ def compute_wb_finance_prompt_metrics(
         sku_catalog_lines=sku_catalog_lines,
         sku_catalog_items=sku_catalog_items,
         oos_forecast_line=oos_line,
-        total_ad_cost=wb_metrics.total_advertising_cost if wb_metrics else 0.0,
+        total_ad_cost=ad_cost,
+        storage_cost=storage_cost,
+        credit_deductions=credit_deductions,
+        operational_profit=operational_profit,
         sales_qty=wb_metrics.sales_qty if wb_metrics else 0.0,
         returns_qty=wb_metrics.returns_qty if wb_metrics else 0.0,
         deliveries_qty=wb_metrics.deliveries_qty if wb_metrics else 0.0,

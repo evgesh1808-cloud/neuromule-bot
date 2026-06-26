@@ -88,6 +88,11 @@ class WbMarketplaceMetrics:
     unit_revenue: float
     top5_units: tuple[WbUnitTopRow, ...]
     insight_lines: tuple[str, ...]
+    storage_cost: float = 0.0
+    credit_deductions: float = 0.0
+    logistics_cost: float = 0.0
+    commission_cost: float = 0.0
+    other_deductions: float = 0.0
 
 
 _PROMO_AD_HINTS = ("продвижен", "реклам")
@@ -147,9 +152,18 @@ def _sum_numeric_column(matrix: list[list[str]], col_idx: int) -> float:
 
 def _sum_promo_advertising_columns(matrix: list[list[str]], headers: list[str]) -> float:
     """Сумма удержаний за продвижение / рекламу по всем подходящим колонкам."""
+    from services.wb_transaction_parse import aggregate_wb_transactions, is_wb_transaction_report
+
+    if is_wb_transaction_report(headers):
+        tx = aggregate_wb_transactions(matrix)
+        if tx is not None:
+            return tx.total_advertising_cost
+
     promo_cols: list[int] = []
     for idx, header in enumerate(headers):
         low = (header or "").lower()
+        if any(x in low for x in ("кредит", "хранен")):
+            continue
         if any(h in low for h in _PROMO_AD_HINTS):
             promo_cols.append(idx)
         elif any(h in low for h in _AD_FALLBACK_HINTS) and "продвижен" in low:
@@ -159,6 +173,8 @@ def _sum_promo_advertising_columns(matrix: list[list[str]], headers: list[str]) 
             idx
             for idx, header in enumerate(headers)
             if any(h in (header or "").lower() for h in _PROMO_AD_HINTS + _AD_FALLBACK_HINTS)
+            and "кредит" not in (header or "").lower()
+            and "хранен" not in (header or "").lower()
         ]
     total = 0.0
     for col_idx in promo_cols:
@@ -335,20 +351,31 @@ def compute_wb_marketplace_metrics(
 ) -> WbMarketplaceMetrics | None:
     """Реклама, юнит TOP-5 и коэффициент выкупа — только Python, 0 ₽ на ИИ."""
     from services.marketplace_platform import get_marketplace_profile
+    from services.wb_transaction_parse import aggregate_wb_transactions, is_wb_transaction_report
 
     if not matrix or len(matrix) < 2 or revenue_total <= 0:
         return None
 
     profile = get_marketplace_profile(platform)
     headers = matrix[0]
-    total_ad = _sum_promo_advertising_columns(matrix, headers)
-    for idx, header in enumerate(headers):
-        low = (header or "").lower()
-        if any(h in low for h in profile.extra_deduction_hints):
-            if any(h in low for h in profile.ad_hints) or any(
-                x in low for x in ("буст", "boost", "реклам", "продвижен", "трафарет")
-            ):
-                total_ad += _sum_numeric_column(matrix, idx)
+    tx_agg = aggregate_wb_transactions(matrix) if is_wb_transaction_report(headers) else None
+
+    total_ad = tx_agg.total_advertising_cost if tx_agg else _sum_promo_advertising_columns(matrix, headers)
+    storage_cost = tx_agg.storage_cost if tx_agg else 0.0
+    credit_deductions = tx_agg.credit_deductions if tx_agg else 0.0
+    logistics_cost = tx_agg.logistics_cost if tx_agg else 0.0
+    commission_cost = tx_agg.commission_cost if tx_agg else 0.0
+    other_deductions = tx_agg.other_deductions if tx_agg else 0.0
+
+    if not tx_agg:
+        for idx, header in enumerate(headers):
+            low = (header or "").lower()
+            if any(h in low for h in profile.extra_deduction_hints):
+                if any(h in low for h in profile.ad_hints) or any(
+                    x in low for x in ("буст", "boost", "реклам", "продвижен", "трафарет")
+                ):
+                    if "кредит" not in low and "хранен" not in low:
+                        total_ad += _sum_numeric_column(matrix, idx)
 
     sales_col = _match_column_index(headers, profile.sales_hints, require_qty=True)
     if sales_col is None:
@@ -363,24 +390,30 @@ def compute_wb_marketplace_metrics(
     if ordered_col is None:
         ordered_col = _match_column_index(headers, _ORDERED_QTY_HINTS)
 
-    sales_qty = _sum_numeric_column(matrix, sales_col) if sales_col is not None else 0.0
-    deliveries_qty = _sum_numeric_column(matrix, del_col) if del_col is not None else 0.0
-    raw_returns = _sum_numeric_column(matrix, ret_col) if ret_col is not None else 0.0
-    returns_qty = raw_returns
-    if returns_qty > 0:
-        if deliveries_qty > 0:
-            returns_qty = min(returns_qty, deliveries_qty)
-        if sales_qty > 0:
-            returns_qty = min(returns_qty, sales_qty * 2.0)
-    ordered_qty = _sum_numeric_column(matrix, ordered_col) if ordered_col is not None else 0.0
-
-    denom = deliveries_qty + returns_qty
-    if denom > 0 and sales_qty > 0:
-        buyout_coef_pct = sales_qty / denom * 100.0
-    elif ordered_qty > 0 and sales_qty > 0:
-        buyout_coef_pct = sales_qty / ordered_qty * 100.0
+    if tx_agg and tx_agg.sales_qty > 0:
+        sales_qty = tx_agg.sales_qty
+        deliveries_qty = tx_agg.deliveries_qty
+        returns_qty = tx_agg.returns_qty
+        buyout_coef_pct = tx_agg.buyout_coef_pct
     else:
-        buyout_coef_pct = 0.0
+        sales_qty = _sum_numeric_column(matrix, sales_col) if sales_col is not None else 0.0
+        deliveries_qty = _sum_numeric_column(matrix, del_col) if del_col is not None else 0.0
+        raw_returns = _sum_numeric_column(matrix, ret_col) if ret_col is not None else 0.0
+        returns_qty = raw_returns
+        if returns_qty > 0:
+            if deliveries_qty > 0:
+                returns_qty = min(returns_qty, deliveries_qty)
+            if sales_qty > 0:
+                returns_qty = min(returns_qty, sales_qty * 2.0)
+        ordered_qty = _sum_numeric_column(matrix, ordered_col) if ordered_col is not None else 0.0
+
+        denom = deliveries_qty + returns_qty
+        if denom > 0 and sales_qty > 0:
+            buyout_coef_pct = sales_qty / denom * 100.0
+        elif ordered_qty > 0 and sales_qty > 0:
+            buyout_coef_pct = sales_qty / ordered_qty * 100.0
+        else:
+            buyout_coef_pct = 0.0
 
     ad_load_pct = (total_ad / revenue_total * 100.0) if revenue_total > 0 and total_ad > 0 else 0.0
     unit_revenue = (revenue_total / sales_qty) if sales_qty > 0 else 0.0
@@ -403,6 +436,11 @@ def compute_wb_marketplace_metrics(
         unit_revenue=unit_revenue,
         top5_units=top5_units,
         insight_lines=insight_lines,
+        storage_cost=storage_cost,
+        credit_deductions=credit_deductions,
+        logistics_cost=logistics_cost,
+        commission_cost=commission_cost,
+        other_deductions=other_deductions,
     )
 
 

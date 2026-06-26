@@ -869,40 +869,102 @@ def compute_seller_matrix_etl(
     ]
     stock_col = _matrix_col(headers, profile.stock_hints)
 
+    from services.wb_transaction_parse import (
+        aggregate_wb_transactions,
+        classify_wb_transaction_row,
+        is_valid_wb_sku,
+        resolve_wb_tx_columns,
+    )
+    from services.wb_transaction_parse import _row_text_blob as tx_row_blob
+
+    tx_cols = resolve_wb_tx_columns(headers)
     buckets: dict[tuple[str, str], _SkuBucket] = {}
-    for row in rows[1:]:
-        name, article_id = _row_sku_identity(row, name_col=name_col, article_col=article_col)
-        if _is_total_row(name):
-            continue
-        bucket = buckets.get((name, article_id))
-        if bucket is None:
-            bucket = _SkuBucket(name=name, article_id=article_id)
-            buckets[(name, article_id)] = bucket
-        if rev_col is not None and rev_col < len(row):
-            bucket.revenue += safe_float(row[rev_col])
-        if sales_col is not None and sales_col < len(row):
-            bucket.sales_qty += safe_float(row[sales_col])
-        if del_col is not None and del_col < len(row):
-            bucket.deliveries_qty += safe_float(row[del_col])
-        if ret_col is not None and ret_col < len(row):
-            bucket.returns_qty += safe_float(row[ret_col])
-        if comm_col is not None and comm_col < len(row):
-            bucket.commission += abs(safe_float(row[comm_col]))
-        if log_col is not None and log_col < len(row):
-            bucket.logistics += abs(safe_float(row[log_col]))
-        for rl_col in return_log_cols:
-            if rl_col < len(row):
-                bucket.return_logistics_rub += abs(safe_float(row[rl_col]))
-        for ac in ad_cols:
-            if ac < len(row):
-                bucket.ad_cost += abs(safe_float(row[ac]))
-        for ec in extra_cols:
-            if ec < len(row):
-                bucket.extra_cost += abs(safe_float(row[ec]))
-        if cost_col is not None and cost_col < len(row):
-            bucket.cost_rub += abs(safe_float(row[cost_col]))
-        if stock_col is not None and stock_col < len(row):
-            bucket.stock_qty += max(0.0, safe_float(row[stock_col]))
+
+    if tx_cols is not None:
+        tx_agg = aggregate_wb_transactions(rows)
+        if tx_agg:
+            for (name, article), sb in tx_agg.sku_buckets.items():
+                if not is_valid_wb_sku(name, article):
+                    continue
+                buckets[(name, article)] = _SkuBucket(
+                    name=name,
+                    article_id=article,
+                    revenue=sb.revenue,
+                    sales_qty=sb.sales_qty,
+                    returns_qty=sb.returns_qty,
+                    deliveries_qty=sb.deliveries_qty or sb.sales_qty,
+                    logistics=sb.logistics,
+                    commission=sb.commission,
+                    ad_cost=sb.ad_cost,
+                )
+        for row in rows[1:]:
+            blob = tx_row_blob(row, tx_cols)
+            doc_type = (row[tx_cols.doc_type] if tx_cols.doc_type is not None and tx_cols.doc_type < len(row) else "") or ""
+            kind = classify_wb_transaction_row(blob, doc_type=str(doc_type).strip())
+            if kind != "sale":
+                continue
+            if tx_cols.name is not None and tx_cols.name < len(row):
+                name = (row[tx_cols.name] or "").strip() or "—"
+            else:
+                name, _ = _row_sku_identity(row, name_col=name_col, article_col=article_col)
+            if tx_cols.article is not None and tx_cols.article < len(row):
+                article_id = (row[tx_cols.article] or "").strip() or name
+            else:
+                _, article_id = _row_sku_identity(row, name_col=name_col, article_col=article_col)
+            if not is_valid_wb_sku(name, article_id):
+                continue
+            bucket = buckets.get((name, article_id))
+            if bucket is None:
+                continue
+            if cost_col is not None and cost_col < len(row):
+                bucket.cost_rub += abs(safe_float(row[cost_col]))
+            if stock_col is not None and stock_col < len(row):
+                bucket.stock_qty = max(bucket.stock_qty, max(0.0, safe_float(row[stock_col])))
+    else:
+        for row in rows[1:]:
+            name, article_id = _row_sku_identity(row, name_col=name_col, article_col=article_col)
+            if _is_total_row(name):
+                continue
+            if not is_valid_wb_sku(name, article_id):
+                continue
+            bucket = buckets.get((name, article_id))
+            if bucket is None:
+                bucket = _SkuBucket(name=name, article_id=article_id)
+                buckets[(name, article_id)] = bucket
+            if rev_col is not None and rev_col < len(row):
+                val = safe_float(row[rev_col])
+                if val > 0:
+                    bucket.revenue += val
+            if sales_col is not None and sales_col < len(row):
+                bucket.sales_qty += safe_float(row[sales_col])
+            if del_col is not None and del_col < len(row):
+                bucket.deliveries_qty += safe_float(row[del_col])
+            if ret_col is not None and ret_col < len(row):
+                bucket.returns_qty += safe_float(row[ret_col])
+            if comm_col is not None and comm_col < len(row):
+                bucket.commission += abs(safe_float(row[comm_col]))
+            if log_col is not None and log_col < len(row):
+                low_hdr = (headers[log_col] or "").lower()
+                if "хранен" not in low_hdr:
+                    bucket.logistics += abs(safe_float(row[log_col]))
+            for rl_col in return_log_cols:
+                if rl_col < len(row):
+                    bucket.return_logistics_rub += abs(safe_float(row[rl_col]))
+            for ac in ad_cols:
+                low_hdr = (headers[ac] or "").lower()
+                if "кредит" in low_hdr or "хранен" in low_hdr:
+                    continue
+                if ac < len(row):
+                    bucket.ad_cost += abs(safe_float(row[ac]))
+            for ec in extra_cols:
+                if ec < len(row):
+                    bucket.extra_cost += abs(safe_float(row[ec]))
+            if cost_col is not None and cost_col < len(row):
+                bucket.cost_rub += abs(safe_float(row[cost_col]))
+            if stock_col is not None and stock_col < len(row):
+                bucket.stock_qty += max(0.0, safe_float(row[stock_col]))
+
+    buckets = {k: v for k, v in buckets.items() if is_valid_wb_sku(k[0], k[1])}
 
     if not buckets:
         return None
