@@ -120,17 +120,15 @@ def find_revenue_column_index(headers: list[str]) -> int | None:
 
 def compute_marketplace_revenue_total(rows: list[list[str]]) -> float:
     """Локальная сумма по колонке «К перечислению…» без OpenRouter."""
-    from services.wb_transaction_parse import aggregate_wb_transactions, is_wb_transaction_report
+    from services.wb_report_parser import parse_wb_report
 
     matrix = normalize_table_rows(rows)
     if len(matrix) < 2:
         return 0.0
-    headers = matrix[0]
-    if is_wb_transaction_report(headers):
-        tx = aggregate_wb_transactions(matrix)
-        if tx is not None and tx.revenue_from_sales > 0:
-            return tx.revenue_from_sales
-    col = find_revenue_column_index(headers)
+    model = parse_wb_report(matrix)
+    if model is not None and model.revenue > 0:
+        return model.revenue
+    col = find_revenue_column_index(matrix[0])
     if col is None:
         return 0.0
     total = 0.0

@@ -469,6 +469,104 @@ async def extract_text_from_document(
 
 # ─── Локальный ETL товарной матрицы (ABC / FOMO логистики / OOS) ───────────
 
+_USN_RATE = 0.06
+_CFO_BUILD = "cfo-v10"
+
+# Семантический маппинг колонок WB (cfo-v10): lower().strip() + подстрока-синоним.
+WB_COLUMN_SYNONYMS: dict[str, tuple[str, ...]] = {
+    "sku": (
+        "артикул",
+        "арт",
+        "артикул поставщика",
+        "supplier_article",
+        "sa_name",
+    ),
+    "sale_price": (
+        "доход",
+        "выручка",
+        "сумма продаж",
+        "продажа (ррц)",
+        "wildberries_amount",
+        "цена розничная с учетом согласованной скидки",
+        "к перечислению",
+        "перечислению",
+    ),
+    "cost": ("себестоимость", "себес", "закупка", "cost", "supplier_price"),
+    "delivery": (
+        "логистика",
+        "услуги по доставке",
+        "доставка к клиенту",
+        "delivery_amount",
+    ),
+    "return_delivery": (
+        "доставка от клиента",
+        "обратная логистика",
+        "услуги по обратной доставке",
+    ),
+    "operation_type": (
+        "тип документа",
+        "обоснование для оплаты",
+        "тип транзакции",
+        "doc_type_name",
+        "обоснован",
+    ),
+}
+
+_WB_QTY_UNIT_HINTS = ("шт", "кол-во", "количество", "единиц")
+
+
+def _normalize_column_header(header: str) -> str:
+    return (header or "").lower().strip()
+
+
+def find_column_index(
+    df_columns: list[str],
+    key_name: str,
+    *,
+    require_qty: bool = False,
+    exclude_substrings: tuple[str, ...] = (),
+) -> int | None:
+    """
+    Безопасный поиск колонки по ключу из :data:`WB_COLUMN_SYNONYMS`.
+
+    Возвращает индекс или ``None`` (вызывающий код инициализирует нулями).
+    """
+    synonyms = WB_COLUMN_SYNONYMS.get(key_name, ())
+    if not synonyms:
+        return None
+    for idx, header in enumerate(df_columns):
+        low = _normalize_column_header(header)
+        if not low:
+            continue
+        if exclude_substrings and any(ex in low for ex in exclude_substrings):
+            continue
+        if require_qty and not any(q in low for q in _WB_QTY_UNIT_HINTS):
+            continue
+        if any(syn in low for syn in synonyms):
+            if key_name == "return_delivery":
+                if "возврат" in low or "обратн" in low or "от клиента" in low:
+                    return idx
+                continue
+            if key_name in ("delivery", "sale_price", "cost") and (
+                "возврат" in low or "обратн" in low
+            ):
+                continue
+            return idx
+    return None
+
+
+def compute_buyout_coef_pct(sales_qty: float, returns_qty: float) -> float:
+    """Выкуп: успешные продажи / (продажи + возвраты) × 100."""
+    sales = max(0.0, float(sales_qty))
+    returns = max(0.0, float(returns_qty))
+    denom = sales + returns
+    if denom > 0 and sales > 0:
+        return sales / denom * 100.0
+    if sales > 0:
+        return 100.0
+    return 0.0
+
+
 _TOP_A_SHARE = 0.20
 _OOS_RISK_DAYS = 7
 _DEFAULT_REVERSE_LOGISTICS_RUB = 50.0
@@ -517,7 +615,6 @@ _WB_COMMISSION_HINTS = ("вознагражден", "комисс")
 _WB_LOGISTICS_HINTS = ("логистик", "доставк", "хранен")
 _WB_AD_HINTS = ("продвижен", "реклам", "удержан")
 _WB_STOCK_HINTS = ("остаток", "склад", "stock", "quantity")
-_WB_QTY_UNIT_HINTS = ("шт", "кол-во", "количество", "единиц")
 _MATRIX_COST_HINTS = ("себестоимость", "себестоим", "себес", "закупка", "закуп", "cost")
 
 
@@ -690,11 +787,7 @@ class _SkuBucket:
 
     @property
     def buyout_pct(self) -> float:
-        if self.deliveries_qty > 0:
-            return self.sales_qty / self.deliveries_qty * 100.0
-        if self.sales_qty > 0:
-            return 100.0
-        return 0.0
+        return compute_buyout_coef_pct(self.sales_qty, self.returns_qty)
 
     def to_detail(self, *, abc_group: str | None = None) -> MatrixSkuDetail:
         return MatrixSkuDetail(
@@ -829,9 +922,12 @@ def compute_seller_matrix_etl(
     platform_id = normalize_marketplace_platform(platform)
 
     headers = [str(h).strip() for h in rows[0]]
-    cost_col: int | None = None
+    cost_col: int | None = find_column_index(headers, "cost")
     name_col, article_col = _matrix_name_and_article_cols(headers)
-    rev_col = _matrix_col(headers, profile.revenue_hints)
+    sku_col = find_column_index(headers, "sku")
+    if sku_col is not None and sku_col != name_col:
+        article_col = sku_col
+    rev_col = find_column_index(headers, "sale_price") or _matrix_col(headers, profile.revenue_hints)
     sales_col = _matrix_col(headers, profile.sales_hints, require_qty=True)
     if sales_col is None:
         sales_col = _matrix_col(headers, profile.sales_hints)
@@ -843,15 +939,19 @@ def compute_seller_matrix_etl(
         ret_col = _matrix_col(headers, profile.return_hints)
     comm_col = _matrix_col(headers, profile.commission_hints)
     return_log_cols = _matrix_return_logistics_cols(headers)
-    log_col = _matrix_forward_logistics_col(headers, return_log_cols)
+    sem_delivery = find_column_index(headers, "delivery", exclude_substrings=("хранен",))
+    log_col = sem_delivery if sem_delivery is not None else _matrix_forward_logistics_col(
+        headers, return_log_cols
+    )
     if log_col is None:
         log_col = _matrix_col(headers, profile.logistics_hints)
-    cost_col = _matrix_col(headers, _MATRIX_COST_HINTS)
+    if cost_col is None:
+        cost_col = _matrix_col(headers, _MATRIX_COST_HINTS)
     if cost_col is None:
         logger.warning(
             "compute_seller_matrix_etl: колонка себестоимости не найдена "
             "(подсказки %s); себестоимость принимается за 0",
-            _MATRIX_COST_HINTS,
+            WB_COLUMN_SYNONYMS.get("cost", _MATRIX_COST_HINTS),
         )
     ad_cols = [
         idx
@@ -869,57 +969,41 @@ def compute_seller_matrix_etl(
     ]
     stock_col = _matrix_col(headers, profile.stock_hints)
 
-    from services.wb_transaction_parse import (
-        aggregate_wb_transactions,
-        classify_wb_transaction_row,
-        is_valid_wb_sku,
-        resolve_wb_tx_columns,
-    )
-    from services.wb_transaction_parse import _row_text_blob as tx_row_blob
+    from services.wb_report_parser import parse_wb_report
+    from services.wb_transaction_parse import is_valid_wb_sku
 
-    tx_cols = resolve_wb_tx_columns(headers)
+    report = parse_wb_report(rows, platform=platform)
     buckets: dict[tuple[str, str], _SkuBucket] = {}
-
-    if tx_cols is not None:
-        tx_agg = aggregate_wb_transactions(rows)
-        if tx_agg:
-            for (name, article), sb in tx_agg.sku_buckets.items():
-                if not is_valid_wb_sku(name, article):
+    if report is not None:
+        for (name, article), sm in report.sku_by_key.items():
+            buckets[(name, article)] = _SkuBucket(
+                name=sm.name,
+                article_id=sm.article_id,
+                revenue=sm.revenue,
+                sales_qty=sm.sales_qty,
+                deliveries_qty=sm.deliveries_qty,
+                returns_qty=sm.returns_qty,
+                logistics=sm.logistics,
+                commission=sm.commission,
+                ad_cost=sm.ad_cost,
+                extra_cost=sm.extra_cost,
+                cost_rub=sm.cost_rub,
+                stock_qty=sm.stock_qty,
+                return_logistics_rub=sm.return_logistics_rub,
+            )
+        if report.kind == "matrix":
+            return_log_cols = _matrix_return_logistics_cols(headers)
+            name_col, article_col = _matrix_name_and_article_cols(headers)
+            for row in rows[1:]:
+                name, article_id = _row_sku_identity(row, name_col=name_col, article_col=article_col)
+                if not is_valid_wb_sku(name, article_id):
                     continue
-                buckets[(name, article)] = _SkuBucket(
-                    name=name,
-                    article_id=article,
-                    revenue=sb.revenue,
-                    sales_qty=sb.sales_qty,
-                    returns_qty=sb.returns_qty,
-                    deliveries_qty=sb.deliveries_qty or sb.sales_qty,
-                    logistics=sb.logistics,
-                    commission=sb.commission,
-                    ad_cost=sb.ad_cost,
-                )
-        for row in rows[1:]:
-            blob = tx_row_blob(row, tx_cols)
-            doc_type = (row[tx_cols.doc_type] if tx_cols.doc_type is not None and tx_cols.doc_type < len(row) else "") or ""
-            kind = classify_wb_transaction_row(blob, doc_type=str(doc_type).strip())
-            if kind != "sale":
-                continue
-            if tx_cols.name is not None and tx_cols.name < len(row):
-                name = (row[tx_cols.name] or "").strip() or "—"
-            else:
-                name, _ = _row_sku_identity(row, name_col=name_col, article_col=article_col)
-            if tx_cols.article is not None and tx_cols.article < len(row):
-                article_id = (row[tx_cols.article] or "").strip() or name
-            else:
-                _, article_id = _row_sku_identity(row, name_col=name_col, article_col=article_col)
-            if not is_valid_wb_sku(name, article_id):
-                continue
-            bucket = buckets.get((name, article_id))
-            if bucket is None:
-                continue
-            if cost_col is not None and cost_col < len(row):
-                bucket.cost_rub += abs(safe_float(row[cost_col]))
-            if stock_col is not None and stock_col < len(row):
-                bucket.stock_qty = max(bucket.stock_qty, max(0.0, safe_float(row[stock_col])))
+                bucket = buckets.get((name, article_id))
+                if bucket is None:
+                    continue
+                for rl_col in return_log_cols:
+                    if rl_col < len(row):
+                        bucket.return_logistics_rub += abs(safe_float(row[rl_col]))
     else:
         for row in rows[1:]:
             name, article_id = _row_sku_identity(row, name_col=name_col, article_col=article_col)
@@ -1107,7 +1191,138 @@ def compute_seller_matrix_etl(
     )
 
 
+def _format_sku_label_for_json(name: str, article_id: str) -> str:
+    name = (name or "").strip() or "—"
+    article_id = (article_id or "").strip()
+    if article_id and article_id != name and article_id != "—":
+        return f"{name} (арт. {article_id})"
+    return name
+
+
+def build_final_metrics_json(
+    rows: list[list[str]],
+    *,
+    revenue_total: float,
+    platform: str | None = None,
+) -> dict[str, Any]:
+    """
+    Гибридный ETL cfo-v10: все математические метрики в Python.
+
+    OpenRouter получает только этот JSON — без пересчёта на стороне LLM.
+    """
+    from services.wb_report_parser import parse_wb_report
+
+    if revenue_total <= 0 or not rows or len(rows) < 2:
+        return {"error": "empty_or_no_revenue", "cfo_build": _CFO_BUILD}
+
+    report = parse_wb_report(rows, platform=platform)
+    etl = compute_seller_matrix_etl(rows, revenue_total=revenue_total, platform=platform)
+
+    if report is not None:
+        sales_qty = report.sales_qty
+        returns_qty = report.returns_qty
+        buyout_coef_pct = report.buyout_coef_pct
+        ad_spend = report.ad_spend
+        storage_cost = report.storage_cost
+        credit_deductions = report.credit_deductions
+        logistics_cost = report.logistics_cost
+        commission_cost = report.commission_cost
+        other_deductions = report.other_deductions
+        cost_of_goods = report.cost_of_goods
+    else:
+        sales_qty = returns_qty = 0.0
+        buyout_coef_pct = ad_spend = storage_cost = 0.0
+        credit_deductions = logistics_cost = commission_cost = other_deductions = 0.0
+        cost_of_goods = 0.0
+
+    tax_usn = round(revenue_total * _USN_RATE, 2)
+    operational_profit = round(
+        revenue_total
+        - cost_of_goods
+        - storage_cost
+        - ad_spend
+        - logistics_cost
+        - commission_cost
+        - other_deductions
+        - tax_usn,
+        2,
+    )
+    clear_profit = round(operational_profit - credit_deductions, 2)
+    margin_rate = (
+        round(clear_profit / revenue_total * 100.0, 1) if revenue_total > 0 else 0.0
+    )
+    drr_pct = round(ad_spend / revenue_total * 100.0, 1) if revenue_total > 0 and ad_spend > 0 else 0.0
+
+    sku_rows: list[dict[str, Any]] = []
+    group_a: list[str] = []
+    group_c: list[str] = []
+    if etl:
+        group_a = [
+            _format_sku_label_for_json(s.name, s.article_id) for s in etl.abc_group_a
+        ]
+        group_c = [
+            _format_sku_label_for_json(s.name, s.article_id) for s in etl.abc_group_c
+        ]
+        for detail in etl.sku_catalog:
+            sku_rows.append(
+                {
+                    "name": detail.name,
+                    "article_id": detail.article_id,
+                    "label": _format_sku_label_for_json(detail.name, detail.article_id),
+                    "revenue_rub": round(detail.revenue, 2),
+                    "net_profit_rub": round(detail.net_profit, 2),
+                    "margin_rub": round(detail.net_profit, 2),
+                    "buyout_pct": round(detail.buyout_pct, 1),
+                    "sales_qty": round(detail.sales_qty, 2),
+                    "stock_qty": round(detail.stock_qty, 2),
+                    "unit_cost_rub": round(detail.unit_cost_rub, 2),
+                    "abc_group": detail.abc_group,
+                }
+            )
+
+    oos_predictions: dict[str, int] = {}
+    if etl:
+        for forecast in etl.oos_forecasts:
+            if forecast.risk_out_of_stock and forecast.days_until_stockout is not None:
+                oos_predictions[forecast.label] = max(0, int(forecast.days_until_stockout))
+
+    return {
+        "cfo_build": _CFO_BUILD,
+        "parser": "wb_final_metrics_v10",
+        "shop": {
+            "total_revenue": round(revenue_total, 2),
+            "tax_usn": tax_usn,
+            "clear_profit": clear_profit,
+            "operational_profit": operational_profit,
+            "margin_rate_pct": margin_rate,
+            "buyout_coef_pct": round(buyout_coef_pct, 1),
+            "drr_pct": drr_pct,
+            "storage_cost": round(storage_cost, 2),
+            "credit_deductions": round(credit_deductions, 2),
+            "penalties_and_other_rub": round(other_deductions, 2),
+            "ad_spend": round(ad_spend, 2),
+            "logistics_cost": round(logistics_cost, 2),
+            "commission_cost": round(commission_cost, 2),
+            "cost_of_goods": round(cost_of_goods, 2),
+            "sales_qty": round(sales_qty, 2),
+            "returns_qty": round(returns_qty, 2),
+        },
+        "sku_catalog": sku_rows,
+        "abc_analysis": {
+            "group_A": group_a or ["Лидеры отсутствуют, требуется оптимизация"],
+            "group_C": group_c,
+            "total_group_c_count": len(group_c),
+        },
+        "oos_predictions": oos_predictions,
+        "year_forecast_rub": round(revenue_total * 12, 0),
+    }
+
+
 __all__ = (
+    "WB_COLUMN_SYNONYMS",
+    "build_final_metrics_json",
+    "compute_buyout_coef_pct",
+    "find_column_index",
     "compress_extracted_text",
     "compute_seller_matrix_etl",
     "extract_text_from_document",

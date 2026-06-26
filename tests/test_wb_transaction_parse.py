@@ -78,6 +78,45 @@ def test_weekly_sales_and_buyout() -> None:
     assert agg.total_advertising_cost == pytest.approx(1200.0)
 
 
+def test_storno_adjusts_sku_revenue() -> None:
+    matrix = [
+        [
+            "Предмет",
+            "Артикул поставщика",
+            "Тип документа",
+            "Обоснование для оплаты",
+            "Кол-во",
+            "К перечислению продавцу за реализованный товар",
+        ],
+        ["Посуда", "DISH-01", "Продажа", "Продажа", "1", "1000"],
+        ["Посуда", "DISH-01", "Сторно", "Корректировка", "1", "-200"],
+    ]
+    agg = aggregate_wb_transactions(matrix)
+    assert agg is not None
+    bucket = agg.sku_buckets[("Посуда", "DISH-01")]
+    assert bucket.revenue == pytest.approx(800.0)
+
+
+def test_buyout_sales_over_sales_plus_returns() -> None:
+    from services.file_processor import compute_buyout_coef_pct
+
+    matrix = [
+        [
+            "Предмет",
+            "Артикул поставщика",
+            "Тип документа",
+            "Обоснование для оплаты",
+            "Кол-во",
+            "К перечислению продавцу за реализованный товар",
+        ],
+        ["Товар", "SKU-1", "Продажа", "Продажа", "1", "500"],
+        ["Товар", "SKU-1", "Возврат", "Возврат", "1", "100"],
+    ]
+    agg = aggregate_wb_transactions(matrix)
+    assert agg is not None
+    assert agg.sales_qty == pytest.approx(1.0)
+    assert agg.returns_qty == pytest.approx(1.0)
+    assert agg.buyout_coef_pct == pytest.approx(compute_buyout_coef_pct(1.0, 1.0))
 def test_drr_excludes_credit_and_storage() -> None:
     matrix = _weekly_matrix()
     revenue = compute_marketplace_revenue_total(matrix)

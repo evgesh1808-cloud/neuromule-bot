@@ -349,25 +349,36 @@ def compute_wb_marketplace_metrics(
     revenue_total: float,
     platform: str | None = None,
 ) -> WbMarketplaceMetrics | None:
-    """Реклама, юнит TOP-5 и коэффициент выкупа — только Python, 0 ₽ на ИИ."""
-    from services.marketplace_platform import get_marketplace_profile
-    from services.wb_transaction_parse import aggregate_wb_transactions, is_wb_transaction_report
+    """Реклама, юнит TOP-5 и коэффициент выкупа — только Python (cfo-v10 hybrid ETL)."""
+    from services.wb_report_parser import parse_wb_report
 
     if not matrix or len(matrix) < 2 or revenue_total <= 0:
         return None
 
-    profile = get_marketplace_profile(platform)
     headers = matrix[0]
-    tx_agg = aggregate_wb_transactions(matrix) if is_wb_transaction_report(headers) else None
+    model = parse_wb_report(matrix, platform=platform)
 
-    total_ad = tx_agg.total_advertising_cost if tx_agg else _sum_promo_advertising_columns(matrix, headers)
-    storage_cost = tx_agg.storage_cost if tx_agg else 0.0
-    credit_deductions = tx_agg.credit_deductions if tx_agg else 0.0
-    logistics_cost = tx_agg.logistics_cost if tx_agg else 0.0
-    commission_cost = tx_agg.commission_cost if tx_agg else 0.0
-    other_deductions = tx_agg.other_deductions if tx_agg else 0.0
+    if model is not None:
+        total_ad = model.ad_spend
+        storage_cost = model.storage_cost
+        credit_deductions = model.credit_deductions
+        logistics_cost = model.logistics_cost
+        commission_cost = model.commission_cost
+        other_deductions = model.other_deductions
+        sales_qty = model.sales_qty
+        deliveries_qty = model.deliveries_qty
+        returns_qty = model.returns_qty
+        buyout_coef_pct = model.buyout_coef_pct
+    else:
+        from services.marketplace_platform import get_marketplace_profile
 
-    if not tx_agg:
+        profile = get_marketplace_profile(platform)
+        total_ad = _sum_promo_advertising_columns(matrix, headers)
+        storage_cost = 0.0
+        credit_deductions = 0.0
+        logistics_cost = 0.0
+        commission_cost = 0.0
+        other_deductions = 0.0
         for idx, header in enumerate(headers):
             low = (header or "").lower()
             if any(h in low for h in profile.extra_deduction_hints):
@@ -377,25 +388,19 @@ def compute_wb_marketplace_metrics(
                     if "кредит" not in low and "хранен" not in low:
                         total_ad += _sum_numeric_column(matrix, idx)
 
-    sales_col = _match_column_index(headers, profile.sales_hints, require_qty=True)
-    if sales_col is None:
-        sales_col = _match_column_index(headers, profile.sales_hints)
-    del_col = _match_column_index(headers, profile.delivery_hints, require_qty=True)
-    if del_col is None:
-        del_col = _match_column_index(headers, profile.delivery_hints)
-    ret_col = _match_column_index(headers, profile.return_hints, require_qty=True)
-    if ret_col is None:
-        ret_col = _match_column_index(headers, profile.return_hints)
-    ordered_col = _match_column_index(headers, _ORDERED_QTY_HINTS, require_qty=True)
-    if ordered_col is None:
-        ordered_col = _match_column_index(headers, _ORDERED_QTY_HINTS)
+        sales_col = _match_column_index(headers, profile.sales_hints, require_qty=True)
+        if sales_col is None:
+            sales_col = _match_column_index(headers, profile.sales_hints)
+        del_col = _match_column_index(headers, profile.delivery_hints, require_qty=True)
+        if del_col is None:
+            del_col = _match_column_index(headers, profile.delivery_hints)
+        ret_col = _match_column_index(headers, profile.return_hints, require_qty=True)
+        if ret_col is None:
+            ret_col = _match_column_index(headers, profile.return_hints)
+        ordered_col = _match_column_index(headers, _ORDERED_QTY_HINTS, require_qty=True)
+        if ordered_col is None:
+            ordered_col = _match_column_index(headers, _ORDERED_QTY_HINTS)
 
-    if tx_agg and tx_agg.sales_qty > 0:
-        sales_qty = tx_agg.sales_qty
-        deliveries_qty = tx_agg.deliveries_qty
-        returns_qty = tx_agg.returns_qty
-        buyout_coef_pct = tx_agg.buyout_coef_pct
-    else:
         sales_qty = _sum_numeric_column(matrix, sales_col) if sales_col is not None else 0.0
         deliveries_qty = _sum_numeric_column(matrix, del_col) if del_col is not None else 0.0
         raw_returns = _sum_numeric_column(matrix, ret_col) if ret_col is not None else 0.0
@@ -407,15 +412,15 @@ def compute_wb_marketplace_metrics(
                 returns_qty = min(returns_qty, sales_qty * 2.0)
         ordered_qty = _sum_numeric_column(matrix, ordered_col) if ordered_col is not None else 0.0
 
-        denom = deliveries_qty + returns_qty
-        if denom > 0 and sales_qty > 0:
-            buyout_coef_pct = sales_qty / denom * 100.0
-        elif ordered_qty > 0 and sales_qty > 0:
-            buyout_coef_pct = sales_qty / ordered_qty * 100.0
-        else:
-            buyout_coef_pct = 0.0
+        from services.file_processor import compute_buyout_coef_pct
 
-    ad_load_pct = (total_ad / revenue_total * 100.0) if revenue_total > 0 and total_ad > 0 else 0.0
+        buyout_coef_pct = compute_buyout_coef_pct(sales_qty, returns_qty)
+        if buyout_coef_pct <= 0 and ordered_qty > 0 and sales_qty > 0:
+            buyout_coef_pct = sales_qty / ordered_qty * 100.0
+
+    ad_load_pct = model.drr_pct if model is not None else (
+        (total_ad / revenue_total * 100.0) if revenue_total > 0 and total_ad > 0 else 0.0
+    )
     unit_revenue = (revenue_total / sales_qty) if sales_qty > 0 else 0.0
     top5_units = _aggregate_top5_units(matrix, headers, platform=platform)
 

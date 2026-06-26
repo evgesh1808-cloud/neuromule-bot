@@ -100,7 +100,7 @@ def test_compute_wb_marketplace_metrics_local_features() -> None:
     assert metrics.total_advertising_cost == 800.0
     assert abs(metrics.ad_load_pct - 800 / 6000 * 100) < 0.01
     assert metrics.sales_qty == 12.0
-    assert metrics.buyout_coef_pct == pytest.approx(12 / (13 + 2) * 100, rel=1e-3)
+    assert metrics.buyout_coef_pct == pytest.approx(12 / (12 + 2) * 100, rel=1e-3)
     assert len(metrics.top5_units) == 2
     assert metrics.top5_units[0].label == "Футболка"
     assert any("Рекламная нагрузка" in line for line in metrics.insight_lines)

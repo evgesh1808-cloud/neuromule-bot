@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
+from services.file_processor import compute_buyout_coef_pct, find_column_index
 from services.table_number_parse import safe_float
 
 WbTxKind = Literal[
@@ -15,6 +16,9 @@ WbTxKind = Literal[
     "ad",
     "logistics",
     "commission",
+    "storno",
+    "penalty",
+    "acceptance",
     "other",
     "skip",
 ]
@@ -78,7 +82,9 @@ def resolve_wb_tx_columns(headers: list[str]) -> WbTxColumns | None:
     if not is_wb_transaction_report(headers):
         return None
     lowered = _header_low(headers)
-    doc_type = _find_col(lowered, "тип документа")
+    doc_type = find_column_index(headers, "operation_type")
+    if doc_type is None:
+        doc_type = _find_col(lowered, "тип документа")
     justification = _find_col(lowered, "обоснован")
     name = _find_col(lowered, "предмет", "наименование", "номенклатур", "бренд", "товар")
     article = _find_col(lowered, "артикул", "vendor", "sku", "barcode", "nmid")
@@ -135,14 +141,22 @@ def _row_text_blob(row: list[str], cols: WbTxColumns) -> str:
 
 
 def classify_wb_transaction_row(blob: str, *, doc_type: str = "") -> WbTxKind:
-    """Разделение удержаний: кредит / хранение / реклама / продажа / возврат."""
+    """Разделение удержаний: кредит / хранение / реклама / продажа / сторно / штраф."""
     text = f"{doc_type} {blob}".lower().strip()
     if not text:
         return "skip"
-    if "кредит" in text:
+    if "сторно" in text or "корректировк" in text:
+        return "storno"
+    if any(k in text for k in ("кредит", "выплата по кредиту")):
         return "credit"
     if "хранен" in text or "стоимость хранения" in text:
         return "storage"
+    if "платная приемка" in text or "платная приёмка" in text:
+        return "acceptance"
+    if "удержание за отсутствие маркировки" in text or (
+        "штраф" in text and "кредит" not in text
+    ):
+        return "penalty"
     if any(k in text for k in ("реклам", "продвижен", "трафарет", "спецразмещ", "медийн", "буст")):
         return "ad"
     doc = (doc_type or "").lower().strip()
@@ -170,7 +184,7 @@ def _money_amount(row: list[str], cols: WbTxColumns, *, kind: WbTxKind) -> float
         amounts.append(safe_float(row[cols.revenue]))
     if cols.deduction is not None and cols.deduction < len(row):
         amounts.append(safe_float(row[cols.deduction]))
-    if kind in ("logistics", "sale", "return") and cols.logistics is not None:
+    if kind in ("logistics", "sale", "return", "storno") and cols.logistics is not None:
         if cols.logistics < len(row):
             amounts.append(safe_float(row[cols.logistics]))
     if kind in ("commission", "sale") and cols.commission is not None:
@@ -180,6 +194,8 @@ def _money_amount(row: list[str], cols: WbTxColumns, *, kind: WbTxKind) -> float
         return 0.0
     if kind == "sale":
         return max(0.0, max(amounts))
+    if kind == "storno":
+        return sum(amounts)
     return sum(abs(v) for v in amounts if v != 0)
 
 
@@ -253,8 +269,23 @@ def aggregate_wb_transactions(
         if kind == "storage":
             agg.storage_cost += amount
             continue
+        if kind == "penalty":
+            agg.other_deductions += amount
+            continue
+        if kind == "acceptance":
+            agg.other_deductions += amount
+            continue
         if kind == "ad":
             agg.total_advertising_cost += amount
+            continue
+        if kind == "storno":
+            name, article = _sku_identity(row, cols)
+            if is_valid_wb_sku(name, article):
+                bucket = agg.sku_buckets.get((name, article))
+                if bucket is None:
+                    bucket = WbSkuTxBucket(name=name, article_id=article)
+                    agg.sku_buckets[(name, article)] = bucket
+                bucket.revenue += amount
             continue
         if kind == "logistics":
             agg.logistics_cost += amount
@@ -265,13 +296,12 @@ def aggregate_wb_transactions(
 
         name, article = _sku_identity(row, cols)
         if not is_valid_wb_sku(name, article):
-            if kind in ("sale", "return"):
-                if kind == "sale":
-                    agg.sales_qty += qty if qty > 0 else (1.0 if amount > 0 else 0.0)
-                    agg.revenue_from_sales += amount
-                    agg.deliveries_qty += qty if qty > 0 else 1.0
-                elif kind == "return":
-                    agg.returns_qty += qty if qty > 0 else 1.0
+            if kind == "sale":
+                agg.sales_qty += qty if qty > 0 else (1.0 if amount > 0 else 0.0)
+                agg.revenue_from_sales += amount
+                agg.deliveries_qty += qty if qty > 0 else 1.0
+            elif kind == "return":
+                agg.returns_qty += qty if qty > 0 else 1.0
             continue
 
         bucket = agg.sku_buckets.get((name, article))
@@ -293,15 +323,7 @@ def aggregate_wb_transactions(
             bucket.logistics += amount
         elif kind == "commission":
             bucket.commission += amount
-        elif kind == "ad":
-            bucket.ad_cost += amount
 
-    denom = agg.deliveries_qty + agg.returns_qty
-    if denom > 0 and agg.sales_qty > 0:
-        agg.buyout_coef_pct = agg.sales_qty / denom * 100.0
-    elif agg.deliveries_qty > 0 and agg.sales_qty > 0:
-        agg.buyout_coef_pct = agg.sales_qty / agg.deliveries_qty * 100.0
-    elif agg.sales_qty > 0:
-        agg.buyout_coef_pct = 100.0
+    agg.buyout_coef_pct = compute_buyout_coef_pct(agg.sales_qty, agg.returns_qty)
 
     return agg

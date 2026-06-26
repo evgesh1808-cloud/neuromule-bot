@@ -351,6 +351,64 @@ def _collect_etl_dynamic_slices(
     )
 
 
+def _format_oos_stockout_message(label: str, stock_qty: float = 0.0) -> str:
+    """Текст для SKU с нулевым остатком при сохранённом спросе."""
+    stock_int = max(0, int(round(stock_qty)))
+    return f"«{label}» — товар полностью ЗАКОНЧИЛСЯ на складе ({stock_int} шт.)"
+
+
+def _build_oos_forecast_line(
+    matrix_etl: object | None,
+    oos_zero_stock_items: tuple[dict[str, Any], ...],
+) -> str:
+    """Единая строка прогноза OOS — та же логика, что и в плане действий (oos_zero_stock_items)."""
+    if oos_zero_stock_items:
+        n = len(oos_zero_stock_items)
+        if n == 1:
+            item = oos_zero_stock_items[0]
+            label = str(item.get("label") or item.get("name") or "—")
+            return _dedupe_report_noise(_format_oos_stockout_message(label, 0.0))
+        return f"⚠️ ВНИМАНИЕ: Зафиксирован дефицит по {n} артикулам"
+
+    if matrix_etl is None:
+        return "данных по остаткам недостаточно"
+
+    risky: list[tuple[float, str]] = []
+    for forecast in getattr(matrix_etl, "oos_forecasts", ()) or ():
+        stock = float(forecast.stock_qty)
+        sales = float(forecast.sales_period_qty)
+        if stock <= 0 or sales <= 0:
+            continue
+        days = forecast.days_until_stockout
+        if not getattr(forecast, "risk_out_of_stock", False):
+            continue
+        if days is None or days <= 0:
+            continue
+        risky.append(
+            (
+                days,
+                f"«{forecast.label}» — обнуление остатков через {days:.0f} дн.",
+            )
+        )
+    risky.sort(key=lambda x: x[0])
+    if risky:
+        return _dedupe_report_noise("; ".join(line for _, line in risky[:3]))
+
+    if getattr(matrix_etl, "oos_forecasts", ()):
+        return "критических рисков обнуления остатков не выявлено"
+    return "данных по остаткам недостаточно"
+
+
+def _wrap_finance_report_in_pre(html: str) -> str:
+    """Моноширинная сетка разделителей для Telegram HTML."""
+    inner = (html or "").strip()
+    if not inner:
+        return ""
+    if inner.startswith("<pre>") and inner.endswith("</pre>"):
+        return inner
+    return f"<pre>{inner}</pre>"
+
+
 @dataclass(frozen=True)
 class WbFinanceMatrixAggregation:
     """Схлопнутые списки матрицы для Telegram (математика — по всем SKU)."""
@@ -1100,14 +1158,23 @@ def build_wb_mpstats_ai_context(
     platform: str | None = "wildberries",
 ) -> dict[str, Any]:
     """
-    MPSTATS-стиль JSON для OpenRouter: финансы, ABC, проблемные зоны, OOS.
+    MPSTATS-стиль JSON для OpenRouter: гибридный ETL cfo-v10.
 
-    Использует локальный ETL (openpyxl → матрица), без pandas.
+    Все числа считаются в Python (:func:`build_final_metrics_json`);
+    LLM только интерпретирует готовый пакет.
     """
-    from services.file_processor import compute_seller_matrix_etl
+    from services.file_processor import build_final_metrics_json, compute_seller_matrix_etl
 
     if revenue_total <= 0 or not matrix_rows or len(matrix_rows) < 2:
-        return {"error": "empty_or_no_revenue"}
+        return {"error": "empty_or_no_revenue", "cfo_build": _FINANCE_REPORT_BUILD}
+
+    final_metrics = build_final_metrics_json(
+        matrix_rows,
+        revenue_total=revenue_total,
+        platform=platform,
+    )
+    if final_metrics.get("error"):
+        return final_metrics
 
     etl = compute_seller_matrix_etl(matrix_rows, revenue_total=revenue_total, platform=platform)
     wb_metrics = resolve_wb_metrics_for_rows(matrix_rows, revenue_total, platform=platform)
@@ -1118,29 +1185,14 @@ def build_wb_mpstats_ai_context(
         platform=platform,
     )
 
-    group_a: list[str] = []
-    group_c_all: list[str] = []
-    if etl:
-        group_a = [_format_sku_label(s.name, s.article_id) for s in etl.abc_group_a]
-        group_c_all = [_format_sku_label(s.name, s.article_id) for s in etl.abc_group_c]
-    if not group_a and revenue_total > 0 and etl and etl.sku_catalog:
-        leader = max(etl.sku_catalog, key=lambda s: s.revenue)
-        group_a = [_format_sku_label(leader.name, leader.article_id)]
-    if not group_a:
-        group_a = ["Лидеры отсутствуют, требуется оптимизация"]
-
     ballast, non_liquid = _extract_problem_zones_structured(etl)
-    drr = wb_metrics.ad_load_pct if wb_metrics else 0.0
-    tax = revenue_total * _USN_RATE
-    margin_rate = prompt_metrics.profitability_pct if prompt_metrics else 0.0
-    clear_profit = prompt_metrics.clear_profit if prompt_metrics else revenue_total - tax
+    drr = wb_metrics.ad_load_pct if wb_metrics else float(
+        final_metrics.get("shop", {}).get("drr_pct", 0.0)
+    )
     business_score = prompt_metrics.business_score if prompt_metrics else 0.0
     verdict = prompt_metrics.verdict if prompt_metrics else ""
-    year_forecast = prompt_metrics.year_forecast if prompt_metrics else revenue_total * 12
-
-    loc_line = prompt_metrics.localization_index_line if prompt_metrics else "не указан в исходных данных"
     traffic_light = _build_traffic_light_json(
-        group_a=group_a,
+        group_a=list(final_metrics.get("abc_analysis", {}).get("group_A", [])),
         ballast=ballast,
         drr=drr,
         prompt_metrics=prompt_metrics,
@@ -1153,18 +1205,20 @@ def build_wb_mpstats_ai_context(
         else "Причина оценки рассчитана по операционным метрикам."
     )
 
+    shop = final_metrics.get("shop", {})
     return {
-        "parser": "wb_matrix_etl_v1",
+        **final_metrics,
         "finance": {
-            "total_revenue": round(revenue_total, 2),
-            "tax_usn": round(tax, 2),
-            "total_profit": round(clear_profit, 2),
-            "operational_profit": round(prompt_metrics.operational_profit, 2) if prompt_metrics else 0.0,
-            "storage_cost": round(prompt_metrics.storage_cost, 2) if prompt_metrics else 0.0,
-            "credit_deductions": round(prompt_metrics.credit_deductions, 2) if prompt_metrics else 0.0,
-            "margin_rate": round(margin_rate, 1),
-            "drr": round(drr, 1),
+            "total_revenue": shop.get("total_revenue", revenue_total),
+            "tax_usn": shop.get("tax_usn", 0.0),
+            "total_profit": shop.get("clear_profit", 0.0),
+            "operational_profit": shop.get("operational_profit", 0.0),
+            "storage_cost": shop.get("storage_cost", 0.0),
+            "credit_deductions": shop.get("credit_deductions", 0.0),
+            "margin_rate": shop.get("margin_rate_pct", 0.0),
+            "drr": shop.get("drr_pct", drr),
             "business_score": round(business_score, 1),
+            "buyout_coef_pct": shop.get("buyout_coef_pct", 0.0),
         },
         "health_index": {
             "score": round(business_score, 1),
@@ -1172,11 +1226,6 @@ def build_wb_mpstats_ai_context(
             "status": status,
             "reason": reason,
             "verdict": verdict,
-        },
-        "abc_analysis": {
-            "group_A": group_a,
-            "group_C": group_c_all,
-            "total_group_c_count": len(group_c_all),
         },
         "problem_zones": {
             "ballast": ballast,
@@ -1189,10 +1238,12 @@ def build_wb_mpstats_ai_context(
             ),
             "fomo_lost_rub": round(prompt_metrics.fomo_lost_rub, 2) if prompt_metrics else 0.0,
         },
-        "oos_predictions": _build_oos_predictions_map(etl),
-        "year_forecast_rub": round(year_forecast, 0),
-        "localization_index": loc_line,
-        "sku_catalog": list(prompt_metrics.sku_catalog_items) if prompt_metrics else [],
+        "localization_index": (
+            prompt_metrics.localization_index_line if prompt_metrics else "не указан в исходных данных"
+        ),
+        "strategic_plan_hints": _build_strategic_plan_lines(prompt_metrics, wb_metrics)
+        if prompt_metrics
+        else [],
     }
 
 
@@ -1294,14 +1345,15 @@ def resolve_wb_mpstats_context(
 
 
 def build_wb_finance_json_user_message(json_payload: str | dict[str, Any]) -> str:
-    """User-сообщение OpenRouter: только готовый JSON-пакет."""
+    """User-сообщение OpenRouter: только готовый final_metrics_json (cfo-v10)."""
     if isinstance(json_payload, dict):
         body = json.dumps(json_payload, ensure_ascii=False, indent=2)
     else:
         body = json_payload.strip()
     return (
-        "Ниже — подтверждённый JSON-пакет финансовой оцифровки Wildberries. "
-        "Все числа, списки товаров, балласт, неликвид и бизнес-скоринг рассчитаны в Python. "
+        "Ты — CFO. На основе готовых выверенных математических данных из JSON "
+        "сформируй бизнес-выводы, Светофор эффективности и План действий. "
+        "Не пересчитывай цифры, бери их строго из JSON. "
         "Строго упакуй JSON в HTML-отчёт по структуре из system prompt. "
         "Запрещено менять числа, дополнять товары, сокращать списки и использовать слово «ИИ».\n\n"
         f"{body}"
@@ -1547,7 +1599,7 @@ _WB_FINANCE_MAX_OUTPUT_TOKENS = 1400
 _WB_FINANCE_TELEGRAM_SOFT_MAX_CHARS = 2000
 _FINANCE_SEPARATOR = "────────────────────────"
 # Меняйте при каждом релизе CFO-шаблона — видно внизу отчёта для проверки деплоя.
-_FINANCE_REPORT_BUILD = "cfo-v9"
+_FINANCE_REPORT_BUILD = "cfo-v10"
 _OLD_FINALE_MARKERS = (
     "Финальный Excel",
     "интерактивный дашборд",
@@ -2054,13 +2106,6 @@ def compute_wb_finance_prompt_metrics(
                     "Убыток вызван удержанием по кредиту. "
                     "Операционная прибыль от продаж при этом положительна."
                 )
-        if matrix_etl.oos_critical_sku and matrix_etl.oos_critical_days is not None:
-            oos_line = _dedupe_report_noise(
-                f"«{matrix_etl.oos_critical_sku}» — "
-                f"обнуление остатков через {matrix_etl.oos_critical_days:.0f} дн."
-            )
-        elif matrix_etl.oos_forecasts:
-            oos_line = "критических рисков обнуления остатков не выявлено"
         (
             abc_group_a_items,
             loss_sku_items,
@@ -2068,6 +2113,7 @@ def compute_wb_finance_prompt_metrics(
             oos_zero_stock_items,
             non_liquid_frozen_total_rub,
         ) = _collect_etl_dynamic_slices(matrix_etl)
+        oos_line = _build_oos_forecast_line(matrix_etl, oos_zero_stock_items)
         if non_liquid_frozen_total_rub > 0:
             fomo_rub = round(fomo_rub + non_liquid_frozen_total_rub, 2)
 
@@ -2698,7 +2744,9 @@ def build_wb_finance_express_html_local(
     )
     lines.extend(_build_strategic_plan_lines(prompt_metrics, wb_metrics))
     lines.append(f"<i>CFO build {_FINANCE_REPORT_BUILD}</i>")
-    html = append_wb_finance_mini_app_cta("\n".join(lines))
+    html = append_wb_finance_mini_app_cta(
+        _wrap_finance_report_in_pre("\n".join(lines))
+    )
     if len(html) > _TELEGRAM_MESSAGE_SOFT_MAX:
         logger.warning(
             "WB finance local HTML %s chars exceeds soft limit %s",
@@ -2968,7 +3016,7 @@ async def generate_wb_finance_consulting_html(
         )
         raw = sanitize_wb_finance_html(completion.get("content") or "")
         if _is_publishable_wb_finance_html(raw):
-            if "cfo-v9" not in raw.lower():
+            if "cfo-v10" not in raw.lower():
                 raw = f"{raw}\n\n<i>CFO build {_FINANCE_REPORT_BUILD}</i>"
             return append_wb_finance_mini_app_cta(raw)
         logger.warning(

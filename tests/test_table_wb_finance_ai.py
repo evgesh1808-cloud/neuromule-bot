@@ -24,7 +24,8 @@ from services.table_wb_finance_ai import (
 def test_wb_analytics_system_prompt_cfo_v8_static() -> None:
     prompt = build_wb_marketplace_finance_system_prompt()
     assert prompt is WB_ANALYTICS_SYSTEM_PROMPT
-    assert "MPSTATS" in prompt or "mpstats" in prompt.lower()
+    assert "CFO" in prompt
+    assert "final_metrics_json" in prompt or "JSON" in prompt
     assert "Проблемные зоны" in prompt
     assert "Балласт" in prompt
     assert "неликвид" in prompt.lower()
@@ -35,7 +36,7 @@ def test_wb_analytics_system_prompt_cfo_v8_static() -> None:
     assert "2000 символов" in prompt
     assert "ABC-АНАЛИЗ ПРОДАЖ" in prompt
     assert "BENOVY" not in prompt
-    assert "cfo-v9" in prompt
+    assert "cfo-v10" in prompt
     assert "20%" in prompt
     assert "group_A" in prompt
     assert "loss_calculator" in prompt
@@ -53,7 +54,8 @@ def test_build_wb_finance_json_user_message_wraps_payload() -> None:
     payload = {"finance": {"total_revenue": 1000.0}}
     user = build_wb_finance_json_user_message(payload)
     assert "1000.0" in user
-    assert "Python" in user
+    assert "CFO" in user
+    assert "JSON" in user
     assert "ИИ»" in user or "«ИИ»" in user
 
 
@@ -74,7 +76,7 @@ def test_build_wb_finance_openrouter_prompt_pair_from_matrix() -> None:
     pair = build_wb_finance_openrouter_prompt_pair(matrix, revenue_total=100_000.0)
     assert pair is not None
     system, user = pair
-    assert "cfo-v9" in system
+    assert "cfo-v10" in system
     data = json.loads(user.split("\n\n", 1)[-1])
     assert data["finance"]["total_revenue"] == 100_000.0
     assert "health_index" in data
@@ -112,7 +114,7 @@ def test_build_wb_finance_system_prompt_from_totals() -> None:
     )
     system = build_wb_finance_system_prompt_from_totals(100_000.0, wb)
     assert system is not None
-    assert "cfo-v9" in system
+    assert "cfo-v10" in system
 
 
 def test_compute_business_score_bounds() -> None:
@@ -300,7 +302,7 @@ def test_build_wb_finance_express_html_local_abc_header() -> None:
     assert metrics is not None
     html = build_wb_finance_express_html_local(metrics, None)
     assert "ABC-АНАЛИЗ ПРОДАЖ" in html
-    assert "cfo-v9" in html
+    assert "cfo-v10" in html
 
 
 def test_build_wb_finance_express_html_local_no_ii_word() -> None:
@@ -427,3 +429,152 @@ def test_build_wb_finance_express_html_local_plan() -> None:
     assert metrics is not None
     html = build_wb_finance_express_html_local(metrics, None)
     assert "ПЛАН ДЕЙСТВИЙ" in html
+
+
+def test_oos_zero_stock_forecast_and_plan_aligned() -> None:
+    """Нулевой остаток: план и прогноз читают oos_zero_stock_items, без «через 0 дн.»."""
+    from services.table_wb_finance_ai import (
+        build_wb_finance_express_html_local,
+        compute_wb_finance_prompt_metrics,
+    )
+
+    matrix = [
+        [
+            "Предмет",
+            "К перечислению, руб.",
+            "Выкупили, шт.",
+            "Остаток на складе, шт.",
+        ],
+        ["DEAD_SKU", "10000", "14", "0"],
+    ]
+    wb = compute_wb_marketplace_metrics(matrix, revenue_total=10_000.0)
+    metrics = compute_wb_finance_prompt_metrics(10_000.0, wb, matrix_rows=matrix)
+    assert metrics is not None
+    assert len(metrics.oos_zero_stock_items) == 1
+    assert "ЗАКОНЧИЛСЯ" in metrics.oos_forecast_line
+    assert "через 0 дн" not in metrics.oos_forecast_line.lower()
+    assert "критических рисков обнуления остатков не выявлено" not in metrics.oos_forecast_line
+
+    html = build_wb_finance_express_html_local(metrics, wb)
+    assert "Срочно пополните остатки" in html
+    assert "товар закончился" in html
+    assert "ЗАКОНЧИЛСЯ" in html
+    assert "критических рисков обнуления остатков не выявлено" not in html
+
+
+def test_oos_multiple_zero_stock_deficit_message() -> None:
+    from services.file_processor import (
+        MatrixOosForecast,
+        MatrixSkuDetail,
+        SellerMatrixEtl,
+    )
+    from services.table_wb_finance_ai import _build_oos_forecast_line, _collect_etl_dynamic_slices
+
+    catalog = (
+        MatrixSkuDetail(
+            name="A",
+            article_id="a1",
+            revenue=1000.0,
+            net_profit=100.0,
+            buyout_pct=80.0,
+            abc_group="A",
+            stock_qty=0.0,
+            sales_qty=7.0,
+        ),
+        MatrixSkuDetail(
+            name="B",
+            article_id="b1",
+            revenue=500.0,
+            net_profit=50.0,
+            buyout_pct=70.0,
+            abc_group="B",
+            stock_qty=0.0,
+            sales_qty=3.0,
+        ),
+    )
+    forecasts = (
+        MatrixOosForecast("A", 0.0, 7.0, 0.0, True),
+        MatrixOosForecast("B", 0.0, 3.0, 0.0, True),
+    )
+    etl = SellerMatrixEtl(
+        abc_group_a=(),
+        abc_group_c=(),
+        abc_a_leader="A",
+        logistics_fomo_rub=0.0,
+        logistics_fomo_detail="",
+        oos_forecasts=forecasts,
+        oos_critical_sku="A",
+        oos_critical_days=0.0,
+        sku_catalog=catalog,
+    )
+    *_, oos_zero, _ = _collect_etl_dynamic_slices(etl)
+    assert len(oos_zero) == 2
+    line = _build_oos_forecast_line(etl, oos_zero)
+    assert "дефицит по 2 артикулам" in line
+    assert "критических рисков" not in line
+
+
+def test_build_wb_finance_express_html_pre_wrapper_and_escape() -> None:
+    from services.table_wb_finance_ai import (
+        build_wb_finance_express_html_local,
+        compute_wb_finance_prompt_metrics,
+    )
+
+    matrix = [
+        ["Предмет", "К перечислению, руб."],
+        ["SKU <bad> & Co", "50000"],
+    ]
+    wb = compute_wb_marketplace_metrics(matrix, revenue_total=50_000.0)
+    metrics = compute_wb_finance_prompt_metrics(50_000.0, wb, matrix_rows=matrix)
+    assert metrics is not None
+    html = build_wb_finance_express_html_local(metrics, wb)
+    assert html.startswith("<pre>")
+    assert html.endswith("</pre>")
+    assert "&lt;bad&gt;" in html
+    assert " &amp; " in html or "&amp;" in html
+
+
+def test_compute_buyout_coef_pct_formula() -> None:
+    from services.file_processor import compute_buyout_coef_pct
+
+    assert compute_buyout_coef_pct(10.0, 5.0) == pytest.approx(66.666, rel=1e-3)
+    assert compute_buyout_coef_pct(27.0, 0.0) == pytest.approx(100.0)
+    assert compute_buyout_coef_pct(0.0, 5.0) == pytest.approx(0.0)
+
+
+def test_find_column_index_synonyms() -> None:
+    from services.file_processor import find_column_index
+
+    headers = [
+        "Артикул поставщика",
+        "Цена розничная с учетом согласованной скидки",
+        "Себестоимость",
+        "Тип документа",
+    ]
+    assert find_column_index(headers, "sku") == 0
+    assert find_column_index(headers, "sale_price") == 1
+    assert find_column_index(headers, "cost") == 2
+    assert find_column_index(headers, "operation_type") == 3
+    assert find_column_index(headers, "cost", exclude_substrings=("xyz",)) == 2
+    assert find_column_index(headers, "missing_key") is None
+
+
+def test_build_final_metrics_json_cfo_v10() -> None:
+    from services.file_processor import build_final_metrics_json
+    from services.table_wb_finance_ai import build_wb_mpstats_ai_context
+
+    matrix = [
+        ["Предмет", "К перечислению, руб.", "Выкупили, шт.", "Возвраты, шт."],
+        ["GOOD", "80000", "8", "2"],
+    ]
+    final = build_final_metrics_json(matrix, revenue_total=80_000.0)
+    assert final.get("cfo_build") == "cfo-v10"
+    assert final["shop"]["total_revenue"] == 80_000.0
+    assert "sku_catalog" in final
+    assert "abc_analysis" in final
+
+    ctx = build_wb_mpstats_ai_context(matrix, revenue_total=80_000.0)
+    assert ctx.get("cfo_build") == "cfo-v10"
+    assert "finance" in ctx
+    assert "health_index" in ctx
+    assert "strategic_plan_hints" in ctx
