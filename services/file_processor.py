@@ -518,6 +518,7 @@ _WB_LOGISTICS_HINTS = ("логистик", "доставк", "хранен")
 _WB_AD_HINTS = ("продвижен", "реклам", "удержан")
 _WB_STOCK_HINTS = ("остаток", "склад", "stock", "quantity")
 _WB_QTY_UNIT_HINTS = ("шт", "кол-во", "количество", "единиц")
+_MATRIX_COST_HINTS = ("себестоимость", "себестоим", "себес", "закупка", "закуп", "cost")
 
 
 @dataclass(frozen=True)
@@ -670,7 +671,14 @@ class _SkuBucket:
 
     @property
     def net_profit(self) -> float:
-        return self.revenue - self.commission - self.logistics - self.ad_cost - self.extra_cost
+        return (
+            self.revenue
+            - self.commission
+            - self.logistics
+            - self.ad_cost
+            - self.extra_cost
+            - self.cost_rub
+        )
 
     @property
     def unit_logistics(self) -> float:
@@ -821,6 +829,7 @@ def compute_seller_matrix_etl(
     platform_id = normalize_marketplace_platform(platform)
 
     headers = [str(h).strip() for h in rows[0]]
+    cost_col: int | None = None
     name_col, article_col = _matrix_name_and_article_cols(headers)
     rev_col = _matrix_col(headers, profile.revenue_hints)
     sales_col = _matrix_col(headers, profile.sales_hints, require_qty=True)
@@ -837,6 +846,13 @@ def compute_seller_matrix_etl(
     log_col = _matrix_forward_logistics_col(headers, return_log_cols)
     if log_col is None:
         log_col = _matrix_col(headers, profile.logistics_hints)
+    cost_col = _matrix_col(headers, _MATRIX_COST_HINTS)
+    if cost_col is None:
+        logger.warning(
+            "compute_seller_matrix_etl: колонка себестоимости не найдена "
+            "(подсказки %s); себестоимость принимается за 0",
+            _MATRIX_COST_HINTS,
+        )
     ad_cols = [
         idx
         for idx, h in enumerate(headers)
@@ -849,10 +865,9 @@ def compute_seller_matrix_etl(
         and idx not in ad_cols
         and idx != comm_col
         and idx != log_col
-        and idx != cost_col
+        and (cost_col is not None and idx != cost_col)
     ]
     stock_col = _matrix_col(headers, profile.stock_hints)
-    cost_col = _matrix_col(headers, ("себестоим", "закуп", "cost"))
 
     buckets: dict[tuple[str, str], _SkuBucket] = {}
     for row in rows[1:]:
