@@ -12,6 +12,33 @@ from services import repository as repo
 router = APIRouter(prefix="/api/v1", tags=["reports"])
 
 
+def _normalize_platform_key(platform: str) -> str:
+    platform_key = (platform or "wildberries").strip().lower()
+    allowed = {"wildberries", "wb", "ozon", "yandex", "yandex_market", "1c", "moysklad"}
+    if platform_key not in allowed:
+        platform_key = "wildberries"
+    if platform_key == "wb":
+        platform_key = "wildberries"
+    return platform_key
+
+
+@router.get("/reports/latest")
+async def get_latest_report_data(
+    telegram_user_id: Annotated[int, Depends(require_telegram_user)],
+    platform: str = "wildberries",
+) -> dict[str, Any]:
+    """Последний сохранённый отчёт пользователя (кнопка «📱 Studio» без report_id)."""
+    loaded = await repo.fetch_latest_table_report_json_for_user(telegram_user_id)
+    if loaded is None:
+        raise HTTPException(status_code=404, detail="No reports yet")
+    report_id, data = loaded
+    return {
+        "report_id": report_id,
+        "platform": _normalize_platform_key(platform),
+        "table_raw_json": data,
+    }
+
+
 @router.get("/reports/{report_id}")
 async def get_report_data(
     report_id: int,
@@ -28,14 +55,8 @@ async def get_report_data(
     data = await repo.fetch_table_report_json_for_user(report_id, telegram_user_id)
     if data is None:
         raise HTTPException(status_code=404, detail="Report not found")
-    platform_key = (platform or "wildberries").strip().lower()
-    allowed = {"wildberries", "wb", "ozon", "yandex", "yandex_market", "1c", "moysklad"}
-    if platform_key not in allowed:
-        platform_key = "wildberries"
-    if platform_key == "wb":
-        platform_key = "wildberries"
     return {
         "report_id": report_id,
-        "platform": platform_key,
+        "platform": _normalize_platform_key(platform),
         "table_raw_json": data,
     }

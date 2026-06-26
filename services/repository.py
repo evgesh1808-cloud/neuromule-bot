@@ -1405,6 +1405,43 @@ async def fetch_table_report_json_for_user(report_id: int, user_id: int) -> dict
     return data
 
 
+async def fetch_latest_table_report_json_for_user(
+    user_id: int,
+) -> tuple[int, dict] | None:
+    """Последний отчёт пользователя (для Studio без report_id в URL)."""
+    import json
+
+    from services.table_json import parse_table_json_response
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """
+            SELECT id, table_json FROM table_reports
+            WHERE user_id = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
+            (int(user_id),),
+        ) as cur:
+            row = await cur.fetchone()
+    if not row:
+        return None
+    report_id = int(row[0])
+    raw_json = str(row[1])
+    try:
+        data = json.loads(raw_json)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    payload = parse_table_json_response(raw_json)
+    if payload is not None:
+        data.setdefault("title", payload.title)
+        data.setdefault("headers", payload.headers)
+        data.setdefault("rows", payload.rows)
+    return report_id, data
+
+
 async def fetch_table_report_json(report_id: int) -> dict | None:
     """
     Загружает отчёт по ``table_reports.id``.

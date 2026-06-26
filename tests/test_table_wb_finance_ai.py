@@ -35,7 +35,7 @@ def test_wb_analytics_system_prompt_cfo_v8_static() -> None:
     assert "2000 символов" in prompt
     assert "ABC-АНАЛИЗ ПРОДАЖ" in prompt
     assert "BENOVY" not in prompt
-    assert "cfo-v8" in prompt
+    assert "cfo-v9" in prompt
     assert "20%" in prompt
     assert "group_A" in prompt
     assert "loss_calculator" in prompt
@@ -74,7 +74,7 @@ def test_build_wb_finance_openrouter_prompt_pair_from_matrix() -> None:
     pair = build_wb_finance_openrouter_prompt_pair(matrix, revenue_total=100_000.0)
     assert pair is not None
     system, user = pair
-    assert "cfo-v8" in system
+    assert "cfo-v9" in system
     data = json.loads(user.split("\n\n", 1)[-1])
     assert data["finance"]["total_revenue"] == 100_000.0
     assert "health_index" in data
@@ -112,7 +112,7 @@ def test_build_wb_finance_system_prompt_from_totals() -> None:
     )
     system = build_wb_finance_system_prompt_from_totals(100_000.0, wb)
     assert system is not None
-    assert "cfo-v8" in system
+    assert "cfo-v9" in system
 
 
 def test_compute_business_score_bounds() -> None:
@@ -218,6 +218,73 @@ def test_build_matrix_problem_zones_block() -> None:
     assert "Неликвид" in block or "Балласт" in block or "проблемных" in block.lower()
 
 
+def test_aggregate_matrix_display_tail_counts() -> None:
+    from services.file_processor import MatrixAbcSku, MatrixOosForecast, MatrixSkuDetail, SellerMatrixEtl
+    from services.table_wb_finance_ai import aggregate_matrix_display
+
+    group_a = tuple(
+        MatrixAbcSku(
+            name=f"A{i}",
+            article_id=f"art{i}",
+            revenue=10_000.0 * i,
+            net_profit=1_000.0 * (12 - i),
+            buyout_pct=70.0,
+            abc_group="A",
+        )
+        for i in range(1, 13)
+    )
+    group_c = tuple(
+        MatrixAbcSku(
+            name=f"C{i}",
+            article_id=f"c{i}",
+            revenue=float(i * 100),
+            net_profit=-50.0,
+            buyout_pct=10.0,
+            abc_group="C",
+        )
+        for i in range(1, 9)
+    )
+    catalog = tuple(
+        MatrixSkuDetail(
+            name=sku.name,
+            article_id=sku.article_id,
+            revenue=sku.revenue,
+            net_profit=sku.net_profit,
+            buyout_pct=sku.buyout_pct,
+            abc_group=sku.abc_group,
+            stock_qty=50.0 if sku.name == "C8" else 0.0,
+        )
+        for sku in (*group_a, *group_c)
+    )
+    oos = tuple(
+        MatrixOosForecast(
+            label=sku.name,
+            stock_qty=50.0 if sku.name == "C8" else 0.0,
+            sales_period_qty=1.0 if sku.revenue > 0 else 0.0,
+            days_until_stockout=None,
+            risk_out_of_stock=False,
+        )
+        for sku in group_c
+    )
+    etl = SellerMatrixEtl(
+        abc_group_a=group_a,
+        abc_group_c=group_c,
+        abc_a_leader="A1",
+        logistics_fomo_rub=0.0,
+        logistics_fomo_detail="",
+        oos_forecasts=oos,
+        oos_critical_sku=None,
+        oos_critical_days=None,
+        sku_catalog=catalog,
+    )
+    agg = aggregate_matrix_display(etl)
+    assert len(agg.abc_a_display_lines) == 5
+    assert agg.tail_a_count == 7
+    assert len(agg.abc_c_display_lines) == 5
+    assert agg.tail_c_count == 3
+    assert agg.tail_c_revenue == round(600.0 + 700.0 + 800.0, 2)
+
+
 def test_build_wb_finance_express_html_local_abc_header() -> None:
     from services.table_wb_finance_ai import (
         build_wb_finance_express_html_local,
@@ -233,7 +300,7 @@ def test_build_wb_finance_express_html_local_abc_header() -> None:
     assert metrics is not None
     html = build_wb_finance_express_html_local(metrics, None)
     assert "ABC-АНАЛИЗ ПРОДАЖ" in html
-    assert "cfo-v8" in html
+    assert "cfo-v9" in html
 
 
 def test_build_wb_finance_express_html_local_no_ii_word() -> None:

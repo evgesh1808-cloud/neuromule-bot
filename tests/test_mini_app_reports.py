@@ -97,6 +97,23 @@ def test_get_report_data_idor_other_user(mini_app_client) -> None:
     assert resp.status_code == 404
 
 
+def test_get_latest_report_endpoint(mini_app_client) -> None:
+    async def _seed() -> int:
+        await repo.init_db()
+        await repo.ensure_user(42)
+        return await repo.insert_table_report(42, SAMPLE_JSON)
+
+    report_id = asyncio.run(_seed())
+    resp = mini_app_client.get(
+        "/api/v1/reports/latest",
+        headers=_auth_headers(42),
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["report_id"] == report_id
+    assert body["table_raw_json"]["title"] == "Доход"
+
+
 def test_get_report_not_found(mini_app_client) -> None:
     resp = mini_app_client.get(
         "/api/v1/reports/999999",

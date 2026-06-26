@@ -530,6 +530,9 @@ class MatrixSkuDetail:
     net_profit: float
     buyout_pct: float
     abc_group: str | None = None
+    sales_qty: float = 0.0
+    stock_qty: float = 0.0
+    unit_cost_rub: float = 0.0
 
     @property
     def label(self) -> str:
@@ -648,11 +651,22 @@ class _SkuBucket:
     logistics: float = 0.0
     ad_cost: float = 0.0
     extra_cost: float = 0.0
+    cost_rub: float = 0.0
     sales_qty: float = 0.0
     deliveries_qty: float = 0.0
     returns_qty: float = 0.0
     stock_qty: float = 0.0
     return_logistics_rub: float = 0.0
+
+    @property
+    def unit_cost_rub(self) -> float:
+        if self.cost_rub <= 0:
+            return 0.0
+        if self.sales_qty > 0:
+            return self.cost_rub / self.sales_qty
+        if self.stock_qty > 0:
+            return self.cost_rub / self.stock_qty
+        return self.cost_rub
 
     @property
     def net_profit(self) -> float:
@@ -682,6 +696,9 @@ class _SkuBucket:
             net_profit=round(self.net_profit, 2),
             buyout_pct=round(self.buyout_pct, 1),
             abc_group=abc_group,
+            sales_qty=round(self.sales_qty, 2),
+            stock_qty=round(self.stock_qty, 2),
+            unit_cost_rub=round(self.unit_cost_rub, 2),
         )
 
 
@@ -832,8 +849,10 @@ def compute_seller_matrix_etl(
         and idx not in ad_cols
         and idx != comm_col
         and idx != log_col
+        and idx != cost_col
     ]
     stock_col = _matrix_col(headers, profile.stock_hints)
+    cost_col = _matrix_col(headers, ("себестоим", "закуп", "cost"))
 
     buckets: dict[tuple[str, str], _SkuBucket] = {}
     for row in rows[1:]:
@@ -865,6 +884,8 @@ def compute_seller_matrix_etl(
         for ec in extra_cols:
             if ec < len(row):
                 bucket.extra_cost += abs(safe_float(row[ec]))
+        if cost_col is not None and cost_col < len(row):
+            bucket.cost_rub += abs(safe_float(row[cost_col]))
         if stock_col is not None and stock_col < len(row):
             bucket.stock_qty += max(0.0, safe_float(row[stock_col]))
 

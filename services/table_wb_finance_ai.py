@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 from config import Settings
@@ -29,6 +29,12 @@ _CRITICAL_BUYOUT_PCT = 5.0
 _SLOW_TURNOVER_DAYS = 45.0
 _ILLIQUID_MIN_STOCK = 1.0
 MIN_REVERSE_LOGISTICS_RUB = 50.0
+_TOP_GROUP_A_DISPLAY = 5
+_TOP_GROUP_C_DISPLAY = 5
+_TOP_BALLAST_DISPLAY = 3
+_TOP_NON_LIQUID_DISPLAY = 3
+_TOP_LOSS_SKU_DISPLAY = 5
+_TELEGRAM_MESSAGE_SOFT_MAX = 4000
 
 
 def clamp_shop_returns_qty(
@@ -124,6 +130,11 @@ def _ru_more_goods_suffix(count: int) -> str:
     return f"… и ещё {n} {word}"
 
 
+def _strict_non_liquid(*, revenue: float, stock_qty: float) -> bool:
+    """Неликвид: остаток на складе есть, выручка за период — ноль."""
+    return stock_qty > 0 and revenue == 0.0
+
+
 def _classify_group_c_problem_zone(
     buyout_pct: float,
     revenue: float,
@@ -207,24 +218,30 @@ def _extract_problem_zones_structured(
         sales = float(oos.sales_period_qty) if oos else 0.0
         days = oos.days_until_stockout if oos else None
         label = _format_sku_label(sku.name, sku.article_id)
-        zone = _classify_group_c_problem_zone(
+        if _strict_non_liquid(revenue=sku.revenue, stock_qty=stock):
+            detail = catalog.get(sku.name)
+            unit_cost = float(detail.unit_cost_rub) if detail else 0.0
+            frozen = round(stock * unit_cost, 2) if unit_cost > 0 else 0.0
+            non_liquid.append(
+                {
+                    "sku": label,
+                    "name": sku.name,
+                    "article_id": sku.article_id,
+                    "stock": int(stock),
+                    "revenue": 0.0,
+                    "cost": round(unit_cost, 2),
+                    "frozen_capital_rub": frozen,
+                }
+            )
+        elif _classify_group_c_problem_zone(
             sku.buyout_pct,
             sku.revenue,
             stock_qty=stock,
             sales_qty=sales,
             days_until_stockout=days,
-        )
-        if zone == "illiquid":
-            detail = catalog.get(sku.name)
-            frozen = float(detail.revenue) if detail and detail.revenue > 0 else 0.0
-            non_liquid.append(
-                {
-                    "sku": label,
-                    "stock": int(stock),
-                    "frozen_capital_rub": round(frozen, 2),
-                }
-            )
-        else:
+        ) == "ballast" or (
+            sku.buyout_pct < _BALLAST_BUYOUT_PCT and sales > 0
+        ):
             log = logistics_map.get(label) or logistics_map.get(sku.name) or {}
             ballast.append(
                 {
@@ -238,6 +255,313 @@ def _extract_problem_zones_structured(
     ballast.sort(key=lambda x: float(x.get("buyout", 100.0)))
     non_liquid.sort(key=lambda x: -int(x.get("stock", 0)))
     return ballast, non_liquid
+
+
+def _sku_unit_profit_rub(net_profit: float, sales_qty: float) -> float:
+    if sales_qty > 0:
+        return round(net_profit / sales_qty, 2)
+    return round(net_profit, 2)
+
+
+def _collect_etl_dynamic_slices(
+    matrix_etl: object | None,
+) -> tuple[
+    tuple[dict[str, Any], ...],
+    tuple[dict[str, Any], ...],
+    tuple[dict[str, Any], ...],
+    tuple[dict[str, Any], ...],
+    float,
+]:
+    """Срезы ETL для светофора, калькулятора потерь и плана действий."""
+    if matrix_etl is None:
+        return (), (), (), (), 0.0
+
+    oos_map = {f.label: f for f in getattr(matrix_etl, "oos_forecasts", ()) or ()}
+    catalog_map = {s.name: s for s in getattr(matrix_etl, "sku_catalog", ()) or ()}
+
+    group_a_items: list[dict[str, Any]] = []
+    for sku in getattr(matrix_etl, "abc_group_a", ()) or ():
+        detail = catalog_map.get(sku.name)
+        oos = oos_map.get(sku.name)
+        sales_qty = float(detail.sales_qty) if detail and detail.sales_qty > 0 else 0.0
+        if sales_qty <= 0 and oos:
+            sales_qty = float(oos.sales_period_qty)
+        group_a_items.append(
+            {
+                "name": sku.name,
+                "article_id": sku.article_id,
+                "label": _format_sku_label(sku.name, sku.article_id),
+                "unit_profit_rub": _sku_unit_profit_rub(sku.net_profit, sales_qty),
+                "net_profit_rub": round(float(sku.net_profit), 2),
+                "buyout_pct": round(float(sku.buyout_pct), 1),
+            }
+        )
+    group_a_items.sort(key=lambda x: float(x["net_profit_rub"]), reverse=True)
+
+    loss_items: list[dict[str, Any]] = []
+    for detail in getattr(matrix_etl, "sku_catalog", ()) or ():
+        if detail.net_profit >= 0:
+            continue
+        oos = oos_map.get(detail.name)
+        sales_qty = float(detail.sales_qty) if detail.sales_qty > 0 else 0.0
+        if sales_qty <= 0 and oos:
+            sales_qty = float(oos.sales_period_qty)
+        loss_items.append(
+            {
+                "name": detail.name,
+                "article_id": detail.article_id,
+                "label": _format_sku_label(detail.name, detail.article_id),
+                "net_profit_rub": round(float(detail.net_profit), 2),
+                "unit_profit_rub": _sku_unit_profit_rub(detail.net_profit, sales_qty),
+            }
+        )
+    loss_items.sort(key=lambda x: float(x["net_profit_rub"]))
+
+    _, non_liquid = _extract_problem_zones_structured(matrix_etl)
+    non_liquid_items = tuple(non_liquid)
+    frozen_total = round(
+        sum(float(item.get("frozen_capital_rub", 0.0)) for item in non_liquid_items),
+        2,
+    )
+
+    oos_zero: list[dict[str, Any]] = []
+    for forecast in getattr(matrix_etl, "oos_forecasts", ()) or ():
+        if float(forecast.stock_qty) > 0:
+            continue
+        if float(forecast.sales_period_qty) <= 0:
+            continue
+        detail = catalog_map.get(forecast.label)
+        article_id = detail.article_id if detail else forecast.label
+        oos_zero.append(
+            {
+                "name": forecast.label,
+                "article_id": article_id,
+                "label": _format_sku_label(forecast.label, article_id),
+            }
+        )
+
+    return (
+        tuple(group_a_items),
+        tuple(loss_items),
+        non_liquid_items,
+        tuple(oos_zero),
+        frozen_total,
+    )
+
+
+@dataclass(frozen=True)
+class WbFinanceMatrixAggregation:
+    """Схлопнутые списки матрицы для Telegram (математика — по всем SKU)."""
+
+    abc_a_display_lines: tuple[str, ...] = ()
+    tail_a_count: int = 0
+    abc_c_display_lines: tuple[str, ...] = ()
+    tail_c_count: int = 0
+    tail_c_revenue: float = 0.0
+    ballast_display_lines: tuple[str, ...] = ()
+    tail_ballast_count: int = 0
+    tail_ballast_loss: float = 0.0
+    non_liquid_display_lines: tuple[str, ...] = ()
+    tail_frozen_count: int = 0
+    tail_frozen_stock: int = 0
+    loss_sku_display_lines: tuple[str, ...] = ()
+    tail_loss_sku_count: int = 0
+    tail_loss_sku_rub: float = 0.0
+    abc_group_a_display_items: tuple[dict[str, Any], ...] = ()
+    non_liquid_display_items: tuple[dict[str, Any], ...] = ()
+
+
+def _escape_verdict(text: str) -> str:
+    from services.telegram_safe_text import _escape_telegram_html
+
+    return _escape_telegram_html(text)
+
+
+def _tail_line_group_a(count: int) -> str:
+    return f"• <i>...и ещё {count} успешных товаров группы А</i>"
+
+
+def _tail_line_group_c(count: int, revenue: float) -> str:
+    return (
+        f"• <i>...и ещё {count} товаров с низким спросом "
+        f"(суммарная выручка: {_fmt_rub_in_code(revenue)} руб.)</i>"
+    )
+
+
+def _tail_line_ballast(count: int, loss: float) -> str:
+    return (
+        f"• <i>Оставшиеся {count} товаров-балласта принесли убыток на покатушках: "
+        f"{_fmt_rub_in_code(loss)} руб.</i>"
+    )
+
+
+def _tail_line_non_liquid(count: int, stock: int) -> str:
+    return (
+        f"• <i>Оставшиеся {count} позиций неликвида заморозили на складе "
+        f"{stock} шт. товара.</i>"
+    )
+
+
+def _tail_line_loss_skus(count: int, loss_rub: float) -> str:
+    return (
+        f"• <i>...и ещё {count} убыточных SKU на сумму "
+        f"{_fmt_rub_in_code(abs(loss_rub))} руб.</i>"
+    )
+
+
+def aggregate_matrix_display(matrix_etl: object | None) -> WbFinanceMatrixAggregation:
+    """ТОП-N в тексте, хвост — агрегированными метриками (все SKU учтены в суммах)."""
+    empty = WbFinanceMatrixAggregation()
+    if matrix_etl is None:
+        return empty
+
+    oos_map = {f.label: f for f in getattr(matrix_etl, "oos_forecasts", ()) or ()}
+    catalog_map = {s.name: s for s in getattr(matrix_etl, "sku_catalog", ()) or ()}
+
+    group_a_sorted = sorted(
+        getattr(matrix_etl, "abc_group_a", ()) or (),
+        key=lambda s: float(s.net_profit),
+        reverse=True,
+    )
+    abc_a_lines: list[str] = []
+    for sku in group_a_sorted[:_TOP_GROUP_A_DISPLAY]:
+        detail = catalog_map.get(sku.name)
+        oos = oos_map.get(sku.name)
+        sales_qty = float(detail.sales_qty) if detail and detail.sales_qty > 0 else 0.0
+        if sales_qty <= 0 and oos:
+            sales_qty = float(oos.sales_period_qty)
+        unit_profit = _sku_unit_profit_rub(sku.net_profit, sales_qty)
+        label = _format_sku_label(sku.name, sku.article_id)
+        safe_label = _escape_verdict(label)
+        abc_a_lines.append(
+            f"• <b>{safe_label}</b> — чистая прибыль "
+            f"<code>{_fmt_rub_in_code(unit_profit)}</code>/шт., "
+            f"выкуп <code>{sku.buyout_pct:.1f}%</code>"
+        )
+    tail_a_count = max(0, len(group_a_sorted) - _TOP_GROUP_A_DISPLAY)
+
+    group_c_sorted = sorted(
+        getattr(matrix_etl, "abc_group_c", ()) or (),
+        key=lambda s: float(s.revenue),
+    )
+    abc_c_lines: list[str] = []
+    for sku in group_c_sorted[:_TOP_GROUP_C_DISPLAY]:
+        label = _format_sku_label(sku.name, sku.article_id)
+        abc_c_lines.append(
+            f"• {_escape_verdict(label)} — выручка "
+            f"<code>{_fmt_rub_in_code(sku.revenue)}</code> руб."
+        )
+    tail_c = group_c_sorted[_TOP_GROUP_C_DISPLAY:]
+    tail_c_count = len(tail_c)
+    tail_c_revenue = round(sum(float(s.revenue) for s in tail_c), 2)
+
+    ballast, non_liquid = _extract_problem_zones_structured(matrix_etl)
+    ballast_lines: list[str] = []
+    for item in ballast[:_TOP_BALLAST_DISPLAY]:
+        ballast_lines.append(
+            f"• {_escape_verdict(str(item['sku']))} — выкуп "
+            f"<code>{item['buyout']:.1f}%</code>, убыток на покатушках "
+            f"<code>{_fmt_rub_in_code(float(item['loss']))}</code> руб."
+        )
+    tail_ballast = ballast[_TOP_BALLAST_DISPLAY:]
+    tail_ballast_count = len(tail_ballast)
+    tail_ballast_loss = round(sum(float(i.get("loss", 0.0)) for i in tail_ballast), 2)
+
+    non_liquid_lines: list[str] = []
+    for item in non_liquid[:_TOP_NON_LIQUID_DISPLAY]:
+        stock = int(item.get("stock", 0))
+        non_liquid_lines.append(
+            f"• {_escape_verdict(str(item['sku']))} — остаток <code>{stock}</code> шт."
+        )
+    tail_frozen = non_liquid[_TOP_NON_LIQUID_DISPLAY:]
+    tail_frozen_count = len(tail_frozen)
+    tail_frozen_stock = sum(int(i.get("stock", 0)) for i in tail_frozen)
+
+    loss_items: list[dict[str, Any]] = []
+    for detail in getattr(matrix_etl, "sku_catalog", ()) or ():
+        if detail.net_profit >= 0:
+            continue
+        loss_items.append(
+            {
+                "label": _format_sku_label(detail.name, detail.article_id),
+                "net_profit_rub": round(float(detail.net_profit), 2),
+            }
+        )
+    loss_items.sort(key=lambda x: float(x["net_profit_rub"]))
+    loss_lines: list[str] = []
+    for item in loss_items[:_TOP_LOSS_SKU_DISPLAY]:
+        loss_lines.append(
+            f"• <b>{_escape_verdict(str(item['label']))}</b> — убыток "
+            f"<code>{_fmt_rub_in_code(abs(float(item['net_profit_rub'])))}</code> руб."
+        )
+    tail_loss = loss_items[_TOP_LOSS_SKU_DISPLAY:]
+    tail_loss_count = len(tail_loss)
+    tail_loss_rub = round(sum(float(i["net_profit_rub"]) for i in tail_loss), 2)
+
+    group_a_display_items: list[dict[str, Any]] = []
+    for sku in group_a_sorted[:_TOP_GROUP_A_DISPLAY]:
+        detail = catalog_map.get(sku.name)
+        oos = oos_map.get(sku.name)
+        sales_qty = float(detail.sales_qty) if detail and detail.sales_qty > 0 else 0.0
+        if sales_qty <= 0 and oos:
+            sales_qty = float(oos.sales_period_qty)
+        group_a_display_items.append(
+            {
+                "name": sku.name,
+                "article_id": sku.article_id,
+                "label": _format_sku_label(sku.name, sku.article_id),
+                "unit_profit_rub": _sku_unit_profit_rub(sku.net_profit, sales_qty),
+                "net_profit_rub": round(float(sku.net_profit), 2),
+                "buyout_pct": round(float(sku.buyout_pct), 1),
+            }
+        )
+
+    return WbFinanceMatrixAggregation(
+        abc_a_display_lines=tuple(abc_a_lines),
+        tail_a_count=tail_a_count,
+        abc_c_display_lines=tuple(abc_c_lines),
+        tail_c_count=tail_c_count,
+        tail_c_revenue=tail_c_revenue,
+        ballast_display_lines=tuple(ballast_lines),
+        tail_ballast_count=tail_ballast_count,
+        tail_ballast_loss=tail_ballast_loss,
+        non_liquid_display_lines=tuple(non_liquid_lines),
+        tail_frozen_count=tail_frozen_count,
+        tail_frozen_stock=tail_frozen_stock,
+        loss_sku_display_lines=tuple(loss_lines),
+        tail_loss_sku_count=tail_loss_count,
+        tail_loss_sku_rub=tail_loss_rub,
+        abc_group_a_display_items=tuple(group_a_display_items),
+        non_liquid_display_items=tuple(non_liquid[:_TOP_NON_LIQUID_DISPLAY]),
+    )
+
+
+def build_matrix_problem_zones_block_from_aggregation(
+    aggregation: WbFinanceMatrixAggregation,
+) -> str:
+    """Балласт и неликвид с агрегированным хвостом."""
+    lines: list[str] = []
+    if aggregation.ballast_display_lines:
+        lines.append("📉 <b>Балласт (Деньги уходят на пустые покатушки):</b>")
+        lines.extend(aggregation.ballast_display_lines)
+        if aggregation.tail_ballast_count > 0:
+            lines.append(
+                _tail_line_ballast(
+                    aggregation.tail_ballast_count,
+                    aggregation.tail_ballast_loss,
+                )
+            )
+    if aggregation.non_liquid_display_lines:
+        lines.append("❄️ <b>Неликвид (Капитал заморожен на складе):</b>")
+        lines.extend(aggregation.non_liquid_display_lines)
+        if aggregation.tail_frozen_count > 0:
+            lines.append(
+                _tail_line_non_liquid(
+                    aggregation.tail_frozen_count,
+                    aggregation.tail_frozen_stock,
+                )
+            )
+    return "\n".join(lines) if lines else "проблемных зон в группе C не выявлено"
 
 
 def _extract_problem_zone_sku_lists(matrix_etl: object | None) -> tuple[list[str], list[str]]:
@@ -639,7 +963,19 @@ def build_wb_weekly_xlsx_ai_context(file_path: str | Path) -> dict[str, Any] | N
                     }
                 )
             if item["stock"] > 0 and item["revenue"] == 0:
-                non_liquid.append({"sku": item["sku"], "stock": item["stock"]})
+                unit_cost = (
+                    float(metrics["cost"]) / max(int(metrics["orders_count"]), 1)
+                    if float(metrics["cost"]) > 0
+                    else 0.0
+                )
+                non_liquid.append(
+                    {
+                        "sku": item["sku"],
+                        "stock": item["stock"],
+                        "cost": round(unit_cost, 2),
+                        "frozen_capital_rub": round(item["stock"] * unit_cost, 2),
+                    }
+                )
             if item["daily_sales"] > 0:
                 days_left = int(item["stock"] / item["daily_sales"])
                 if days_left <= 7:
@@ -1058,59 +1394,10 @@ def _illiquid_reason(
 
 
 def build_matrix_problem_zones_block(matrix_etl: object | None) -> str:
-    """Текст подсказки ETL: балласт и неликвид из группы C."""
-    if matrix_etl is None:
-        return "проблемных зон в группе C не выявлено"
-    group_c = getattr(matrix_etl, "abc_group_c", ()) or ()
-    if not group_c:
-        return "проблемных зон в группе C не выявлено"
-
-    oos_map = {f.label: f for f in getattr(matrix_etl, "oos_forecasts", ()) or ()}
-    ballast: list[tuple[float, str, str]] = []
-    illiquid: list[tuple[float, str, str]] = []
-
-    for sku in group_c:
-        oos = oos_map.get(sku.name)
-        stock = float(oos.stock_qty) if oos else 0.0
-        sales = float(oos.sales_period_qty) if oos else 0.0
-        days = oos.days_until_stockout if oos else None
-        label = _format_sku_label(sku.name, sku.article_id)
-        zone = _classify_group_c_problem_zone(
-            sku.buyout_pct,
-            sku.revenue,
-            stock_qty=stock,
-            sales_qty=sales,
-            days_until_stockout=days,
-        )
-        if zone == "illiquid":
-            illiquid.append(
-                (
-                    stock,
-                    label,
-                    _illiquid_reason(
-                        stock_qty=stock,
-                        sales_qty=sales,
-                        days_until_stockout=days,
-                        revenue=sku.revenue,
-                    ),
-                )
-            )
-        else:
-            ballast.append((sku.buyout_pct, label, _ballast_reason(sku.buyout_pct)))
-
-    ballast.sort(key=lambda x: x[0])
-    illiquid.sort(key=lambda x: -x[0])
-
-    lines: list[str] = []
-    if ballast:
-        lines.append("📉 <b>Балласт (Деньги уходят на пустые покатушки):</b>")
-        for _, label, reason in ballast:
-            lines.append(f"• {label} — {reason}")
-    if illiquid:
-        lines.append("❄️ <b>Неликвид (Капитал заморожен на складе):</b>")
-        for _, label, reason in illiquid:
-            lines.append(f"• {label} — {reason}")
-    return "\n".join(lines) if lines else "проблемных зон в группе C не выявлено"
+    """Текст подсказки ETL: балласт и неликвид из группы C (с агрегацией хвоста)."""
+    return build_matrix_problem_zones_block_from_aggregation(
+        aggregate_matrix_display(matrix_etl)
+    )
 
 
 def _format_sku_bullet_lines(
@@ -1166,53 +1453,52 @@ def _build_strategic_plan_lines(
     prompt_metrics: WbFinancePromptMetrics,
     wb_metrics: WbMarketplaceMetrics | None,
 ) -> list[str]:
-    """Три шага плана с учётом выкупа лидера и уровня ДРР."""
-    leader_label = _escape_verdict(
-        _format_sku_label(
-            prompt_metrics.abc_a_leader_name,
-            prompt_metrics.abc_a_leader_article,
-        )
-    )
+    """Три шага плана: масштабирование, убыточный SKU, OOS — только из ETL."""
     lines: list[str] = []
 
-    leader_ok = _leader_buyout_is_healthy(
-        prompt_metrics.abc_a_leader_buyout,
-        prompt_metrics.abc_a_leader_margin,
-    )
-
-    if leader_ok:
-        lines.append(
-            f"<b>1.</b> Усилить закуп и рекламу на <b>{leader_label}</b> — "
-            f"лидер A, выкуп <code>{prompt_metrics.abc_a_leader_buyout:.1f}%</code>, "
-            f"чистая прибыль с одной продажи: <code>{_fmt_rub_in_code(prompt_metrics.abc_a_leader_margin)}</code> руб."
-        )
-    elif wb_metrics and wb_metrics.top5_units:
-        scale_candidate = None
-        for unit in sorted(wb_metrics.top5_units, key=lambda u: u.net_income, reverse=True):
-            if unit.net_income > 0:
-                scale_candidate = unit
+    scale_item: dict[str, Any] | None = None
+    for item in prompt_metrics.abc_group_a_items:
+        if float(item.get("unit_profit_rub", 0.0)) > 0:
+            scale_item = item
+            break
+    if scale_item is None:
+        for item in sorted(
+            prompt_metrics.sku_catalog_items,
+            key=lambda x: float(x.get("margin_rub", 0.0)),
+            reverse=True,
+        ):
+            if float(item.get("margin_rub", 0.0)) > 0:
+                scale_item = {
+                    "label": _format_sku_label(
+                        str(item.get("name", "")),
+                        str(item.get("article_id", "")),
+                    ),
+                    "unit_profit_rub": float(item.get("margin_rub", 0.0)),
+                }
                 break
-        if scale_candidate and leader_ok is False:
-            lines.append(
-                f"<b>1.</b> Не масштабируйте <b>{leader_label}</b> "
-                f"(выкуп <code>{prompt_metrics.abc_a_leader_buyout:.1f}%</code>) — "
-                f"сначала карточка и логистика. Рабочий драйвер: "
-                f"<b>{_escape_verdict(scale_candidate.label)}</b> "
-                f"(<code>{_fmt_rub_in_code(scale_candidate.net_income)}</code>/шт.)."
-            )
-        else:
-            lines.append(
-                "<b>1.</b> Не масштабируйте товары с нулевым выкупом или убытком — "
-                "сначала поднимите конверсию карточки и цену."
-            )
+
+    if scale_item:
+        scale_label = _escape_verdict(str(scale_item.get("label", "—")))
+        lines.append(
+            f"<b>1.</b> Усилить закуп и рекламу на <b>{scale_label}</b> — "
+            f"чистая прибыль с одной продажи: "
+            f"<code>{_fmt_rub_in_code(float(scale_item.get('unit_profit_rub', 0.0)))}</code> руб."
+        )
     else:
         lines.append(
-            f"<b>1.</b> Не масштабируйте <b>{leader_label}</b>: "
-            f"выкуп <code>{prompt_metrics.abc_a_leader_buyout:.1f}%</code> — "
-            "сначала карточка, цена и логистика."
+            "<b>1.</b> Контролируйте ДРР и окупаемость рекламы — "
+            "прибыльный драйвер для масштабирования в этом периоде не выделен."
         )
 
-    if prompt_metrics.adv_load_pct >= 30:
+    if prompt_metrics.loss_sku_items:
+        worst = prompt_metrics.loss_sku_items[0]
+        worst_label = _escape_verdict(str(worst.get("label", "—")))
+        lines.append(
+            f"<b>2.</b> Для <b>{worst_label}</b> поднимите цену "
+            f"или остановите рекламу — убыток "
+            f"<code>{_fmt_rub_in_code(abs(float(worst.get('net_profit_rub', 0.0))))}</code> руб."
+        )
+    elif prompt_metrics.adv_load_pct >= 30:
         lines.append(
             f"<b>2.</b> Катастрофический ДРР <code>{prompt_metrics.adv_load_pct:.1f}%</code> — "
             "немедленно режьте рекламный бюджет минимум вдвое, отключите все неокупаемые кампании "
@@ -1223,28 +1509,36 @@ def _build_strategic_plan_lines(
             f"<b>2.</b> Срочно <b>снизить ДРР</b> с <code>{prompt_metrics.adv_load_pct:.1f}%</code> "
             "до 12–15%: отключите неокупаемые кампании, сузьте ключевые слова и ставки."
         )
-    elif prompt_metrics.outsider_name not in ("—", "") and prompt_metrics.outsider_loss > 0:
-        out_name = _escape_verdict(_format_sku_label(prompt_metrics.outsider_name, prompt_metrics.outsider_article))
-        lines.append(
-            f"<b>2.</b> Для <b>{out_name}</b> поднимите цену "
-            f"или остановите рекламу — убыток "
-            f"<code>{_fmt_rub_in_code(prompt_metrics.outsider_loss)}</code> руб."
-        )
     else:
         lines.append(
             f"<b>2.</b> Держите ДРР не выше <code>15%</code> — еженедельно чистите неокупаемые ключи."
         )
 
-    lines.append(
-        f"<b>3.</b> Контролируйте остатки по рисковым артикулам: "
-        f"<i>{_escape_verdict(_dedupe_report_noise(prompt_metrics.oos_forecast_line))}</i>"
-    )
+    if prompt_metrics.oos_zero_stock_items:
+        oos_names = ", ".join(
+            _escape_verdict(str(item.get("label", item.get("name", "—"))))
+            for item in prompt_metrics.oos_zero_stock_items[:3]
+        )
+        lines.append(
+            f"<b>3.</b> Срочно пополните остатки: <b>{oos_names}</b> — "
+            "товар закончился на складе при сохранённом спросе."
+        )
+    elif prompt_metrics.oos_forecast_line and "недостаточно" not in prompt_metrics.oos_forecast_line:
+        lines.append(
+            f"<b>3.</b> Контролируйте остатки по рисковым артикулам: "
+            f"<i>{_escape_verdict(_dedupe_report_noise(prompt_metrics.oos_forecast_line))}</i>"
+        )
+    else:
+        lines.append(
+            "<b>3.</b> Еженедельно сверяйте остатки FBO/FBS и не допускайте обнуления "
+            "по товарам с продажами в отчётном периоде."
+        )
     return lines
 _WB_FINANCE_MAX_OUTPUT_TOKENS = 1400
 _WB_FINANCE_TELEGRAM_SOFT_MAX_CHARS = 2000
 _FINANCE_SEPARATOR = "────────────────────────"
 # Меняйте при каждом релизе CFO-шаблона — видно внизу отчёта для проверки деплоя.
-_FINANCE_REPORT_BUILD = "cfo-v8"
+_FINANCE_REPORT_BUILD = "cfo-v9"
 _OLD_FINALE_MARKERS = (
     "Финальный Excel",
     "интерактивный дашборд",
@@ -1333,6 +1627,14 @@ class WbFinancePromptMetrics:
     return_logistics_block: str = "• существенных потерь на обратной логистике не выявлено"
     matrix_problem_zones_block: str = "проблемных зон в группе C не выявлено"
     localization_index_line: str = "не указан в исходных данных"
+    abc_group_a_items: tuple[dict[str, Any], ...] = ()
+    loss_sku_items: tuple[dict[str, Any], ...] = ()
+    non_liquid_items: tuple[dict[str, Any], ...] = ()
+    oos_zero_stock_items: tuple[dict[str, Any], ...] = ()
+    non_liquid_frozen_total_rub: float = 0.0
+    matrix_aggregation: WbFinanceMatrixAggregation = field(
+        default_factory=WbFinanceMatrixAggregation
+    )
 
 
 def compute_business_score(
@@ -1517,7 +1819,8 @@ def compute_fomo_lost_rub(
             if sku_loss > 20:
                 total += sku_loss
                 parts.append(
-                    f"неликвид «{unit.label[:28]}» (убыток {_fmt_rub_in_code(unit.net_income)}/шт.) ≈ "
+                    f"убыточный SKU «{unit.label[:28]}» "
+                    f"(<code>{_fmt_rub_in_code(unit.net_income)}</code>/шт.) ≈ "
                     f"{_fmt_rub_in_code(sku_loss)} руб."
                 )
                 break
@@ -1593,6 +1896,12 @@ def compute_wb_finance_prompt_metrics(
     oos_line = "данных по остаткам недостаточно"
     reverse_logistics_shop_avg = 0.0
     return_logistics_block = "• существенных потерь на обратной логистике не выявлено"
+    abc_group_a_items: tuple[dict[str, Any], ...] = ()
+    loss_sku_items: tuple[dict[str, Any], ...] = ()
+    non_liquid_items: tuple[dict[str, Any], ...] = ()
+    oos_zero_stock_items: tuple[dict[str, Any], ...] = ()
+    non_liquid_frozen_total_rub = 0.0
+    matrix_aggregation = WbFinanceMatrixAggregation()
     if matrix_etl:
         logistics_fomo = matrix_etl.logistics_fomo_rub
         reverse_logistics_shop_avg = matrix_etl.reverse_logistics_shop_avg
@@ -1621,13 +1930,24 @@ def compute_wb_finance_prompt_metrics(
             abc_a_leader_article = matrix_etl.abc_a_leader
         abc_a_count = len(matrix_etl.abc_group_a)
         abc_c_count = len(matrix_etl.abc_group_c)
-        if matrix_etl.abc_group_c:
-            abc_c_summary = _format_sku_bullet_lines(
-                [(s.name, s.article_id) for s in matrix_etl.abc_group_c],
-            )
+        matrix_aggregation = aggregate_matrix_display(matrix_etl)
+        if matrix_aggregation.abc_c_display_lines:
+            abc_c_lines = list(matrix_aggregation.abc_c_display_lines)
+            if matrix_aggregation.tail_c_count > 0:
+                abc_c_lines.append(
+                    _tail_line_group_c(
+                        matrix_aggregation.tail_c_count,
+                        matrix_aggregation.tail_c_revenue,
+                    )
+                )
+            abc_c_summary = "\n".join(abc_c_lines)
         elif abc_c_count == 0:
             abc_c_summary = "убыточных товаров не выявлено"
-        matrix_problem_zones_block = build_matrix_problem_zones_block(matrix_etl)
+        else:
+            abc_c_summary = "• убыточных товаров не выявлено"
+        matrix_problem_zones_block = build_matrix_problem_zones_block_from_aggregation(
+            matrix_aggregation
+        )
         if matrix_etl.outsider_sku:
             outsider_name = matrix_etl.outsider_sku.name
             outsider_article = matrix_etl.outsider_sku.article_id
@@ -1640,7 +1960,11 @@ def compute_wb_finance_prompt_metrics(
             outsider_loss = abs(worst.net_profit)
             outsider_buyout = worst.buyout_pct
         if matrix_etl.sku_catalog:
-            sku_catalog_lines = tuple(s.catalog_line() for s in matrix_etl.sku_catalog[:20])
+            agg = matrix_aggregation
+            sku_catalog_lines = tuple(agg.abc_a_display_lines) + tuple(
+                s.catalog_line()
+                for s in matrix_etl.sku_catalog[:_TOP_GROUP_A_DISPLAY]
+            )
             sku_catalog_items = tuple(
                 {
                     "name": s.name,
@@ -1650,7 +1974,7 @@ def compute_wb_finance_prompt_metrics(
                     "buyout_pct": s.buyout_pct,
                     "abc_group": s.abc_group,
                 }
-                for s in matrix_etl.sku_catalog[:20]
+                for s in matrix_etl.sku_catalog
             )
             gross_net = sum(s.net_profit for s in matrix_etl.sku_catalog)
             clear_profit = round(gross_net - tax, 2)
@@ -1677,6 +2001,15 @@ def compute_wb_finance_prompt_metrics(
             )
         elif matrix_etl.oos_forecasts:
             oos_line = "критических рисков обнуления остатков не выявлено"
+        (
+            abc_group_a_items,
+            loss_sku_items,
+            non_liquid_items,
+            oos_zero_stock_items,
+            non_liquid_frozen_total_rub,
+        ) = _collect_etl_dynamic_slices(matrix_etl)
+        if non_liquid_frozen_total_rub > 0:
+            fomo_rub = round(fomo_rub + non_liquid_frozen_total_rub, 2)
 
     return WbFinancePromptMetrics(
         revenue=revenue_total,
@@ -1715,6 +2048,12 @@ def compute_wb_finance_prompt_metrics(
         deliveries_qty=wb_metrics.deliveries_qty if wb_metrics else 0.0,
         reverse_logistics_shop_avg=reverse_logistics_shop_avg,
         return_logistics_block=return_logistics_block,
+        abc_group_a_items=abc_group_a_items,
+        loss_sku_items=loss_sku_items,
+        non_liquid_items=non_liquid_items,
+        oos_zero_stock_items=oos_zero_stock_items,
+        non_liquid_frozen_total_rub=non_liquid_frozen_total_rub,
+        matrix_aggregation=matrix_aggregation,
     )
 
 
@@ -1938,6 +2277,127 @@ def _abc_sku_to_dict(sku: object, group: str) -> dict[str, Any]:
     }
 
 
+_STRIP_HTML_TAGS_RE = re.compile(r"<[^>]+>")
+
+
+def _strip_html_tags(text: str) -> str:
+    return _STRIP_HTML_TAGS_RE.sub("", text or "").replace("&nbsp;", " ").strip()
+
+
+def _matrix_aggregation_to_dict(agg: WbFinanceMatrixAggregation) -> dict[str, Any]:
+    return {
+        "tail_a_count": agg.tail_a_count,
+        "tail_c_count": agg.tail_c_count,
+        "tail_c_revenue_rub": round(agg.tail_c_revenue, 2),
+        "tail_ballast_count": agg.tail_ballast_count,
+        "tail_ballast_loss_rub": round(agg.tail_ballast_loss, 2),
+        "tail_frozen_count": agg.tail_frozen_count,
+        "tail_frozen_stock": agg.tail_frozen_stock,
+        "tail_loss_sku_count": agg.tail_loss_sku_count,
+        "tail_loss_sku_rub": round(agg.tail_loss_sku_rub, 2),
+        "abc_a_display": list(agg.abc_a_display_lines),
+        "abc_c_display": list(agg.abc_c_display_lines),
+        "ballast_display": list(agg.ballast_display_lines),
+        "non_liquid_display": list(agg.non_liquid_display_lines),
+    }
+
+
+def _build_mini_app_traffic_light_dict(
+    prompt_metrics: WbFinancePromptMetrics,
+    wb_metrics: WbMarketplaceMetrics | None,
+) -> dict[str, str]:
+    """Плоский светофор для Mini App (без HTML-тегов)."""
+    block = _build_traffic_light_block(wb_metrics, prompt_metrics)
+    keys = ("green", "yellow", "red")
+    out: dict[str, str] = {}
+    for idx, key in enumerate(keys):
+        raw = block[idx * 2] if idx * 2 < len(block) else ""
+        text = _strip_html_tags(raw)
+        for prefix in (
+            "ЗОНА УСПЕХА:",
+            "ЗОНА ВНИМАНИЯ:",
+            "КРИТИЧЕСКАЯ ЗОНА:",
+        ):
+            text = text.replace(prefix, "").strip()
+        out[key] = text or (
+            "Лидеры с высокой маржой в этом периоде отсутствуют"
+            if key == "green"
+            else "показатели в норме"
+            if key == "yellow"
+            else "Критических убытков по товарам не зафиксировано"
+        )
+    return out
+
+
+def _mini_app_abc_groups_from_etl(
+    matrix_etl: object | None,
+    agg: WbFinanceMatrixAggregation,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """ТОП-N SKU для Mini App; полная математика остаётся в summary."""
+    catalog_map: dict[str, Any] = {}
+    if matrix_etl is not None:
+        catalog_map = {s.name: s for s in getattr(matrix_etl, "sku_catalog", ()) or ()}
+
+    group_a: list[dict[str, Any]] = []
+    for item in agg.abc_group_a_display_items:
+        detail = catalog_map.get(str(item.get("name", "")))
+        revenue = float(detail.revenue) if detail else 0.0
+        buyout = float(item.get("buyout_pct") or (detail.buyout_pct if detail else 0.0))
+        group_a.append(
+            {
+                "sku": str(item.get("article_id") or item.get("name") or "—"),
+                "name": str(item.get("name") or "—"),
+                "article_id": str(item.get("article_id") or "—"),
+                "revenue": round(revenue, 2),
+                "revenue_rub": round(revenue, 2),
+                "margin": round(float(item.get("net_profit_rub", 0.0)), 2),
+                "margin_rub": round(float(item.get("net_profit_rub", 0.0)), 2),
+                "unit_profit_rub": round(float(item.get("unit_profit_rub", 0.0)), 2),
+                "buyout_pct": round(buyout, 1),
+                "abc_group": "A",
+            }
+        )
+
+    group_b: list[dict[str, Any]] = []
+    group_c: list[dict[str, Any]] = []
+    if matrix_etl is not None:
+        all_c = sorted(
+            getattr(matrix_etl, "abc_group_c", ()) or (),
+            key=lambda s: float(s.revenue),
+        )
+        for sku in all_c[:_TOP_GROUP_C_DISPLAY]:
+            group_c.append(_abc_sku_to_dict(sku, "C"))
+
+        ranked_b = [
+            s
+            for s in getattr(matrix_etl, "sku_catalog", ()) or ()
+            if (s.abc_group or "B").upper() == "B"
+        ]
+        ranked_b.sort(key=lambda s: float(s.net_profit), reverse=True)
+        for item in ranked_b[:_TOP_GROUP_A_DISPLAY]:
+            group_b.append(_abc_sku_to_dict(item, "B"))
+
+    return group_a, group_b, group_c
+
+
+def _mini_app_sku_catalog_slice(
+    group_a: list[dict[str, Any]],
+    group_b: list[dict[str, Any]],
+    group_c: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Компактный каталог для WebView (без 10k карточек)."""
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for batch in (group_a, group_b, group_c):
+        for row in batch:
+            key = str(row.get("article_id") or row.get("sku") or row.get("name"))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(row)
+    return out
+
+
 def build_wb_finance_mini_app_extensions(
     revenue_total: float,
     wb_metrics: WbMarketplaceMetrics | None,
@@ -1966,40 +2426,11 @@ def build_wb_finance_mini_app_extensions(
         if matrix_rows
         else None
     )
+    agg = prompt_metrics.matrix_aggregation
+    if matrix_etl is not None and not agg.abc_a_display_lines:
+        agg = aggregate_matrix_display(matrix_etl)
 
-    group_a: list[dict[str, Any]] = []
-    group_b: list[dict[str, Any]] = []
-    group_c: list[dict[str, Any]] = []
-    if matrix_etl and matrix_etl.sku_catalog:
-        for item in matrix_etl.sku_catalog:
-            g = (item.abc_group or "B").upper()
-            row = _abc_sku_to_dict(item, g)
-            if g == "A":
-                group_a.append(row)
-            elif g == "C":
-                group_c.append(row)
-            else:
-                group_b.append(row)
-    elif prompt_metrics.sku_catalog_items:
-        for item in prompt_metrics.sku_catalog_items:
-            g = str(item.get("abc_group") or "B").upper()
-            row = {
-                "sku": str(item.get("article_id") or item.get("name") or "—"),
-                "name": str(item.get("name") or "—"),
-                "article_id": str(item.get("article_id") or "—"),
-                "revenue": round(float(item.get("revenue_rub") or 0), 2),
-                "revenue_rub": round(float(item.get("revenue_rub") or 0), 2),
-                "margin": round(float(item.get("margin_rub") or 0), 2),
-                "margin_rub": round(float(item.get("margin_rub") or 0), 2),
-                "buyout_pct": round(float(item.get("buyout_pct") or 0), 1),
-                "abc_group": g,
-            }
-            if g == "A":
-                group_a.append(row)
-            elif g == "C":
-                group_c.append(row)
-            else:
-                group_b.append(row)
+    group_a, group_b, group_c = _mini_app_abc_groups_from_etl(matrix_etl, agg)
 
     oos_forecast: list[dict[str, Any]] = []
     if matrix_etl:
@@ -2020,17 +2451,33 @@ def build_wb_finance_mini_app_extensions(
                 "fomo_lost_rub": round(fomo, 2),
             })
 
-    sku_catalog = list(prompt_metrics.sku_catalog_items)
+    score_emoji, score_status = _business_score_band(prompt_metrics.business_score)
+    sku_catalog = _mini_app_sku_catalog_slice(group_a, group_b, group_c)
+
     return {
         "source": "wb_ozon_finance_xlsx",
         "platform": platform_id,
+        "cfo_build": _FINANCE_REPORT_BUILD,
         "abc_analysis": {
             "group_a": group_a,
             "group_b": group_b,
             "group_c": group_c,
         },
+        "matrix_aggregation": _matrix_aggregation_to_dict(agg),
         "sku_catalog": sku_catalog,
         "out_of_stock_forecast": oos_forecast,
+        "health_index": {
+            "score": round(prompt_metrics.business_score, 1),
+            "emoji": score_emoji,
+            "status": score_status,
+            "verdict": prompt_metrics.verdict,
+        },
+        "traffic_light": _build_mini_app_traffic_light_dict(prompt_metrics, wb_metrics),
+        "loss_calculator": {
+            "fomo_lost_rub": round(prompt_metrics.fomo_lost_rub, 2),
+            "non_liquid_frozen_rub": round(prompt_metrics.non_liquid_frozen_total_rub, 2),
+            "return_logistics_shop_avg_rub": round(prompt_metrics.reverse_logistics_shop_avg, 2),
+        },
         "summary": {
             "revenue": round(prompt_metrics.revenue, 2),
             "revenue_rub": round(prompt_metrics.revenue, 2),
@@ -2041,6 +2488,7 @@ def build_wb_finance_mini_app_extensions(
             "buyout_coef_pct": round(prompt_metrics.buy_ratio_pct, 1),
             "fomo_rub": round(prompt_metrics.fomo_lost_rub, 2),
             "group_a_leader": prompt_metrics.abc_a_leader_name,
+            "reverse_logistics_shop_avg": round(prompt_metrics.reverse_logistics_shop_avg, 2),
         },
     }
 
@@ -2081,30 +2529,36 @@ def append_wb_finance_mini_app_cta(html: str) -> str:
     return repair_telegram_html((html or "").strip())
 
 
-def _format_abc_a_leader_html(prompt_metrics: WbFinancePromptMetrics) -> str:
-    """Лидер A: реальный SKU или сообщение о санации матрицы."""
+def _format_abc_a_leader_html(prompt_metrics: WbFinancePromptMetrics) -> list[str]:
+    """Группа A: ТОП-5 лидеров + агрегированный хвост."""
+    agg = prompt_metrics.matrix_aggregation
     if prompt_metrics.revenue > 0 and (
-        prompt_metrics.abc_a_leader_name in ("—", "")
-        or (
-            prompt_metrics.abc_a_leader_margin <= 0
-            and prompt_metrics.abc_a_leader_buyout <= 0
-            and prompt_metrics.abc_a_count == 0
-        )
+        not agg.abc_a_display_lines
+        and prompt_metrics.abc_a_count == 0
     ):
-        return (
-            "🅰️ <b>Товары-лидеры (Приносят основные деньги группы А):</b> "
-            "<i>Отсутствуют, выручка требует оптимизации</i>"
+        return [
+            (
+                "🅰️ <b>Товары-лидеры (Приносят основные деньги группы А):</b> "
+                "<i>Отсутствуют, выручка требует оптимизации</i>"
+            )
+        ]
+    lines = ["🅰️ <b>Товары-лидеры (Приносят основные деньги группы А):</b>"]
+    if agg.abc_a_display_lines:
+        lines.extend(agg.abc_a_display_lines)
+    elif prompt_metrics.abc_a_leader_name not in ("—", ""):
+        label = _escape_verdict(
+            _format_sku_label(
+                prompt_metrics.abc_a_leader_name,
+                prompt_metrics.abc_a_leader_article,
+            )
         )
-    label = _escape_verdict(
-        _format_sku_label(
-            prompt_metrics.abc_a_leader_name,
-            prompt_metrics.abc_a_leader_article,
+        lines.append(
+            f"• <b>{label}</b> — выкуп "
+            f"<code>{prompt_metrics.abc_a_leader_buyout:.1f}%</code>"
         )
-    )
-    return (
-        f"🅰️ <b>Товары-лидеры (Приносят основные деньги группы А):</b> <b>{label}</b> "
-        f"(выкуп: <code>{prompt_metrics.abc_a_leader_buyout:.1f}%</code>)"
-    )
+    if agg.tail_a_count > 0:
+        lines.append(_tail_line_group_a(agg.tail_a_count))
+    return lines
 
 
 def build_wb_finance_express_html_local(
@@ -2138,16 +2592,22 @@ def build_wb_finance_express_html_local(
         ),
         _FINANCE_SEPARATOR,
         "📦 <b>ABC-АНАЛИЗ ПРОДАЖ</b>",
-        _format_abc_a_leader_html(prompt_metrics),
-        "🅲 <b>Товары-аутсайдеры (Слабые продажи группы С):</b>",
     ]
+    lines.extend(_format_abc_a_leader_html(prompt_metrics))
+    lines.append("🅲 <b>Товары-аутсайдеры (Слабые продажи группы С):</b>")
     for c_line in prompt_metrics.abc_c_summary.splitlines():
         if c_line.strip():
-            lines.append(_escape_verdict(c_line))
+            if c_line.startswith("• <i>"):
+                lines.append(c_line)
+            else:
+                lines.append(c_line if "<code>" in c_line else _escape_verdict(c_line))
     lines.append("📦 <b>Проблемные зоны и скрытые убытки матрицы:</b>")
     for zone_line in prompt_metrics.matrix_problem_zones_block.splitlines():
         if zone_line.strip():
-            lines.append(_escape_verdict(zone_line))
+            if zone_line.startswith("📉") or zone_line.startswith("❄️") or zone_line.startswith("• <i>"):
+                lines.append(zone_line)
+            else:
+                lines.append(zone_line)
     lines.extend(
         [
         _FINANCE_SEPARATOR,
@@ -2156,26 +2616,7 @@ def build_wb_finance_express_html_local(
     )
     for zone_line in _build_traffic_light_block(wb_metrics, prompt_metrics):
         lines.append(zone_line)
-    lines.extend(
-        [
-            _FINANCE_SEPARATOR,
-            "💸 <b>КАЛЬКУЛЯТОР ПОТЕРЬ И УПУЩЕННОЙ ВЫГОДЫ</b>",
-            (
-                f"Потенциально можно вернуть в оборот: "
-                f"<code>{_fmt_rub_in_code(prompt_metrics.fomo_lost_rub)} руб.</code>"
-            ),
-        ]
-    )
-    fomo_items = _expand_fomo_breakdown(prompt_metrics.fomo_breakdown)
-    if fomo_items:
-        for part in fomo_items:
-            lines.append(f"• {_escape_verdict(part)}")
-    else:
-        lines.append("• критических зон упущенной выгоды не выявлено")
-    lines.append(
-        f"<i>Исправление выявленных зон вернёт в оборот до "
-        f"<code>{_fmt_rub_in_code(prompt_metrics.fomo_lost_rub)} руб.</code></i>"
-    )
+    lines.extend(_build_loss_calculator_lines(prompt_metrics))
     lines.extend(
         [
             _FINANCE_SEPARATOR,
@@ -2194,55 +2635,101 @@ def build_wb_finance_express_html_local(
     )
     lines.extend(_build_strategic_plan_lines(prompt_metrics, wb_metrics))
     lines.append(f"<i>CFO build {_FINANCE_REPORT_BUILD}</i>")
-    return append_wb_finance_mini_app_cta("\n".join(lines))
+    html = append_wb_finance_mini_app_cta("\n".join(lines))
+    if len(html) > _TELEGRAM_MESSAGE_SOFT_MAX:
+        logger.warning(
+            "WB finance local HTML %s chars exceeds soft limit %s",
+            len(html),
+            _TELEGRAM_MESSAGE_SOFT_MAX,
+        )
+    return html
 
 
-def _escape_verdict(text: str) -> str:
-    from services.telegram_safe_text import _escape_telegram_html
+def _build_loss_calculator_lines(prompt_metrics: WbFinancePromptMetrics) -> list[str]:
+    """Калькулятор потерь: логистика, реклама и замороженный капитал в неликвиде."""
+    lines = [
+        _FINANCE_SEPARATOR,
+        "💸 <b>КАЛЬКУЛЯТОР ПОТЕРЬ И УПУЩЕННОЙ ВЫГОДЫ</b>",
+        (
+            f"Потенциально можно вернуть в оборот: "
+            f"<code>{_fmt_rub_in_code(prompt_metrics.fomo_lost_rub)} руб.</code>"
+        ),
+    ]
 
-    return _escape_telegram_html(text)
+    detail_lines: list[str] = []
+    for part in _expand_fomo_breakdown(prompt_metrics.fomo_breakdown):
+        low = part.lower()
+        if "неликвид" in low:
+            continue
+        detail_lines.append(f"• {_escape_verdict(part)}")
+
+    for item in prompt_metrics.matrix_aggregation.non_liquid_display_items:
+        stock = int(item.get("stock", 0))
+        if stock <= 0:
+            continue
+        label = _escape_verdict(str(item.get("sku", item.get("name", "—"))))
+        unit_cost = float(item.get("cost", 0.0))
+        frozen = float(item.get("frozen_capital_rub", 0.0))
+        if unit_cost > 0 and frozen > 0:
+            detail_lines.append(
+                "• "
+                f"<b>{label}</b> — остаток <code>{stock}</code> шт. × "
+                f"себестоимость <code>{_fmt_rub_in_code(unit_cost)}</code> = "
+                f"заморожено <code>{_fmt_rub_in_code(frozen)}</code> руб."
+            )
+        else:
+            detail_lines.append(
+                "• "
+                f"<b>{label}</b> — остаток <code>{stock}</code> шт., "
+                "движения в периоде нет (себестоимость не указана в отчёте)."
+            )
+    agg = prompt_metrics.matrix_aggregation
+    if agg.tail_frozen_count > 0:
+        detail_lines.append(
+            _escape_verdict(
+                _tail_line_non_liquid(agg.tail_frozen_count, agg.tail_frozen_stock)
+            )
+        )
+
+    if detail_lines:
+        lines.extend(detail_lines)
+    else:
+        lines.append("• критических зон упущенной выгоды не выявлено")
+
+    if prompt_metrics.non_liquid_frozen_total_rub > 0:
+        lines.append(
+            f"Заморожено в неликвиде: "
+            f"<code>{_fmt_rub_in_code(prompt_metrics.non_liquid_frozen_total_rub)} руб.</code>"
+        )
+
+    lines.append(
+        f"<i>Исправление выявленных зон вернёт в оборот до "
+        f"<code>{_fmt_rub_in_code(prompt_metrics.fomo_lost_rub)} руб.</code></i>"
+    )
+    return lines
 
 
 def _build_traffic_light_block(
     wb_metrics: WbMarketplaceMetrics | None,
     prompt_metrics: WbFinancePromptMetrics,
 ) -> list[str]:
-    """🟢🟡🔴 блоки для локального fallback."""
-    leader_label = _escape_verdict(
-        _format_sku_label(
-            prompt_metrics.abc_a_leader_name,
-            prompt_metrics.abc_a_leader_article,
-        )
-    )
-    leader_buyout = prompt_metrics.abc_a_leader_buyout
-    leader_margin = prompt_metrics.abc_a_leader_margin
-    leader_ok = _leader_buyout_is_healthy(leader_buyout, leader_margin)
-
+    """🟢🟡🔴 блоки для локального fallback — только данные ETL."""
+    agg = prompt_metrics.matrix_aggregation
     green = "🟢 <b>ЗОНА УСПЕХА:</b> "
-    if not leader_ok:
-        if wb_metrics and wb_metrics.top5_units:
-            healthy = [u for u in wb_metrics.top5_units if u.net_income > 0]
-            if healthy:
-                best = max(healthy, key=lambda u: u.net_income)
-                green += (
-                    f"Масштабируйте <b>{_escape_verdict(best.label)}</b> "
-                    f"(<code>{_fmt_rub_in_code(best.net_income)}</code>/шт.) — "
-                    "здоровый драйвер маржи. "
-                    f"<b>{leader_label}</b> в критической зоне, не масштабировать."
-                )
-            else:
-                green += "сначала восстановите выкуп и маржу — масштабировать пока нечего."
-        else:
-            green += (
-                "сначала поднимите выкуп по карточкам — масштабирование отложите."
+    display_a = agg.abc_group_a_display_items or prompt_metrics.abc_group_a_items[:_TOP_GROUP_A_DISPLAY]
+    if display_a:
+        green_parts = [
+            (
+                f"<b>{_escape_verdict(str(item.get('label', '—')))}</b> — "
+                f"чистая прибыль <code>{_fmt_rub_in_code(float(item.get('unit_profit_rub', 0.0)))}</code>/шт."
             )
+            for item in display_a
+        ]
+        green += "; ".join(green_parts)
+        if agg.tail_a_count > 0:
+            green += f" {_escape_verdict(_tail_line_group_a(agg.tail_a_count).removeprefix('• '))}"
     else:
-        green += (
-            f"Товары-лидеры группы A — <b>{leader_label}</b>, "
-            f"маржа <code>{_fmt_rub_in_code(leader_margin)}</code> руб., "
-            f"выкуп <code>{leader_buyout:.1f}%</code>. "
-            "Масштабируйте закуп и рекламу на этот артикул."
-        )
+        green += "Лидеры с высокой маржой в этом периоде отсутствуют"
 
     yellow = "🟡 <b>ЗОНА ВНИМАНИЯ:</b> "
     yellow_parts: list[str] = []
@@ -2288,53 +2775,37 @@ def _build_traffic_light_block(
     yellow += " ".join(yellow_parts)
 
     red = "🔴 <b>КРИТИЧЕСКАЯ ЗОНА:</b> "
-    red_parts: list[str] = []
-    if not leader_ok:
-        if leader_buyout < _CRITICAL_BUYOUT_PCT:
-            red_parts.append(
-                f"<b>{leader_label}</b> — "
-                f"главный источник убытков: выкуп <code>{leader_buyout:.1f}%</code>, "
-                "масштабирование запрещено."
+    loss_display = agg.loss_sku_display_lines
+    if loss_display or prompt_metrics.loss_sku_items:
+        red_parts: list[str] = []
+        if loss_display:
+            red_parts.extend(
+                line.removeprefix("• ") for line in loss_display
             )
         else:
+            for item in prompt_metrics.loss_sku_items[:_TOP_LOSS_SKU_DISPLAY]:
+                red_parts.append(
+                    f"<b>{_escape_verdict(str(item.get('label', '—')))}</b> — убыток "
+                    f"<code>{_fmt_rub_in_code(abs(float(item.get('net_profit_rub', 0.0))))}</code> руб."
+                )
+        if agg.tail_loss_sku_count > 0:
             red_parts.append(
-                f"<b>{leader_label}</b> — выкуп "
-                f"<code>{leader_buyout:.1f}%</code>: нельзя масштабировать, "
-                "сначала карточка и логистика."
+                _tail_line_loss_skus(agg.tail_loss_sku_count, agg.tail_loss_sku_rub).removeprefix(
+                    "• "
+                )
             )
-    if prompt_metrics.outsider_name not in ("—", "") and prompt_metrics.outsider_loss > 0:
-        outsider_label = _escape_verdict(
-            _format_sku_label(
-                prompt_metrics.outsider_name,
-                prompt_metrics.outsider_article,
-            )
-        )
-        if outsider_label.lower() != leader_label.lower():
+        if prompt_metrics.adv_load_pct >= 30:
             red_parts.append(
-                f"Аутсайдер <b>{outsider_label}</b> — убыток "
-                f"<code>{_fmt_rub_in_code(prompt_metrics.outsider_loss)}</code> руб., "
-                f"выкуп <code>{prompt_metrics.outsider_buyout:.1f}%</code>."
+                f"Катастрофический ДРР <code>{prompt_metrics.adv_load_pct:.1f}%</code> — "
+                "реклама съедает чистую прибыль быстрее, чем растёт выручка."
             )
-    elif wb_metrics and wb_metrics.top5_units:
-        worst = min(wb_metrics.top5_units, key=lambda u: u.net_income)
-        if worst.net_income < 0:
+        elif prompt_metrics.adv_load_pct > _HIGH_DRR_PCT:
             red_parts.append(
-                f"«{worst.label}» убыточен "
-                f"(<code>{_fmt_rub_in_code(worst.net_income)}</code>/шт.)."
+                f"ДРР <code>{prompt_metrics.adv_load_pct:.1f}%</code> — срочно режьте рекламный бюджет."
             )
-    if prompt_metrics.adv_load_pct >= 30:
-        red_parts.append(
-            f"Катастрофический ДРР <code>{prompt_metrics.adv_load_pct:.1f}%</code> — "
-            "реклама съедает чистую прибыль быстрее, чем растёт выручка."
-        )
-    elif prompt_metrics.adv_load_pct > _HIGH_DRR_PCT:
-        red_parts.append(
-            f"ДРР <code>{prompt_metrics.adv_load_pct:.1f}%</code> — срочно режьте рекламный бюджет."
-        )
-    if not red_parts:
-        red += "критических утечек не зафиксировано — держите фокус на жёлтой зоне."
+        red += "; ".join(red_parts)
     else:
-        red += " ".join(red_parts)
+        red += "Критических убытков по товарам не зафиксировано"
 
     return [green, "", yellow, "", red]
 
@@ -2434,7 +2905,7 @@ async def generate_wb_finance_consulting_html(
         )
         raw = sanitize_wb_finance_html(completion.get("content") or "")
         if _is_publishable_wb_finance_html(raw):
-            if "cfo-v8" not in raw.lower():
+            if "cfo-v9" not in raw.lower():
                 raw = f"{raw}\n\n<i>CFO build {_FINANCE_REPORT_BUILD}</i>"
             return append_wb_finance_mini_app_cta(raw)
         logger.warning(

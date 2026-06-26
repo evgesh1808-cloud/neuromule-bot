@@ -2,7 +2,8 @@
 Точка входа NeuroMule.
 
 NEUROMULE_PLATFORM:
-  telegram (по умолчанию) — aiogram, полный UI
+  telegram (по умолчанию) — aiogram, полный UI; при старте вызывается
+    ``platforms.telegram_studio.setup_studio_menu_button`` (кнопка «📱 Studio»).
   vk — vkbottle (заглушка, общий сервисный слой подключается позже)
   max — maxgram (заглушка до реализации polling/webhook)
   api — FastAPI для Mini App backend

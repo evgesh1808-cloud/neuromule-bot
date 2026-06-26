@@ -1310,7 +1310,14 @@
 
         /* ── Render ──────────────────────────────────────────── */
         function renderMetrics(fin) {
-            $("metric-score").textContent = fin.score.toFixed(1) + " / 10";
+            const hi = state.report && state.report.health_index;
+            if (hi && hi.score != null) {
+                const emoji = hi.emoji || "🎯";
+                $("metric-score").textContent =
+                    emoji + " " + Number(hi.score).toFixed(1) + " / 10";
+            } else {
+                $("metric-score").textContent = fin.score.toFixed(1) + " / 10";
+            }
             $("metric-revenue").textContent = formatRub(fin.revenue);
             $("metric-tax").textContent = formatRub(fin.tax);
             $("metric-expenses").textContent = formatRub(fin.expenses);
@@ -1365,6 +1372,26 @@
         }
 
         function renderTrafficLight(fin) {
+            const tl = state.report && state.report.traffic_light;
+            const grid = $("traffic-grid");
+            if (tl && (tl.green || tl.yellow || tl.red)) {
+                const zones = [];
+                if (tl.green) {
+                    zones.push({ cls: "zone-green", title: "🟢 Зона успеха", text: tl.green });
+                }
+                if (tl.yellow) {
+                    zones.push({ cls: "zone-yellow", title: "🟡 Зона внимания", text: tl.yellow });
+                }
+                if (tl.red) {
+                    zones.push({ cls: "zone-red", title: "🔴 Критическая зона", text: tl.red });
+                }
+                grid.innerHTML = zones.map(function (z) {
+                    return '<div class="traffic-card ' + z.cls + '"><strong>' + z.title +
+                        '</strong> ' + escapeHtml(z.text) + '</div>';
+                }).join("");
+                return;
+            }
+
             const groups = deriveAbcGroups();
             const drr = Number($("drr-range").value) || fin.drr;
 
@@ -1504,6 +1531,26 @@
 
                 container.appendChild(card);
             });
+
+            const agg = state.report && state.report.matrix_aggregation;
+            if (agg) {
+                let tailHtml = "";
+                if (tab === "a" && agg.tail_a_count > 0) {
+                    tailHtml = "<p class=\"empty-hint\"><i>…и ещё " + agg.tail_a_count +
+                        " успешных товаров группы А</i></p>";
+                } else if (tab === "c" && agg.tail_c_count > 0) {
+                    tailHtml = "<p class=\"empty-hint\"><i>…и ещё " + agg.tail_c_count +
+                        " товаров с низким спросом (суммарная выручка: " +
+                        formatRub(agg.tail_c_revenue_rub || 0) + ")</i></p>";
+                } else if (tab === "b" && agg.tail_ballast_count > 0) {
+                    tailHtml = "<p class=\"empty-hint\"><i>Оставшиеся " + agg.tail_ballast_count +
+                        " товаров-балласта: убыток на покатушках " +
+                        formatRub(agg.tail_ballast_loss_rub || 0) + "</i></p>";
+                }
+                if (tailHtml) {
+                    container.insertAdjacentHTML("beforeend", tailHtml);
+                }
+            }
         }
 
         function applyReport(payload) {
@@ -1613,19 +1660,19 @@
         }
 
         async function loadReport() {
-            if (!state.reportId) {
-                showToast("Не указан report_id в ссылке Mini App", true);
-                showDashboardSkeleton(false);
-                return;
-            }
             if (state.loading) return;
             state.loading = true;
             showDashboardSkeleton(true);
 
             try {
                 const platformApi = (PLATFORMS[state.platform] || PLATFORMS.wildberries).api;
-                const url = "/api/v1/reports/" + encodeURIComponent(state.reportId) +
-                    "?platform=" + encodeURIComponent(platformApi);
+                let url;
+                if (state.reportId) {
+                    url = "/api/v1/reports/" + encodeURIComponent(state.reportId) +
+                        "?platform=" + encodeURIComponent(platformApi);
+                } else {
+                    url = "/api/v1/reports/latest?platform=" + encodeURIComponent(platformApi);
+                }
                 const response = await apiFetch(url, { method: "GET" });
 
                 if (response.status === 401) {
@@ -1633,7 +1680,12 @@
                     return;
                 }
                 if (response.status === 404) {
-                    showToast("Отчёт не найден", true);
+                    showToast(
+                        state.reportId
+                            ? "Отчёт не найден"
+                            : "Загрузите Excel-отчёт в боте — пока нет сохранённых данных",
+                        true
+                    );
                     return;
                 }
                 if (!response.ok) {
@@ -1641,6 +1693,9 @@
                 }
 
                 const body = await response.json();
+                if (body.report_id != null) {
+                    state.reportId = String(body.report_id);
+                }
                 const payload = body.table_raw_json || body;
 
                 if (state.platform !== "wildberries" && payload.source === "wb_api_nightly_worker") {

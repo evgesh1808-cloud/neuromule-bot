@@ -311,7 +311,7 @@ WB_ANALYTICS_SYSTEM_PROMPT = """\
 <b>2.</b> [Действие по оптимизации ДРР]
 <b>3.</b> [Действие по допоставкам остатков]
 
-В конце ответа добавь строку: <i>CFO build cfo-v8</i>
+В конце ответа добавь строку: <i>CFO build cfo-v9</i>
 
 Начни с «📊 ФИНАНСОВЫЙ ЭКСПРЕСС-АНАЛИЗ МАГАЗИНА». Не добавляй блок про Excel, кнопки и Автопилот. Не более 2000 символов."""
 
@@ -321,7 +321,7 @@ WB_ANALYTICS_SYSTEM_PROMPT_TEMPLATE = WB_ANALYTICS_SYSTEM_PROMPT
 
 
 def build_wb_marketplace_finance_system_prompt(**_kwargs: object) -> str:
-    """Статический system-prompt cfo-v8: упаковщик JSON → HTML (без ETL-плейсхолдеров)."""
+    """Статический system-prompt cfo-v9: упаковщик JSON → HTML (без ETL-плейсхолдеров)."""
     return WB_ANALYTICS_SYSTEM_PROMPT
 
 
