@@ -31,22 +31,32 @@ def _detail_headers() -> list[str]:
     ]
 
 
-def _write_multi_sheet_wb(path: Path) -> None:
+def _write_multi_sheet_wb(path: Path, *, preamble: bool = False) -> None:
     wb = Workbook()
     ws_detail = wb.active
     ws_detail.title = "Детализация"
+    if preamble:
+        ws_detail.append(["Отчёт реализации Wildberries"])
+        ws_detail.append(["Поставщик: ИП Тестов"])
+        ws_detail.append([])
     ws_detail.append(_detail_headers())
     ws_detail.append(
         ["Товар", "SKU-1", "208547", "Продажа", "Продажа", "2", "2400", "1600", "100", "50"]
     )
 
     ws_storage = wb.create_sheet("Хранение")
-    ws_storage.append(["Склад", "Сумма"])
+    if preamble:
+        ws_storage.append(["Платное хранение"])
+        ws_storage.append([])
+    ws_storage.append(["Склад", "Стоимость хранения, руб."])
     ws_storage.append(["208547", "2782.27"])
 
     ws_hold = wb.create_sheet("Удержания")
-    ws_hold.append(["Описание", "К удержанию"])
-    ws_hold.append(["Кредит WB", "8192.77"])
+    if preamble:
+        ws_hold.append(["Удержания WB"])
+        ws_hold.append([])
+    ws_hold.append(["Вид удержания", "Сумма удержания"])
+    ws_hold.append(["Предоставление кредита", "8192.77"])
 
     wb.save(path)
     wb.close()
@@ -115,6 +125,16 @@ def test_prompt_metrics_include_aux_sheet_costs_from_file() -> None:
     html = build_wb_finance_express_html_local(prompt, None)
     assert "2,782.27" in html
     assert "8,192.77" in html
+
+
+def test_load_cfo_workbook_aux_sheets_with_preamble() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "wb_preamble.xlsx"
+        _write_multi_sheet_wb(path, preamble=True)
+        loaded = load_cfo_workbook_from_path(str(path))
+
+    assert loaded.aux_storage_cost == pytest.approx(2782.27)
+    assert loaded.aux_system_losses == pytest.approx(8192.77)
 
 
 def test_supply_chain_warehouse_id_mapping() -> None:

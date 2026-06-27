@@ -400,6 +400,20 @@ _WB_AUX_AMOUNT_COL_HINTS: Final[tuple[str, ...]] = (
     "к удержанию",
     "удержано",
     "итого",
+    "стоимост",
+    "к оплате",
+    "начислен",
+    "размер",
+    "перечисл",
+    "тариф",
+    "оплат",
+)
+_WB_DETAIL_HEADER_HINTS: Final[tuple[str, ...]] = (
+    "тип документа",
+    "обоснован",
+    "к перечислению",
+    "артикул",
+    "баркод",
 )
 _WB_WITHHOLDING_KEYWORDS: Final[tuple[str, ...]] = (
     "кредит",
@@ -428,13 +442,59 @@ def map_wb_warehouse_label(value: str) -> str:
 def _wb_aux_sheet_category(sheet_name: str) -> str | None:
     """Категория вспомогательного листа WB: storage | system."""
     low = (sheet_name or "").lower().strip()
-    if "хранен" in low:
+    if "хранен" in low or ("платн" in low and "хран" in low):
         return "storage"
     if "приемк" in low or "приёмк" in low:
         return "storage"
-    if "удержан" in low:
+    if any(k in low for k in ("удержан", "кредит", "штраф", "санкц", "маркиров")):
         return "system"
     return None
+
+
+def _find_sheet_header_row(
+    rows: list[list[str]],
+    *,
+    detail: bool = False,
+    max_scan: int = 40,
+) -> int:
+    """Ищет строку шапки WB (после преамбулы поставщика на вспомогательных листах)."""
+    hints = _WB_DETAIL_HEADER_HINTS if detail else _WB_AUX_AMOUNT_COL_HINTS
+    for idx, row in enumerate(rows[:max_scan]):
+        lowered = [_normalize_column_header(str(cell)) for cell in row]
+        if not any(lowered):
+            continue
+        blob = " ".join(h for h in lowered if h)
+        if detail:
+            if any(k in blob for k in hints) and (
+                "обоснован" in blob or "тип документа" in blob
+            ):
+                return idx
+        elif any(k in blob for k in hints):
+            return idx
+    return 0
+
+
+def _matrix_from_header_row(rows: list[list[str]], header_row: int) -> list[list[str]]:
+    if header_row <= 0 or header_row >= len(rows):
+        return rows
+    return [list(rows[header_row]), *[list(r) for r in rows[header_row + 1 :]]]
+
+
+def _row_money_fallback(row: list[str]) -> float:
+    """Берёт наибольшую денежную ячейку строки, если колонка суммы не распознана."""
+    best = 0.0
+    for cell in row:
+        text = str(cell or "").strip()
+        if not text:
+            continue
+        val = abs(safe_float(cell))
+        if val < 0.01:
+            continue
+        if val > 50_000_000:
+            continue
+        if any(ch in text for ch in (",", ".")) or val >= 50:
+            best = max(best, val)
+    return best
 
 
 def _find_workbook_amount_columns(headers: list[str]) -> list[int]:
@@ -455,6 +515,11 @@ def _find_workbook_amount_columns(headers: list[str]) -> list[int]:
             for col in (tx_cols.payout_price, tx_cols.commission, tx_cols.retail_price):
                 if col is not None and col not in indices:
                     indices.append(col)
+    if not indices:
+        for idx in range(len(headers) - 1, -1, -1):
+            if str(headers[idx] or "").strip():
+                indices.append(idx)
+                break
     return indices
 
 
@@ -464,17 +529,19 @@ def _row_workbook_amount(row: list[str], amount_cols: list[int]) -> float:
             val = abs(safe_float(row[col]))
             if val > 0:
                 return val
-    return 0.0
+    return _row_money_fallback(row)
 
 
 def _sum_workbook_sheet_amounts(rows: list[list[str]]) -> float:
     if len(rows) < 2:
         return 0.0
-    headers = [str(h) for h in rows[0]]
-    amount_cols = _find_workbook_amount_columns(headers)
-    if not amount_cols:
+    header_row = _find_sheet_header_row(rows, detail=False)
+    matrix = _matrix_from_header_row(rows, header_row)
+    if len(matrix) < 2:
         return 0.0
-    total = sum(_row_workbook_amount(row, amount_cols) for row in rows[1:])
+    headers = [str(h) for h in matrix[0]]
+    amount_cols = _find_workbook_amount_columns(headers)
+    total = sum(_row_workbook_amount(row, amount_cols) for row in matrix[1:])
     return _round_money(total)
 
 
@@ -483,6 +550,11 @@ def scan_matrix_deep_costs(matrix: list[list[str]]) -> tuple[float, float]:
     Сканирует лист детализации: хранение и системные удержания по обоснованию операции.
     """
     if not matrix or len(matrix) < 2:
+        return 0.0, 0.0
+
+    header_row = _find_sheet_header_row(matrix, detail=True)
+    matrix = _matrix_from_header_row(matrix, header_row)
+    if len(matrix) < 2:
         return 0.0, 0.0
 
     headers = [str(h) for h in matrix[0]]
@@ -557,11 +629,20 @@ def _is_likely_wb_detail_sheet(rows: list[list[str]]) -> bool:
         return False
     from services.wb_transaction_parse import is_wb_transaction_report
 
-    headers = [str(h) for h in rows[0]]
+    header_row = _find_sheet_header_row(rows, detail=True)
+    headers = [str(h) for h in rows[header_row]]
     if is_wb_transaction_report(headers):
         return True
     low = " ".join(_normalize_column_header(h) for h in headers)
     return "перечислен" in low and ("обоснован" in low or "артикул" in low)
+
+
+def _detail_matrix_from_rows(rows: list[list[str]]) -> list[list[str]]:
+    """Нормализует лист детализации: шапка после преамбулы WB."""
+    if not rows:
+        return rows
+    header_row = _find_sheet_header_row(rows, detail=True)
+    return _matrix_from_header_row(rows, header_row)
 
 
 def load_cfo_workbook_from_path(file_path: str) -> CfoWorkbookLoadResult:
@@ -600,12 +681,13 @@ def load_cfo_workbook_from_path(file_path: str) -> CfoWorkbookLoadResult:
                 sheet_system += _sum_workbook_sheet_amounts(rows)
                 continue
             if _is_likely_wb_detail_sheet(rows):
-                score = len(rows[0]) * 1000 + len(rows)
+                normalized = _detail_matrix_from_rows(rows)
+                score = len(normalized[0]) * 1000 + len(normalized)
                 if score > best_detail_score:
                     best_detail_score = score
-                    detail_matrix = rows
+                    detail_matrix = normalized
         if detail_matrix is None and wb.active is not None:
-            detail_matrix = _read_worksheet_rows(wb.active)
+            detail_matrix = _detail_matrix_from_rows(_read_worksheet_rows(wb.active))
     finally:
         wb.close()
 
