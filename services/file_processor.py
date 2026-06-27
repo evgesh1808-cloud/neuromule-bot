@@ -1873,7 +1873,7 @@ def _cfo_engine_to_sku_data(engine: CfoEngineResult) -> dict[str, dict[str, floa
         if not sku or sku == "—" or len(sku) < 2:
             continue
         payout_est = bucket.gross_sales_rrc - bucket.commission
-        out[sku] = {
+        entry: dict[str, float | int | str] = {
             "sales_count": int(bucket.sales_qty),
             "returns_count": int(bucket.returns_qty),
             "rrc_revenue": _round_money(bucket.gross_sales_rrc),
@@ -1881,6 +1881,10 @@ def _cfo_engine_to_sku_data(engine: CfoEngineResult) -> dict[str, dict[str, floa
             "delivery": _round_money(bucket.logistics),
             "stock": int(bucket.stock_qty),
         }
+        human_name = (bucket.name or "").strip()
+        if human_name and human_name not in ("—", "-", "–"):
+            entry["human_name"] = human_name
+        out[sku] = entry
     return out
 
 

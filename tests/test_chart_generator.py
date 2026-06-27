@@ -8,6 +8,7 @@ from services.chart_generator import (
     build_rrc_chart_series_from_rows,
     build_rrc_chart_series_from_sku_data,
     format_rub_thousands,
+    format_sku_chart_display_label,
     render_horizontal_bar_chart_png,
 )
 from services.file_processor import build_cfo_metrics_dict_from_rows
@@ -35,6 +36,47 @@ def _cfo_matrix_rows() -> list[list[str]]:
 def test_format_rub_thousands() -> None:
     assert format_rub_thousands(1_234_567.8) == "1 234 568"
     assert format_rub_thousands(0) == "0"
+
+
+def test_format_sku_chart_display_label() -> None:
+    assert format_sku_chart_display_label("100", human_name="Стаканы") == "Стаканы (100)"
+    assert format_sku_chart_display_label("500", human_name="Стаканы") == "Стаканы (500)"
+    assert format_sku_chart_display_label("100", human_name="100") == "100"
+    assert format_sku_chart_display_label("первичная", human_name="Упаковочная пленка") == (
+        "Упаковочная пленка (первичная)"
+    )
+    assert format_sku_chart_display_label("скотч 6 шт", human_name="Клейкая лента") == (
+        "Клейкая лента (скотч 6 шт)"
+    )
+    assert format_sku_chart_display_label("SKU-9") == "SKU-9"
+
+
+def test_build_rrc_series_uses_short_name_labels() -> None:
+    metrics = {
+        "sku_data": {
+            "скотч 1 шт": {"rrc_revenue": 5_000.0, "short_name": "Клейкая лента"},
+            "скотч 6 шт": {"rrc_revenue": 15_000.0, "short_name": "Клейкая лента"},
+        }
+    }
+    series = build_rrc_chart_series_from_final_metrics(metrics)
+    assert series is not None
+    assert "Клейкая лента (скотч 1 шт)" in series.labels
+    assert "Клейкая лента (скотч 6 шт)" in series.labels
+
+
+def test_build_rrc_series_uses_human_name_labels() -> None:
+    metrics = {
+        "sku_data": {
+            "100": {"rrc_revenue": 50_000.0, "human_name": "Стаканы"},
+            "первичная": {"rrc_revenue": 30_000.0, "human_name": "Упаковочная пленка"},
+            "DISH-01": {"rrc_revenue": 10_000.0, "human_name": "DISH-01"},
+        }
+    }
+    series = build_rrc_chart_series_from_final_metrics(metrics)
+    assert series is not None
+    assert "Стаканы (100)" in series.labels
+    assert "Упаковочная пленка (первичная)" in series.labels
+    assert "DISH-01" in series.labels
 
 
 def test_build_rrc_series_from_sku_data_matches_metrics() -> None:
@@ -70,8 +112,8 @@ def test_build_rrc_series_from_rows_uses_cfo_rrc_revenue() -> None:
 
     top_label, top_value = series.labels[0], series.values[0]
     top_sku = max(expected_by_sku, key=expected_by_sku.get)
-    assert top_label == top_sku
     assert top_value == expected_by_sku[top_sku]
+    assert top_sku in top_label
 
 
 def test_render_horizontal_bar_chart_png() -> None:

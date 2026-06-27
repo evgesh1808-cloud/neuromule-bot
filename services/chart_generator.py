@@ -44,6 +44,65 @@ def _truncate_label(text: str, *, max_len: int = 28) -> str:
     return clean[: max_len - 1] + "…"
 
 
+_EMPTY_SKU_LABELS = frozenset({"—", "-", "–", ""})
+_NAME_FIELD_KEYS = ("human_name", "short_name", "name")
+
+
+def _resolve_product_name(stats: dict[str, Any]) -> str:
+    """Человеческое наименование из CFO-метрик (human_name → short_name → name)."""
+    for key in _NAME_FIELD_KEYS:
+        raw = stats.get(key)
+        if raw is None:
+            continue
+        name = str(raw).strip()
+        if name and name not in _EMPTY_SKU_LABELS:
+            return name
+    return ""
+
+
+def format_sku_chart_display_label(
+    sku: str,
+    *,
+    human_name: str | None = None,
+    short_name: str | None = None,
+) -> str:
+    """
+    Подпись товара для оси Y: различает комплектации с похожими названиями.
+
+    1. Имя ≠ артикул → «Наименование (Артикул)», напр. «Стаканы (100)».
+    2. Имя = артикул → только наименование.
+    3. Имени нет → чистый артикул (SKU).
+    """
+    sku_clean = (sku or "").strip() or "—"
+    name = (human_name or "").strip()
+    if not name:
+        name = (short_name or "").strip()
+    if name and name not in _EMPTY_SKU_LABELS:
+        if name.lower() == sku_clean.lower():
+            return name
+        return f"{name} ({sku_clean})"
+    return sku_clean
+
+
+def _sku_chart_label(sku: str, stats: dict[str, Any]) -> str:
+    product_name = _resolve_product_name(stats)
+    return _truncate_label(
+        format_sku_chart_display_label(sku, human_name=product_name),
+        max_len=40,
+    )
+
+
+def _catalog_item_chart_label(item: dict[str, Any]) -> str:
+    article_id = str(item.get("article_id") or item.get("sku") or "").strip()
+    fallback = str(item.get("label") or article_id or "—").strip()
+    sku = article_id or fallback
+    product_name = _resolve_product_name(item)
+    return _truncate_label(
+        format_sku_chart_display_label(sku, human_name=product_name),
+        max_len=40,
+    )
+
+
 def build_rrc_chart_series_from_sku_data(
     sku_data: dict[str, dict[str, Any]],
 ) -> HorizontalBarSeries | None:
@@ -53,7 +112,7 @@ def build_rrc_chart_series_from_sku_data(
 
     grouped: dict[str, float] = defaultdict(float)
     for sku, stats in sku_data.items():
-        label = _truncate_label(str(sku))
+        label = _sku_chart_label(str(sku), stats)
         revenue = round(float(stats.get("rrc_revenue", 0.0) or 0.0), 2)
         if revenue <= 0:
             continue
@@ -93,9 +152,7 @@ def build_rrc_chart_series_from_final_metrics(
     for item in catalog:
         if not isinstance(item, dict):
             continue
-        label = _truncate_label(
-            str(item.get("label") or item.get("name") or item.get("article_id") or "—")
-        )
+        label = _catalog_item_chart_label(item)
         revenue = round(
             float(
                 item.get("rrc_revenue")
@@ -157,7 +214,7 @@ def render_horizontal_bar_chart_png(series: HorizontalBarSeries) -> bytes | None
     if max_revenue <= 0:
         return None
 
-    fig_h = max(4.2, 0.45 * len(labels) + 1.8)
+    fig_h = max(4.5, 0.58 * len(labels) + 2.0)
     fig, ax = plt.subplots(figsize=(8.5, fig_h), dpi=120)
     fig.patch.set_facecolor(_CHART_BG)
     ax.set_facecolor("#ffffff")
@@ -170,10 +227,11 @@ def render_horizontal_bar_chart_png(series: HorizontalBarSeries) -> bytes | None
         alpha=0.9,
         edgecolor="#27ae60",
         linewidth=0.6,
-        height=0.62,
+        height=0.5,
     )
     ax.set_yticks(list(y_pos))
     ax.set_yticklabels(labels, fontsize=9)
+    ax.tick_params(axis="y", pad=6)
     ax.invert_yaxis()
     ax.set_xlabel(series.value_axis_label, fontsize=10, labelpad=8)
     ax.set_ylabel("Товары", fontsize=10, labelpad=8)
@@ -200,7 +258,8 @@ def render_horizontal_bar_chart_png(series: HorizontalBarSeries) -> bytes | None
             color="#1e293b",
         )
 
-    plt.tight_layout()
+    plt.tight_layout(pad=1.2)
+    fig.subplots_adjust(left=0.32)
     buf = BytesIO()
     fig.savefig(buf, format="png", bbox_inches="tight", facecolor=fig.get_facecolor())
     plt.close(fig)
