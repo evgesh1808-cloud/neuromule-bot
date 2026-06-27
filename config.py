@@ -511,6 +511,13 @@ class Settings(BaseSettings):
     wb_api_morning_minute: Annotated[int, _coerce_int(0)] = 0
     wb_api_run_batch_on_start: Annotated[bool, _coerce_bool(True)] = True
 
+    # --- WB тарифы: ночной кэш «Робот для Робота» (services/wb_tariffs_cache.py) ---
+    master_wb_api_token: str = ""
+    wb_tariffs_api_base_url: Annotated[
+        str, _nonempty_str("https://common-api.wildberries.ru")
+    ] = "https://common-api.wildberries.ru"
+    wb_tariffs_cache_path: str = ""
+
 
 settings = Settings()
 

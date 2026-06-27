@@ -470,8 +470,8 @@ async def extract_text_from_document(
 # ─── Локальный ETL товарной матрицы (ABC / FOMO логистики / OOS) ───────────
 
 _USN_RATE = 0.06
-_CFO_BUILD = "cfo-v11.1"
-CFO_ENGINE_NAME = "CFO Engine v11.1"
+_CFO_BUILD = "cfo-v11.2"
+CFO_ENGINE_NAME = "CFO Engine v11.2"
 
 # Семантический маппинг колонок WB (CFO Engine v11.1).
 WB_COLUMN_SYNONYMS: dict[str, tuple[str, ...]] = {
@@ -537,6 +537,23 @@ WB_COLUMN_SYNONYMS: dict[str, tuple[str, ...]] = {
         "doc_type_name",
         "тип обоснования",
         "обоснован",
+    ),
+    "warehouse": (
+        "наименование склада",
+        "склад отгрузки",
+        "логистический склад",
+        "офис",
+        "warehouse",
+        "склад wb",
+    ),
+    "volume_liters": (
+        "литраж",
+        "объем",
+        "объём",
+        "volume",
+        "литр",
+        "габарит",
+        "объем л",
     ),
 }
 
@@ -1210,6 +1227,15 @@ _WB_COMMISSION_HINTS = ("вознагражден", "комисс")
 _WB_LOGISTICS_HINTS = ("логистик", "доставк", "хранен")
 _WB_AD_HINTS = ("продвижен", "реклам", "удержан")
 _WB_STOCK_HINTS = ("остаток", "склад", "stock", "quantity")
+_WB_WAREHOUSE_HINTS = (
+    "склад",
+    "warehouse",
+    "наименование склада",
+    "офис",
+    "логистический склад",
+    "склад отгрузки",
+)
+_WB_VOLUME_HINTS = ("литраж", "объем", "объём", "volume", "литр", "габарит")
 _MATRIX_COST_HINTS = ("себестоимость", "себестоим", "себес", "закупка", "закуп", "cost")
 
 
@@ -1294,6 +1320,17 @@ def _matrix_col(headers: list[str], hints: tuple[str, ...], *, require_qty: bool
         if any(h in low for h in _WB_RETURN_HINTS) and _is_return_id_column(header):
             continue
         return idx
+    return None
+
+
+def _matrix_warehouse_col(headers: list[str]) -> int | None:
+    """Колонка названия склада WB (не путать с «остаток на складе»)."""
+    for idx, header in enumerate(headers):
+        low = (header or "").lower()
+        if "остаток" in low:
+            continue
+        if any(h in low for h in _WB_WAREHOUSE_HINTS):
+            return idx
     return None
 
 
@@ -1410,6 +1447,8 @@ class _SkuBucket:
     returns_qty: float = 0.0
     stock_qty: float = 0.0
     return_logistics_rub: float = 0.0
+    warehouse_name: str = ""
+    volume_liters: float = 0.0
 
     @property
     def unit_cost_rub(self) -> float:
@@ -1524,13 +1563,24 @@ def _reverse_logistics_unit_rub(bucket: _SkuBucket, qty: float) -> float:
     """
     Средняя стоимость одной обратной логистики для SKU (руб./ед.).
 
-    Приоритет: колонка «логистика возвратов» / факт из отчёта → доля общей логистики.
-    Оценочный тариф не ниже базового WB (~50 ₽/шт).
+    Приоритет: факт из отчёта → ночной кэш WB по складу и литражу → доля общей логистики.
+    Живые запросы к API при разборе Excel **запрещены**.
     """
     if qty <= 0:
         return 0.0
     if bucket.return_logistics_rub > 0:
         return max(_DEFAULT_REVERSE_LOGISTICS_RUB, bucket.return_logistics_rub / qty)
+
+    from services.wb_tariffs_cache import estimate_return_logistics_unit_rub
+
+    cached_unit = estimate_return_logistics_unit_rub(
+        bucket.warehouse_name,
+        bucket.volume_liters or 1.0,
+        floor_rub=_DEFAULT_REVERSE_LOGISTICS_RUB,
+    )
+    if bucket.warehouse_name.strip():
+        return cached_unit
+
     if bucket.logistics > 0:
         if bucket.deliveries_qty > 0:
             return_share = min(1.0, qty / bucket.deliveries_qty)
@@ -1538,6 +1588,8 @@ def _reverse_logistics_unit_rub(bucket: _SkuBucket, qty: float) -> float:
         else:
             unit = bucket.logistics / qty
         return max(_DEFAULT_REVERSE_LOGISTICS_RUB, unit)
+    if cached_unit > _DEFAULT_REVERSE_LOGISTICS_RUB:
+        return cached_unit
     return _DEFAULT_REVERSE_LOGISTICS_RUB
 
 
@@ -1547,9 +1599,20 @@ def _format_return_logistics_fomo_line(
     *,
     returns_count: float,
     total_loss_rub: float,
+    warehouse_name: str = "",
+    volume_liters: float = 0.0,
+    unit_rub: float = 0.0,
 ) -> str:
-    label = f"{name[:28]} ({article_id[:16]})" if article_id and article_id != name else name[:40]
+    label = _format_sku_label_for_json(name, article_id)
     loss_s = f"{total_loss_rub:,.2f}".replace(",", " ")
+    wh = (warehouse_name or "").strip()
+    vol = float(volume_liters or 0.0)
+    if wh and vol > 0 and unit_rub > 0:
+        return (
+            f"Логистика возвратов: {label} ({wh}, {vol:.1f} л × "
+            f"{unit_rub:,.2f} руб./шт.): {returns_count:.0f} возвратов. "
+            f"Убыток на покатушках (кэш тарифов WB): ≈ {loss_s} руб."
+        )
     return (
         f"Логистика возвратов: {label}: {returns_count:.0f} возвратов. "
         f"Общий убыток на пустых покатушках: ≈ {loss_s} руб."
@@ -1623,6 +1686,12 @@ def compute_seller_matrix_etl(
         and (cost_col is not None and idx != cost_col)
     ]
     stock_col = _matrix_col(headers, profile.stock_hints)
+    warehouse_col = find_column_index(headers, "warehouse")
+    if warehouse_col is None:
+        warehouse_col = _matrix_warehouse_col(headers)
+    volume_col = find_column_index(headers, "volume_liters") or _matrix_col(
+        headers, _WB_VOLUME_HINTS
+    )
 
     from services.wb_report_parser import parse_wb_report
     from services.wb_transaction_parse import is_valid_wb_sku
@@ -1687,6 +1756,31 @@ def compute_seller_matrix_etl(
                 bucket.cost_rub += abs(safe_float(row[cost_col]))
             if stock_col is not None and stock_col < len(row):
                 bucket.stock_qty += max(0.0, safe_float(row[stock_col]))
+            if warehouse_col is not None and warehouse_col < len(row):
+                wh = str(row[warehouse_col] or "").strip()
+                if wh and not bucket.warehouse_name:
+                    bucket.warehouse_name = wh
+            if volume_col is not None and volume_col < len(row):
+                vol = safe_float(row[volume_col])
+                if vol > 0:
+                    bucket.volume_liters = max(bucket.volume_liters, vol)
+
+    if report is not None and (warehouse_col is not None or volume_col is not None):
+        for row in rows[1:]:
+            name, article_id = _row_sku_identity(row, name_col=name_col, article_col=article_col)
+            if _is_total_row(name):
+                continue
+            bucket = buckets.get((name, article_id))
+            if bucket is None:
+                continue
+            if warehouse_col is not None and warehouse_col < len(row):
+                wh = str(row[warehouse_col] or "").strip()
+                if wh and not bucket.warehouse_name:
+                    bucket.warehouse_name = wh
+            if volume_col is not None and volume_col < len(row):
+                vol = safe_float(row[volume_col])
+                if vol > 0:
+                    bucket.volume_liters = max(bucket.volume_liters, vol)
 
     buckets = {k: v for k, v in buckets.items() if is_valid_wb_sku(k[0], k[1])}
 
@@ -1768,6 +1862,9 @@ def compute_seller_matrix_etl(
                         b.article_id,
                         returns_count=returns_qty,
                         total_loss_rub=loss,
+                        warehouse_name=b.warehouse_name,
+                        volume_liters=b.volume_liters,
+                        unit_rub=unit_log,
                     )
                 )
     reverse_logistics_shop_avg = (
@@ -1884,6 +1981,11 @@ def _cfo_engine_to_sku_data(engine: CfoEngineResult) -> dict[str, dict[str, floa
         human_name = (bucket.name or "").strip()
         if human_name and human_name not in ("—", "-", "–"):
             entry["human_name"] = human_name
+        sales_qty = float(bucket.sales_qty)
+        entry["net_profit_rub"] = _round_money(bucket.margin_rub)
+        entry["unit_profit_rub"] = (
+            _round_money(bucket.margin_rub / sales_qty) if sales_qty > 0 else 0.0
+        )
         out[sku] = entry
     return out
 
@@ -1892,23 +1994,47 @@ def _cfo_oos_lists_from_etl(
     etl: SellerMatrixEtl | None,
     *,
     critical_days: int = 4,
-) -> tuple[list[str], list[dict[str, object]]]:
-    """OOS: нулевой остаток и критический запас (дней до обнуления)."""
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    """OOS: нулевой остаток и критический запас (остаток > 0, дней до обнуления)."""
     if etl is None:
         return [], []
-    zero_stock: list[str] = []
+
+    catalog_map = {s.name: s for s in etl.sku_catalog}
+    zero_stock: list[dict[str, object]] = []
     critical: list[dict[str, object]] = []
+
     for forecast in etl.oos_forecasts:
-        if forecast.stock_qty <= 0 and forecast.sales_period_qty > 0:
-            zero_stock.append(forecast.label)
+        sales = float(forecast.sales_period_qty)
+        if sales <= 0:
+            continue
+        stock = float(forecast.stock_qty)
+        detail = catalog_map.get(forecast.label)
+        name = (detail.name if detail else forecast.label) or forecast.label
+        article_id = (detail.article_id if detail else forecast.label) or forecast.label
+        label = _format_sku_label_for_json(name, article_id)
+        base = {
+            "name": name,
+            "article_id": article_id,
+            "label": label,
+            "sku": article_id,
+        }
+        if stock <= 0:
+            zero_stock.append({**base, "stock_qty": 0})
             continue
         days = forecast.days_until_stockout
         if (
-            forecast.stock_qty > 0
+            forecast.risk_out_of_stock
             and days is not None
             and days <= critical_days
         ):
-            critical.append({"sku": forecast.label, "days": int(days)})
+            critical.append(
+                {
+                    **base,
+                    "stock_qty": round(stock, 2),
+                    "days": max(1, int(round(float(days)))),
+                    "days_until_stockout": round(float(days), 1),
+                }
+            )
     critical.sort(key=lambda item: int(item["days"]))  # type: ignore[arg-type]
     return zero_stock, critical
 

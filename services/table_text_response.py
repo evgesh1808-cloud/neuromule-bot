@@ -450,7 +450,7 @@ def compute_wb_marketplace_metrics(
 
 
 def format_wb_oos_forecast_block(prompt_metrics: object | None) -> str:
-    """cfo-v11: HTML-блок «ПРОГНОЗ И ОБНУЛЕНИЕ ОСТАТКОВ» (<pre> со списком SKU)."""
+    """cfo-v11.2: HTML-блок «ПРОГНОЗ И ОБНУЛЕНИЕ ОСТАТКОВ» (<pre> со списком SKU)."""
     if prompt_metrics is None:
         return ""
     return str(getattr(prompt_metrics, "oos_forecast_line", "") or "").strip()
@@ -462,26 +462,165 @@ def build_wb_finance_express_html(
     wb_metrics: WbMarketplaceMetrics | None = None,
     matrix_rows: list[list[str]] | None = None,
     platform: str | None = None,
+    tax_preset_id: str | None = None,
 ) -> str:
     """
-    Локальный fallback для под-режима ``wb_ozon_finance`` (если ИИ недоступен).
+    Динамический финансовый отчёт wb_ozon_finance (cfo-v11.2).
 
-    Расчёт УСН 6%, чистой прибыли, скоринга, FOMO — только на сервере (cfo-v11).
+    Приоритет: CFO metrics из Excel → локальный express-отчёт без шаблонов.
+  Все суммы и подписи SKU — только из ETL, без OpenRouter.
     """
+    if calculated_total <= 0 and not (matrix_rows and len(matrix_rows) >= 2):
+        return ""
+
+    if matrix_rows and len(matrix_rows) >= 2:
+        from services.audit_tax import resolve_audit_tax_preset
+        from services.file_processor import (
+            build_cfo_metrics_dict_from_rows,
+            find_column_index,
+        )
+        from services.table_wb_finance_ai import (
+            append_wb_finance_mini_app_cta,
+            build_wb_finance_consulting_html_from_cfo_metrics,
+        )
+
+        headers = [str(h) for h in matrix_rows[0]]
+        wb_shaped = any(
+            find_column_index(headers, key) is not None
+            for key in ("sku", "sale_price", "payout_price", "delivery")
+        )
+        if wb_shaped:
+            preset = resolve_audit_tax_preset(tax_preset_id)
+            cfo_metrics = build_cfo_metrics_dict_from_rows(
+                matrix_rows,
+                platform or "wildberries",
+                preset.regime,
+                preset.rate_percent,
+            )
+            if not cfo_metrics.get("error"):
+                return append_wb_finance_mini_app_cta(
+                    build_wb_finance_consulting_html_from_cfo_metrics(cfo_metrics)
+                )
+
     if calculated_total <= 0:
         return ""
 
-    from services.table_wb_finance_ai import (
-        build_wb_finance_express_html_local,
-        compute_wb_finance_prompt_metrics,
-    )
+    from services.table_wb_finance_ai import compute_wb_finance_prompt_metrics
 
     prompt_metrics = compute_wb_finance_prompt_metrics(
-        calculated_total, wb_metrics, matrix_rows=matrix_rows, platform=platform
+        calculated_total,
+        wb_metrics,
+        matrix_rows=matrix_rows,
+        platform=platform,
+        tax_preset_id=tax_preset_id,
     )
     if prompt_metrics is None:
         return ""
     return build_wb_finance_express_html_local(prompt_metrics, wb_metrics)
+
+
+# ─── Динамический текстовый отчёт CFO v11.2 (без шаблонов «вилка/ложка») ───
+
+FINANCE_REPORT_BUILD = "cfo-v11.2"
+_FINANCE_SEPARATOR = "────────────────────────"
+
+
+def build_wb_finance_express_html_local(
+    prompt_metrics: object,
+    wb_metrics: WbMarketplaceMetrics | None,
+) -> str:
+    """Премиальный локальный отчёт (0 ₽) — ABC, светофор, план, OOS из ETL."""
+    from services.table_wb_finance_ai import (
+        _FINANCE_REPORT_BUILD,
+        _TELEGRAM_MESSAGE_SOFT_MAX,
+        _business_score_band,
+        _business_score_reason_line,
+        _build_loss_calculator_lines,
+        _build_strategic_plan_lines,
+        _build_traffic_light_block,
+        _escape_verdict,
+        _format_abc_a_leader_html,
+        _wrap_finance_report_in_pre,
+        append_wb_finance_mini_app_cta,
+    )
+
+    import logging
+
+    logger = logging.getLogger(__name__)
+    score_emoji, score_status = _business_score_band(prompt_metrics.business_score)
+    score_reason = _business_score_reason_line(prompt_metrics, wb_metrics)
+    lines = [
+        "📊 <b>ФИНАНСОВЫЙ ЭКСПРЕСС-АНАЛИЗ МАГАЗИНА</b>",
+        _FINANCE_SEPARATOR,
+        (
+            f"🎯 <b>ИНДЕКС ЗДОРОВЬЯ БИЗНЕСА:</b> {score_emoji} "
+            f"<code>{prompt_metrics.business_score:.1f} / 10</code> "
+            f"<i>{score_status}</i>"
+        ),
+        score_reason,
+        "💡 <b>ГЛАВНЫЙ АНАЛИТИЧЕСКИЙ ВЫВОД:</b>",
+        f"<i>{_escape_verdict(prompt_metrics.verdict)}</i>",
+        _FINANCE_SEPARATOR,
+        f"💰 <b>ОБЩАЯ ВЫРУЧКА:</b> <code>{_fmt_rub_in_code(prompt_metrics.revenue)} руб.</code>",
+        f"📉 <b>НАЛОГ УСН (6%):</b> <code>{_fmt_rub_in_code(prompt_metrics.tax)} руб.</code>",
+        (
+            f"💵 <b>ЧИСТАЯ ПРИБЫЛЬ:</b> "
+            f"<code>{_fmt_rub_in_code(prompt_metrics.clear_profit)} руб.</code>"
+        ),
+        (
+            f"Эффективность (рентабельность) чистой прибыли: "
+            f"<code>{prompt_metrics.profitability_pct:.1f}%</code>"
+        ),
+        _FINANCE_SEPARATOR,
+        "📦 <b>ABC-АНАЛИЗ ПРОДАЖ</b>",
+    ]
+    lines.extend(_format_abc_a_leader_html(prompt_metrics))
+    lines.append("🅲 <b>Товары-аутсайдеры (Слабые продажи группы С):</b>")
+    for c_line in prompt_metrics.abc_c_summary.splitlines():
+        if c_line.strip():
+            if c_line.startswith("• <i>"):
+                lines.append(c_line)
+            else:
+                lines.append(c_line if "<code>" in c_line else _escape_verdict(c_line))
+    lines.append("📦 <b>Проблемные зоны и скрытые убытки матрицы:</b>")
+    for zone_line in prompt_metrics.matrix_problem_zones_block.splitlines():
+        if zone_line.strip():
+            if zone_line.startswith("📉") or zone_line.startswith("❄️") or zone_line.startswith("• <i>"):
+                lines.append(zone_line)
+            else:
+                lines.append(zone_line)
+    lines.extend(
+        [
+            _FINANCE_SEPARATOR,
+            "📈 <b>СВЕТОФОР ЭФФЕКТИВНОСТИ</b>",
+        ]
+    )
+    for zone_line in _build_traffic_light_block(wb_metrics, prompt_metrics):
+        lines.append(zone_line)
+    lines.extend(_build_loss_calculator_lines(prompt_metrics))
+    lines.extend(
+        [
+            _FINANCE_SEPARATOR,
+            "🛡️ <b>ПРОГНОЗ И ОБНУЛЕНИЕ ОСТАТКОВ</b>",
+            (
+                f"<i>При сохранении текущего темпа годовой оборот составит около "
+                f"<code>{_fmt_rub_in_code(prompt_metrics.year_forecast, decimals=0)} руб.</code>.</i>"
+            ),
+            prompt_metrics.oos_forecast_line,
+            _FINANCE_SEPARATOR,
+            "📋 <b>ПЛАН ДЕЙСТВИЙ ДЛЯ ПРЕДПРИНИМАТЕЛЯ НА СЕГОДНЯ</b>",
+        ]
+    )
+    lines.extend(_build_strategic_plan_lines(prompt_metrics, wb_metrics))
+    lines.append(f"<i>CFO build {FINANCE_REPORT_BUILD}</i>")
+    html = append_wb_finance_mini_app_cta(_wrap_finance_report_in_pre("\n".join(lines)))
+    if len(html) > _TELEGRAM_MESSAGE_SOFT_MAX:
+        logger.warning(
+            "WB finance local HTML %s chars exceeds soft limit %s",
+            len(html),
+            _TELEGRAM_MESSAGE_SOFT_MAX,
+        )
+    return html
 
 def fmt_count(value: float) -> str:
     if abs(value - round(value)) < 1e-9:

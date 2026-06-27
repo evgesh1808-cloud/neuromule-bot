@@ -85,12 +85,61 @@ def build_mpstats_return_logistics_payload(
 
 
 def _format_sku_label(name: str, article: str) -> str:
-    """Связка «название (арт. …)» — не абстрактный бренд."""
+    """Связка «название (арт. …)» — различает модификации одного товара."""
     name = (name or "—").strip()
     art = (article or "").strip()
     if not art or art == name:
         return name
     return f"{name} (арт. {art})"
+
+
+def _sku_display_from_stats(sku_key: str, stats: dict[str, Any]) -> str:
+    """Подпись SKU из CFO ``sku_data`` (human_name + артикул)."""
+    name = (
+        stats.get("human_name")
+        or stats.get("short_name")
+        or stats.get("name")
+        or sku_key
+    )
+    return _format_sku_label(str(name), str(sku_key))
+
+
+def _normalize_oos_stock_item(
+    item: str | dict[str, Any],
+    sku_data: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Приводит OOS-запись к dict с полным label «наименование (арт. SKU)»."""
+    if isinstance(item, dict):
+        out = dict(item)
+        if not str(out.get("label") or "").strip():
+            sku_key = str(out.get("article_id") or out.get("sku") or out.get("name") or "—")
+            stats = (sku_data or {}).get(sku_key, {})
+            name = out.get("name") or stats.get("human_name") or sku_key
+            out["label"] = _format_sku_label(str(name), sku_key)
+            out.setdefault("article_id", sku_key)
+            out.setdefault("name", name)
+        return out
+    sku_key = str(item).strip()
+    stats = (sku_data or {}).get(sku_key, {})
+    name = stats.get("human_name") or stats.get("short_name") or sku_key
+    return {
+        "name": str(name),
+        "article_id": sku_key,
+        "sku": sku_key,
+        "label": _sku_display_from_stats(sku_key, stats),
+        "stock_qty": 0,
+    }
+
+
+def _oos_item_display_label(item: dict[str, Any]) -> str:
+    """Полная подпись для OOS/ABC/плана — всегда с артикулом при необходимости."""
+    label = str(item.get("label") or "").strip()
+    if label:
+        return label
+    return _format_sku_label(
+        str(item.get("name") or "—"),
+        str(item.get("article_id") or item.get("sku") or "—"),
+    )
 
 
 def _sku_qualifies_for_success_zone(buyout_pct: float, margin_rub: float) -> bool:
@@ -344,6 +393,7 @@ def _collect_etl_dynamic_slices(
                 "name": forecast.label,
                 "article_id": article_id,
                 "label": _format_sku_label(forecast.label, article_id),
+                "stock_qty": 0,
             }
         )
 
@@ -355,19 +405,21 @@ def _collect_etl_dynamic_slices(
         days = forecast.days_until_stockout
         if not getattr(forecast, "risk_out_of_stock", False):
             continue
-        if days is None or days <= 0:
+        if days is None:
             continue
         detail = catalog_map.get(forecast.label)
         article_id = detail.article_id if detail else forecast.label
         key = (forecast.label, article_id)
         if key in zero_keys:
             continue
+        days_int = max(1, int(round(float(days))))
         oos_critical.append(
             {
                 "name": forecast.label,
                 "article_id": article_id,
                 "label": _format_sku_label(forecast.label, article_id),
                 "stock_qty": round(stock, 2),
+                "days": days_int,
                 "days_until_stockout": round(float(days), 1),
             }
         )
@@ -381,17 +433,6 @@ def _collect_etl_dynamic_slices(
         tuple(oos_critical),
         frozen_total,
     )
-
-
-def _short_oos_sku_name(item: dict[str, Any]) -> str:
-    """Короткое имя для списка OOS (без артикула в скобках)."""
-    name = str(item.get("name") or "").strip()
-    if name and name != "—":
-        return name
-    label = str(item.get("label") or "—").strip()
-    if " (арт." in label:
-        return label.split(" (арт.", 1)[0].strip() or label
-    return label or "—"
 
 
 def _escape_oos_html(text: str) -> str:
@@ -409,16 +450,38 @@ def _oos_articles_word(count: int) -> str:
     return "артикулам"
 
 
+def _format_oos_zero_line(item: dict[str, Any]) -> str:
+    label = _escape_oos_html(_oos_item_display_label(item))
+    return f"  • {label} (0 шт. — ЗАКОНЧИЛСЯ)"
+
+
+def _format_oos_critical_line(item: dict[str, Any]) -> str:
+    label = _escape_oos_html(_oos_item_display_label(item))
+    stock = max(0, int(round(float(item.get("stock_qty", 0)))))
+    if stock <= 0:
+        return _format_oos_zero_line(item)
+    days = max(
+        1,
+        int(
+            round(
+                float(
+                    item.get("days_until_stockout")
+                    if item.get("days_until_stockout") is not None
+                    else item.get("days", 1)
+                )
+            )
+        ),
+    )
+    return f"  • {label} — остаток {stock} шт. (ЗАКОНЧИТСЯ через {days} дн.)"
+
+
 def _build_oos_forecast_line(
     matrix_etl: object | None,
     oos_zero_stock_items: tuple[dict[str, Any], ...],
     oos_critical_stock_items: tuple[dict[str, Any], ...] = (),
 ) -> str:
     """
-    cfo-v11: HTML-блок прогноза OOS — заголовок + список SKU в <pre>.
-
-    Нулевой остаток (oos_zero_stock_items) и критический (oos_critical_stock_items)
-    выводятся столбиком с отступом в 2 пробела.
+    cfo-v11.2: прогноз OOS — нулевой остаток и критический (остаток > 0) раздельно.
     """
     zero = tuple(oos_zero_stock_items or ())
     critical = tuple(oos_critical_stock_items or ())
@@ -431,14 +494,9 @@ def _build_oos_forecast_line(
         )
         body_lines = [header]
         for item in zero:
-            name = _escape_oos_html(_short_oos_sku_name(item))
-            body_lines.append(f"  • {name} (0 шт. — ЗАКОНЧИЛСЯ)")
+            body_lines.append(_format_oos_zero_line(dict(item)))
         for item in critical:
-            name = _escape_oos_html(_short_oos_sku_name(item))
-            days = max(1, int(round(float(item.get("days_until_stockout", 1)))))
-            body_lines.append(
-                f"  • {name} (остаток на {days} дн. — КРИТИЧЕСКИЙ ОСТАТК)"
-            )
+            body_lines.append(_format_oos_critical_line(dict(item)))
         return f"<pre>{chr(10).join(body_lines)}</pre>"
 
     if matrix_etl is None:
@@ -1660,12 +1718,21 @@ def _build_strategic_plan_lines(
 
     if prompt_metrics.oos_zero_stock_items:
         oos_names = ", ".join(
-            _escape_verdict(str(item.get("label", item.get("name", "—"))))
+            _escape_verdict(_oos_item_display_label(dict(item)))
             for item in prompt_metrics.oos_zero_stock_items[:3]
         )
         lines.append(
-            f"<b>3.</b> Срочно пополните остатки: <b>{oos_names}</b> — "
+            f"<b>3.</b> Срочно закупите: <b>{oos_names}</b> — "
             "товар закончился на складе при сохранённом спросе."
+        )
+    elif prompt_metrics.oos_critical_stock_items:
+        crit_names = ", ".join(
+            _escape_verdict(_oos_item_display_label(dict(item)))
+            for item in prompt_metrics.oos_critical_stock_items[:3]
+        )
+        lines.append(
+            f"<b>3.</b> Запланируйте поставку в течение 48 часов: <b>{crit_names}</b> — "
+            "остаток на складе критически мал при текущем темпе продаж."
         )
     elif prompt_metrics.oos_forecast_summary:
         lines.append(
@@ -1682,7 +1749,7 @@ _WB_FINANCE_MAX_OUTPUT_TOKENS = 1400
 _WB_FINANCE_TELEGRAM_SOFT_MAX_CHARS = 2000
 _FINANCE_SEPARATOR = "────────────────────────"
 # Меняйте при каждом релизе CFO-шаблона — видно внизу отчёта для проверки деплоя.
-_FINANCE_REPORT_BUILD = "cfo-v11.1"
+_FINANCE_REPORT_BUILD = "cfo-v11.2"
 _OLD_FINALE_MARKERS = (
     "Финальный Excel",
     "интерактивный дашборд",
@@ -2825,20 +2892,86 @@ def _cfo_metrics_health_band(
     return score, emoji, conclusion, status
 
 
-def _pick_cfo_top_sku(sku_data: dict[str, dict[str, float | int]]) -> tuple[str, float]:
-    """Лидер группы A по выручке РРЦ и выкуп (%)."""
+def _pick_cfo_top_sku(
+    sku_data: dict[str, dict[str, float | int]],
+) -> tuple[str, float, float]:
+    """Лидер группы A: подпись с артикулом, выкуп %, чистая прибыль со штуки."""
     if not sku_data:
-        return "Товары не найдены", 0.0
+        return "Товары не найдены", 0.0, 0.0
     top_sku = max(
         sku_data,
         key=lambda sku: float(sku_data[sku].get("rrc_revenue", 0.0)),
     )
     stats = sku_data[top_sku]
+    label = _sku_display_from_stats(top_sku, stats)
     sales = int(stats.get("sales_count", 0))
     returns = int(stats.get("returns_count", 0))
     denom = sales + returns
     buyout = (sales / denom * 100.0) if denom > 0 else 100.0
-    return top_sku, buyout
+    unit_profit = float(stats.get("unit_profit_rub", 0.0) or 0.0)
+    if unit_profit == 0.0 and sales > 0:
+        net = float(stats.get("net_profit_rub", 0.0) or 0.0)
+        unit_profit = round(net / sales, 2)
+    return label, buyout, unit_profit
+
+
+def _build_storage_traffic_text(storage_cost: float, *, html: bool = False) -> str:
+    if storage_cost <= 0:
+        text = (
+            "🟢 Издержки на хранение отсутствуют (0.00 руб.). "
+            "Оборачиваемость идеальная, замороженного капитала нет."
+        )
+    else:
+        amount = _fmt_cfo_pre_money(storage_cost)
+        text = (
+            f"🟡 ЗОНА ВНИМАНИЯ: Списания за хранение: {amount} руб. "
+            "— пересмотрите оборачиваемость и объём неликвида на складе."
+        )
+    if html:
+        return text.replace(
+            _fmt_cfo_pre_money(storage_cost),
+            f"<code>{_fmt_rub_in_code(storage_cost)}</code>",
+            1,
+        ) if storage_cost > 0 else text
+    return text
+
+
+def _build_penalties_traffic_text(
+    system_losses: float,
+    credit_deductions: float = 0.0,
+    *,
+    html: bool = False,
+) -> str:
+    total = round(float(system_losses) + float(credit_deductions), 2)
+    if total <= 0:
+        return (
+            "🟢 Системных штрафов, удержаний по кредитам и санкций за маркировку от WB "
+            "не зафиксировано (0.00 руб.). Карточки заполнены верно."
+        )
+    amount = _fmt_cfo_pre_money(total)
+    text = f"🔴 КРИТИЧЕСКАЯ ЗОНА: Штрафы и удержания WB: {amount} руб."
+    if html:
+        return (
+            "🔴 <b>КРИТИЧЕСКАЯ ЗОНА:</b> Штрафы и удержания WB: "
+            f"<code>{_fmt_rub_in_code(total)}</code> руб."
+        )
+    return text
+
+
+def _build_loss_calculator_headline(fomo_lost_rub: float, *, html: bool = False) -> str:
+    if fomo_lost_rub <= 0:
+        return (
+            "🛡️ Эффективность юнит-экономики 100%. Скрытых операционных потерь на логистике "
+            "возвратов не выявлено. Вся маржа идет в карман."
+        )
+    amount_plain = _fmt_cfo_pre_money(fomo_lost_rub)
+    plain = f"Потенциально можно вернуть в оборот: {amount_plain} руб."
+    if html:
+        return (
+            f"Потенциально можно вернуть в оборот: "
+            f"<code>{_fmt_rub_in_code(fomo_lost_rub)}</code> руб."
+        )
+    return plain
 
 
 def _fmt_cfo_pre_money(value: float) -> str:
@@ -2847,9 +2980,7 @@ def _fmt_cfo_pre_money(value: float) -> str:
 
 def build_wb_finance_consulting_html_from_cfo_metrics(metrics: dict[str, object]) -> str:
     """
-    Генерирует финальный HTML-отчёт CFO Engine v11.1 из словаря ``sync_table_cfo_processing_worker``.
-
-    Алиас для интеграций: ``generate_wb_finance_consulting_html(metrics)`` в документации.
+    Генерирует финальный HTML-отчёт CFO Engine v11.2 из ``sync_table_cfo_processing_worker``.
     """
     if metrics.get("error"):
         return (
@@ -2865,9 +2996,16 @@ def build_wb_finance_consulting_html_from_cfo_metrics(metrics: dict[str, object]
     system_losses = float(metrics.get("total_system_losses", 0.0) or 0.0)
     tax_type = str(metrics.get("tax_type") or "USN")
     tax_rate = float(metrics.get("tax_rate", 6.0) or 0.0)
-    sku_data = dict(metrics.get("sku_data") or {})
-    oos_zero = list(metrics.get("oos_zero_stock_items") or [])
-    oos_critical = list(metrics.get("oos_critical_sku") or [])
+    sku_data: dict[str, dict[str, Any]] = dict(metrics.get("sku_data") or {})
+
+    oos_zero_norm = [
+        _normalize_oos_stock_item(item, sku_data)
+        for item in list(metrics.get("oos_zero_stock_items") or [])
+    ]
+    oos_critical_norm = [
+        _normalize_oos_stock_item(item, sku_data)
+        for item in list(metrics.get("oos_critical_sku") or [])
+    ]
 
     health_score, health_emoji, conclusion, health_status = _cfo_metrics_health_band(
         margin_pct,
@@ -2883,50 +3021,111 @@ def build_wb_finance_consulting_html_from_cfo_metrics(metrics: dict[str, object]
             f"{_fmt_cfo_pre_money(tax_total)} руб."
         )
 
-    total_oos_count = len(oos_zero) + len(oos_critical)
-    if total_oos_count > 0:
-        oos_header = (
-            f"⚠️ Заканчивается товар: ⚠️ ВНИМАНИЕ: "
-            f"Зафиксирован дефицит по {total_oos_count} артикулам:"
-        )
-        oos_block_lines = [oos_header]
-        for item in oos_zero:
-            oos_block_lines.append(f"  • {html.escape(str(item))} (0 шт. — ЗАКОНЧИЛСЯ)")
-        for item in oos_critical:
-            if isinstance(item, dict):
-                sku = html.escape(str(item.get("sku", "—")))
-                days = int(item.get("days", 0))
-            else:
-                sku = html.escape(str(item))
-                days = 0
-            oos_block_lines.append(
-                f"  • {sku} (остаток на {days} дн. — КРИТИЧЕСКИЙ ОСТАТК)"
-            )
-        oos_string = "\n".join(oos_block_lines)
-    else:
-        oos_string = (
-            "⚠️ Заканчивается товар: критических рисков обнуления остатков не выявлено"
-        )
+    oos_pre = _build_oos_forecast_line(
+        None,
+        tuple(oos_zero_norm),
+        tuple(oos_critical_norm),
+    )
+    oos_inner = oos_pre.removeprefix("<pre>").removesuffix("</pre>")
 
-    top_sku, top_buyout = _pick_cfo_top_sku(sku_data)
-    top_sku_esc = html.escape(top_sku)
+    top_label, top_buyout, top_unit_profit = _pick_cfo_top_sku(sku_data)
+    top_label_esc = html.escape(top_label)
 
-    if top_sku in oos_zero:
+    abc_lines: list[str] = []
+    ranked = sorted(
+        sku_data.items(),
+        key=lambda kv: float(kv[1].get("rrc_revenue", 0.0) or 0.0),
+        reverse=True,
+    )
+    for sku_key, stats in ranked[:7]:
+        revenue = float(stats.get("rrc_revenue", 0.0) or 0.0)
+        if revenue <= 0:
+            continue
+        label = html.escape(_sku_display_from_stats(sku_key, stats))
+        sales = int(stats.get("sales_count", 0))
+        returns = int(stats.get("returns_count", 0))
+        denom = sales + returns
+        buyout = (sales / denom * 100.0) if denom > 0 else 0.0
+        unit_profit = float(stats.get("unit_profit_rub", 0.0) or 0.0)
+        abc_lines.append(
+            f"• {label} — чистая прибыль {_fmt_cfo_pre_money(unit_profit)} руб./шт., "
+            f"выкуп {buyout:.1f}%"
+        )
+    abc_block = "\n".join(abc_lines) if abc_lines else "• лидеры не выявлены"
+
+    outsider_lines: list[str] = []
+    for sku_key, stats in sorted(
+        sku_data.items(),
+        key=lambda kv: float(kv[1].get("net_profit_rub", 0.0) or 0.0),
+    ):
+        net = float(stats.get("net_profit_rub", 0.0) or 0.0)
+        if net >= 0:
+            continue
+        label = html.escape(_sku_display_from_stats(sku_key, stats))
+        outsider_lines.append(
+            f"• {label} — убыток {_fmt_cfo_pre_money(abs(net))} руб."
+        )
+    outsider_block = (
+        "\n".join(outsider_lines[:5])
+        if outsider_lines
+        else "убыточных товаров не выявлено"
+    )
+
+    green_zone = (
+        f"🟢 ЗОНА УСПЕХА: Масштабируйте {top_label_esc} "
+        f"(чистая прибыль {_fmt_cfo_pre_money(top_unit_profit)} руб./шт.) "
+        "при наличии остатков на складе отгрузки."
+    )
+    if storage <= 0:
+        green_zone += f"\n{_build_storage_traffic_text(0.0)}"
+
+    yellow_zone = (
+        _build_storage_traffic_text(storage)
+        if storage > 0
+        else "🟡 ЗОНА ВНИМАНИЯ: критических операционных отклонений не зафиксировано."
+    )
+    red_zone = _build_penalties_traffic_text(system_losses)
+
+    loss_pool = round(storage + system_losses, 2)
+    loss_headline = _build_loss_calculator_headline(loss_pool)
+    loss_details: list[str] = []
+    if storage > 0:
+        loss_details.append(
+            f"• Складское хранение: {_fmt_cfo_pre_money(storage)} руб."
+        )
+    if system_losses > 0:
+        loss_details.append(
+            f"• Системные штрафы и удержания: {_fmt_cfo_pre_money(system_losses)} руб."
+        )
+    loss_details_block = "\n".join(loss_details)
+
+    zero_labels = {_oos_item_display_label(z) for z in oos_zero_norm}
+    if top_label in zero_labels:
         action_1 = (
-            f"Срочно пополните остатки Лидера [{top_sku_esc}] на складе. "
-            "До момента приемки поставки удерживайте или остановите рекламные кампании, "
-            "чтобы карточка не улетела вниз в поисковой выдаче WB."
+            f"Срочно закупите лидера {top_label_esc} — товар закончился на складе. "
+            f"Целевая чистая прибыль со штуки: {_fmt_cfo_pre_money(top_unit_profit)} руб."
         )
     else:
         action_1 = (
-            f"Усилить закуп и рекламу на {top_sku_esc} — чистая прибыль со штуки в норме."
+            f"Усилить закуп и рекламу на {top_label_esc} — "
+            f"чистая прибыль с одной продажи: {_fmt_cfo_pre_money(top_unit_profit)} руб."
         )
 
-    if oos_zero:
-        names = ", ".join(html.escape(str(x)) for x in oos_zero)
+    if oos_zero_norm:
+        names = ", ".join(
+            html.escape(_oos_item_display_label(z)) for z in oos_zero_norm[:3]
+        )
         action_3 = (
-            f"Срочно пополните остатки: {names} — "
+            f"Срочно закупите: {names} — "
             "товар закончился на складе при сохранённом спросе."
+        )
+    elif oos_critical_norm:
+        names = ", ".join(
+            html.escape(_oos_item_display_label(c)) for c in oos_critical_norm[:3]
+        )
+        action_3 = (
+            f"Запланируйте поставку в течение 48 часов: {names} — "
+            "остаток на складе критически мал при текущем темпе продаж."
         )
     else:
         action_3 = (
@@ -2934,7 +3133,6 @@ def build_wb_finance_consulting_html_from_cfo_metrics(metrics: dict[str, object]
             "критических рисков обнуления остатков не выявлено."
         )
 
-    loss_pool = storage + system_losses
     year_forecast = total_revenue * 12.0
 
     report_html = f"""<pre>
@@ -2960,29 +3158,29 @@ def build_wb_finance_consulting_html_from_cfo_metrics(metrics: dict[str, object]
 
 📦 ABC-АНАЛИЗ ПРОДАЖ
 🅰️ Товары-лидеры (Приносят основные деньги группы А):
-• {top_sku_esc} (выкуп: {top_buyout:.1f}%)
+{abc_block}
 
 🅲 Товары-аутсайдеры (Слабые продажи или убытки):
-убыточных товаров не выявлено
+{outsider_block}
 
 ────────────────────────
 
 📈 СВЕТОФОР ЭФФЕКТИВНОСТИ
-🟢 ЗОНА УСПЕХА: Масштабируйте {top_sku_esc} при условии наличия остатков на складах отгрузки.
-🟡 ЗОНА ВНИМАНИЯ: Списания за Хранение: {_fmt_cfo_pre_money(storage)} руб. Контролируйте оборачиваемость.
-🔴 КРИТИЧЕСКАЯ ЗОНА: Штрафы/Кредиты WB: {_fmt_cfo_pre_money(system_losses)} руб. Реклама и удержания съедают маржу.
+{green_zone}
+{yellow_zone}
+{red_zone}
 
 ────────────────────────
 
 💸 КАЛЬКУЛЯТОР ПОТЕРЬ И УПУЩЕННОЙ ВЫГОДЫ
-Потенциально можно вернуть в оборот: {_fmt_cfo_pre_money(loss_pool)} руб.
-• Потери на пустых покатушках, штрафах и переплатах за складское хранение.
+{loss_headline}
+{loss_details_block}
 
 ────────────────────────
 
 🛡️ ПРОГНОЗ И ОБНУЛЕНИЕ ОСТАТКОВ
 При сохранении текущего темпа годовой оборот составит около {_fmt_cfo_pre_money(year_forecast)} руб.
-{oos_string}
+{oos_inner}
 
 ────────────────────────
 
@@ -3000,95 +3198,22 @@ def build_wb_finance_express_html_local(
     prompt_metrics: WbFinancePromptMetrics,
     wb_metrics: WbMarketplaceMetrics | None,
 ) -> str:
-    """Премиальный локальный отчёт (0 ₽) — тот же стиль, что и консалтинг CFO."""
-    score_emoji, score_status = _business_score_band(prompt_metrics.business_score)
-    score_reason = _business_score_reason_line(prompt_metrics, wb_metrics)
-    lines = [
-        "📊 <b>ФИНАНСОВЫЙ ЭКСПРЕСС-АНАЛИЗ МАГАЗИНА</b>",
-        _FINANCE_SEPARATOR,
-        (
-            f"🎯 <b>ИНДЕКС ЗДОРОВЬЯ БИЗНЕСА:</b> {score_emoji} "
-            f"<code>{prompt_metrics.business_score:.1f} / 10</code> "
-            f"<i>{score_status}</i>"
-        ),
-        score_reason,
-        "💡 <b>ГЛАВНЫЙ АНАЛИТИЧЕСКИЙ ВЫВОД:</b>",
-        f"<i>{_escape_verdict(prompt_metrics.verdict)}</i>",
-        _FINANCE_SEPARATOR,
-        f"💰 <b>ОБЩАЯ ВЫРУЧКА:</b> <code>{_fmt_rub_in_code(prompt_metrics.revenue)} руб.</code>",
-        f"📉 <b>НАЛОГ УСН (6%):</b> <code>{_fmt_rub_in_code(prompt_metrics.tax)} руб.</code>",
-        (
-            f"💵 <b>ЧИСТАЯ ПРИБЫЛЬ:</b> "
-            f"<code>{_fmt_rub_in_code(prompt_metrics.clear_profit)} руб.</code>"
-        ),
-        (
-            f"Эффективность (рентабельность) чистой прибыли: "
-            f"<code>{prompt_metrics.profitability_pct:.1f}%</code>"
-        ),
-        _FINANCE_SEPARATOR,
-        "📦 <b>ABC-АНАЛИЗ ПРОДАЖ</b>",
-    ]
-    lines.extend(_format_abc_a_leader_html(prompt_metrics))
-    lines.append("🅲 <b>Товары-аутсайдеры (Слабые продажи группы С):</b>")
-    for c_line in prompt_metrics.abc_c_summary.splitlines():
-        if c_line.strip():
-            if c_line.startswith("• <i>"):
-                lines.append(c_line)
-            else:
-                lines.append(c_line if "<code>" in c_line else _escape_verdict(c_line))
-    lines.append("📦 <b>Проблемные зоны и скрытые убытки матрицы:</b>")
-    for zone_line in prompt_metrics.matrix_problem_zones_block.splitlines():
-        if zone_line.strip():
-            if zone_line.startswith("📉") or zone_line.startswith("❄️") or zone_line.startswith("• <i>"):
-                lines.append(zone_line)
-            else:
-                lines.append(zone_line)
-    lines.extend(
-        [
-        _FINANCE_SEPARATOR,
-        "📈 <b>СВЕТОФОР ЭФФЕКТИВНОСТИ</b>",
-    ]
-    )
-    for zone_line in _build_traffic_light_block(wb_metrics, prompt_metrics):
-        lines.append(zone_line)
-    lines.extend(_build_loss_calculator_lines(prompt_metrics))
-    lines.extend(
-        [
-            _FINANCE_SEPARATOR,
-            "🛡️ <b>ПРОГНОЗ И ОБНУЛЕНИЕ ОСТАТКОВ</b>",
-            (
-                f"<i>При сохранении текущего темпа годовой оборот составит около "
-                f"<code>{_fmt_rub_in_code(prompt_metrics.year_forecast, decimals=0)} руб.</code>.</i>"
-            ),
-            prompt_metrics.oos_forecast_line,
-            _FINANCE_SEPARATOR,
-            "📋 <b>ПЛАН ДЕЙСТВИЙ ДЛЯ ПРЕДПРИНИМАТЕЛЯ НА СЕГОДНЯ</b>",
-        ]
-    )
-    lines.extend(_build_strategic_plan_lines(prompt_metrics, wb_metrics))
-    lines.append(f"<i>CFO build {_FINANCE_REPORT_BUILD}</i>")
-    html = append_wb_finance_mini_app_cta(
-        _wrap_finance_report_in_pre("\n".join(lines))
-    )
-    if len(html) > _TELEGRAM_MESSAGE_SOFT_MAX:
-        logger.warning(
-            "WB finance local HTML %s chars exceeds soft limit %s",
-            len(html),
-            _TELEGRAM_MESSAGE_SOFT_MAX,
-        )
-    return html
+    """Re-export: каноническая сборка отчёта — :func:`services.table_text_response.build_wb_finance_express_html_local`."""
+    from services.table_text_response import build_wb_finance_express_html_local as _impl
+
+    return _impl(prompt_metrics, wb_metrics)
 
 
 def _build_loss_calculator_lines(prompt_metrics: WbFinancePromptMetrics) -> list[str]:
-    """Калькулятор потерь: логистика, реклама и замороженный капитал в неликвиде."""
+    """Калькулятор потерь cfo-v11.2 — без шаблонов при нулевых суммах."""
     lines = [
         _FINANCE_SEPARATOR,
         "💸 <b>КАЛЬКУЛЯТОР ПОТЕРЬ И УПУЩЕННОЙ ВЫГОДЫ</b>",
-        (
-            f"Потенциально можно вернуть в оборот: "
-            f"<code>{_fmt_rub_in_code(prompt_metrics.fomo_lost_rub)} руб.</code>"
-        ),
+        _build_loss_calculator_headline(prompt_metrics.fomo_lost_rub, html=True),
     ]
+
+    if prompt_metrics.fomo_lost_rub <= 0:
+        return lines
 
     detail_lines: list[str] = []
     for part in _expand_fomo_breakdown(prompt_metrics.fomo_breakdown):
@@ -3127,8 +3252,6 @@ def _build_loss_calculator_lines(prompt_metrics: WbFinancePromptMetrics) -> list
 
     if detail_lines:
         lines.extend(detail_lines)
-    else:
-        lines.append("• критических зон упущенной выгоды не выявлено")
 
     if prompt_metrics.non_liquid_frozen_total_rub > 0:
         lines.append(
@@ -3147,14 +3270,17 @@ def _build_traffic_light_block(
     wb_metrics: WbMarketplaceMetrics | None,
     prompt_metrics: WbFinancePromptMetrics,
 ) -> list[str]:
-    """🟢🟡🔴 блоки для локального fallback — только данные ETL."""
+    """🟢🟡🔴 cfo-v11.2 — только факты из ETL, без пугающих шаблонов при 0.00 руб."""
     agg = prompt_metrics.matrix_aggregation
+    storage = float(prompt_metrics.storage_cost or 0.0)
+    credit = float(prompt_metrics.credit_deductions or 0.0)
+
     green = "🟢 <b>ЗОНА УСПЕХА:</b> "
     display_a = agg.abc_group_a_display_items or prompt_metrics.abc_group_a_items[:_TOP_GROUP_A_DISPLAY]
     if display_a:
         green_parts = [
             (
-                f"<b>{_escape_verdict(str(item.get('label', '—')))}</b> — "
+                f"<b>{_escape_verdict(_oos_item_display_label(dict(item)))}</b> — "
                 f"чистая прибыль <code>{_fmt_rub_in_code(float(item.get('unit_profit_rub', 0.0)))}</code>/шт."
             )
             for item in display_a
@@ -3164,19 +3290,30 @@ def _build_traffic_light_block(
             green += f" {_escape_verdict(_tail_line_group_a(agg.tail_a_count).removeprefix('• '))}"
     else:
         green += "Лидеры с высокой маржой в этом периоде отсутствуют"
+    if storage <= 0:
+        green += f" {_build_storage_traffic_text(0.0)}"
 
     yellow = "🟡 <b>ЗОНА ВНИМАНИЯ:</b> "
     yellow_parts: list[str] = []
-    if prompt_metrics.adv_load_pct >= _DRR_WARNING_PCT:
-        ad_cost = prompt_metrics.total_ad_cost
-        loss_hint = (
-            f" — потери на рекламу <code>{_fmt_rub_in_code(ad_cost)}</code> руб."
-            if ad_cost > 0
-            else ""
-        )
+    if storage > 0:
         yellow_parts.append(
-            f"ДРР <code>{prompt_metrics.adv_load_pct:.1f}%</code> выше 20%: "
-            f"работаете на рекламу, а не на карман{loss_hint}."
+            f"Списания за хранение: <code>{_fmt_rub_in_code(storage)}</code> руб. "
+            "— пересмотрите оборачиваемость и объём неликвида."
+        )
+    if prompt_metrics.total_ad_cost > 0 and prompt_metrics.adv_load_pct >= _DRR_WARNING_PCT:
+        yellow_parts.append(
+            f"ДРР <code>{prompt_metrics.adv_load_pct:.1f}%</code> — "
+            f"рекламные расходы <code>{_fmt_rub_in_code(prompt_metrics.total_ad_cost)}</code> руб."
+        )
+    elif wb_metrics and prompt_metrics.total_ad_cost > 0 and 12 < wb_metrics.ad_load_pct <= _HIGH_DRR_PCT:
+        yellow_parts.append(
+            f"реклама <code>{wb_metrics.ad_load_pct:.1f}%</code> — "
+            "еженедельно отключайте кампании с ДРР выше целевого."
+        )
+    elif wb_metrics and 45 <= wb_metrics.buyout_coef_pct < 65:
+        yellow_parts.append(
+            f"выкуп <code>{wb_metrics.buyout_coef_pct:.1f}%</code> — "
+            "подтяните инфографику, отзывы и размерную сетку."
         )
     loc_line = (prompt_metrics.localization_index_line or "").lower()
     if any(
@@ -3184,62 +3321,50 @@ def _build_traffic_light_block(
         for token in ("низк", "ниже", "плох", "критич", "0.", "1.", "2.", "3.")
     ) and "не указан" not in loc_line:
         yellow_parts.append(
-            "низкий индекс локализации — распределите остатки на Казань, "
-            "Краснодар и Электросталь, чтобы снизить логистику WB."
-        )
-    elif wb_metrics and 45 <= wb_metrics.buyout_coef_pct < 65:
-        yellow_parts.append(
-            f"выкуп <code>{wb_metrics.buyout_coef_pct:.1f}%</code> — подтяните инфографику, "
-            "отзывы и размерную сетку."
-        )
-    elif wb_metrics and prompt_metrics.adv_load_pct > _HIGH_DRR_PCT:
-        yellow_parts.append(
-            f"ДРР <code>{prompt_metrics.adv_load_pct:.1f}%</code> выше нормы — "
-            "сузьте ключевые слова и отключите слабые кампании."
-        )
-    elif wb_metrics and 12 < wb_metrics.ad_load_pct <= _HIGH_DRR_PCT:
-        yellow_parts.append(
-            f"реклама <code>{wb_metrics.ad_load_pct:.1f}%</code> — еженедельно отключайте "
-            "кампании с ДРР выше целевого."
+            "низкий индекс локализации — распределите остатки на региональные склады WB."
         )
     if not yellow_parts:
-        yellow_parts.append(
-            "контролируйте оборачиваемость и не раздувайте склад неликвидом без спроса."
-        )
+        yellow_parts.append("критических операционных отклонений не зафиксировано.")
     yellow += " ".join(yellow_parts)
 
-    red = "🔴 <b>КРИТИЧЕСКАЯ ЗОНА:</b> "
+    system_losses = float(wb_metrics.other_deductions if wb_metrics else 0.0)
+    penalties_html = _build_penalties_traffic_text(
+        system_losses,
+        credit_deductions=credit,
+        html=True,
+    )
+    red = penalties_html
     loss_display = agg.loss_sku_display_lines
     if loss_display or prompt_metrics.loss_sku_items:
         red_parts: list[str] = []
         if loss_display:
-            red_parts.extend(
-                line.removeprefix("• ") for line in loss_display
-            )
+            red_parts.extend(line.removeprefix("• ") for line in loss_display)
         else:
             for item in prompt_metrics.loss_sku_items[:_TOP_LOSS_SKU_DISPLAY]:
                 red_parts.append(
-                    f"<b>{_escape_verdict(str(item.get('label', '—')))}</b> — убыток "
+                    f"<b>{_escape_verdict(_oos_item_display_label(dict(item)))}</b> — убыток "
                     f"<code>{_fmt_rub_in_code(abs(float(item.get('net_profit_rub', 0.0))))}</code> руб."
                 )
         if agg.tail_loss_sku_count > 0:
             red_parts.append(
-                _tail_line_loss_skus(agg.tail_loss_sku_count, agg.tail_loss_sku_rub).removeprefix(
-                    "• "
-                )
+                _tail_line_loss_skus(
+                    agg.tail_loss_sku_count, agg.tail_loss_sku_rub
+                ).removeprefix("• ")
             )
-        if prompt_metrics.adv_load_pct >= 30:
+        if prompt_metrics.total_ad_cost > 0 and prompt_metrics.adv_load_pct >= 30:
             red_parts.append(
                 f"Катастрофический ДРР <code>{prompt_metrics.adv_load_pct:.1f}%</code> — "
-                "реклама съедает чистую прибыль быстрее, чем растёт выручка."
+                f"реклама <code>{_fmt_rub_in_code(prompt_metrics.total_ad_cost)}</code> руб."
             )
-        elif prompt_metrics.adv_load_pct > _HIGH_DRR_PCT:
+        elif prompt_metrics.total_ad_cost > 0 and prompt_metrics.adv_load_pct > _HIGH_DRR_PCT:
             red_parts.append(
-                f"ДРР <code>{prompt_metrics.adv_load_pct:.1f}%</code> — срочно режьте рекламный бюджет."
+                f"ДРР <code>{prompt_metrics.adv_load_pct:.1f}%</code> — "
+                "срочно режьте рекламный бюджет."
             )
-        red += "; ".join(red_parts)
-    else:
-        red += "Критических убытков по товарам не зафиксировано"
+        if red_parts:
+            red = "🔴 <b>КРИТИЧЕСКАЯ ЗОНА:</b> " + "; ".join(red_parts)
+    elif credit <= 0 and prompt_metrics.fomo_lost_rub <= 0 and not loss_display:
+        red = f"🔴 <b>КРИТИЧЕСКАЯ ЗОНА:</b> {_build_penalties_traffic_text(0.0, html=False)}"
 
     return [green, "", yellow, "", red]
 
@@ -3341,7 +3466,7 @@ async def generate_wb_finance_consulting_html(
         )
         raw = sanitize_wb_finance_html(completion.get("content") or "")
         if _is_publishable_wb_finance_html(raw):
-            if "cfo-v11.1" not in raw.lower():
+            if "cfo-v11.2" not in raw.lower():
                 raw = f"{raw}\n\n<i>CFO build {_FINANCE_REPORT_BUILD}</i>"
             return append_wb_finance_mini_app_cta(raw)
         logger.warning(

@@ -18,4 +18,4 @@ def test_build_info_text_contains_rev() -> None:
     assert "NeuroMule" in text
     assert "<code>" in text
     assert "CFO" in text
-    assert "cfo-v11.1" in text
+    assert "cfo-v11.2" in text

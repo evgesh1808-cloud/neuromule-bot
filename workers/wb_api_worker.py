@@ -124,6 +124,11 @@ async def run_nightly_batch(
     Возвращает ``(ok_count, fail_count)``.
     """
     cfg = app_settings or settings
+
+    from services.wb_tariffs_cache import update_global_tariffs_db
+
+    await update_global_tariffs_db()
+
     client = wb_client or WbApiClient(
         base_url=cfg.wb_api_base_url,
         timeout_sec=cfg.wb_api_timeout_sec,

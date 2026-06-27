@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import pytest
 
+from pathlib import Path
+
 from services.file_processor import compute_seller_matrix_etl
 
 
@@ -84,6 +86,57 @@ def test_logistics_fomo_dedicated_return_column() -> None:
     assert etl.reverse_logistics_shop_avg == pytest.approx(1000.0)
     assert "5 возвратов" in etl.logistics_fomo_items[0]
     assert "≈ 5 000.00 руб." in etl.logistics_fomo_items[0]
+
+
+def test_logistics_fomo_uses_tariffs_cache_by_warehouse(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """FOMO: тариф обратной логистики из JSON-кэша × литраж × возвраты."""
+    from services.wb_tariffs_cache import (
+        GlobalTariffsCache,
+        WarehouseTariffRow,
+        save_global_tariffs_cache,
+    )
+
+    cache_path = tmp_path / "GLOBAL_TARIFFS_CACHE.json"
+    save_global_tariffs_cache(
+        GlobalTariffsCache(
+            updated_at="2026-05-27",
+            source="test",
+            build="test",
+            warehouses={
+                "коледино": WarehouseTariffRow(
+                    warehouse_name="Коледино",
+                    return_base_rub=50.0,
+                    return_liter_rub=10.0,
+                )
+            },
+        ),
+        cache_path,
+    )
+    monkeypatch.setattr(
+        "services.wb_tariffs_cache.default_cache_path",
+        lambda: cache_path,
+    )
+
+    matrix = [
+        [
+            "Предмет",
+            "Артикул",
+            "Выкупили, шт.",
+            "Доставки, шт.",
+            "Возвраты, шт.",
+            "Наименование склада",
+            "Литраж, л",
+            "К перечислению, руб.",
+        ],
+        ["Стаканы", "Стаканы_500шт", "0", "10", "4", "Коледино", "2", "10000"],
+    ]
+    etl = compute_seller_matrix_etl(matrix, revenue_total=10_000.0)
+    assert etl is not None
+    # unit = 50 + 10*2 = 70; loss = 4 * 70 = 280
+    assert etl.logistics_fomo_rub == pytest.approx(280.0)
+    assert "Коледино" in etl.logistics_fomo_items[0]
+    assert "2.0 л" in etl.logistics_fomo_items[0]
+    assert "кэш тарифов WB" in etl.logistics_fomo_items[0]
 
 
 def test_returns_qty_capped_by_deliveries() -> None:

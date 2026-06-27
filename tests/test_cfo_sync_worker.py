@@ -53,7 +53,7 @@ def test_sync_table_cfo_processing_worker_from_xlsx() -> None:
             "USN",
             6.0,
         )
-    assert result.get("cfo_build") == "cfo-v11.1"
+    assert result.get("cfo_build") == "cfo-v11.2"
     assert result["tax_type"] == "USN"
     assert result["tax_rate"] == pytest.approx(6.0)
     assert result["total_revenue"] == pytest.approx(1800.0)
@@ -88,12 +88,24 @@ def test_build_wb_finance_consulting_html_from_cfo_metrics() -> None:
             "SKU-2": {"sales_count": 1, "returns_count": 0, "rrc_revenue": 20_000.0, "stock": 5},
         },
         "oos_zero_stock_items": ["SKU-1"],
-        "oos_critical_sku": [{"sku": "SKU-2", "days": 3}],
+        "oos_critical_sku": [
+            {
+                "sku": "SKU-2",
+                "article_id": "SKU-2",
+                "name": "SKU-2",
+                "days": 3,
+                "stock_qty": 5,
+            }
+        ],
     }
     html = build_wb_finance_consulting_html_from_cfo_metrics(metrics)
-    assert "cfo-v11.1" in html
+    assert "cfo-v11.2" in html
     assert "НАЛОГ USN (6%)" in html
     assert "SKU-1" in html
     assert "ЗАКОНЧИЛСЯ" in html
-    assert "остановите рекламные кампании" in html
-    assert "Срочно пополните остатки: SKU-1" in html
+    assert "Срочно закупите лидера SKU-1" in html
+    assert "Целевая чистая прибыль со штуки" in html
+    assert "Срочно закупите: SKU-1" in html
+    assert "остаток 5 шт." in html
+    assert "ЗАКОНЧИТСЯ через 3 дн." in html
+    assert "Списания за хранение: 2 500.00 руб." in html

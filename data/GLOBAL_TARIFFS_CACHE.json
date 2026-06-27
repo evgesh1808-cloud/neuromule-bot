@@ -1,0 +1,1629 @@
+{
+  "updated_at": "2026-06-27T14:15:19.510126+00:00",
+  "source": "https://common-api.wildberries.ru",
+  "build": "cfo-v11.2-tariffs-cache",
+  "default_return_base_rub": 50.0,
+  "default_return_liter_rub": 0.0,
+  "warehouses": {
+    "цифровой склад": {
+      "warehouse_name": "Цифровой склад",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 46.0,
+      "delivery_liter_rub": 14.0,
+      "storage_base_rub": 0.07,
+      "storage_liter_rub": 0.07
+    },
+    "центральный федеральный округ врц": {
+      "warehouse_name": "Центральный федеральный округ ВРЦ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 46.0,
+      "delivery_liter_rub": 14.0,
+      "storage_base_rub": 0.07,
+      "storage_liter_rub": 0.07
+    },
+    "северо-западный федеральный округ врц": {
+      "warehouse_name": "Северо-Западный федеральный округ ВРЦ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 46.0,
+      "delivery_liter_rub": 14.0,
+      "storage_base_rub": 0.07,
+      "storage_liter_rub": 0.07
+    },
+    "южный федеральный округ врц": {
+      "warehouse_name": "Южный федеральный округ ВРЦ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 46.0,
+      "delivery_liter_rub": 14.0,
+      "storage_base_rub": 0.07,
+      "storage_liter_rub": 0.07
+    },
+    "северо-кавказский федеральный округ врц": {
+      "warehouse_name": "Северо-Кавказский федеральный округ ВРЦ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 46.0,
+      "delivery_liter_rub": 14.0,
+      "storage_base_rub": 0.07,
+      "storage_liter_rub": 0.07
+    },
+    "приволжский федеральный округ врц": {
+      "warehouse_name": "Приволжский федеральный округ ВРЦ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 46.0,
+      "delivery_liter_rub": 14.0,
+      "storage_base_rub": 0.07,
+      "storage_liter_rub": 0.07
+    },
+    "уральский федеральный округ врц": {
+      "warehouse_name": "Уральский федеральный округ ВРЦ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 46.0,
+      "delivery_liter_rub": 14.0,
+      "storage_base_rub": 0.07,
+      "storage_liter_rub": 0.07
+    },
+    "сибирский федеральный округ врц": {
+      "warehouse_name": "Сибирский федеральный округ ВРЦ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 46.0,
+      "delivery_liter_rub": 14.0,
+      "storage_base_rub": 0.07,
+      "storage_liter_rub": 0.07
+    },
+    "дальневосточный федеральный округ врц": {
+      "warehouse_name": "Дальневосточный федеральный округ ВРЦ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 46.0,
+      "delivery_liter_rub": 14.0,
+      "storage_base_rub": 0.07,
+      "storage_liter_rub": 0.07
+    },
+    "коледино": {
+      "warehouse_name": "Коледино: Горючее",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 89.7,
+      "delivery_liter_rub": 27.3,
+      "storage_base_rub": 0.1,
+      "storage_liter_rub": 0.1
+    },
+    "подольск": {
+      "warehouse_name": "Подольск 3 СГТ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 46.0,
+      "delivery_liter_rub": 14.0,
+      "storage_base_rub": 0.07,
+      "storage_liter_rub": 0.07
+    },
+    "электросталь": {
+      "warehouse_name": "Электросталь: Питание",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 73.6,
+      "delivery_liter_rub": 22.4,
+      "storage_base_rub": 0.08,
+      "storage_liter_rub": 0.08
+    },
+    "тула": {
+      "warehouse_name": "Тула",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 69.0,
+      "delivery_liter_rub": 21.0,
+      "storage_base_rub": 0.08,
+      "storage_liter_rub": 0.08
+    },
+    "чехов 1": {
+      "warehouse_name": "Чехов 1",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 94.3,
+      "delivery_liter_rub": 28.7,
+      "storage_base_rub": 0.11,
+      "storage_liter_rub": 0.11
+    },
+    "чехов 2": {
+      "warehouse_name": "Чехов 2",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 94.3,
+      "delivery_liter_rub": 28.7,
+      "storage_base_rub": 0.11,
+      "storage_liter_rub": 0.11
+    },
+    "белая дача": {
+      "warehouse_name": "Белая дача",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 89.7,
+      "delivery_liter_rub": 27.3,
+      "storage_base_rub": 0.13,
+      "storage_liter_rub": 0.13
+    },
+    "белые столбы": {
+      "warehouse_name": "Белые Столбы",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 128.8,
+      "delivery_liter_rub": 39.2,
+      "storage_base_rub": 0.2,
+      "storage_liter_rub": 0.2
+    },
+    "обухово": {
+      "warehouse_name": "Обухово",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 78.2,
+      "delivery_liter_rub": 23.8,
+      "storage_base_rub": 0.12,
+      "storage_liter_rub": 0.12
+    },
+    "радумля сгт": {
+      "warehouse_name": "Радумля СГТ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 43.7,
+      "delivery_liter_rub": 13.3,
+      "storage_base_rub": 0.07,
+      "storage_liter_rub": 0.07
+    },
+    "рязань": {
+      "warehouse_name": "Рязань (Тюшевское): Питание",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 55.2,
+      "delivery_liter_rub": 16.8,
+      "storage_base_rub": 0.1,
+      "storage_liter_rub": 0.1
+    },
+    "котовск": {
+      "warehouse_name": "Котовск",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 69.0,
+      "delivery_liter_rub": 21.0,
+      "storage_base_rub": 0.13,
+      "storage_liter_rub": 0.13
+    },
+    "голицыно сгт": {
+      "warehouse_name": "Голицыно СГТ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 34.5,
+      "delivery_liter_rub": 10.5,
+      "storage_base_rub": 0.05,
+      "storage_liter_rub": 0.05
+    },
+    "сабурово": {
+      "warehouse_name": "Сабурово",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 59.8,
+      "delivery_liter_rub": 18.2,
+      "storage_base_rub": 0.09,
+      "storage_liter_rub": 0.09
+    },
+    "маркетплейс: центральный федеральный округ сгт": {
+      "warehouse_name": "Маркетплейс: Центральный федеральный округ СГТ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "маркетплейс: центральный федеральный округ": {
+      "warehouse_name": "Маркетплейс: Центральный федеральный округ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "владимир": {
+      "warehouse_name": "Владимир",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 64.4,
+      "delivery_liter_rub": 19.6,
+      "storage_base_rub": 0.1,
+      "storage_liter_rub": 0.1
+    },
+    "щербинка": {
+      "warehouse_name": "Щербинка",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 92.0,
+      "delivery_liter_rub": 28.0,
+      "storage_base_rub": 0.14,
+      "storage_liter_rub": 0.14
+    },
+    "софрино сгт": {
+      "warehouse_name": "Софрино СГТ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 43.7,
+      "delivery_liter_rub": 13.3,
+      "storage_base_rub": 0.07,
+      "storage_liter_rub": 0.07
+    },
+    "ярославль сгт": {
+      "warehouse_name": "Ярославль СГТ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 46.0,
+      "delivery_liter_rub": 14.0,
+      "storage_base_rub": 0.07,
+      "storage_liter_rub": 0.07
+    },
+    "воронеж": {
+      "warehouse_name": "Воронеж",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 69.0,
+      "delivery_liter_rub": 21.0,
+      "storage_base_rub": 0.11,
+      "storage_liter_rub": 0.11
+    },
+    "софьино сгт": {
+      "warehouse_name": "Софьино СГТ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 43.7,
+      "delivery_liter_rub": 13.3,
+      "storage_base_rub": 0.07,
+      "storage_liter_rub": 0.07
+    },
+    "воронеж: питание": {
+      "warehouse_name": "Воронеж: Питание",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 73.6,
+      "delivery_liter_rub": 22.4,
+      "storage_base_rub": 0.11,
+      "storage_liter_rub": 0.11
+    },
+    "тверь": {
+      "warehouse_name": "Тверь",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 73.6,
+      "delivery_liter_rub": 22.4,
+      "storage_base_rub": 0.11,
+      "storage_liter_rub": 0.11
+    },
+    "белые столбы: горючее": {
+      "warehouse_name": "Белые Столбы: Горючее",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 128.8,
+      "delivery_liter_rub": 39.2,
+      "storage_base_rub": 0.2,
+      "storage_liter_rub": 0.2
+    },
+    "владимир (воршинское): питание": {
+      "warehouse_name": "Владимир (Воршинское): Питание",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 64.4,
+      "delivery_liter_rub": 19.6,
+      "storage_base_rub": 0.1,
+      "storage_liter_rub": 0.1
+    },
+    "котовск: питание": {
+      "warehouse_name": "Котовск: Питание",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 69.0,
+      "delivery_liter_rub": 21.0,
+      "storage_base_rub": 0.13,
+      "storage_liter_rub": 0.13
+    },
+    "санкт-петербург уткина заводь": {
+      "warehouse_name": "Санкт-Петербург Уткина Заводь",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 124.2,
+      "delivery_liter_rub": 37.8,
+      "storage_base_rub": 0.14,
+      "storage_liter_rub": 0.14
+    },
+    "маркетплейс: северо-западный федеральный округ сгт": {
+      "warehouse_name": "Маркетплейс: Северо-Западный федеральный округ СГТ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "маркетплейс: северо-западный федеральный округ": {
+      "warehouse_name": "Маркетплейс: Северо-Западный федеральный округ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "санкт-петербург сгт": {
+      "warehouse_name": "Санкт-Петербург СГТ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 48.3,
+      "delivery_liter_rub": 14.7,
+      "storage_base_rub": 0.07,
+      "storage_liter_rub": 0.07
+    },
+    "спб шушары": {
+      "warehouse_name": "СПБ Шушары",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 101.2,
+      "delivery_liter_rub": 30.8,
+      "storage_base_rub": 0.15,
+      "storage_liter_rub": 0.15
+    },
+    "шушары: питание": {
+      "warehouse_name": "Шушары: Питание",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 101.2,
+      "delivery_liter_rub": 30.8,
+      "storage_base_rub": 0.15,
+      "storage_liter_rub": 0.15
+    },
+    "краснодар": {
+      "warehouse_name": "Краснодар (Тихорецкая): Питание",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 73.6,
+      "delivery_liter_rub": 22.4,
+      "storage_base_rub": 0.1,
+      "storage_liter_rub": 0.1
+    },
+    "волгоград": {
+      "warehouse_name": "Волгоград",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 50.6,
+      "delivery_liter_rub": 15.4,
+      "storage_base_rub": 0.08,
+      "storage_liter_rub": 0.08
+    },
+    "маркетплейс: южный федеральный округ сгт": {
+      "warehouse_name": "Маркетплейс: Южный федеральный округ СГТ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "маркетплейс: южный федеральный округ": {
+      "warehouse_name": "Маркетплейс: Южный федеральный округ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "волгоград: питание": {
+      "warehouse_name": "Волгоград: Питание",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 50.6,
+      "delivery_liter_rub": 15.4,
+      "storage_base_rub": 0.08,
+      "storage_liter_rub": 0.08
+    },
+    "невинномысск": {
+      "warehouse_name": "Невинномысск",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 59.8,
+      "delivery_liter_rub": 18.2,
+      "storage_base_rub": 0.09,
+      "storage_liter_rub": 0.09
+    },
+    "маркетплейс: северо-кавказский федеральный округ сгт": {
+      "warehouse_name": "Маркетплейс: Северо-Кавказский федеральный округ СГТ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "маркетплейс: северо-кавказский федеральный округ": {
+      "warehouse_name": "Маркетплейс: Северо-Кавказский федеральный округ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "казань": {
+      "warehouse_name": "Казань: Питание",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 101.2,
+      "delivery_liter_rub": 30.8,
+      "storage_base_rub": 0.13,
+      "storage_liter_rub": 0.13
+    },
+    "самара (новосемейкино)": {
+      "warehouse_name": "Самара (Новосемейкино)",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 92.0,
+      "delivery_liter_rub": 28.0,
+      "storage_base_rub": 0.14,
+      "storage_liter_rub": 0.14
+    },
+    "маркетплейс: приволжский федеральный округ сгт": {
+      "warehouse_name": "Маркетплейс: Приволжский федеральный округ СГТ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "маркетплейс: приволжский федеральный округ": {
+      "warehouse_name": "Маркетплейс: Приволжский федеральный округ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сарапул": {
+      "warehouse_name": "Сарапул",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 96.6,
+      "delivery_liter_rub": 29.4,
+      "storage_base_rub": 0.15,
+      "storage_liter_rub": 0.15
+    },
+    "кузнецк сгт": {
+      "warehouse_name": "Кузнецк СГТ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 46.0,
+      "delivery_liter_rub": 14.0,
+      "storage_base_rub": 0.07,
+      "storage_liter_rub": 0.07
+    },
+    "пенза": {
+      "warehouse_name": "Пенза",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 46.0,
+      "delivery_liter_rub": 14.0,
+      "storage_base_rub": 0.07,
+      "storage_liter_rub": 0.07
+    },
+    "сц нижний новгород ларина": {
+      "warehouse_name": "СЦ Нижний Новгород Ларина",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 69.0,
+      "delivery_liter_rub": 21.0,
+      "storage_base_rub": 0.11,
+      "storage_liter_rub": 0.11
+    },
+    "новосемейкино: питание": {
+      "warehouse_name": "Новосемейкино: Питание",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 92.0,
+      "delivery_liter_rub": 28.0,
+      "storage_base_rub": 0.14,
+      "storage_liter_rub": 0.14
+    },
+    "екатеринбург": {
+      "warehouse_name": "Екатеринбург Перспективная: Питание",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 103.5,
+      "delivery_liter_rub": 31.5,
+      "storage_base_rub": 0.16,
+      "storage_liter_rub": 0.16
+    },
+    "маркетплейс: уральский федеральный округ сгт": {
+      "warehouse_name": "Маркетплейс: Уральский федеральный округ СГТ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "маркетплейс: уральский федеральный округ": {
+      "warehouse_name": "Маркетплейс: Уральский федеральный округ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "челябинск сгт": {
+      "warehouse_name": "Челябинск СГТ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 46.0,
+      "delivery_liter_rub": 14.0,
+      "storage_base_rub": 0.07,
+      "storage_liter_rub": 0.07
+    },
+    "новосибирск": {
+      "warehouse_name": "Новосибирск",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 204.7,
+      "delivery_liter_rub": 62.3,
+      "storage_base_rub": 0.29,
+      "storage_liter_rub": 0.29
+    },
+    "маркетплейс: сибирский федеральный округ сгт": {
+      "warehouse_name": "Маркетплейс: Сибирский федеральный округ СГТ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "маркетплейс: сибирский федеральный округ": {
+      "warehouse_name": "Маркетплейс: Сибирский федеральный округ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "хабаровск": {
+      "warehouse_name": "Хабаровск",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 101.2,
+      "delivery_liter_rub": 30.8,
+      "storage_base_rub": 0.14,
+      "storage_liter_rub": 0.14
+    },
+    "маркетплейс: дальневосточный федеральный округ сгт": {
+      "warehouse_name": "Маркетплейс: Дальневосточный федеральный округ СГТ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "маркетплейс: дальневосточный федеральный округ": {
+      "warehouse_name": "Маркетплейс: Дальневосточный федеральный округ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "маркетплейс: армения сгт": {
+      "warehouse_name": "Маркетплейс: Армения СГТ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц ереван": {
+      "warehouse_name": "СЦ Ереван",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 71.3,
+      "delivery_liter_rub": 21.7,
+      "storage_base_rub": 0.11,
+      "storage_liter_rub": 0.11
+    },
+    "ск ереван": {
+      "warehouse_name": "СК Ереван",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 71.3,
+      "delivery_liter_rub": 21.7,
+      "storage_base_rub": 0.11,
+      "storage_liter_rub": 0.11
+    },
+    "маркетплейс: беларусь сгт": {
+      "warehouse_name": "Маркетплейс: Беларусь СГТ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "маркетплейс: беларусь": {
+      "warehouse_name": "Маркетплейс: Беларусь",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "атакент": {
+      "warehouse_name": "Атакент",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 62.1,
+      "delivery_liter_rub": 18.9,
+      "storage_base_rub": 0.08,
+      "storage_liter_rub": 0.08
+    },
+    "актобе": {
+      "warehouse_name": "Актобе",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 66.7,
+      "delivery_liter_rub": 20.3,
+      "storage_base_rub": 0.1,
+      "storage_liter_rub": 0.1
+    },
+    "астана карагандинское шоссе": {
+      "warehouse_name": "Астана Карагандинское шоссе",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 66.7,
+      "delivery_liter_rub": 20.3,
+      "storage_base_rub": 0.1,
+      "storage_liter_rub": 0.1
+    },
+    "маркетплейс: казахстан сгт": {
+      "warehouse_name": "Маркетплейс: Казахстан СГТ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "маркетплейс: казахстан": {
+      "warehouse_name": "Маркетплейс: Казахстан",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "маркетплейс: кыргызстан сгт": {
+      "warehouse_name": "Маркетплейс: Кыргызстан СГТ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "маркетплейс: кыргызстан": {
+      "warehouse_name": "Маркетплейс: Кыргызстан",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "маркетплейс: узбекистан": {
+      "warehouse_name": "Маркетплейс: Узбекистан",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "ташкент": {
+      "warehouse_name": "Ташкент",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 46.0,
+      "delivery_liter_rub": 14.0,
+      "storage_base_rub": 0.07,
+      "storage_liter_rub": 0.07
+    },
+    "ташкент 2": {
+      "warehouse_name": "Ташкент 2",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 46.0,
+      "delivery_liter_rub": 14.0,
+      "storage_base_rub": 0.07,
+      "storage_liter_rub": 0.07
+    },
+    "сц тбилиси 3 бонд": {
+      "warehouse_name": "СЦ Тбилиси 3 Бонд",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 59.8,
+      "delivery_liter_rub": 18.2,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "маркетплейс: грузия": {
+      "warehouse_name": "Маркетплейс: Грузия",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "маркетплейс: грузия сгт": {
+      "warehouse_name": "Маркетплейс: Грузия СГТ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "sc tbilisi 2 bond": {
+      "warehouse_name": "SC Tbilisi 2 Bond",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 59.8,
+      "delivery_liter_rub": 18.2,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "базовые тарифы": {
+      "warehouse_name": "Базовые тарифы",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "на бонд грузия": {
+      "warehouse_name": "На бонд Грузия",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц новосибирск докучаева": {
+      "warehouse_name": "СЦ Новосибирск Докучаева",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "вёшки": {
+      "warehouse_name": "Вёшки",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "пушкино": {
+      "warehouse_name": "Пушкино",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "иваново": {
+      "warehouse_name": "Иваново",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "радумля 1": {
+      "warehouse_name": "Радумля 1",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "клин": {
+      "warehouse_name": "Клин",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "обухово 2": {
+      "warehouse_name": "Обухово 2",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "чашниково": {
+      "warehouse_name": "Чашниково",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц тамбов": {
+      "warehouse_name": "СЦ Тамбов",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц липецк": {
+      "warehouse_name": "СЦ Липецк",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц смоленск 3": {
+      "warehouse_name": "СЦ Смоленск 3",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц воронеж": {
+      "warehouse_name": "СЦ Воронеж",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц калуга": {
+      "warehouse_name": "СЦ Калуга",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц брянск 2": {
+      "warehouse_name": "СЦ Брянск 2",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц внуково": {
+      "warehouse_name": "СЦ Внуково",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц курск": {
+      "warehouse_name": "СЦ Курск",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц ярославль громова": {
+      "warehouse_name": "СЦ Ярославль Громова",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "воронеж сгт": {
+      "warehouse_name": "Воронеж СГТ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц софьино": {
+      "warehouse_name": "СЦ Софьино",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "истра": {
+      "warehouse_name": "Истра",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "никольское": {
+      "warehouse_name": "Никольское",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "никольское сгт": {
+      "warehouse_name": "Никольское СГТ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "тверь сгт": {
+      "warehouse_name": "Тверь СГТ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "домодедово 2": {
+      "warehouse_name": "Домодедово 2",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "домодедово 2: питание": {
+      "warehouse_name": "Домодедово 2: Питание",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "климовск сгт": {
+      "warehouse_name": "Климовск СГТ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "обухово сгт новый": {
+      "warehouse_name": "Обухово СГТ новый",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "щеглово (холмогоры) сгт": {
+      "warehouse_name": "Щеглово (Холмогоры) СГТ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "домодедово 2 сгт": {
+      "warehouse_name": "Домодедово 2 СГТ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "чашниково сгт": {
+      "warehouse_name": "Чашниково СГТ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "ск домодедово шинный": {
+      "warehouse_name": "СК Домодедово Шинный",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "чашниково: горючее": {
+      "warehouse_name": "Чашниково: Горючее",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "санкт-петербург шушары": {
+      "warehouse_name": "Санкт-Петербург Шушары",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сгт шушары": {
+      "warehouse_name": "СГТ Шушары",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц шушары": {
+      "warehouse_name": "СЦ Шушары",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "череповец": {
+      "warehouse_name": "Череповец",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц вологда 2": {
+      "warehouse_name": "СЦ Вологда 2",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц сыктывкар": {
+      "warehouse_name": "СЦ Сыктывкар",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц псков": {
+      "warehouse_name": "СЦ Псков",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц мурманск": {
+      "warehouse_name": "СЦ Мурманск",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц архангельск": {
+      "warehouse_name": "СЦ Архангельск",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "красный бор сгт": {
+      "warehouse_name": "Красный Бор СГТ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "крыловская": {
+      "warehouse_name": "Крыловская",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц симферополь (молодежненское)": {
+      "warehouse_name": "СЦ Симферополь (Молодежненское)",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц ростов-на-дону": {
+      "warehouse_name": "СЦ Ростов-на-Дону",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц астрахань (солянка)": {
+      "warehouse_name": "СЦ Астрахань (Солянка)",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц астрахань": {
+      "warehouse_name": "СЦ Астрахань",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц пятигорск": {
+      "warehouse_name": "СЦ Пятигорск",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц владикавказ": {
+      "warehouse_name": "СЦ Владикавказ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "махачкала сепараторная": {
+      "warehouse_name": "Махачкала Сепараторная",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц кузнецк": {
+      "warehouse_name": "СЦ Кузнецк",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц ижевск": {
+      "warehouse_name": "СЦ Ижевск",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц уфа": {
+      "warehouse_name": "СЦ Уфа",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц ульяновск": {
+      "warehouse_name": "СЦ Ульяновск",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц оренбург центральная": {
+      "warehouse_name": "СЦ Оренбург Центральная",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц киров": {
+      "warehouse_name": "СЦ Киров",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц пермь 2": {
+      "warehouse_name": "СЦ Пермь 2",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц чебоксары 2": {
+      "warehouse_name": "СЦ Чебоксары 2",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "пенза сгт": {
+      "warehouse_name": "Пенза СГТ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "пермь 4": {
+      "warehouse_name": "Пермь 4",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц нижний тагил": {
+      "warehouse_name": "СЦ Нижний Тагил",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц челябинск 2": {
+      "warehouse_name": "СЦ Челябинск 2",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц тюмень": {
+      "warehouse_name": "СЦ Тюмень",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "нижний тагил (восточное) сгт": {
+      "warehouse_name": "Нижний Тагил (Восточное) СГТ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "нижний тагил восточное": {
+      "warehouse_name": "Нижний Тагил Восточное",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц барнаул": {
+      "warehouse_name": "СЦ Барнаул",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц новосибирск пасечная": {
+      "warehouse_name": "СЦ Новосибирск Пасечная",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц новокузнецк": {
+      "warehouse_name": "СЦ Новокузнецк",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц томск": {
+      "warehouse_name": "СЦ Томск",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц абакан 2": {
+      "warehouse_name": "СЦ Абакан 2",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц кемерово": {
+      "warehouse_name": "СЦ Кемерово",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц омск": {
+      "warehouse_name": "СЦ Омск",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц иркутск": {
+      "warehouse_name": "СЦ Иркутск",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "новосибирск сгт": {
+      "warehouse_name": "Новосибирск СГТ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "юрга": {
+      "warehouse_name": "Юрга",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц хабаровск": {
+      "warehouse_name": "СЦ Хабаровск",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц белогорск": {
+      "warehouse_name": "СЦ Белогорск",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц чита 2": {
+      "warehouse_name": "СЦ Чита 2",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "владивосток": {
+      "warehouse_name": "Владивосток",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "владивосток сгт": {
+      "warehouse_name": "Владивосток СГТ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "минск": {
+      "warehouse_name": "Минск",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц брест": {
+      "warehouse_name": "СЦ Брест",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц гродно": {
+      "warehouse_name": "СЦ Гродно",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц минск": {
+      "warehouse_name": "СЦ Минск",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц гомель 2": {
+      "warehouse_name": "СЦ Гомель 2",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "ск великий камень": {
+      "warehouse_name": "СК Великий Камень",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц байсерке": {
+      "warehouse_name": "СЦ Байсерке",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц шымкент": {
+      "warehouse_name": "СЦ Шымкент",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "сц шымкент асар": {
+      "warehouse_name": "СЦ Шымкент Асар",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "маркетплейс: таджикистан": {
+      "warehouse_name": "Маркетплейс: Таджикистан",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    }
+  }
+}
