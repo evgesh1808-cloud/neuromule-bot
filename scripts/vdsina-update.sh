@@ -7,7 +7,15 @@ DEPLOY_DIR="$(pwd)"
 
 echo "==> $(hostname) $(date -Is)"
 echo "==> Dir: ${DEPLOY_DIR}"
+echo "==> Remote: $(git remote get-url origin 2>/dev/null || echo 'no remote')"
 echo "==> Before: $(git log -1 --oneline 2>/dev/null || echo 'no git')"
+
+REMOTE_SHA="$(git ls-remote origin refs/heads/main 2>/dev/null | awk '{print $1}')"
+if [ -z "${REMOTE_SHA}" ]; then
+  echo "ERROR: git ls-remote origin main — пустой ответ (сеть или remote)"
+  exit 1
+fi
+echo "==> GitHub main: ${REMOTE_SHA:0:7}"
 
 for svc in neuromule-bot neuromule_bot; do
   systemctl stop "${svc}" 2>/dev/null || true
@@ -21,6 +29,13 @@ for attempt in 1 2 3; do
   sleep 3
 done
 git reset --hard origin/main
+
+LOCAL_SHA="$(git rev-parse HEAD)"
+if [ "${LOCAL_SHA}" != "${REMOTE_SHA}" ]; then
+  echo "ERROR: HEAD (${LOCAL_SHA:0:7}) != GitHub main (${REMOTE_SHA:0:7}) после fetch/reset"
+  echo "       Попробуйте: git fetch origin main && git reset --hard ${REMOTE_SHA}"
+  exit 1
+fi
 
 if ! grep -q reply_build_version platforms/build_info.py; then
   echo "ERROR: нет /version в коде — проверьте git remote и push в main"
@@ -59,5 +74,7 @@ if [ "${online}" -ne 1 ]; then
   exit 1
 fi
 
+CFO_BUILD="$(grep -m1 '_FINANCE_REPORT_BUILD' services/table_wb_finance_ai.py 2>/dev/null | sed -n 's/.*= *"\([^"]*\)".*/\1/p' || true)"
 echo "==> After: $(git log -1 --oneline)"
-echo "==> Напишите боту /version — должен ответить rev=$(git rev-parse --short HEAD)"
+echo "==> CFO build: ${CFO_BUILD:-unknown}"
+echo "==> Напишите боту /version — ожидается rev=$(git rev-parse --short HEAD) и ${CFO_BUILD:-cfo-?}"

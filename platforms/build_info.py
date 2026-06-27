@@ -27,12 +27,22 @@ def _git_rev_short() -> str:
         return "unknown"
 
 
+def _cfo_build_tag() -> str:
+    try:
+        from services.file_processor import _CFO_BUILD
+
+        return str(_CFO_BUILD or "unknown")
+    except Exception:
+        return "unknown"
+
+
 def get_build_info_text() -> str:
     from content import messages as msg
 
     rev = _git_rev_short()
+    cfo = _cfo_build_tag()
     return (
-        f"🛠 <b>NeuroMule</b> <code>{rev}</code>\n"
+        f"🛠 <b>NeuroMule</b> <code>{rev}</code> · CFO <code>{cfo}</code>\n"
         f"{msg.BTN_REPLY_NEUROTEXT} · {msg.BTN_TEXT_ROLE_TABLE}"
     )
 
