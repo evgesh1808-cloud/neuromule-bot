@@ -38,7 +38,7 @@ def _document_suffix(file_name: str | None) -> str:
 async def wb_audit_file_process(message: Message, state: FSMContext) -> None:
     """Асинхронный перехватчик финансового отчёта Wildberries."""
     from platforms.neurotext_input import (
-        _notify_table_status,
+        _fail_wb_finance_status,
         _reply_chat_turn_result,
         _send_wb_finance_processing_status,
         _table_xlsx_allowed,
@@ -84,12 +84,6 @@ async def wb_audit_file_process(message: Message, state: FSMContext) -> None:
             data_key="instruction_msg_id",
         )
 
-        await _notify_table_status(
-            message,
-            status_msg,
-            msg.TXT_AUDIT_WB_PROCESSING_MATRIX,
-        )
-
         is_csv = suffix == ".csv"
         title = Path(file_name).stem or "Отчёт NeuroMule"
         worker = await run_table_processing_worker_async(
@@ -100,7 +94,7 @@ async def wb_audit_file_process(message: Message, state: FSMContext) -> None:
             marketplace_platform=str(audit_platform),
         )
         if worker is None or not worker.rows:
-            await _notify_table_status(
+            await _fail_wb_finance_status(
                 message,
                 status_msg,
                 msg.TXT_AUDIT_WB_DIGITIZE_FAILED,
@@ -149,7 +143,7 @@ async def wb_audit_file_process(message: Message, state: FSMContext) -> None:
         )
     except Exception:
         logger.exception("wb_audit_file_process failed uid=%s file=%s", uid, file_name)
-        await _notify_table_status(
+        await _fail_wb_finance_status(
             message,
             status_msg,
             msg.TXT_AUDIT_WB_DIGITIZE_FAILED,

@@ -470,8 +470,9 @@ async def extract_text_from_document(
 # ─── Локальный ETL товарной матрицы (ABC / FOMO логистики / OOS) ───────────
 
 _USN_RATE = 0.06
-_CFO_BUILD = "cfo-v11.2"
-CFO_ENGINE_NAME = "CFO Engine v11.2"
+_CFO_BUILD = "cfo-v12 (Highload + No-Token UX)"
+CFO_ENGINE_NAME = "CFO Engine v12 (Highload)"
+_OOS_CRITICAL_DAYS = 5
 
 # Семантический маппинг колонок WB (CFO Engine v11.1).
 WB_COLUMN_SYNONYMS: dict[str, tuple[str, ...]] = {
@@ -1180,7 +1181,7 @@ def aggregate_cfo_engine_v11_1(
 
 
 _TOP_A_SHARE = 0.20
-_OOS_RISK_DAYS = 7
+_OOS_RISK_DAYS = 5
 _DEFAULT_REVERSE_LOGISTICS_RUB = 50.0
 _RETURN_LOGISTICS_COL_HINTS: tuple[tuple[str, ...], ...] = (
     ("обратн", "логистик"),
@@ -1993,9 +1994,13 @@ def _cfo_engine_to_sku_data(engine: CfoEngineResult) -> dict[str, dict[str, floa
 def _cfo_oos_lists_from_etl(
     etl: SellerMatrixEtl | None,
     *,
-    critical_days: int = 4,
+    critical_days: int = _OOS_CRITICAL_DAYS,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
-    """OOS: нулевой остаток и критический запас (остаток > 0, дней до обнуления)."""
+    """
+    OOS cfo-v12: цветовые статусы без штук и дней в тексте.
+
+    🔴 остаток 0 (в т.ч. без продаж в периоде) · 🟡 критический запас < N дн.
+    """
     if etl is None:
         return [], []
 
@@ -2005,8 +2010,6 @@ def _cfo_oos_lists_from_etl(
 
     for forecast in etl.oos_forecasts:
         sales = float(forecast.sales_period_qty)
-        if sales <= 0:
-            continue
         stock = float(forecast.stock_qty)
         detail = catalog_map.get(forecast.label)
         name = (detail.name if detail else forecast.label) or forecast.label
@@ -2019,24 +2022,71 @@ def _cfo_oos_lists_from_etl(
             "sku": article_id,
         }
         if stock <= 0:
-            zero_stock.append({**base, "stock_qty": 0})
+            zero_stock.append({**base, "stock_qty": 0, "sales_qty": round(sales, 2)})
             continue
         days = forecast.days_until_stockout
         if (
-            forecast.risk_out_of_stock
+            sales > 0
+            and forecast.risk_out_of_stock
             and days is not None
-            and days <= critical_days
+            and float(days) <= critical_days
         ):
             critical.append(
                 {
                     **base,
                     "stock_qty": round(stock, 2),
-                    "days": max(1, int(round(float(days)))),
                     "days_until_stockout": round(float(days), 1),
                 }
             )
-    critical.sort(key=lambda item: int(item["days"]))  # type: ignore[arg-type]
+    critical.sort(
+        key=lambda item: float(item.get("days_until_stockout") or 999.0),
+    )
     return zero_stock, critical
+
+
+def build_report_metrics_for_history(
+    rows: list[list[str]],
+    *,
+    revenue_total: float = 0.0,
+    platform: str | None = "wildberries",
+    tax_type: str = "USN",
+    tax_rate: float = 6.0,
+    tax_preset_id: str | None = None,
+) -> dict[str, object]:
+    """
+    Словарь для ``save_user_report_to_db``: CFO-метрики + ``final_metrics_json``.
+    """
+    from services.audit_tax import preset_from_regime_rate, resolve_audit_tax_preset
+
+    if not rows or len(rows) < 2:
+        return {"error": "empty_file", "cfo_build": _CFO_BUILD}
+
+    preset = (
+        resolve_audit_tax_preset(tax_preset_id)
+        if tax_preset_id
+        else preset_from_regime_rate(tax_type, tax_rate)
+    )
+    cfo = build_cfo_metrics_dict_from_rows(
+        rows,
+        platform or "wildberries",
+        preset.regime,
+        preset.rate_percent,
+    )
+    if cfo.get("error"):
+        return cfo
+
+    rev = float(revenue_total or cfo.get("total_revenue") or 0.0)
+    final = build_final_metrics_json(
+        rows,
+        revenue_total=rev,
+        platform=platform,
+        tax_preset_id=preset.id,
+    )
+    pack: dict[str, object] = dict(cfo)
+    pack["platform"] = platform or "wildberries"
+    pack["final_metrics_json"] = final
+    pack["cfo_build"] = _CFO_BUILD
+    return pack
 
 
 def build_cfo_metrics_dict_from_rows(
@@ -2229,6 +2279,7 @@ __all__ = (
     "CfoEngineResult",
     "CfoSkuBucket",
     "aggregate_cfo_engine_v11_1",
+    "build_report_metrics_for_history",
     "build_final_metrics_json",
     "build_cfo_metrics_dict_from_rows",
     "sync_table_cfo_processing_worker",

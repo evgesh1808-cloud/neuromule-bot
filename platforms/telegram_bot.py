@@ -205,9 +205,13 @@ async def run_telegram() -> None:
                 await pg_pool.close()
                 logger.info("postgres pool closed")
             except Exception:
-                # Финализация — единственное место, где допустим generic
-                # except: shutdown не должен падать, мы уже выходим.
                 logger.exception("postgres pool close failed")
+        try:
+            from services.db_reports import close_financial_reports_db
+
+            await close_financial_reports_db()
+        except Exception:
+            logger.exception("financial_reports engine close failed")
 
 
 async def _maybe_start_pg_pool(dp: Dispatcher):
@@ -238,4 +242,12 @@ async def _maybe_start_pg_pool(dp: Dispatcher):
         return None
     dp.workflow_data["pg_pool"] = pool
     logger.info("postgres pool attached to dispatcher (Phase 1a)")
+
+    try:
+        from services.db_reports import init_financial_reports_db
+
+        await init_financial_reports_db(dsn)
+    except Exception:
+        logger.exception("financial_reports SQLAlchemy init failed — история отчётов недоступна")
+
     return pool

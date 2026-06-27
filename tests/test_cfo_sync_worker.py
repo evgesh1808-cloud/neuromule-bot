@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 from openpyxl import Workbook
 
+from services.table_text_response import FINANCE_REPORT_BUILD
+
 from services.file_processor import COLUMN_SYNONYMS, sync_table_cfo_processing_worker
 
 
@@ -53,7 +55,7 @@ def test_sync_table_cfo_processing_worker_from_xlsx() -> None:
             "USN",
             6.0,
         )
-    assert result.get("cfo_build") == "cfo-v11.2"
+    assert result.get("cfo_build") == FINANCE_REPORT_BUILD
     assert result["tax_type"] == "USN"
     assert result["tax_rate"] == pytest.approx(6.0)
     assert result["total_revenue"] == pytest.approx(1800.0)
@@ -99,13 +101,14 @@ def test_build_wb_finance_consulting_html_from_cfo_metrics() -> None:
         ],
     }
     html = build_wb_finance_consulting_html_from_cfo_metrics(metrics)
-    assert "cfo-v11.2" in html
+    assert "cfo-v12" in html
     assert "НАЛОГ USN (6%)" in html
     assert "SKU-1" in html
-    assert "ЗАКОНЧИЛСЯ" in html
+    assert "🔴 ТОВАР ПОЛНОСТЬЮ ЗАКОНЧИЛСЯ" in html
     assert "Срочно закупите лидера SKU-1" in html
     assert "Целевая чистая прибыль со штуки" in html
     assert "Срочно закупите: SKU-1" in html
-    assert "остаток 5 шт." in html
-    assert "ЗАКОНЧИТСЯ через 3 дн." in html
+    assert "🟡 СКОРО ЗАКОНЧИТСЯ" in html
+    assert "остаток 5 шт." not in html
+    assert "через 3 дн." not in html
     assert "Списания за хранение: 2 500.00 руб." in html

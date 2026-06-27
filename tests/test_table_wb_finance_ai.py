@@ -7,7 +7,7 @@ import json
 import pytest
 
 from content.chat_prompt import WB_ANALYTICS_SYSTEM_PROMPT, build_wb_marketplace_finance_system_prompt
-from services.table_text_response import compute_wb_marketplace_metrics
+from services.table_text_response import FINANCE_REPORT_BUILD, compute_wb_marketplace_metrics
 from services.table_wb_finance_ai import (
     append_wb_finance_mini_app_cta,
     build_wb_finance_json_user_message,
@@ -36,7 +36,7 @@ def test_wb_analytics_system_prompt_cfo_v8_static() -> None:
     assert "2000 символов" in prompt
     assert "ABC-АНАЛИЗ ПРОДАЖ" in prompt
     assert "BENOVY" not in prompt
-    assert "cfo-v11.2" in prompt
+    assert "cfo-v12" in prompt
     assert "20%" in prompt
     assert "group_A" in prompt
     assert "loss_calculator" in prompt
@@ -76,7 +76,7 @@ def test_build_wb_finance_openrouter_prompt_pair_from_matrix() -> None:
     pair = build_wb_finance_openrouter_prompt_pair(matrix, revenue_total=100_000.0)
     assert pair is not None
     system, user = pair
-    assert "cfo-v11.2" in system
+    assert "cfo-v12" in system
     data = json.loads(user.split("\n\n", 1)[-1])
     assert data["finance"]["total_revenue"] == 100_000.0
     assert "health_index" in data
@@ -114,7 +114,7 @@ def test_build_wb_finance_system_prompt_from_totals() -> None:
     )
     system = build_wb_finance_system_prompt_from_totals(100_000.0, wb)
     assert system is not None
-    assert "cfo-v11.2" in system
+    assert "cfo-v12" in system
 
 
 def test_compute_business_score_bounds() -> None:
@@ -302,7 +302,7 @@ def test_build_wb_finance_express_html_local_abc_header() -> None:
     assert metrics is not None
     html = build_wb_finance_express_html_local(metrics, None)
     assert "ABC-АНАЛИЗ ПРОДАЖ" in html
-    assert "cfo-v11.2" in html
+    assert "cfo-v12" in html
 
 
 def test_build_wb_finance_express_html_local_no_ii_word() -> None:
@@ -452,15 +452,16 @@ def test_oos_zero_stock_forecast_and_plan_aligned() -> None:
     assert metrics is not None
     assert len(metrics.oos_zero_stock_items) == 1
     assert "<pre>" in metrics.oos_forecast_line
-    assert "ЗАКОНЧИЛСЯ" in metrics.oos_forecast_line
+    assert "🔴 ТОВАР ПОЛНОСТЬЮ ЗАКОНЧИЛСЯ" in metrics.oos_forecast_line
     assert "  •" in metrics.oos_forecast_line
-    assert "через 0 дн" not in metrics.oos_forecast_line.lower()
+    assert "0 шт" not in metrics.oos_forecast_line.lower()
+    assert "через" not in metrics.oos_forecast_line.lower()
     assert "критических рисков обнуления остатков не выявлено" not in metrics.oos_forecast_line
 
     html = build_wb_finance_express_html_local(metrics, wb)
     assert "Срочно закупите" in html
     assert "товар закончился" in html
-    assert "ЗАКОНЧИЛСЯ" in html
+    assert "🔴 ТОВАР ПОЛНОСТЬЮ ЗАКОНЧИЛСЯ" in html
     assert "критических рисков обнуления остатков не выявлено" not in html
 
 
@@ -515,8 +516,9 @@ def test_oos_multiple_zero_stock_deficit_message() -> None:
     line = _build_oos_forecast_line(etl, oos_zero, oos_critical)
     assert "<pre>" in line
     assert "дефицит по 2" in line
-    assert "  • A (арт. a1) (0 шт. — ЗАКОНЧИЛСЯ)" in line
-    assert "  • B (арт. b1) (0 шт. — ЗАКОНЧИЛСЯ)" in line
+    assert "Мониторинг запасов" in line
+    assert "  • A (арт. a1) — 🔴 ТОВАР ПОЛНОСТЬЮ ЗАКОНЧИЛСЯ" in line
+    assert "  • B (арт. b1) — 🔴 ТОВАР ПОЛНОСТЬЮ ЗАКОНЧИЛСЯ" in line
     assert "критических рисков" not in line
 
 
@@ -566,8 +568,10 @@ def test_oos_critical_and_zero_stock_column_list() -> None:
     assert len(oos_critical) == 1
     line = _build_oos_forecast_line(etl, oos_zero, oos_critical)
     assert "дефицит по 2" in line
-    assert "DEAD (арт. d1) (0 шт. — ЗАКОНЧИЛСЯ)" in line
-    assert "LOW (арт. l1) — остаток 3 шт. (ЗАКОНЧИТСЯ через 2 дн.)" in line
+    assert "DEAD (арт. d1) — 🔴 ТОВАР ПОЛНОСТЬЮ ЗАКОНЧИЛСЯ" in line
+    assert "LOW (арт. l1) — 🟡 СКОРО ЗАКОНЧИТСЯ" in line
+    assert "0 шт" not in line
+    assert "через" not in line
     assert "SKU &lt;bad&gt;" not in line  # sanity: escape only when needed
 
 
@@ -625,13 +629,13 @@ def test_build_final_metrics_json_cfo_v10() -> None:
         ["GOOD", "80000", "8", "2"],
     ]
     final = build_final_metrics_json(matrix, revenue_total=80_000.0)
-    assert final.get("cfo_build") == "cfo-v11.2"
+    assert final.get("cfo_build") == FINANCE_REPORT_BUILD
     assert final["shop"]["total_revenue"] == 80_000.0
     assert "sku_catalog" in final
     assert "abc_analysis" in final
 
     ctx = build_wb_mpstats_ai_context(matrix, revenue_total=80_000.0)
-    assert ctx.get("cfo_build") == "cfo-v11.2"
+    assert ctx.get("cfo_build") == FINANCE_REPORT_BUILD
     assert "finance" in ctx
     assert "health_index" in ctx
     assert "strategic_plan_hints" in ctx

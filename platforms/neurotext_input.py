@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import traceback
 from pathlib import Path
 
@@ -113,12 +114,22 @@ async def _send_table_generator_status(message: Message) -> Message:
 
 
 async def _send_wb_finance_processing_status(message: Message) -> Message:
-    """Короткий статус WB-аудита (без лишнего баннера перед отчётом)."""
+    """Статус WB-аудита: один раз «Оцифровываю…» без последующих edit_text до выдачи отчёта."""
     return await flood_safe_answer(
         message,
         "⏳ <b>Оцифровываю финансовый отчёт…</b>",
         parse_mode=ParseMode.HTML,
     )
+
+
+async def _fail_wb_finance_status(
+    message: Message,
+    status_msg: Message | None,
+    text: str,
+) -> None:
+    """Ошибка WB-аудита: удаляем статус «Оцифровываю…», новое сообщение без edit_text."""
+    await _clear_table_status_on_failure(status_msg)
+    await message.answer(text, parse_mode=ParseMode.HTML)
 
 
 async def _notify_table_status(
@@ -377,6 +388,7 @@ async def handle_neurotext_user_message(
     is_xlsx_api_path = False
     column_structure_warning = False
     status_msg: Message | None = None
+    is_wb_finance_subrole = False
     try:
         if is_document:
             doc = message.document
@@ -427,12 +439,14 @@ async def handle_neurotext_user_message(
                         data_key="instruction_msg_id",
                     )
                 if not await _table_xlsx_allowed(uid):
-                    await _notify_table_status(
-                        message,
-                        status_msg,
+                    deny_text = (
                         f"⛔ {msg.TXT_AI_ANALYST_ROLE_PHRASE} доступна с тарифа <b>MINI</b> и выше. "
-                        "Открой «🚀 Тарифы» для подключения.",
+                        "Открой «🚀 Тарифы» для подключения."
                     )
+                    if is_wb_finance_subrole:
+                        await _fail_wb_finance_status(message, status_msg, deny_text)
+                    else:
+                        await _notify_table_status(message, status_msg, deny_text)
                     return
                 file_path = await asyncio.wait_for(
                     download_telegram_document_to_path(deps.bot(), doc),
@@ -449,17 +463,30 @@ async def handle_neurotext_user_message(
                         title=title,
                         marketplace_platform=audit_platform,
                     )
+                    if worker is not None and worker.rows:
+                        from services.db_reports import save_user_report_to_db
+                        from services.file_processor import build_report_metrics_for_history
+
+                        report_pack = build_report_metrics_for_history(
+                            worker.rows,
+                            revenue_total=float(worker.calculated_total or 0),
+                            platform=audit_platform or "wildberries",
+                            tax_preset_id=str(audit_tax_preset)
+                            if audit_tax_preset
+                            else None,
+                        )
+                        await save_user_report_to_db(uid, report_pack)
                     if is_wb_finance_subrole or xlsx_auto_finance:
                         xlsx_source_path = file_path
                 finally:
-                    if xlsx_source_path is None:
-                        Path(file_path).unlink(missing_ok=True)
+                    if xlsx_source_path is None and os.path.isfile(file_path):
+                        os.remove(file_path)
                 if worker is None or not worker.rows:
-                    await _notify_table_status(
-                        message,
-                        status_msg,
-                        "⚠️ Файл пустой или не содержит данных.",
-                    )
+                    empty_text = "⚠️ Файл пустой или не содержит данных."
+                    if is_wb_finance_subrole:
+                        await _fail_wb_finance_status(message, status_msg, empty_text)
+                    else:
+                        await _notify_table_status(message, status_msg, empty_text)
                     return
                 rows = worker.rows
                 xlsx_fallback_rows = rows
@@ -553,8 +580,8 @@ async def handle_neurotext_user_message(
                         await _clear_table_status_on_failure(status_msg)
                         await _answer_local_pipeline_traceback(message)
                     finally:
-                        if xlsx_source_path is not None:
-                            Path(xlsx_source_path).unlink(missing_ok=True)
+                        if xlsx_source_path is not None and os.path.isfile(xlsx_source_path):
+                            os.remove(xlsx_source_path)
                     return
                 raw_user_text = build_xlsx_api_user_prompt(
                     caption,
@@ -636,13 +663,15 @@ async def handle_neurotext_user_message(
             dialog_text = user_text[: settings.chat_max_message_chars] if quoted_text else None
     except asyncio.TimeoutError:
         logger.warning("telegram document download timeout uid=%s", uid)
-        if status_msg is not None:
+        timeout_text = (
+            "⚠️ <b>Не удалось скачать файл</b> (таймаут). "
+            "Попробуйте ещё раз или отправьте файл без подписи."
+        )
+        if is_wb_finance_subrole:
+            await _fail_wb_finance_status(message, status_msg, timeout_text)
+        elif status_msg is not None:
             try:
-                await status_msg.edit_text(
-                    "⚠️ <b>Не удалось скачать файл</b> (таймаут). "
-                    "Попробуйте ещё раз или отправьте файл без подписи.",
-                    parse_mode=ParseMode.HTML,
-                )
+                await status_msg.edit_text(timeout_text, parse_mode=ParseMode.HTML)
             except Exception:
                 await message.answer(
                     "⚠️ Не удалось скачать файл с серверов Telegram. Попробуйте ещё раз.",

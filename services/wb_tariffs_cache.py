@@ -18,7 +18,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 CACHE_FILENAME = "GLOBAL_TARIFFS_CACHE.json"
-_BUILD_TAG = "cfo-v11.2-tariffs-cache"
+_BUILD_TAG = "cfo-v12-tariffs-cache"
 
 # Алиасы складов из отчётов продавцов → ключи в кэше WB.
 _WAREHOUSE_ALIASES: dict[str, tuple[str, ...]] = {

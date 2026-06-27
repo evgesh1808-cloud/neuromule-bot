@@ -49,6 +49,16 @@ async def wb_autopilot_setup(
     telegram_user_id: Annotated[int, Depends(require_telegram_user)],
 ) -> dict[str, Any]:
     """Сохраняет WB API Key и опционально включает мониторинг."""
+    from config import settings
+
+    if not settings.wb_user_statistics_api_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Личные WB API-ключи отключены (cfo-v12). "
+                "Загрузите Excel-отчёт в боте — токен не требуется."
+            ),
+        )
     token = body.api_token.strip()
     if len(token) < 8:
         raise HTTPException(status_code=400, detail="API token too short")
@@ -68,6 +78,13 @@ async def wb_autopilot_toggle(
     telegram_user_id: Annotated[int, Depends(require_telegram_user)],
 ) -> dict[str, Any]:
     """Мгновенно вкл/выкл ежедневный мониторинг (списание 50 💎/сутки при enabled)."""
+    from config import settings
+
+    if not settings.wb_user_statistics_api_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Автопилот WB API недоступен — используйте загрузку Excel без токена.",
+        )
     settings_row = await repo.fetch_wb_api_settings(telegram_user_id)
     if not settings_row or not settings_row.get("has_token"):
         raise HTTPException(

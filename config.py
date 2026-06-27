@@ -518,6 +518,9 @@ class Settings(BaseSettings):
     ] = "https://common-api.wildberries.ru"
     wb_tariffs_cache_path: str = ""
 
+    # cfo-v12: личные Statistics API ключи пользователей отключены (только Excel + MASTER_WB).
+    wb_user_statistics_api_enabled: Annotated[bool, _coerce_bool(False)] = False
+
 
 settings = Settings()
 

@@ -1,7 +1,7 @@
 {
   "updated_at": "2026-06-27T14:15:19.510126+00:00",
   "source": "https://common-api.wildberries.ru",
-  "build": "cfo-v11.2-tariffs-cache",
+  "build": "cfo-v12-tariffs-cache",
   "default_return_base_rub": 50.0,
   "default_return_liter_rub": 0.0,
   "warehouses": {

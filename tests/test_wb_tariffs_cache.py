@@ -21,7 +21,7 @@ def _sample_cache() -> GlobalTariffsCache:
     return GlobalTariffsCache(
         updated_at="2026-05-27T00:00:00+00:00",
         source="test",
-        build="cfo-v11.2-tariffs-cache",
+        build="cfo-v12-tariffs-cache",
         warehouses={
             "коледино": WarehouseTariffRow(
                 warehouse_name="Коледино",

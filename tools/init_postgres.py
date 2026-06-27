@@ -107,6 +107,29 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     CREATE INDEX IF NOT EXISTS idx_payment_events_created_at
         ON payment_events (created_at)
     """,
+    # ── financial_reports (CFO v12 Highload) ───────────────────────────
+    """
+    CREATE TABLE IF NOT EXISTS financial_reports (
+        id              UUID         PRIMARY KEY,
+        user_id         BIGINT       NOT NULL,
+        platform        VARCHAR(32)  NOT NULL DEFAULT 'wildberries',
+        created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+        tax_type        VARCHAR(32)  NOT NULL DEFAULT 'USN',
+        tax_rate        DOUBLE PRECISION NOT NULL DEFAULT 6.0,
+        total_revenue   DOUBLE PRECISION NOT NULL DEFAULT 0,
+        tax_total       DOUBLE PRECISION NOT NULL DEFAULT 0,
+        net_profit      DOUBLE PRECISION NOT NULL DEFAULT 0,
+        metrics_json    JSONB        NOT NULL
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS ix_financial_reports_user_id
+        ON financial_reports (user_id)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS ix_financial_reports_user_id_created_at
+        ON financial_reports (user_id, created_at DESC)
+    """,
 )
 
 
