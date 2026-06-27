@@ -406,7 +406,19 @@ _WB_AUX_AMOUNT_COL_HINTS: Final[tuple[str, ...]] = (
     "размер",
     "перечисл",
     "тариф",
-    "оплат",
+)
+_WB_AUX_AMOUNT_HEADER_SKIP: Final[tuple[str, ...]] = (
+    "обоснован",
+    "описан",
+    "тип док",
+    "артикул",
+    "бренд",
+    "предмет",
+    "наименован",
+    "кол-во",
+    "количество",
+    "баркод",
+    "штрих",
 )
 _WB_DETAIL_HEADER_HINTS: Final[tuple[str, ...]] = (
     "тип документа",
@@ -480,6 +492,18 @@ def _matrix_from_header_row(rows: list[list[str]], header_row: int) -> list[list
     return [list(rows[header_row]), *[list(r) for r in rows[header_row + 1 :]]]
 
 
+def _looks_like_rub_amount(text: str, val: float) -> bool:
+    """Отсекает номера договоров и ID, оставляя денежные суммы."""
+    raw = (text or "").strip().replace("\u00a0", " ")
+    if not raw or val < 0.01:
+        return False
+    if re.search(r"\d[.,]\d{1,2}\b", raw.replace(" ", "")):
+        return True
+    if val >= 1_000_000:
+        return False
+    return val <= 999_999.99
+
+
 def _row_money_fallback(row: list[str]) -> float:
     """Берёт наибольшую денежную ячейку строки, если колонка суммы не распознана."""
     best = 0.0
@@ -488,21 +512,19 @@ def _row_money_fallback(row: list[str]) -> float:
         if not text:
             continue
         val = abs(safe_float(cell))
-        if val < 0.01:
-            continue
-        if val > 50_000_000:
-            continue
-        if any(ch in text for ch in (",", ".")) or val >= 50:
+        if _looks_like_rub_amount(text, val):
             best = max(best, val)
     return best
 
 
-def _find_workbook_amount_columns(headers: list[str]) -> list[int]:
+def _find_workbook_amount_columns(headers: list[str], *, allow_positional_fallback: bool = True) -> list[int]:
     """Индексы колонок с суммами на листах «Хранение» / «Удержания»."""
     lowered = [_normalize_column_header(str(h)) for h in headers]
     indices: list[int] = []
     for idx, header in enumerate(lowered):
         if not header:
+            continue
+        if any(skip in header for skip in _WB_AUX_AMOUNT_HEADER_SKIP):
             continue
         if any(hint in header for hint in _WB_AUX_AMOUNT_COL_HINTS):
             indices.append(idx)
@@ -515,7 +537,7 @@ def _find_workbook_amount_columns(headers: list[str]) -> list[int]:
             for col in (tx_cols.payout_price, tx_cols.commission, tx_cols.retail_price):
                 if col is not None and col not in indices:
                     indices.append(col)
-    if not indices:
+    if not indices and allow_positional_fallback:
         for idx in range(len(headers) - 1, -1, -1):
             if str(headers[idx] or "").strip():
                 indices.append(idx)
@@ -523,13 +545,34 @@ def _find_workbook_amount_columns(headers: list[str]) -> list[int]:
     return indices
 
 
-def _row_workbook_amount(row: list[str], amount_cols: list[int]) -> float:
+def _explicit_workbook_amount_columns(headers: list[str]) -> list[int]:
+    lowered = [_normalize_column_header(str(h)) for h in headers]
+    indices: list[int] = []
+    for idx, header in enumerate(lowered):
+        if header and any(hint in header for hint in _WB_AUX_AMOUNT_COL_HINTS):
+            if any(skip in header for skip in _WB_AUX_AMOUNT_HEADER_SKIP):
+                continue
+            indices.append(idx)
+    for idx, header in enumerate(lowered):
+        if "услуг" in header and idx not in indices:
+            indices.append(idx)
+    return indices
+
+
+def _row_workbook_amount(
+    row: list[str],
+    amount_cols: list[int],
+    *,
+    allow_money_fallback: bool = False,
+) -> float:
     for col in amount_cols:
         if col < len(row):
             val = abs(safe_float(row[col]))
             if val > 0:
                 return val
-    return _row_money_fallback(row)
+    if allow_money_fallback:
+        return _row_money_fallback(row)
+    return 0.0
 
 
 def _sum_workbook_sheet_amounts(rows: list[list[str]]) -> float:
@@ -540,8 +583,13 @@ def _sum_workbook_sheet_amounts(rows: list[list[str]]) -> float:
     if len(matrix) < 2:
         return 0.0
     headers = [str(h) for h in matrix[0]]
-    amount_cols = _find_workbook_amount_columns(headers)
-    total = sum(_row_workbook_amount(row, amount_cols) for row in matrix[1:])
+    explicit_cols = _explicit_workbook_amount_columns(headers)
+    amount_cols = explicit_cols or _find_workbook_amount_columns(headers)
+    use_fallback = not explicit_cols
+    total = sum(
+        _row_workbook_amount(row, amount_cols, allow_money_fallback=use_fallback)
+        for row in matrix[1:]
+    )
     return _round_money(total)
 
 
@@ -572,7 +620,7 @@ def scan_matrix_deep_costs(matrix: list[list[str]]) -> tuple[float, float]:
         ):
             justification_cols.append(idx)
 
-    amount_cols = _find_workbook_amount_columns(headers)
+    amount_cols = _find_workbook_amount_columns(headers, allow_positional_fallback=False)
     tx_cols = _resolve_cfo_tx_columns(headers)
     if tx_cols is not None:
         if tx_cols.justification is not None and tx_cols.justification not in justification_cols:
@@ -593,13 +641,13 @@ def scan_matrix_deep_costs(matrix: list[list[str]]) -> tuple[float, float]:
         ).lower()
         if not blob.strip():
             continue
-        amount = _row_workbook_amount(row, amount_cols)
+        amount = _row_workbook_amount(row, amount_cols, allow_money_fallback=False)
         if amount <= 0:
             continue
-        if any(keyword in blob for keyword in _WB_WITHHOLDING_KEYWORDS):
-            system_total += amount
-        elif any(keyword in blob for keyword in _WB_STORAGE_KEYWORDS):
+        if any(keyword in blob for keyword in _WB_STORAGE_KEYWORDS):
             storage_total += amount
+        elif any(keyword in blob for keyword in _WB_WITHHOLDING_KEYWORDS):
+            system_total += amount
 
     return _round_money(storage_total), _round_money(system_total)
 
