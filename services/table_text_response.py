@@ -449,6 +449,13 @@ def compute_wb_marketplace_metrics(
     )
 
 
+def format_wb_oos_forecast_block(prompt_metrics: object | None) -> str:
+    """cfo-v11: HTML-блок «ПРОГНОЗ И ОБНУЛЕНИЕ ОСТАТКОВ» (<pre> со списком SKU)."""
+    if prompt_metrics is None:
+        return ""
+    return str(getattr(prompt_metrics, "oos_forecast_line", "") or "").strip()
+
+
 def build_wb_finance_express_html(
     calculated_total: float,
     *,
@@ -459,7 +466,7 @@ def build_wb_finance_express_html(
     """
     Локальный fallback для под-режима ``wb_ozon_finance`` (если ИИ недоступен).
 
-    Расчёт УСН 6%, чистой прибыли, скоринга, FOMO и CTA — только на сервере.
+    Расчёт УСН 6%, чистой прибыли, скоринга, FOMO — только на сервере (cfo-v11).
     """
     if calculated_total <= 0:
         return ""

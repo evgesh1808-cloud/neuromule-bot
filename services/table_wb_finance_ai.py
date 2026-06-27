@@ -327,6 +327,8 @@ def _collect_etl_dynamic_slices(
     )
 
     oos_zero: list[dict[str, Any]] = []
+    oos_critical: list[dict[str, Any]] = []
+    zero_keys: set[tuple[str, str]] = set()
     for forecast in getattr(matrix_etl, "oos_forecasts", ()) or ():
         if float(forecast.stock_qty) > 0:
             continue
@@ -334,6 +336,8 @@ def _collect_etl_dynamic_slices(
             continue
         detail = catalog_map.get(forecast.label)
         article_id = detail.article_id if detail else forecast.label
+        key = (forecast.label, article_id)
+        zero_keys.add(key)
         oos_zero.append(
             {
                 "name": forecast.label,
@@ -342,38 +346,6 @@ def _collect_etl_dynamic_slices(
             }
         )
 
-    return (
-        tuple(group_a_items),
-        tuple(loss_items),
-        non_liquid_items,
-        tuple(oos_zero),
-        frozen_total,
-    )
-
-
-def _format_oos_stockout_message(label: str, stock_qty: float = 0.0) -> str:
-    """Текст для SKU с нулевым остатком при сохранённом спросе."""
-    stock_int = max(0, int(round(stock_qty)))
-    return f"«{label}» — товар полностью ЗАКОНЧИЛСЯ на складе ({stock_int} шт.)"
-
-
-def _build_oos_forecast_line(
-    matrix_etl: object | None,
-    oos_zero_stock_items: tuple[dict[str, Any], ...],
-) -> str:
-    """Единая строка прогноза OOS — та же логика, что и в плане действий (oos_zero_stock_items)."""
-    if oos_zero_stock_items:
-        n = len(oos_zero_stock_items)
-        if n == 1:
-            item = oos_zero_stock_items[0]
-            label = str(item.get("label") or item.get("name") or "—")
-            return _dedupe_report_noise(_format_oos_stockout_message(label, 0.0))
-        return f"⚠️ ВНИМАНИЕ: Зафиксирован дефицит по {n} артикулам"
-
-    if matrix_etl is None:
-        return "данных по остаткам недостаточно"
-
-    risky: list[tuple[float, str]] = []
     for forecast in getattr(matrix_etl, "oos_forecasts", ()) or ():
         stock = float(forecast.stock_qty)
         sales = float(forecast.sales_period_qty)
@@ -384,19 +356,109 @@ def _build_oos_forecast_line(
             continue
         if days is None or days <= 0:
             continue
-        risky.append(
-            (
-                days,
-                f"«{forecast.label}» — обнуление остатков через {days:.0f} дн.",
-            )
+        detail = catalog_map.get(forecast.label)
+        article_id = detail.article_id if detail else forecast.label
+        key = (forecast.label, article_id)
+        if key in zero_keys:
+            continue
+        oos_critical.append(
+            {
+                "name": forecast.label,
+                "article_id": article_id,
+                "label": _format_sku_label(forecast.label, article_id),
+                "stock_qty": round(stock, 2),
+                "days_until_stockout": round(float(days), 1),
+            }
         )
-    risky.sort(key=lambda x: x[0])
-    if risky:
-        return _dedupe_report_noise("; ".join(line for _, line in risky[:3]))
+    oos_critical.sort(key=lambda x: float(x["days_until_stockout"]))
+
+    return (
+        tuple(group_a_items),
+        tuple(loss_items),
+        non_liquid_items,
+        tuple(oos_zero),
+        tuple(oos_critical),
+        frozen_total,
+    )
+
+
+def _short_oos_sku_name(item: dict[str, Any]) -> str:
+    """Короткое имя для списка OOS (без артикула в скобках)."""
+    name = str(item.get("name") or "").strip()
+    if name and name != "—":
+        return name
+    label = str(item.get("label") or "—").strip()
+    if " (арт." in label:
+        return label.split(" (арт.", 1)[0].strip() or label
+    return label or "—"
+
+
+def _escape_oos_html(text: str) -> str:
+    import html
+
+    return html.escape(text or "", quote=False)
+
+
+def _oos_articles_word(count: int) -> str:
+    n = abs(int(count))
+    if n % 10 == 1 and n % 100 != 11:
+        return "артикулу"
+    if n % 10 in (2, 3, 4) and n % 100 not in (12, 13, 14):
+        return "артикулам"
+    return "артикулам"
+
+
+def _build_oos_forecast_line(
+    matrix_etl: object | None,
+    oos_zero_stock_items: tuple[dict[str, Any], ...],
+    oos_critical_stock_items: tuple[dict[str, Any], ...] = (),
+) -> str:
+    """
+    cfo-v11: HTML-блок прогноза OOS — заголовок + список SKU в <pre>.
+
+    Нулевой остаток (oos_zero_stock_items) и критический (oos_critical_stock_items)
+    выводятся столбиком с отступом в 2 пробела.
+    """
+    zero = tuple(oos_zero_stock_items or ())
+    critical = tuple(oos_critical_stock_items or ())
+    total = len(zero) + len(critical)
+
+    if total > 0:
+        header = (
+            f"⚠️ Заканчивается товар: ⚠️ ВНИМАНИЕ: "
+            f"Зафиксирован дефицит по {total} {_oos_articles_word(total)}:"
+        )
+        body_lines = [header]
+        for item in zero:
+            name = _escape_oos_html(_short_oos_sku_name(item))
+            body_lines.append(f"  • {name} (0 шт. — ЗАКОНЧИЛСЯ)")
+        for item in critical:
+            name = _escape_oos_html(_short_oos_sku_name(item))
+            days = max(1, int(round(float(item.get("days_until_stockout", 1)))))
+            body_lines.append(
+                f"  • {name} (остаток на {days} дн. — КРИТИЧЕСКИЙ ОСТАТК)"
+            )
+        return f"<pre>{chr(10).join(body_lines)}</pre>"
+
+    if matrix_etl is None:
+        return f"<pre>{_escape_oos_html('данных по остаткам недостаточно')}</pre>"
 
     if getattr(matrix_etl, "oos_forecasts", ()):
-        return "критических рисков обнуления остатков не выявлено"
-    return "данных по остаткам недостаточно"
+        return (
+            f"<pre>{_escape_oos_html('критических рисков обнуления остатков не выявлено')}</pre>"
+        )
+    return f"<pre>{_escape_oos_html('данных по остаткам недостаточно')}</pre>"
+
+
+def _build_oos_forecast_plain_summary(
+    oos_zero_stock_items: tuple[dict[str, Any], ...],
+    oos_critical_stock_items: tuple[dict[str, Any], ...],
+) -> str:
+    """Краткая plain-строка для JSON/плана (без HTML)."""
+    total = len(oos_zero_stock_items) + len(oos_critical_stock_items)
+    if total > 0:
+        return f"дефицит по {total} артикулам"
+    return ""
 
 
 def _wrap_finance_report_in_pre(html: str) -> str:
@@ -1584,10 +1646,10 @@ def _build_strategic_plan_lines(
             f"<b>3.</b> Срочно пополните остатки: <b>{oos_names}</b> — "
             "товар закончился на складе при сохранённом спросе."
         )
-    elif prompt_metrics.oos_forecast_line and "недостаточно" not in prompt_metrics.oos_forecast_line:
+    elif prompt_metrics.oos_forecast_summary:
         lines.append(
             f"<b>3.</b> Контролируйте остатки по рисковым артикулам: "
-            f"<i>{_escape_verdict(_dedupe_report_noise(prompt_metrics.oos_forecast_line))}</i>"
+            f"<i>{_escape_verdict(prompt_metrics.oos_forecast_summary)}</i>"
         )
     else:
         lines.append(
@@ -1599,7 +1661,7 @@ _WB_FINANCE_MAX_OUTPUT_TOKENS = 1400
 _WB_FINANCE_TELEGRAM_SOFT_MAX_CHARS = 2000
 _FINANCE_SEPARATOR = "────────────────────────"
 # Меняйте при каждом релизе CFO-шаблона — видно внизу отчёта для проверки деплоя.
-_FINANCE_REPORT_BUILD = "cfo-v10"
+_FINANCE_REPORT_BUILD = "cfo-v11"
 _OLD_FINALE_MARKERS = (
     "Финальный Excel",
     "интерактивный дашборд",
@@ -1680,6 +1742,7 @@ class WbFinancePromptMetrics:
     sku_catalog_lines: tuple[str, ...] = ()
     sku_catalog_items: tuple[dict[str, Any], ...] = ()
     oos_forecast_line: str = "данных по остаткам недостаточно"
+    oos_forecast_summary: str = ""
     total_ad_cost: float = 0.0
     storage_cost: float = 0.0
     credit_deductions: float = 0.0
@@ -1695,6 +1758,7 @@ class WbFinancePromptMetrics:
     loss_sku_items: tuple[dict[str, Any], ...] = ()
     non_liquid_items: tuple[dict[str, Any], ...] = ()
     oos_zero_stock_items: tuple[dict[str, Any], ...] = ()
+    oos_critical_stock_items: tuple[dict[str, Any], ...] = ()
     non_liquid_frozen_total_rub: float = 0.0
     matrix_aggregation: WbFinanceMatrixAggregation = field(
         default_factory=WbFinanceMatrixAggregation
@@ -1985,13 +2049,15 @@ def compute_wb_finance_prompt_metrics(
     outsider_buyout = 0.0
     sku_catalog_lines: tuple[str, ...] = ()
     sku_catalog_items: tuple[dict[str, Any], ...] = ()
-    oos_line = "данных по остаткам недостаточно"
+    oos_line = _build_oos_forecast_line(None, (), ())
+    oos_summary = ""
     reverse_logistics_shop_avg = 0.0
     return_logistics_block = "• существенных потерь на обратной логистике не выявлено"
     abc_group_a_items: tuple[dict[str, Any], ...] = ()
     loss_sku_items: tuple[dict[str, Any], ...] = ()
     non_liquid_items: tuple[dict[str, Any], ...] = ()
     oos_zero_stock_items: tuple[dict[str, Any], ...] = ()
+    oos_critical_stock_items: tuple[dict[str, Any], ...] = ()
     non_liquid_frozen_total_rub = 0.0
     matrix_aggregation = WbFinanceMatrixAggregation()
     if matrix_etl:
@@ -2111,9 +2177,15 @@ def compute_wb_finance_prompt_metrics(
             loss_sku_items,
             non_liquid_items,
             oos_zero_stock_items,
+            oos_critical_stock_items,
             non_liquid_frozen_total_rub,
         ) = _collect_etl_dynamic_slices(matrix_etl)
-        oos_line = _build_oos_forecast_line(matrix_etl, oos_zero_stock_items)
+        oos_line = _build_oos_forecast_line(
+            matrix_etl, oos_zero_stock_items, oos_critical_stock_items
+        )
+        oos_summary = _build_oos_forecast_plain_summary(
+            oos_zero_stock_items, oos_critical_stock_items
+        )
         if non_liquid_frozen_total_rub > 0:
             fomo_rub = round(fomo_rub + non_liquid_frozen_total_rub, 2)
 
@@ -2148,6 +2220,7 @@ def compute_wb_finance_prompt_metrics(
         sku_catalog_lines=sku_catalog_lines,
         sku_catalog_items=sku_catalog_items,
         oos_forecast_line=oos_line,
+        oos_forecast_summary=oos_summary,
         total_ad_cost=ad_cost,
         storage_cost=storage_cost,
         credit_deductions=credit_deductions,
@@ -2161,6 +2234,7 @@ def compute_wb_finance_prompt_metrics(
         loss_sku_items=loss_sku_items,
         non_liquid_items=non_liquid_items,
         oos_zero_stock_items=oos_zero_stock_items,
+        oos_critical_stock_items=oos_critical_stock_items,
         non_liquid_frozen_total_rub=non_liquid_frozen_total_rub,
         matrix_aggregation=matrix_aggregation,
     )
@@ -2734,10 +2808,7 @@ def build_wb_finance_express_html_local(
                 f"<i>При сохранении текущего темпа годовой оборот составит около "
                 f"<code>{_fmt_rub_in_code(prompt_metrics.year_forecast, decimals=0)} руб.</code>.</i>"
             ),
-            (
-                f"⚠️ <b>Заканчивается товар:</b> "
-                f"<i>{_escape_verdict(_dedupe_report_noise(prompt_metrics.oos_forecast_line))}</i>"
-            ),
+            prompt_metrics.oos_forecast_line,
             _FINANCE_SEPARATOR,
             "📋 <b>ПЛАН ДЕЙСТВИЙ ДЛЯ ПРЕДПРИНИМАТЕЛЯ НА СЕГОДНЯ</b>",
         ]
@@ -3016,7 +3087,7 @@ async def generate_wb_finance_consulting_html(
         )
         raw = sanitize_wb_finance_html(completion.get("content") or "")
         if _is_publishable_wb_finance_html(raw):
-            if "cfo-v10" not in raw.lower():
+            if "cfo-v11" not in raw.lower():
                 raw = f"{raw}\n\n<i>CFO build {_FINANCE_REPORT_BUILD}</i>"
             return append_wb_finance_mini_app_cta(raw)
         logger.warning(

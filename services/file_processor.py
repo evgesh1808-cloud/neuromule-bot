@@ -470,7 +470,7 @@ async def extract_text_from_document(
 # ─── Локальный ETL товарной матрицы (ABC / FOMO логистики / OOS) ───────────
 
 _USN_RATE = 0.06
-_CFO_BUILD = "cfo-v10"
+_CFO_BUILD = "cfo-v11"
 
 # Семантический маппинг колонок WB (cfo-v10): lower().strip() + подстрока-синоним.
 WB_COLUMN_SYNONYMS: dict[str, tuple[str, ...]] = {

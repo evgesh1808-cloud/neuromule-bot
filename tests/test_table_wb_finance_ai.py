@@ -36,7 +36,7 @@ def test_wb_analytics_system_prompt_cfo_v8_static() -> None:
     assert "2000 символов" in prompt
     assert "ABC-АНАЛИЗ ПРОДАЖ" in prompt
     assert "BENOVY" not in prompt
-    assert "cfo-v10" in prompt
+    assert "cfo-v11" in prompt
     assert "20%" in prompt
     assert "group_A" in prompt
     assert "loss_calculator" in prompt
@@ -76,7 +76,7 @@ def test_build_wb_finance_openrouter_prompt_pair_from_matrix() -> None:
     pair = build_wb_finance_openrouter_prompt_pair(matrix, revenue_total=100_000.0)
     assert pair is not None
     system, user = pair
-    assert "cfo-v10" in system
+    assert "cfo-v11" in system
     data = json.loads(user.split("\n\n", 1)[-1])
     assert data["finance"]["total_revenue"] == 100_000.0
     assert "health_index" in data
@@ -114,7 +114,7 @@ def test_build_wb_finance_system_prompt_from_totals() -> None:
     )
     system = build_wb_finance_system_prompt_from_totals(100_000.0, wb)
     assert system is not None
-    assert "cfo-v10" in system
+    assert "cfo-v11" in system
 
 
 def test_compute_business_score_bounds() -> None:
@@ -302,7 +302,7 @@ def test_build_wb_finance_express_html_local_abc_header() -> None:
     assert metrics is not None
     html = build_wb_finance_express_html_local(metrics, None)
     assert "ABC-АНАЛИЗ ПРОДАЖ" in html
-    assert "cfo-v10" in html
+    assert "cfo-v11" in html
 
 
 def test_build_wb_finance_express_html_local_no_ii_word() -> None:
@@ -451,7 +451,9 @@ def test_oos_zero_stock_forecast_and_plan_aligned() -> None:
     metrics = compute_wb_finance_prompt_metrics(10_000.0, wb, matrix_rows=matrix)
     assert metrics is not None
     assert len(metrics.oos_zero_stock_items) == 1
+    assert "<pre>" in metrics.oos_forecast_line
     assert "ЗАКОНЧИЛСЯ" in metrics.oos_forecast_line
+    assert "  •" in metrics.oos_forecast_line
     assert "через 0 дн" not in metrics.oos_forecast_line.lower()
     assert "критических рисков обнуления остатков не выявлено" not in metrics.oos_forecast_line
 
@@ -507,11 +509,66 @@ def test_oos_multiple_zero_stock_deficit_message() -> None:
         oos_critical_days=0.0,
         sku_catalog=catalog,
     )
-    *_, oos_zero, _ = _collect_etl_dynamic_slices(etl)
+    *_, oos_zero, oos_critical, _ = _collect_etl_dynamic_slices(etl)
     assert len(oos_zero) == 2
-    line = _build_oos_forecast_line(etl, oos_zero)
-    assert "дефицит по 2 артикулам" in line
+    assert not oos_critical
+    line = _build_oos_forecast_line(etl, oos_zero, oos_critical)
+    assert "<pre>" in line
+    assert "дефицит по 2" in line
+    assert "  • A (0 шт. — ЗАКОНЧИЛСЯ)" in line
+    assert "  • B (0 шт. — ЗАКОНЧИЛСЯ)" in line
     assert "критических рисков" not in line
+
+
+def test_oos_critical_and_zero_stock_column_list() -> None:
+    from services.file_processor import MatrixOosForecast, MatrixSkuDetail, SellerMatrixEtl
+    from services.table_wb_finance_ai import _build_oos_forecast_line, _collect_etl_dynamic_slices
+
+    catalog = (
+        MatrixSkuDetail(
+            name="DEAD",
+            article_id="d1",
+            revenue=100.0,
+            net_profit=50.0,
+            buyout_pct=80.0,
+            abc_group="A",
+            stock_qty=0.0,
+            sales_qty=5.0,
+        ),
+        MatrixSkuDetail(
+            name="LOW",
+            article_id="l1",
+            revenue=200.0,
+            net_profit=40.0,
+            buyout_pct=70.0,
+            abc_group="B",
+            stock_qty=3.0,
+            sales_qty=7.0,
+        ),
+    )
+    forecasts = (
+        MatrixOosForecast("DEAD", 0.0, 5.0, 0.0, True),
+        MatrixOosForecast("LOW", 3.0, 7.0, 2.0, True),
+    )
+    etl = SellerMatrixEtl(
+        abc_group_a=(),
+        abc_group_c=(),
+        abc_a_leader="DEAD",
+        logistics_fomo_rub=0.0,
+        logistics_fomo_detail="",
+        oos_forecasts=forecasts,
+        oos_critical_sku="LOW",
+        oos_critical_days=2.0,
+        sku_catalog=catalog,
+    )
+    *_, oos_zero, oos_critical, _ = _collect_etl_dynamic_slices(etl)
+    assert len(oos_zero) == 1
+    assert len(oos_critical) == 1
+    line = _build_oos_forecast_line(etl, oos_zero, oos_critical)
+    assert "дефицит по 2" in line
+    assert "DEAD (0 шт. — ЗАКОНЧИЛСЯ)" in line
+    assert "LOW (остаток на 2 дн. — КРИТИЧЕСКИЙ ОСТАТК)" in line
+    assert "SKU &lt;bad&gt;" not in line  # sanity: escape only when needed
 
 
 def test_build_wb_finance_express_html_pre_wrapper_and_escape() -> None:
@@ -568,13 +625,13 @@ def test_build_final_metrics_json_cfo_v10() -> None:
         ["GOOD", "80000", "8", "2"],
     ]
     final = build_final_metrics_json(matrix, revenue_total=80_000.0)
-    assert final.get("cfo_build") == "cfo-v10"
+    assert final.get("cfo_build") == "cfo-v11"
     assert final["shop"]["total_revenue"] == 80_000.0
     assert "sku_catalog" in final
     assert "abc_analysis" in final
 
     ctx = build_wb_mpstats_ai_context(matrix, revenue_total=80_000.0)
-    assert ctx.get("cfo_build") == "cfo-v10"
+    assert ctx.get("cfo_build") == "cfo-v11"
     assert "finance" in ctx
     assert "health_index" in ctx
     assert "strategic_plan_hints" in ctx
