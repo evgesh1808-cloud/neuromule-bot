@@ -67,48 +67,37 @@ def test_sync_table_cfo_processing_worker_from_xlsx() -> None:
 
 
 def test_build_wb_finance_consulting_html_from_cfo_metrics() -> None:
-    from services.table_wb_finance_ai import build_wb_finance_consulting_html_from_cfo_metrics
+    from services.table_wb_finance_ai import (
+        WbFinancePromptMetrics,
+        build_wb_finance_express_html_local,
+    )
 
-    metrics = {
-        "tax_type": "USN",
-        "tax_rate": 6.0,
-        "total_revenue": 100_000.0,
-        "tax_total": 6_000.0,
-        "net_profit": 12_000.0,
-        "margin_pct": 12.0,
-        "total_storage_cost": 2_500.0,
-        "total_system_losses": 500.0,
-        "sku_data": {
-            "SKU-1": {
-                "sales_count": 10,
-                "returns_count": 2,
-                "rrc_revenue": 80_000.0,
-                "payout": 60_000.0,
-                "delivery": 5_000.0,
-                "stock": 0,
-            },
-            "SKU-2": {"sales_count": 1, "returns_count": 0, "rrc_revenue": 20_000.0, "stock": 5},
-        },
-        "oos_zero_stock_items": ["SKU-1"],
-        "oos_critical_sku": [
-            {
-                "sku": "SKU-2",
-                "article_id": "SKU-2",
-                "name": "SKU-2",
-                "days": 3,
-                "stock_qty": 5,
-            }
-        ],
-    }
-    html = build_wb_finance_consulting_html_from_cfo_metrics(metrics)
-    assert "cfo-v12" in html
-    assert "НАЛОГ USN (6%)" in html
+    metrics = WbFinancePromptMetrics(
+        revenue=100_000.0,
+        tax=6_000.0,
+        clear_profit=12_000.0,
+        adv_load_pct=10.0,
+        buy_ratio_pct=80.0,
+        year_forecast=1_200_000.0,
+        profitability_pct=12.0,
+        business_score=7.5,
+        verdict="Стабильная база при риске перерасхода на рекламу и просадки кассы.",
+        fomo_lost_rub=3_000.0,
+        fomo_breakdown=("Списания за хранение: 2 500.00 руб.",),
+        storage_cost=2_500.0,
+        total_system_losses=500.0,
+        abc_a_leader_name="SKU-1",
+        abc_a_leader_article="SKU-1",
+        top_regions=("Карелия",),
+        top_warehouses=("Рязань",),
+        canceled_skus=("SKU-1",),
+    )
+    html = build_wb_finance_express_html_local(metrics, None)
+    assert "Fact-Based Audit Build" in html
+    assert "НАЛОГ УСН" in html
     assert "SKU-1" in html
-    assert "🔴 ТОВАР ПОЛНОСТЬЮ ЗАКОНЧИЛСЯ" in html
-    assert "Срочно закупите лидера SKU-1" in html
-    assert "Целевая чистая прибыль со штуки" in html
-    assert "Срочно закупите: SKU-1" in html
-    assert "🟡 СКОРО ЗАКОНЧИТСЯ" in html
-    assert "остаток 5 шт." not in html
-    assert "через 3 дн." not in html
-    assert "Списания за хранение: 2 500.00 руб." in html
+    assert "ПРОГНОЗ И ОБНУЛЕНИЕ ОСТАТКОВ" not in html
+    assert "Контроль Cash Flow" in html
+    assert "ОПЕРАЦИОННЫЙ АУДИТ ПОСТАВОК" in html
+    assert "отмены заказов" in html
+    assert "СТРУКТУРА ИЗДЕРЖЕК" in html

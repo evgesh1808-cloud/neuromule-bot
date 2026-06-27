@@ -428,11 +428,17 @@ def test_build_wb_finance_express_html_local_plan() -> None:
     metrics = compute_wb_finance_prompt_metrics(10_000.0, wb, matrix_rows=matrix)
     assert metrics is not None
     html = build_wb_finance_express_html_local(metrics, None)
-    assert "ПЛАН ДЕЙСТВИЙ" in html
+    assert "СТРАТЕГИЧЕСКИЕ РЕКОМЕНДАЦИИ CFO" in html
+    assert "Контроль Cash Flow" in html
+    assert "Ценообразование и Логистика" in html
+    assert "ПРОГНОЗ И ОБНУЛЕНИЕ ОСТАТКОВ" not in html
+    assert "CFO build cfo-v12 (Fact-Based Audit Build)" in html
+    assert "CFO build CFO build" not in html
 
 
-def test_oos_zero_stock_forecast_and_plan_aligned() -> None:
-    """Нулевой остаток: план и прогноз читают oos_zero_stock_items, без «через 0 дн.»."""
+def test_oos_forecast_disabled_in_fact_based_build() -> None:
+    """Fact-Based Audit: прогноз остатков не строится и не попадает в HTML."""
+    from services.table_text_response import build_oos_forecast_line
     from services.table_wb_finance_ai import (
         build_wb_finance_express_html_local,
         compute_wb_finance_prompt_metrics,
@@ -450,129 +456,14 @@ def test_oos_zero_stock_forecast_and_plan_aligned() -> None:
     wb = compute_wb_marketplace_metrics(matrix, revenue_total=10_000.0)
     metrics = compute_wb_finance_prompt_metrics(10_000.0, wb, matrix_rows=matrix)
     assert metrics is not None
-    assert len(metrics.oos_zero_stock_items) == 1
-    assert "<pre>" in metrics.oos_forecast_line
-    assert "🔴 ТОВАР ПОЛНОСТЬЮ ЗАКОНЧИЛСЯ" in metrics.oos_forecast_line
-    assert "  •" in metrics.oos_forecast_line
-    assert "0 шт" not in metrics.oos_forecast_line.lower()
-    assert "через" not in metrics.oos_forecast_line.lower()
-    assert "критических рисков обнуления остатков не выявлено" not in metrics.oos_forecast_line
+    assert metrics.oos_forecast_line == ""
+    assert build_oos_forecast_line(None, (), ()) == ""
 
     html = build_wb_finance_express_html_local(metrics, wb)
-    assert "Срочно закупите" in html
-    assert "товар закончился" in html
-    assert "🔴 ТОВАР ПОЛНОСТЬЮ ЗАКОНЧИЛСЯ" in html
-    assert "критических рисков обнуления остатков не выявлено" not in html
-
-
-def test_oos_multiple_zero_stock_deficit_message() -> None:
-    from services.file_processor import (
-        MatrixOosForecast,
-        MatrixSkuDetail,
-        SellerMatrixEtl,
-    )
-    from services.table_wb_finance_ai import _build_oos_forecast_line, _collect_etl_dynamic_slices
-
-    catalog = (
-        MatrixSkuDetail(
-            name="A",
-            article_id="a1",
-            revenue=1000.0,
-            net_profit=100.0,
-            buyout_pct=80.0,
-            abc_group="A",
-            stock_qty=0.0,
-            sales_qty=7.0,
-        ),
-        MatrixSkuDetail(
-            name="B",
-            article_id="b1",
-            revenue=500.0,
-            net_profit=50.0,
-            buyout_pct=70.0,
-            abc_group="B",
-            stock_qty=0.0,
-            sales_qty=3.0,
-        ),
-    )
-    forecasts = (
-        MatrixOosForecast("A", 0.0, 7.0, 0.0, True),
-        MatrixOosForecast("B", 0.0, 3.0, 0.0, True),
-    )
-    etl = SellerMatrixEtl(
-        abc_group_a=(),
-        abc_group_c=(),
-        abc_a_leader="A",
-        logistics_fomo_rub=0.0,
-        logistics_fomo_detail="",
-        oos_forecasts=forecasts,
-        oos_critical_sku="A",
-        oos_critical_days=0.0,
-        sku_catalog=catalog,
-    )
-    *_, oos_zero, oos_critical, _ = _collect_etl_dynamic_slices(etl)
-    assert len(oos_zero) == 2
-    assert not oos_critical
-    line = _build_oos_forecast_line(etl, oos_zero, oos_critical)
-    assert "<pre>" in line
-    assert "дефицит по 2" in line
-    assert "Мониторинг запасов" in line
-    assert "  • A (арт. a1) — 🔴 ТОВАР ПОЛНОСТЬЮ ЗАКОНЧИЛСЯ" in line
-    assert "  • B (арт. b1) — 🔴 ТОВАР ПОЛНОСТЬЮ ЗАКОНЧИЛСЯ" in line
-    assert "критических рисков" not in line
-
-
-def test_oos_critical_and_zero_stock_column_list() -> None:
-    from services.file_processor import MatrixOosForecast, MatrixSkuDetail, SellerMatrixEtl
-    from services.table_wb_finance_ai import _build_oos_forecast_line, _collect_etl_dynamic_slices
-
-    catalog = (
-        MatrixSkuDetail(
-            name="DEAD",
-            article_id="d1",
-            revenue=100.0,
-            net_profit=50.0,
-            buyout_pct=80.0,
-            abc_group="A",
-            stock_qty=0.0,
-            sales_qty=5.0,
-        ),
-        MatrixSkuDetail(
-            name="LOW",
-            article_id="l1",
-            revenue=200.0,
-            net_profit=40.0,
-            buyout_pct=70.0,
-            abc_group="B",
-            stock_qty=3.0,
-            sales_qty=7.0,
-        ),
-    )
-    forecasts = (
-        MatrixOosForecast("DEAD", 0.0, 5.0, 0.0, True),
-        MatrixOosForecast("LOW", 3.0, 7.0, 2.0, True),
-    )
-    etl = SellerMatrixEtl(
-        abc_group_a=(),
-        abc_group_c=(),
-        abc_a_leader="DEAD",
-        logistics_fomo_rub=0.0,
-        logistics_fomo_detail="",
-        oos_forecasts=forecasts,
-        oos_critical_sku="LOW",
-        oos_critical_days=2.0,
-        sku_catalog=catalog,
-    )
-    *_, oos_zero, oos_critical, _ = _collect_etl_dynamic_slices(etl)
-    assert len(oos_zero) == 1
-    assert len(oos_critical) == 1
-    line = _build_oos_forecast_line(etl, oos_zero, oos_critical)
-    assert "дефицит по 2" in line
-    assert "DEAD (арт. d1) — 🔴 ТОВАР ПОЛНОСТЬЮ ЗАКОНЧИЛСЯ" in line
-    assert "LOW (арт. l1) — 🟡 СКОРО ЗАКОНЧИТСЯ" in line
-    assert "0 шт" not in line
-    assert "через" not in line
-    assert "SKU &lt;bad&gt;" not in line  # sanity: escape only when needed
+    assert "ПРОГНОЗ И ОБНУЛЕНИЕ ОСТАТКОВ" not in html
+    assert "Срочно закупите" not in html
+    assert "товар закончился" not in html
+    assert "🔴 ТОВАР ПОЛНОСТЬЮ ЗАКОНЧИЛСЯ" not in html
 
 
 def test_build_wb_finance_express_html_pre_wrapper_and_escape() -> None:

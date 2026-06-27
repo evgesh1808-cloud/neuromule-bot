@@ -68,15 +68,153 @@ def test_build_wb_finance_express_html() -> None:
     assert "185,000.00" in html
     assert "11,100.00" in html  # tax 6%
     assert "173,900.00" in html  # net
-    assert "2,220,000" in html  # yearly forecast
+    assert "РАСХОДЫ НА ХРАНЕНИЕ" in html
+    assert "СИСТЕМНЫЕ УДЕРЖАНИЯ" in html
+    assert "ПРОГНОЗ И ОБНУЛЕНИЕ ОСТАТКОВ" not in html
+    assert "Fact-Based Audit Build" in html
     assert "НАЛОГ УСН" in html
     assert "ГЛАВНЫЙ АНАЛИТИЧЕСКИЙ ВЫВОД" in html
     assert "ОБЩАЯ ВЫРУЧКА" in html
-    assert "ПЛАН ДЕЙСТВИЙ ДЛЯ ПРЕДПРИНИМАТЕЛЯ" in html
+    assert "ПЛАН ДЕЙСТВИЙ ДЛЯ ПРЕДПРИНИМАТЕЛЯ" not in html
+    assert "СТРАТЕГИЧЕСКИЕ РЕКОМЕНДАЦИИ CFO" in html
+    assert "ОПЕРАЦИОННЫЙ АУДИТ ПОСТАВОК" in html
     assert "СВЕТОФОР" in html
     assert "Серверный" not in html
     assert "ИИ-ПЛАН" not in html
     assert "интерактивный дашборд" not in html
+
+
+def test_finance_block_shows_storage_and_system_losses() -> None:
+    from services.table_wb_finance_ai import (
+        WbFinancePromptMetrics,
+        build_wb_finance_express_html_local,
+    )
+
+    metrics = WbFinancePromptMetrics(
+        revenue=100_000.0,
+        tax=6_000.0,
+        clear_profit=20_000.0,
+        adv_load_pct=12.0,
+        buy_ratio_pct=70.0,
+        year_forecast=1_200_000.0,
+        profitability_pct=20.0,
+        business_score=8.0,
+        verdict="Высокая маржинальность — фокус на масштабировании лидеров ассортимента.",
+        fomo_lost_rub=0.0,
+        fomo_breakdown=(),
+        storage_cost=2_500.0,
+        total_system_losses=500.0,
+    )
+    html = build_wb_finance_express_html_local(metrics, None)
+    assert "2,500.00" in html
+    assert "500.00" in html
+    assert "РАСХОДЫ НА ХРАНЕНИЕ" in html
+    assert "СИСТЕМНЫЕ УДЕРЖАНИЯ" in html
+    assert "Контроль Cash Flow" in html
+    assert "3,000.00" in html
+
+
+def test_supply_chain_audit_block_in_report() -> None:
+    from services.table_wb_finance_ai import WbFinancePromptMetrics, build_wb_finance_express_html_local
+
+    metrics = WbFinancePromptMetrics(
+        revenue=100_000.0,
+        tax=6_000.0,
+        clear_profit=20_000.0,
+        adv_load_pct=12.0,
+        buy_ratio_pct=70.0,
+        year_forecast=1_200_000.0,
+        profitability_pct=20.0,
+        business_score=8.0,
+        verdict="Высокая маржинальность — фокус на масштабировании лидеров ассортимента.",
+        fomo_lost_rub=0.0,
+        fomo_breakdown=(),
+        top_regions=("Карелия", "Краснодар", "Алтай"),
+        top_warehouses=("Рязань", "Тула"),
+        canceled_skus=("SKU-C", "SKU-D"),
+    )
+    html = build_wb_finance_express_html_local(metrics, None)
+    assert "ОПЕРАЦИОННЫЙ АУДИТ ПОСТАВОК" in html
+    assert "Рязань" in html
+    assert "Карелия" in html
+    assert "SKU-C" in html
+    assert "отмены заказов" in html
+
+
+def test_cost_structure_block_with_losses() -> None:
+    from services.table_wb_finance_ai import WbFinancePromptMetrics, build_wb_finance_express_html_local
+
+    metrics = WbFinancePromptMetrics(
+        revenue=100_000.0,
+        tax=6_000.0,
+        clear_profit=20_000.0,
+        adv_load_pct=12.0,
+        buy_ratio_pct=70.0,
+        year_forecast=1_200_000.0,
+        profitability_pct=20.0,
+        business_score=8.0,
+        verdict="Высокая маржинальность — фокус на масштабировании лидеров ассортимента.",
+        fomo_lost_rub=0.0,
+        fomo_breakdown=(),
+        storage_cost=2_500.0,
+        total_system_losses=500.0,
+    )
+    html = build_wb_finance_express_html_local(metrics, None)
+    assert "СТРУКТУРА ИЗДЕРЖЕК И КОММЕРЧЕСКИХ УДЕРЖАНИЙ" in html
+    assert "КРИТИЧЕСКАЯ ЗОНА" in html
+    assert "500.00" in html
+    assert "ХРАНЕНИЕ И ЛОГИСТИКА" in html
+    assert "2,500.00" in html
+    assert "КОМИССИИ И АКЦИИ WB" in html
+    assert "30-40%" in html
+
+
+def test_cost_structure_block_praise_when_zero_costs() -> None:
+    from services.table_wb_finance_ai import WbFinancePromptMetrics, build_wb_finance_express_html_local
+
+    metrics = WbFinancePromptMetrics(
+        revenue=100_000.0,
+        tax=6_000.0,
+        clear_profit=20_000.0,
+        adv_load_pct=12.0,
+        buy_ratio_pct=70.0,
+        year_forecast=1_200_000.0,
+        profitability_pct=20.0,
+        business_score=8.0,
+        verdict="Высокая маржинальность — фокус на масштабировании лидеров ассортимента.",
+        fomo_lost_rub=0.0,
+        fomo_breakdown=(),
+    )
+    html = build_wb_finance_express_html_local(metrics, None)
+    assert "СТРУКТУРА ИЗДЕРЖЕК И КОММЕРЧЕСКИХ УДЕРЖАНИЙ" in html
+    assert "Эффективность юнит-экономики 100%" in html
+    assert "КОМИССИИ И АКЦИИ WB" in html
+    assert "внереализационные списания" not in html
+    assert "за нахождение товара на складах FBO" not in html
+
+
+def test_main_verdict_system_losses_override() -> None:
+    from services.table_text_response import _resolve_main_analytical_verdict
+    from services.table_wb_finance_ai import WbFinancePromptMetrics
+
+    metrics = WbFinancePromptMetrics(
+        revenue=100_000.0,
+        tax=6_000.0,
+        clear_profit=-1_500.0,
+        adv_load_pct=12.0,
+        buy_ratio_pct=70.0,
+        year_forecast=1_200_000.0,
+        profitability_pct=-1.5,
+        business_score=4.0,
+        verdict="Высокая маржинальность — фокус на масштабировании лидеров ассортимента.",
+        fomo_lost_rub=0.0,
+        fomo_breakdown=(),
+        total_system_losses=3_000.0,
+        operational_profit=1_500.0,
+    )
+    verdict = _resolve_main_analytical_verdict(metrics, None)
+    assert "системными удержаниями" in verdict
+    assert "масштабировании лидеров" not in verdict
 
 
 def test_compute_wb_marketplace_metrics_local_features() -> None:

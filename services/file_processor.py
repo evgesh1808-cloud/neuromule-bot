@@ -22,6 +22,7 @@ import math
 import os
 import re
 import tempfile
+from collections import Counter
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
@@ -470,7 +471,7 @@ async def extract_text_from_document(
 # ─── Локальный ETL товарной матрицы (ABC / FOMO логистики / OOS) ───────────
 
 _USN_RATE = 0.06
-_CFO_BUILD = "cfo-v12 (Highload + No-Token UX)"
+_CFO_BUILD = "cfo-v12 (Fact-Based Audit Build)"
 CFO_ENGINE_NAME = "CFO Engine v12 (Highload)"
 _OOS_CRITICAL_DAYS = 5
 
@@ -547,6 +548,16 @@ WB_COLUMN_SYNONYMS: dict[str, tuple[str, ...]] = {
         "warehouse",
         "склад wb",
     ),
+    "region": (
+        "регион доставки",
+        "регион",
+        "область",
+        "субъект",
+        "населенный пункт",
+        "город доставки",
+        "region",
+        "delivery region",
+    ),
     "volume_liters": (
         "литраж",
         "объем",
@@ -566,6 +577,8 @@ COLUMN_SYNONYMS: dict[str, tuple[str, ...]] = {
     "delivery": WB_COLUMN_SYNONYMS["delivery"],
     "return_delivery": WB_COLUMN_SYNONYMS["return_delivery"],
     "op_type": WB_COLUMN_SYNONYMS["operation_type"],
+    "warehouse": WB_COLUMN_SYNONYMS["warehouse"],
+    "region": WB_COLUMN_SYNONYMS["region"],
 }
 
 _COLUMN_KEY_ALIASES: dict[str, str] = {
@@ -2089,6 +2102,113 @@ def build_report_metrics_for_history(
     return pack
 
 
+def collect_supply_chain_audit_from_rows(
+    matrix: list[list[str]],
+) -> dict[str, object]:
+    """
+    Операционный аудит поставок: топ регионов/складов и отмены по артикулам.
+
+    Использует ``collections.Counter`` по строкам детализации WB.
+    """
+    empty: dict[str, object] = {
+        "top_regions": [],
+        "top_warehouses": [],
+        "canceled_skus": [],
+    }
+    if not matrix or len(matrix) < 2:
+        return empty
+
+    headers = [str(h) for h in matrix[0]]
+    warehouse_col = find_column_index(headers, "warehouse")
+    if warehouse_col is None:
+        warehouse_col = _matrix_warehouse_col(headers)
+    region_col = find_column_index(headers, "region")
+    sku_col = find_column_index(headers, "sku")
+    op_col = find_column_index(headers, "op_type")
+    name_col, article_col = _matrix_name_and_article_cols(headers)
+    tx_cols = _resolve_cfo_tx_columns(headers)
+
+    region_counter: Counter[str] = Counter()
+    warehouse_counter: Counter[str] = Counter()
+    canceled_skus: list[str] = []
+    canceled_seen: set[str] = set()
+
+    _OUTBOUND_KINDS = frozenset(
+        {"sale", "sale_adjustment", "forward_logistics", "commission", "other"}
+    )
+    _SKIP_SUPPLY_KINDS = frozenset(
+        {
+            "skip",
+            "storage",
+            "acceptance",
+            "utilization",
+            "ad",
+            "system_loss",
+            "return",
+            "storno",
+            "cancel",
+        }
+    )
+
+    for row in matrix[1:]:
+        if not any(str(cell or "").strip() for cell in row):
+            continue
+
+        op_text = ""
+        blob = ""
+        if tx_cols is not None:
+            blob = _cfo_row_blob(row, tx_cols)
+            op_text = _cfo_cell(row, tx_cols.doc_type)
+            kind = classify_cfo_tx_row(blob, doc_type=op_text)
+        elif op_col is not None and op_col < len(row):
+            op_text = str(row[op_col] or "").strip()
+            blob = op_text.lower()
+            kind = classify_cfo_tx_row(blob, doc_type=op_text)
+        else:
+            kind = "other"
+
+        sku_label = ""
+        if tx_cols is not None:
+            name, article = _cfo_sku_identity(row, tx_cols)
+            sku_label = (article or name or "").strip()
+        else:
+            if sku_col is not None and sku_col < len(row):
+                sku_label = str(row[sku_col] or "").strip()
+            elif article_col is not None and article_col < len(row):
+                sku_label = str(row[article_col] or "").strip()
+            elif name_col is not None and name_col < len(row):
+                sku_label = str(row[name_col] or "").strip()
+
+        op_low = f"{op_text} {blob}".lower()
+        if "возврат" in op_low or "сторно" in op_low:
+            if sku_label and sku_label not in canceled_seen:
+                canceled_seen.add(sku_label)
+                canceled_skus.append(sku_label)
+
+        if kind in _SKIP_SUPPLY_KINDS:
+            continue
+
+        count_supply = kind in _OUTBOUND_KINDS
+        if not count_supply:
+            continue
+
+        if warehouse_col is not None and warehouse_col < len(row):
+            warehouse = str(row[warehouse_col] or "").strip()
+            if warehouse:
+                warehouse_counter[warehouse] += 1
+
+        if region_col is not None and region_col < len(row):
+            region = str(row[region_col] or "").strip()
+            if region:
+                region_counter[region] += 1
+
+    return {
+        "top_regions": [name for name, _ in region_counter.most_common(3)],
+        "top_warehouses": [name for name, _ in warehouse_counter.most_common(2)],
+        "canceled_skus": canceled_skus,
+    }
+
+
 def build_cfo_metrics_dict_from_rows(
     rows: list[list[str]],
     audit_platform: str,
@@ -2127,6 +2247,7 @@ def build_cfo_metrics_dict_from_rows(
     margin_pct = (
         round(engine.clear_profit / revenue * 100.0, 2) if revenue > 0 else 0.0
     )
+    supply_audit = collect_supply_chain_audit_from_rows(rows)
 
     return {
         "cfo_build": _CFO_BUILD,
@@ -2143,6 +2264,9 @@ def build_cfo_metrics_dict_from_rows(
         "total_sku_margin": engine.total_sku_margin,
         "oos_zero_stock_items": oos_zero,
         "oos_critical_sku": oos_critical,
+        "top_regions": supply_audit["top_regions"],
+        "top_warehouses": supply_audit["top_warehouses"],
+        "canceled_skus": supply_audit["canceled_skus"],
     }
 
 

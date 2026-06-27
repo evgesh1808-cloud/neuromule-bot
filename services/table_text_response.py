@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import html as html_module
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -452,19 +451,15 @@ def compute_wb_marketplace_metrics(
 
 
 def format_wb_oos_forecast_block(prompt_metrics: object | None) -> str:
-    """cfo-v12: HTML-блок мониторинга запасов (<pre>, цветовые статусы без штук/дней)."""
-    if prompt_metrics is None:
-        return ""
-    line = str(getattr(prompt_metrics, "oos_forecast_line", "") or "").strip()
-    return normalize_finance_report_html(line)
+    """cfo-v12 Fact-Based: прогноз остатков отключён — WB-отчёт не содержит складских данных."""
+    return ""
 
 
-# ─── CFO v12: мониторинг запасов и подпись сборки (единый источник истины) ───
+# ─── CFO v12 Fact-Based Audit Build (единый источник подписи) ───
 
-FINANCE_REPORT_BUILD = "cfo-v12 (Highload + No-Token UX)"
-CFO_BUILD_FOOTER_HTML = f"<i>CFO build {FINANCE_REPORT_BUILD}</i>"
+FINANCE_REPORT_BUILD = "cfo-v12 (Fact-Based Audit Build)"
 CFO_BUILD_FOOTER_PLAIN = f"CFO build {FINANCE_REPORT_BUILD}"
-_OOS_CRITICAL_VELOCITY_DAYS = 5.0
+CFO_BUILD_FOOTER_HTML = f"<i>{CFO_BUILD_FOOTER_PLAIN}</i>"
 
 _LEGACY_OOS_ZERO_RE = re.compile(
     r"\(\s*0\s*шт\.?\s*—\s*ЗАКОНЧИЛСЯ\s*\)",
@@ -475,150 +470,55 @@ _LEGACY_OOS_CRITICAL_RE = re.compile(
     re.IGNORECASE,
 )
 _LEGACY_BUILD_TAG_RE = re.compile(r"cfo-v11\.2", re.IGNORECASE)
+_LEGACY_HIGHLOAD_BUILD_RE = re.compile(
+    r"cfo-v12\s*\(\s*Highload\s*\+\s*No-Token\s*UX\s*\)",
+    re.IGNORECASE,
+)
+_CFO_BUILD_DUP_RE = re.compile(r"(?:CFO\s+build\s+)+", re.IGNORECASE)
+_LEGACY_OOS_SECTION_RE = re.compile(
+    r"🛡️[^\n]*ПРОГНОЗ\s+И\s+ОБНУЛЕНИЕ\s+ОСТАТКОВ[\s\S]*?"
+    r"(?=────────────────────────\s*\n\s*📋|────────────────────────\s*\n\s*<b>📋|📋\s*<b>ПЛАН|CFO\s+build|$)",
+    re.IGNORECASE,
+)
 
 
 def normalize_finance_report_build_tag(text: str) -> str:
-    """Принудительно заменяет устаревшую подпись cfo-v11.2 на cfo-v12."""
+    """Принудительно нормализует маркер сборки до Fact-Based Audit Build."""
     if not text:
         return text
-    return _LEGACY_BUILD_TAG_RE.sub(FINANCE_REPORT_BUILD, text)
+    out = _LEGACY_BUILD_TAG_RE.sub(FINANCE_REPORT_BUILD, text)
+    out = _LEGACY_HIGHLOAD_BUILD_RE.sub(FINANCE_REPORT_BUILD, out)
+    out = _CFO_BUILD_DUP_RE.sub("CFO build ", out)
+    if "CFO build" not in out and FINANCE_REPORT_BUILD in out:
+        out = out.replace(FINANCE_REPORT_BUILD, CFO_BUILD_FOOTER_PLAIN)
+    return out
 
 
 def normalize_finance_report_html(text: str) -> str:
-    """Убирает разметку OOS v11.2 и старую подпись сборки из готового HTML."""
+    """Убирает устаревшую OOS-разметку, секцию прогноза и дубли подписи сборки."""
     if not text:
         return text
-    out = _LEGACY_OOS_ZERO_RE.sub("— 🔴 ТОВАР ПОЛНОСТЬЮ ЗАКОНЧИЛСЯ", text)
-    out = _LEGACY_OOS_CRITICAL_RE.sub(
-        "— 🟡 СКОРО ЗАКОНЧИТСЯ (критический уровень запасов)",
-        out,
-    )
-    return normalize_finance_report_build_tag(out)
-
-
-def _escape_oos_html(text: str) -> str:
-    return html_module.escape(text or "", quote=False)
-
-
-def _oos_item_label(item: dict[str, Any]) -> str:
-    label = str(item.get("label") or "").strip()
-    if label:
-        return label
-    name = str(item.get("name") or item.get("human_name") or "—")
-    article = str(item.get("article_id") or item.get("sku") or "").strip()
-    if article and article not in ("—", name):
-        return f"{name} (арт. {article})"
-    return name
-
-
-def _format_oos_zero_line_v12(item: dict[str, Any]) -> str:
-    label = _escape_oos_html(_oos_item_label(item))
-    return f"  • {label} — 🔴 ТОВАР ПОЛНОСТЬЮ ЗАКОНЧИЛСЯ"
-
-
-def _format_oos_critical_line_v12(item: dict[str, Any]) -> str:
-    label = _escape_oos_html(_oos_item_label(item))
-    return f"  • {label} — 🟡 СКОРО ЗАКОНЧИТСЯ (критический уровень запасов)"
-
-
-def _oos_lists_from_matrix_etl(
-    matrix_etl: object | None,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Локальный Python-анализ oos_forecasts из Excel-ETL (velocity ≤ 5 дн.)."""
-    if matrix_etl is None:
-        return [], []
-
-    catalog_map = {
-        s.name: s for s in getattr(matrix_etl, "sku_catalog", ()) or ()
-    }
-    zero: list[dict[str, Any]] = []
-    critical: list[dict[str, Any]] = []
-    zero_keys: set[tuple[str, str]] = set()
-
-    for forecast in getattr(matrix_etl, "oos_forecasts", ()) or ():
-        stock = float(getattr(forecast, "stock_qty", 0) or 0)
-        sales = float(getattr(forecast, "sales_period_qty", 0) or 0)
-        name = str(getattr(forecast, "label", "") or "—")
-        detail = catalog_map.get(name)
-        article_id = str(
-            detail.article_id if detail else getattr(forecast, "label", name) or name
-        )
-        key = (name, article_id)
-        base = {
-            "name": name,
-            "article_id": article_id,
-            "label": _oos_item_label(
-                {"name": name, "article_id": article_id, "label": ""}
-            ),
-        }
-        if stock <= 0:
-            zero_keys.add(key)
-            zero.append({**base, "stock_qty": 0})
-            continue
-        days = getattr(forecast, "days_until_stockout", None)
-        if sales <= 0 or not getattr(forecast, "risk_out_of_stock", False):
-            continue
-        if days is None or float(days) > _OOS_CRITICAL_VELOCITY_DAYS:
-            continue
-        if key in zero_keys:
-            continue
-        critical.append(
-            {
-                **base,
-                "stock_qty": round(stock, 2),
-                "days_until_stockout": round(float(days), 1),
-            }
-        )
-
-    critical.sort(key=lambda x: float(x.get("days_until_stockout") or 999.0))
-    return zero, critical
+    out = _LEGACY_OOS_SECTION_RE.sub("", text)
+    out = _LEGACY_OOS_ZERO_RE.sub("", out)
+    out = _LEGACY_OOS_CRITICAL_RE.sub("", out)
+    out = normalize_finance_report_build_tag(out)
+    out = re.sub(r"\n{3,}", "\n\n", out)
+    return out.strip()
 
 
 def build_oos_forecast_line(
-    matrix_etl: object | None,
+    matrix_etl: object | None = None,
     oos_zero_stock_items: tuple[dict[str, Any], ...] | list[dict[str, Any]] = (),
     oos_critical_stock_items: tuple[dict[str, Any], ...] | list[dict[str, Any]] = (),
 ) -> str:
-    """
-    cfo-v12: мониторинг запасов — только 🔴/🟡 статусы, без штук и дней в тексте.
-
-    Весь блок в ``<pre>``; подписи SKU через ``html.escape()``.
-    """
-    zero = [dict(x) for x in (oos_zero_stock_items or ())]
-    critical = [dict(x) for x in (oos_critical_stock_items or ())]
-
-    if not zero and not critical and matrix_etl is not None:
-        zero, critical = _oos_lists_from_matrix_etl(matrix_etl)
-
-    total = len(zero) + len(critical)
-    if total > 0:
-        header = _escape_oos_html(
-            f"⚠️ Мониторинг запасов: Зафиксирован дефицит по {total} артикулам:"
-        )
-        body_lines = [header]
-        for item in zero:
-            body_lines.append(_format_oos_zero_line_v12(item))
-        for item in critical:
-            body_lines.append(_format_oos_critical_line_v12(item))
-        return f"<pre>{chr(10).join(body_lines)}</pre>"
-
-    if matrix_etl is None:
-        return f"<pre>{_escape_oos_html('данных по остаткам недостаточно')}</pre>"
-
-    if getattr(matrix_etl, "oos_forecasts", ()):
-        return (
-            f"<pre>{_escape_oos_html('критических рисков обнуления остатков не выявлено')}</pre>"
-        )
-    return f"<pre>{_escape_oos_html('данных по остаткам недостаточно')}</pre>"
+    """Отключено: финансовый отчёт WB не содержит достоверных остатков на складе."""
+    return ""
 
 
 def build_oos_forecast_plain_summary(
-    oos_zero_stock_items: tuple[dict[str, Any], ...] | list[dict[str, Any]],
-    oos_critical_stock_items: tuple[dict[str, Any], ...] | list[dict[str, Any]],
+    oos_zero_stock_items: tuple[dict[str, Any], ...] | list[dict[str, Any]] = (),
+    oos_critical_stock_items: tuple[dict[str, Any], ...] | list[dict[str, Any]] = (),
 ) -> str:
-    total = len(oos_zero_stock_items or ()) + len(oos_critical_stock_items or ())
-    if total > 0:
-        return f"дефицит по {total} артикулам"
     return ""
 
 
@@ -647,7 +547,7 @@ def build_wb_finance_express_html(
         )
         from services.table_wb_finance_ai import (
             append_wb_finance_mini_app_cta,
-            build_wb_finance_consulting_html_from_cfo_metrics,
+            compute_wb_finance_prompt_metrics,
         )
 
         headers = [str(h) for h in matrix_rows[0]]
@@ -664,9 +564,17 @@ def build_wb_finance_express_html(
                 preset.rate_percent,
             )
             if not cfo_metrics.get("error"):
-                return append_wb_finance_mini_app_cta(
-                    build_wb_finance_consulting_html_from_cfo_metrics(cfo_metrics)
+                prompt_metrics = compute_wb_finance_prompt_metrics(
+                    float(cfo_metrics.get("total_revenue") or calculated_total or 0.0),
+                    wb_metrics,
+                    matrix_rows=matrix_rows,
+                    platform=platform,
+                    tax_preset_id=tax_preset_id,
                 )
+                if prompt_metrics is not None:
+                    return append_wb_finance_mini_app_cta(
+                        build_wb_finance_express_html_local(prompt_metrics, wb_metrics)
+                    )
 
     if calculated_total <= 0:
         return ""
@@ -685,14 +593,156 @@ def build_wb_finance_express_html(
     return build_wb_finance_express_html_local(prompt_metrics, wb_metrics)
 
 
-# ─── Динамический текстовый отчёт CFO v12 (Highload + No-Token UX) ───
+# ─── Динамический текстовый отчёт CFO v12 (Fact-Based Audit Build) ───
+
+_SYSTEM_LOSSES_VERDICT = (
+    "Отрицательный баланс периода связан с крупными системными удержаниями "
+    "по кредитам/штрафам маркетплейса. Операционная прибыль от прямых продаж "
+    "товаров при этом остается положительной."
+)
+
+
+def _prompt_total_storage_cost(prompt_metrics: object) -> float:
+    return float(getattr(prompt_metrics, "storage_cost", 0.0) or 0.0)
+
+
+def _prompt_total_system_losses(
+    prompt_metrics: object,
+    wb_metrics: WbMarketplaceMetrics | None,
+) -> float:
+    explicit = getattr(prompt_metrics, "total_system_losses", None)
+    if explicit is not None:
+        return float(explicit or 0.0)
+    if wb_metrics is not None:
+        return float(wb_metrics.other_deductions or 0.0)
+    return float(getattr(prompt_metrics, "credit_deductions", 0.0) or 0.0)
+
+
+def _resolve_main_analytical_verdict(
+    prompt_metrics: object,
+    wb_metrics: WbMarketplaceMetrics | None,
+) -> str:
+    net_profit = float(getattr(prompt_metrics, "clear_profit", 0.0) or 0.0)
+    system_losses = _prompt_total_system_losses(prompt_metrics, wb_metrics)
+    if net_profit < 0 and system_losses > 0:
+        return _SYSTEM_LOSSES_VERDICT
+    return str(getattr(prompt_metrics, "verdict", "") or "")
+
+
+_IDEAL_UNIT_ECONOMICS_PRAISE = (
+    "🛡️ Эффективность юнит-экономики 100%. Скрытых операционных потерь на логистике "
+    "возвратов не выявлено. Вся маржа идет в карман."
+)
+
+_COMMISSION_AUDIT_LINE = (
+    "  📊 <b>КОМИССИИ И АКЦИИ WB:</b> Средняя доля удержаний маркетплейса (включая услуги "
+    "поверенного) составляет ~30-40% от розничной цены (РРЦ). Зафиксированы сложные расчеты "
+    "скидок/СПП. Рекомендуется регулярно пересчитывать юнит-экономику под новые тарифы литража."
+)
+
+
+def _build_cost_structure_lines(
+    prompt_metrics: object,
+    wb_metrics: WbMarketplaceMetrics | None,
+) -> list[str]:
+    """Структура издержек WB: системные удержания, хранение, аудит комиссий."""
+    storage_total = _prompt_total_storage_cost(prompt_metrics)
+    system_losses_total = _prompt_total_system_losses(prompt_metrics, wb_metrics)
+
+    lines: list[str] = [
+        _FINANCE_SEPARATOR,
+        "📊 <b>СТРУКТУРА ИЗДЕРЖЕК И КОММЕРЧЕСКИХ УДЕРЖАНИЙ</b>",
+    ]
+
+    if system_losses_total > 0:
+        lines.append(
+            "  ⚠️ <b>КРИТИЧЕСКАЯ ЗОНА:</b> Зафиксированы крупные внереализационные списания "
+            f"(кредиты/штрафы) на сумму <code>{_fmt_rub_in_code(system_losses_total)}</code> руб. "
+            "Внимание: контролируйте график платежей, чтобы данные списания не создавали "
+            "скрытый дефицит Cash Flow."
+        )
+
+    if storage_total > 0:
+        lines.append(
+            "  📦 <b>ХРАНЕНИЕ И ЛОГИСТИКА:</b> За неделю накопилось "
+            f"<code>{_fmt_rub_in_code(storage_total)}</code> руб. за нахождение товара на складах FBO. "
+            "Риск: если оборачиваемость SKU упадет, стоимость хранения начнет планово съедать "
+            "всю маржинальность продаж."
+        )
+
+    if system_losses_total <= 0 and storage_total <= 0:
+        lines.append(f"  {_IDEAL_UNIT_ECONOMICS_PRAISE}")
+
+    lines.append(_COMMISSION_AUDIT_LINE)
+    return lines
+
+
+def _prompt_top_regions(prompt_metrics: object) -> tuple[str, ...]:
+    raw = getattr(prompt_metrics, "top_regions", ()) or ()
+    return tuple(str(x) for x in raw if str(x).strip())
+
+
+def _prompt_top_warehouses(prompt_metrics: object) -> tuple[str, ...]:
+    raw = getattr(prompt_metrics, "top_warehouses", ()) or ()
+    return tuple(str(x) for x in raw if str(x).strip())
+
+
+def _prompt_canceled_skus(prompt_metrics: object) -> tuple[str, ...]:
+    raw = getattr(prompt_metrics, "canceled_skus", ()) or ()
+    return tuple(str(x) for x in raw if str(x).strip())
+
+
+def _build_supply_chain_audit_lines(
+    prompt_metrics: object,
+    wb_metrics: WbMarketplaceMetrics | None,
+) -> list[str]:
+    """Операционный аудит поставок: склады, география, отмены."""
+    from services.table_wb_finance_ai import _escape_verdict
+
+    del wb_metrics
+    top_regions = _prompt_top_regions(prompt_metrics)
+    top_warehouses = _prompt_top_warehouses(prompt_metrics)
+    canceled_skus = _prompt_canceled_skus(prompt_metrics)
+
+    warehouses_text = ", ".join(_escape_verdict(name) for name in top_warehouses[:2])
+    if not warehouses_text:
+        warehouses_text = "не указаны в отчёте"
+
+    regions_text = ", ".join(_escape_verdict(name) for name in top_regions[:3])
+    if not regions_text:
+        regions_text = "не зафиксированы в отчёте"
+
+    lines: list[str] = [
+        _FINANCE_SEPARATOR,
+        "📦 <b>ОПЕРАЦИОННЫЙ АУДИТ ПОСТАВОК</b>",
+        f"  🏭 <b>Склады отгрузки:</b> {warehouses_text}.",
+        (
+            "  🗺️ <b>География продаж:</b> Товар уходит в удаленные регионы. "
+            f"В периоде зафиксированы: {regions_text}."
+        ),
+    ]
+
+    if canceled_skus:
+        sku_list = ", ".join(_escape_verdict(sku) for sku in canceled_skus[:8])
+        lines.append(
+            "  ⚠️ <b>Операционные потери:</b> Зафиксированы отмены заказов по артикулам: "
+            f"{sku_list}. При отмене селлер несет чистый убыток, оплачивая логистику к клиенту "
+            "и обратно на склад маркетплейса."
+        )
+    else:
+        lines.append(
+            "  ⚠️ <b>Операционные потери:</b> Возвратов и отмен в периоде не зафиксировано. "
+            "Логистических петель нет."
+        )
+
+    return lines
 
 
 def build_wb_finance_express_html_local(
     prompt_metrics: object,
     wb_metrics: WbMarketplaceMetrics | None,
 ) -> str:
-    """Премиальный локальный отчёт (0 ₽) — ABC, светофор, план, OOS из ETL."""
+    """Премиальный локальный отчёт (0 ₽) — ABC, светофор и fact-based план из ETL."""
     from services.table_wb_finance_ai import (
         _TELEGRAM_MESSAGE_SOFT_MAX,
         _business_score_band,
@@ -711,6 +761,9 @@ def build_wb_finance_express_html_local(
     logger = logging.getLogger(__name__)
     score_emoji, score_status = _business_score_band(prompt_metrics.business_score)
     score_reason = _business_score_reason_line(prompt_metrics, wb_metrics)
+    storage_total = _prompt_total_storage_cost(prompt_metrics)
+    system_losses_total = _prompt_total_system_losses(prompt_metrics, wb_metrics)
+    main_verdict = _resolve_main_analytical_verdict(prompt_metrics, wb_metrics)
     lines = [
         "📊 <b>ФИНАНСОВЫЙ ЭКСПРЕСС-АНАЛИЗ МАГАЗИНА</b>",
         _FINANCE_SEPARATOR,
@@ -721,13 +774,21 @@ def build_wb_finance_express_html_local(
         ),
         score_reason,
         "💡 <b>ГЛАВНЫЙ АНАЛИТИЧЕСКИЙ ВЫВОД:</b>",
-        f"<i>{_escape_verdict(prompt_metrics.verdict)}</i>",
+        f"<i>{_escape_verdict(main_verdict)}</i>",
         _FINANCE_SEPARATOR,
         f"💰 <b>ОБЩАЯ ВЫРУЧКА:</b> <code>{_fmt_rub_in_code(prompt_metrics.revenue)} руб.</code>",
         f"📉 <b>НАЛОГ УСН (6%):</b> <code>{_fmt_rub_in_code(prompt_metrics.tax)} руб.</code>",
         (
             f"💵 <b>ЧИСТАЯ ПРИБЫЛЬ:</b> "
             f"<code>{_fmt_rub_in_code(prompt_metrics.clear_profit)} руб.</code>"
+        ),
+        (
+            f"📦 <b>РАСХОДЫ НА ХРАНЕНИЕ:</b> "
+            f"<code>{_fmt_rub_in_code(storage_total)} руб.</code>"
+        ),
+        (
+            f"🛑 <b>СИСТЕМНЫЕ УДЕРЖАНИЯ (Кредиты/Штрафы):</b> "
+            f"<code>{_fmt_rub_in_code(system_losses_total)} руб.</code>"
         ),
         (
             f"Эффективность (рентабельность) чистой прибыли: "
@@ -760,21 +821,16 @@ def build_wb_finance_express_html_local(
     for zone_line in _build_traffic_light_block(wb_metrics, prompt_metrics):
         lines.append(zone_line)
     lines.extend(_build_loss_calculator_lines(prompt_metrics))
+    lines.extend(_build_cost_structure_lines(prompt_metrics, wb_metrics))
+    lines.extend(_build_supply_chain_audit_lines(prompt_metrics, wb_metrics))
     lines.extend(
         [
             _FINANCE_SEPARATOR,
-            "🛡️ <b>ПРОГНОЗ И ОБНУЛЕНИЕ ОСТАТКОВ</b>",
-            (
-                f"<i>При сохранении текущего темпа годовой оборот составит около "
-                f"<code>{_fmt_rub_in_code(prompt_metrics.year_forecast, decimals=0)} руб.</code>.</i>"
-            ),
-            prompt_metrics.oos_forecast_line,
-            _FINANCE_SEPARATOR,
-            "📋 <b>ПЛАН ДЕЙСТВИЙ ДЛЯ ПРЕДПРИНИМАТЕЛЯ НА СЕГОДНЯ</b>",
+            "📋 <b>СТРАТЕГИЧЕСКИЕ РЕКОМЕНДАЦИИ CFO</b>",
         ]
     )
     lines.extend(_build_strategic_plan_lines(prompt_metrics, wb_metrics))
-    lines.append(CFO_BUILD_FOOTER_HTML)
+    lines.append(CFO_BUILD_FOOTER_PLAIN)
     html = append_wb_finance_mini_app_cta(
         normalize_finance_report_html(_wrap_finance_report_in_pre("\n".join(lines)))
     )
