@@ -629,52 +629,44 @@ def _resolve_main_analytical_verdict(
     return str(getattr(prompt_metrics, "verdict", "") or "")
 
 
-_IDEAL_UNIT_ECONOMICS_PRAISE = (
-    "🛡️ Эффективность юнит-экономики 100%. Скрытых операционных потерь на логистике "
-    "возвратов не выявлено. Вся маржа идет в карман."
-)
-
 _COMMISSION_AUDIT_LINE = (
     "  📊 <b>КОМИССИИ И АКЦИИ WB:</b> Средняя доля удержаний маркетплейса (включая услуги "
     "поверенного) составляет ~30-40% от розничной цены (РРЦ). Зафиксированы сложные расчеты "
     "скидок/СПП. Рекомендуется регулярно пересчитывать юнит-экономику под новые тарифы литража."
 )
 
+_IDEAL_UNIT_ECONOMICS_PRAISE = ""  # cfo-v12: шаблонная похвала при 0.00 руб. запрещена
+
 
 def _build_cost_structure_lines(
     prompt_metrics: object,
     wb_metrics: WbMarketplaceMetrics | None,
 ) -> list[str]:
-    """Структура издержек WB: системные удержания, хранение, аудит комиссий."""
+    """Структура издержек WB: удержания, хранение, итоговый операционный результат."""
     storage_total = _prompt_total_storage_cost(prompt_metrics)
     system_losses_total = _prompt_total_system_losses(prompt_metrics, wb_metrics)
+    net_profit = float(getattr(prompt_metrics, "clear_profit", 0.0) or 0.0)
 
-    lines: list[str] = [
+    return [
         _FINANCE_SEPARATOR,
         "📊 <b>СТРУКТУРА ИЗДЕРЖЕК И КОММЕРЧЕСКИХ УДЕРЖАНИЙ</b>",
+        (
+            "  🛑 <b>УДЕРЖАНИЯ ПО КРЕДИТАМ / ШТРАФАМ:</b> "
+            f"<code>{_fmt_rub_in_code(system_losses_total)}</code> руб. "
+            "(Внимание! Данные списания жестко режут чистый оборот Cash Flow)."
+        ),
+        (
+            "  📦 <b>ПЛАТНОЕ ХРАНЕНИЕ НА СКЛАДАХ FBO:</b> "
+            f"<code>{_fmt_rub_in_code(storage_total)}</code> руб. "
+            "(Зафиксированы списания за нахождение остатков)."
+        ),
+        (
+            "  💵 <b>ИТОГОВЫЙ ОПЕРАЦИОННЫЙ УБЫТОК МАГАЗИНА С УЧЕТОМ ВСЕХ ТАРИФОВ "
+            "И КРЕДИТОВ:</b> "
+            f"<code>{_fmt_rub_in_code(net_profit)}</code> руб."
+        ),
+        _COMMISSION_AUDIT_LINE,
     ]
-
-    if system_losses_total > 0:
-        lines.append(
-            "  ⚠️ <b>КРИТИЧЕСКАЯ ЗОНА:</b> Зафиксированы крупные внереализационные списания "
-            f"(кредиты/штрафы) на сумму <code>{_fmt_rub_in_code(system_losses_total)}</code> руб. "
-            "Внимание: контролируйте график платежей, чтобы данные списания не создавали "
-            "скрытый дефицит Cash Flow."
-        )
-
-    if storage_total > 0:
-        lines.append(
-            "  📦 <b>ХРАНЕНИЕ И ЛОГИСТИКА:</b> За неделю накопилось "
-            f"<code>{_fmt_rub_in_code(storage_total)}</code> руб. за нахождение товара на складах FBO. "
-            "Риск: если оборачиваемость SKU упадет, стоимость хранения начнет планово съедать "
-            "всю маржинальность продаж."
-        )
-
-    if system_losses_total <= 0 and storage_total <= 0:
-        lines.append(f"  {_IDEAL_UNIT_ECONOMICS_PRAISE}")
-
-    lines.append(_COMMISSION_AUDIT_LINE)
-    return lines
 
 
 def _prompt_top_regions(prompt_metrics: object) -> tuple[str, ...]:
@@ -697,11 +689,14 @@ def _build_supply_chain_audit_lines(
     wb_metrics: WbMarketplaceMetrics | None,
 ) -> list[str]:
     """Операционный аудит поставок: склады, география, отмены."""
+    from services.file_processor import map_wb_warehouse_label
     from services.table_wb_finance_ai import _escape_verdict
 
     del wb_metrics
     top_regions = _prompt_top_regions(prompt_metrics)
-    top_warehouses = _prompt_top_warehouses(prompt_metrics)
+    top_warehouses = tuple(
+        map_wb_warehouse_label(name) for name in _prompt_top_warehouses(prompt_metrics)
+    )
     canceled_skus = _prompt_canceled_skus(prompt_metrics)
 
     warehouses_text = ", ".join(_escape_verdict(name) for name in top_warehouses[:2])

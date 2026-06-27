@@ -1577,32 +1577,53 @@ def _build_strategic_plan_lines(
     prompt_metrics: WbFinancePromptMetrics,
     wb_metrics: WbMarketplaceMetrics | None,
 ) -> list[str]:
-    """Жёсткие CFO-рекомендации: Cash Flow и юнит-экономика по регионам/складам."""
+    """Жёсткие CFO-рекомендации: Cash Flow и оптимизация хранения."""
+    from services.file_processor import map_wb_warehouse_label
+
     del wb_metrics
 
     storage_total = float(prompt_metrics.storage_cost or 0.0)
     system_losses_total = float(prompt_metrics.total_system_losses or 0.0)
-    holdback_total = round(storage_total + system_losses_total, 2)
+    net_profit = float(prompt_metrics.clear_profit or 0.0)
 
-    top_regions = [str(x) for x in (prompt_metrics.top_regions or ()) if str(x).strip()]
-    top_warehouses = [str(x) for x in (prompt_metrics.top_warehouses or ()) if str(x).strip()]
-    regions_text = ", ".join(_escape_verdict(region) for region in top_regions[:3])
-    if not regions_text:
-        regions_text = "удалённых регионах доставки"
-    top_warehouse = _escape_verdict(top_warehouses[0] if top_warehouses else "основного склада отгрузки")
+    top_warehouses = [
+        map_wb_warehouse_label(str(x))
+        for x in (prompt_metrics.top_warehouses or ())
+        if str(x).strip()
+    ]
+    warehouse_label = _escape_verdict(
+        top_warehouses[0] if top_warehouses else "Рязань (Тюшевское)"
+    )
 
-    return [
-        (
+    if system_losses_total > 0 and net_profit < 0:
+        point1 = (
+            f"<b>1.</b> Спасение Cash Flow: Внимание! Системные удержания и кредиты маркетплейса "
+            f"на сумму <code>{_fmt_rub_in_code(system_losses_total)}</code> руб. полностью перекрыли "
+            "чистую прибыль от продаж. Срочно сформируйте денежный резерв, иначе следующие "
+            "еженедельные списания создадут глубокий кассовый разрыв и заблокируют закупки."
+        )
+    elif system_losses_total > 0:
+        point1 = (
+            f"<b>1.</b> Спасение Cash Flow: Системные удержания и кредиты маркетплейса на сумму "
+            f"<code>{_fmt_rub_in_code(system_losses_total)}</code> руб. существенно давят на "
+            "чистый оборот. Сформируйте денежный резерв до следующих еженедельных списаний."
+        )
+    else:
+        holdback_total = round(storage_total + system_losses_total, 2)
+        point1 = (
             f"<b>1.</b> Контроль Cash Flow: Удержания по кредитам и платному хранению составляют "
             f"<code>{_fmt_rub_in_code(holdback_total)}</code> руб. Сформируйте финансовый резерв, "
             "иначе будущие списания создадут кассовый разрыв."
-        ),
-        (
-            f"<b>2.</b> Ценообразование и Логистика: Доля издержек WB съедает маржу в удаленных "
-            f"регионах ({regions_text}). Пересчитайте юнит-экономику карточек с учетом тарифов "
-            f"литража складов отгрузки (<b>{top_warehouse}</b>)."
-        ),
-    ]
+        )
+
+    point2 = (
+        f"<b>2.</b> Оптимизация хранения: Стоимость платного хранения стоков составляет "
+        f"<code>{_fmt_rub_in_code(storage_total)}</code> руб. Проверьте оборачиваемость товаров "
+        f"на складе <b>{warehouse_label}</b>. Если товар залеживается, рассмотрите участие в "
+        "акциях или вывод неликвида."
+    )
+
+    return [point1, point2]
 _WB_FINANCE_MAX_OUTPUT_TOKENS = 1400
 _WB_FINANCE_TELEGRAM_SOFT_MAX_CHARS = 2000
 _FINANCE_SEPARATOR = "────────────────────────"
@@ -2810,10 +2831,7 @@ def _split_cfo_leader_label(label: str) -> tuple[str, str]:
 
 def _build_storage_traffic_text(storage_cost: float, *, html: bool = False) -> str:
     if storage_cost <= 0:
-        text = (
-            "🟢 Издержки на хранение отсутствуют (0.00 руб.). "
-            "Оборачиваемость идеальная, замороженного капитала нет."
-        )
+        text = "🟢 Списания за хранение в периоде не зафиксированы."
     else:
         amount = _fmt_cfo_pre_money(storage_cost)
         text = (
@@ -2837,10 +2855,7 @@ def _build_penalties_traffic_text(
 ) -> str:
     total = round(float(system_losses) + float(credit_deductions), 2)
     if total <= 0:
-        return (
-            "🟢 Системных штрафов, удержаний по кредитам и санкций за маркировку от WB "
-            "не зафиксировано (0.00 руб.). Карточки заполнены верно."
-        )
+        return "🟢 Системных штрафов, удержаний по кредитам и санкций за маркировку в периоде не зафиксировано."
     amount = _fmt_cfo_pre_money(total)
     text = f"🔴 КРИТИЧЕСКАЯ ЗОНА: Штрафы и удержания WB: {amount} руб."
     if html:
@@ -2853,10 +2868,7 @@ def _build_penalties_traffic_text(
 
 def _build_loss_calculator_headline(fomo_lost_rub: float, *, html: bool = False) -> str:
     if fomo_lost_rub <= 0:
-        return (
-            "🛡️ Эффективность юнит-экономики 100%. Скрытых операционных потерь на логистике "
-            "возвратов не выявлено. Вся маржа идет в карман."
-        )
+        return "Упущенная выгода по логистике возвратов в периоде не зафиксирована."
     amount_plain = _fmt_cfo_pre_money(fomo_lost_rub)
     plain = f"Потенциально можно вернуть в оборот: {amount_plain} руб."
     if html:
@@ -3186,7 +3198,9 @@ def _build_traffic_light_block(
         yellow_parts.append("критических операционных отклонений не зафиксировано.")
     yellow += " ".join(yellow_parts)
 
-    system_losses = float(wb_metrics.other_deductions if wb_metrics else 0.0)
+    system_losses = float(prompt_metrics.total_system_losses or 0.0)
+    if wb_metrics is not None:
+        system_losses = max(system_losses, float(wb_metrics.other_deductions or 0.0))
     penalties_html = _build_penalties_traffic_text(
         system_losses,
         credit_deductions=credit,
@@ -3222,7 +3236,7 @@ def _build_traffic_light_block(
             )
         if red_parts:
             red = "🔴 <b>КРИТИЧЕСКАЯ ЗОНА:</b> " + "; ".join(red_parts)
-    elif credit <= 0 and prompt_metrics.fomo_lost_rub <= 0 and not loss_display:
+    elif credit <= 0 and system_losses <= 0 and prompt_metrics.fomo_lost_rub <= 0 and not loss_display:
         red = f"🔴 <b>КРИТИЧЕСКАЯ ЗОНА:</b> {_build_penalties_traffic_text(0.0, html=False)}"
 
     return [green, "", yellow, "", red]

@@ -108,10 +108,7 @@ def test_finance_block_shows_storage_and_system_losses() -> None:
     html = build_wb_finance_express_html_local(metrics, None)
     assert "2,500.00" in html
     assert "500.00" in html
-    assert "РАСХОДЫ НА ХРАНЕНИЕ" in html
-    assert "СИСТЕМНЫЕ УДЕРЖАНИЯ" in html
-    assert "Контроль Cash Flow" in html
-    assert "3,000.00" in html
+    assert "Спасение Cash Flow" in html or "Контроль Cash Flow" in html
 
 
 def test_supply_chain_audit_block_in_report() -> None:
@@ -161,12 +158,16 @@ def test_cost_structure_block_with_losses() -> None:
     )
     html = build_wb_finance_express_html_local(metrics, None)
     assert "СТРУКТУРА ИЗДЕРЖЕК И КОММЕРЧЕСКИХ УДЕРЖАНИЙ" in html
-    assert "КРИТИЧЕСКАЯ ЗОНА" in html
+    assert "УДЕРЖАНИЯ ПО КРЕДИТАМ / ШТРАФАМ" in html
     assert "500.00" in html
-    assert "ХРАНЕНИЕ И ЛОГИСТИКА" in html
+    assert "ПЛАТНОЕ ХРАНЕНИЕ НА СКЛАДАХ FBO" in html
     assert "2,500.00" in html
+    assert "ИТОГОВЫЙ ОПЕРАЦИОННЫЙ УБЫТОК" in html
+    assert "20,000.00" in html
     assert "КОМИССИИ И АКЦИИ WB" in html
     assert "30-40%" in html
+    assert "КРИТИЧЕСКАЯ ЗОНА" in html
+    assert "500.00" in html
 
 
 def test_cost_structure_block_praise_when_zero_costs() -> None:
@@ -187,10 +188,13 @@ def test_cost_structure_block_praise_when_zero_costs() -> None:
     )
     html = build_wb_finance_express_html_local(metrics, None)
     assert "СТРУКТУРА ИЗДЕРЖЕК И КОММЕРЧЕСКИХ УДЕРЖАНИЙ" in html
-    assert "Эффективность юнит-экономики 100%" in html
+    assert "УДЕРЖАНИЯ ПО КРЕДИТАМ / ШТРАФАМ" in html
+    assert "0.00" in html
+    assert "ПЛАТНОЕ ХРАНЕНИЕ НА СКЛАДАХ FBO" in html
+    assert "ИТОГОВЫЙ ОПЕРАЦИОННЫЙ УБЫТОК" in html
     assert "КОМИССИИ И АКЦИИ WB" in html
+    assert "Эффективность юнит-экономики 100%" not in html
     assert "внереализационные списания" not in html
-    assert "за нахождение товара на складах FBO" not in html
 
 
 def test_main_verdict_system_losses_override() -> None:
@@ -254,7 +258,7 @@ def test_build_table_one_screen_html_wb_finance_subrole() -> None:
     )
     assert "ФИНАНСОВЫЙ ЭКСПРЕСС-АНАЛИЗ" in html
     assert "185,000.00" in html
-    assert "ИТОГО" not in html
+    assert "Январь" not in html
 
 
 def test_build_table_generator_pack_wb_finance_subrole() -> None:

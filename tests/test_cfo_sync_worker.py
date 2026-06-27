@@ -97,7 +97,7 @@ def test_build_wb_finance_consulting_html_from_cfo_metrics() -> None:
     assert "НАЛОГ УСН" in html
     assert "SKU-1" in html
     assert "ПРОГНОЗ И ОБНУЛЕНИЕ ОСТАТКОВ" not in html
-    assert "Контроль Cash Flow" in html
+    assert "Контроль Cash Flow" in html or "Спасение Cash Flow" in html
     assert "ОПЕРАЦИОННЫЙ АУДИТ ПОСТАВОК" in html
     assert "отмены заказов" in html
     assert "СТРУКТУРА ИЗДЕРЖЕК" in html

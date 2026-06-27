@@ -23,7 +23,7 @@ import os
 import re
 import tempfile
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from io import BytesIO
 from pathlib import Path
 from typing import Any, BinaryIO, Final
@@ -386,6 +386,286 @@ def _read_docx(path: Path, max_chars: int) -> str:
         if max_chars and total >= max_chars:
             break
     return _safe_truncate("\n".join(paragraphs), max_chars)
+
+
+_WB_WAREHOUSE_ID_MAP: Final[dict[str, str]] = {
+    "208547": "Рязань (Тюшевское)",
+    "50003969": "Подольск (Транзит WB)",
+}
+
+_WB_AUX_AMOUNT_COL_HINTS: Final[tuple[str, ...]] = (
+    "сумма",
+    "всего",
+    "total",
+    "к удержанию",
+    "удержано",
+    "итого",
+)
+_WB_WITHHOLDING_KEYWORDS: Final[tuple[str, ...]] = (
+    "кредит",
+    "выплат",
+    "штраф",
+    "удержан",
+    "маркировк",
+)
+_WB_STORAGE_KEYWORDS: Final[tuple[str, ...]] = ("хранен",)
+
+
+def map_wb_warehouse_label(value: str) -> str:
+    """Замена цифровых ID складов WB на читаемые названия."""
+    raw = (value or "").strip()
+    if not raw:
+        return raw
+    key = raw.split(".")[0].strip()
+    if key in _WB_WAREHOUSE_ID_MAP:
+        return _WB_WAREHOUSE_ID_MAP[key]
+    for wid, name in _WB_WAREHOUSE_ID_MAP.items():
+        if wid in raw:
+            return name
+    return raw
+
+
+def _wb_aux_sheet_category(sheet_name: str) -> str | None:
+    """Категория вспомогательного листа WB: storage | system."""
+    low = (sheet_name or "").lower().strip()
+    if "хранен" in low:
+        return "storage"
+    if "приемк" in low or "приёмк" in low:
+        return "storage"
+    if "удержан" in low:
+        return "system"
+    return None
+
+
+def _find_workbook_amount_columns(headers: list[str]) -> list[int]:
+    """Индексы колонок с суммами на листах «Хранение» / «Удержания»."""
+    lowered = [_normalize_column_header(str(h)) for h in headers]
+    indices: list[int] = []
+    for idx, header in enumerate(lowered):
+        if not header:
+            continue
+        if any(hint in header for hint in _WB_AUX_AMOUNT_COL_HINTS):
+            indices.append(idx)
+    for idx, header in enumerate(lowered):
+        if "услуг" in header and idx not in indices:
+            indices.append(idx)
+    if not indices:
+        tx_cols = _resolve_cfo_tx_columns([str(h) for h in headers])
+        if tx_cols is not None:
+            for col in (tx_cols.payout_price, tx_cols.commission, tx_cols.retail_price):
+                if col is not None and col not in indices:
+                    indices.append(col)
+    return indices
+
+
+def _row_workbook_amount(row: list[str], amount_cols: list[int]) -> float:
+    for col in amount_cols:
+        if col < len(row):
+            val = abs(safe_float(row[col]))
+            if val > 0:
+                return val
+    return 0.0
+
+
+def _sum_workbook_sheet_amounts(rows: list[list[str]]) -> float:
+    if len(rows) < 2:
+        return 0.0
+    headers = [str(h) for h in rows[0]]
+    amount_cols = _find_workbook_amount_columns(headers)
+    if not amount_cols:
+        return 0.0
+    total = sum(_row_workbook_amount(row, amount_cols) for row in rows[1:])
+    return _round_money(total)
+
+
+def scan_matrix_deep_costs(matrix: list[list[str]]) -> tuple[float, float]:
+    """
+    Сканирует лист детализации: хранение и системные удержания по обоснованию операции.
+    """
+    if not matrix or len(matrix) < 2:
+        return 0.0, 0.0
+
+    headers = [str(h) for h in matrix[0]]
+    justification_cols: list[int] = []
+    for idx, header in enumerate(headers):
+        low = _normalize_column_header(header)
+        if any(
+            part in low
+            for part in (
+                "обоснован",
+                "описание операции",
+                "тип обоснования",
+                "описание",
+            )
+        ):
+            justification_cols.append(idx)
+
+    amount_cols = _find_workbook_amount_columns(headers)
+    tx_cols = _resolve_cfo_tx_columns(headers)
+    if tx_cols is not None:
+        if tx_cols.justification is not None and tx_cols.justification not in justification_cols:
+            justification_cols.append(tx_cols.justification)
+        if tx_cols.doc_type is not None and tx_cols.doc_type not in justification_cols:
+            justification_cols.append(tx_cols.doc_type)
+        for col in (tx_cols.payout_price, tx_cols.commission, tx_cols.retail_price):
+            if col is not None and col not in amount_cols:
+                amount_cols.append(col)
+
+    storage_total = 0.0
+    system_total = 0.0
+    for row in matrix[1:]:
+        if not any(str(cell or "").strip() for cell in row):
+            continue
+        blob = " ".join(
+            str(row[col] or "") for col in justification_cols if col < len(row)
+        ).lower()
+        if not blob.strip():
+            continue
+        amount = _row_workbook_amount(row, amount_cols)
+        if amount <= 0:
+            continue
+        if any(keyword in blob for keyword in _WB_WITHHOLDING_KEYWORDS):
+            system_total += amount
+        elif any(keyword in blob for keyword in _WB_STORAGE_KEYWORDS):
+            storage_total += amount
+
+    return _round_money(storage_total), _round_money(system_total)
+
+
+@dataclass
+class CfoWorkbookLoadResult:
+    """Результат глубокого чтения книги WB: детализация + вспомогательные листы."""
+
+    matrix: list[list[str]]
+    aux_storage_cost: float = 0.0
+    aux_system_losses: float = 0.0
+
+
+def _read_worksheet_rows(ws: object, *, max_rows: int = 50_000) -> list[list[str]]:
+    rows: list[list[str]] = []
+    for i, row in enumerate(ws.iter_rows(values_only=True)):  # type: ignore[attr-defined]
+        if i >= max_rows:
+            break
+        cells = ["" if v is None else str(v).strip() for v in row]
+        if any(cells):
+            rows.append(cells)
+    return rows
+
+
+def _is_likely_wb_detail_sheet(rows: list[list[str]]) -> bool:
+    if not rows:
+        return False
+    from services.wb_transaction_parse import is_wb_transaction_report
+
+    headers = [str(h) for h in rows[0]]
+    if is_wb_transaction_report(headers):
+        return True
+    low = " ".join(_normalize_column_header(h) for h in headers)
+    return "перечислен" in low and ("обоснован" in low or "артикул" in low)
+
+
+def load_cfo_workbook_from_path(file_path: str) -> CfoWorkbookLoadResult:
+    """
+    Глубокое чтение xlsx/csv: все листы, вспомогательные вкладки «Хранение» / «Удержания».
+    """
+    path = Path(file_path)
+    if path.suffix.lower() == ".csv":
+        matrix = _load_csv_matrix(path)
+        detail_storage, detail_system = scan_matrix_deep_costs(matrix)
+        return CfoWorkbookLoadResult(
+            matrix=matrix,
+            aux_storage_cost=detail_storage,
+            aux_system_losses=detail_system,
+        )
+
+    from openpyxl import load_workbook
+
+    wb = load_workbook(path, read_only=True, data_only=True)
+    detail_matrix: list[list[str]] | None = None
+    sheet_storage = 0.0
+    sheet_system = 0.0
+    best_detail_score = -1
+
+    try:
+        for sheet_name in wb.sheetnames:
+            ws = wb[sheet_name]
+            rows = _read_worksheet_rows(ws)
+            if not rows:
+                continue
+            category = _wb_aux_sheet_category(sheet_name)
+            if category == "storage":
+                sheet_storage += _sum_workbook_sheet_amounts(rows)
+                continue
+            if category == "system":
+                sheet_system += _sum_workbook_sheet_amounts(rows)
+                continue
+            if _is_likely_wb_detail_sheet(rows):
+                score = len(rows[0]) * 1000 + len(rows)
+                if score > best_detail_score:
+                    best_detail_score = score
+                    detail_matrix = rows
+        if detail_matrix is None and wb.active is not None:
+            detail_matrix = _read_worksheet_rows(wb.active)
+    finally:
+        wb.close()
+
+    detail_storage, detail_system = scan_matrix_deep_costs(detail_matrix or [])
+    aux_storage = _round_money(max(sheet_storage, detail_storage))
+    aux_system = _round_money(max(sheet_system, detail_system))
+
+    return CfoWorkbookLoadResult(
+        matrix=detail_matrix or [],
+        aux_storage_cost=aux_storage,
+        aux_system_losses=aux_system,
+    )
+
+
+def apply_deep_workbook_costs_to_engine(
+    engine: CfoEngineResult,
+    *,
+    aux_storage_cost: float = 0.0,
+    aux_system_losses: float = 0.0,
+) -> CfoEngineResult:
+    """Подмешивает суммы с вспомогательных листов и пересчитывает чистую прибыль."""
+    storage = _round_money(max(engine.total_storage_cost, aux_storage_cost))
+    system = _round_money(max(engine.total_system_losses, aux_system_losses))
+    if (
+        storage == engine.total_storage_cost
+        and system == engine.total_system_losses
+    ):
+        return engine
+    credit = max(engine.credit_deductions, system if aux_system_losses > 0 else 0.0)
+    clear_profit = _round_money(
+        engine.total_sku_margin - storage - system - engine.tax_total
+    )
+    return replace(
+        engine,
+        total_storage_cost=storage,
+        total_system_losses=system,
+        credit_deductions=credit,
+        clear_profit=clear_profit,
+    )
+
+
+def _load_csv_matrix(path: Path, *, max_rows: int = 5000) -> list[list[str]]:
+    import csv
+
+    for encoding in ("utf-8-sig", "utf-8", "cp1251"):
+        try:
+            with path.open("r", encoding=encoding, newline="") as fh:
+                reader = csv.reader(fh)
+                rows: list[list[str]] = []
+                for i, row in enumerate(reader):
+                    if i >= max_rows:
+                        break
+                    cells = [str(c).strip() for c in row]
+                    if any(cells):
+                        rows.append(cells)
+                if rows:
+                    return rows
+        except UnicodeDecodeError:
+            continue
+    return []
 
 
 def _read_xlsx_rows(path: Path, *, max_rows: int = 5000) -> list[list[str]]:
@@ -768,9 +1048,11 @@ def classify_cfo_tx_row(blob: str, *, doc_type: str = "") -> str:
         return "acceptance"
     if "хранен" in text or "стоимость хранения" in text:
         return "storage"
-    if any(k in text for k in ("кредит", "взыскан", "честный знак")):
+    if any(k in text for k in ("кредит", "взыскан", "честный знак", "маркировк")):
         return "system_loss"
-    if "штраф" in text and "кредит" not in text:
+    if "выплат" in text and any(k in text for k in ("кредит", "удержан", "штраф")):
+        return "system_loss"
+    if "штраф" in text:
         return "system_loss"
     if any(k in text for k in ("реклам", "продвижен", "трафарет", "спецразмещ", "медийн", "буст")):
         return "ad"
@@ -1952,28 +2234,7 @@ def _format_sku_label_for_json(name: str, article_id: str) -> str:
 
 def _load_cfo_matrix_from_path(file_path: str) -> list[list[str]]:
     """Читает .xlsx / .csv с диска в матрицу строк (потоково для Excel)."""
-    import csv
-
-    path = Path(file_path)
-    suffix = path.suffix.lower()
-    if suffix == ".csv":
-        for encoding in ("utf-8-sig", "utf-8", "cp1251"):
-            try:
-                with path.open("r", encoding=encoding, newline="") as fh:
-                    reader = csv.reader(fh)
-                    rows: list[list[str]] = []
-                    for i, row in enumerate(reader):
-                        if i >= 5000:
-                            break
-                        cells = [str(c).strip() for c in row]
-                        if any(cells):
-                            rows.append(cells)
-                    if rows:
-                        return rows
-            except UnicodeDecodeError:
-                continue
-        return []
-    return read_xlsx_rows_from_path(path)
+    return load_cfo_workbook_from_path(file_path).matrix
 
 
 def _cfo_engine_to_sku_data(engine: CfoEngineResult) -> dict[str, dict[str, float | int]]:
@@ -2193,7 +2454,7 @@ def collect_supply_chain_audit_from_rows(
             continue
 
         if warehouse_col is not None and warehouse_col < len(row):
-            warehouse = str(row[warehouse_col] or "").strip()
+            warehouse = map_wb_warehouse_label(str(row[warehouse_col] or "").strip())
             if warehouse:
                 warehouse_counter[warehouse] += 1
 
@@ -2214,6 +2475,9 @@ def build_cfo_metrics_dict_from_rows(
     audit_platform: str,
     tax_type: str,
     tax_rate: float,
+    *,
+    aux_storage_cost: float = 0.0,
+    aux_system_losses: float = 0.0,
 ) -> dict[str, object]:
     """CFO Engine v11.1: матрица строк → метрики с динамическим налогом."""
     from services.audit_tax import preset_from_regime_rate
@@ -2240,6 +2504,16 @@ def build_cfo_metrics_dict_from_rows(
             "tax_rate": tax_rate,
         }
 
+    if aux_storage_cost == 0.0 and aux_system_losses == 0.0:
+        scanned_storage, scanned_system = scan_matrix_deep_costs(rows)
+        aux_storage_cost = scanned_storage
+        aux_system_losses = scanned_system
+
+    engine = apply_deep_workbook_costs_to_engine(
+        engine,
+        aux_storage_cost=aux_storage_cost,
+        aux_system_losses=aux_system_losses,
+    )
     revenue = engine.tax_base_revenue
     etl = compute_seller_matrix_etl(rows, revenue_total=revenue, platform=audit_platform)
     sku_data = _cfo_engine_to_sku_data(engine)
@@ -2284,8 +2558,15 @@ def sync_table_cfo_processing_worker(
     с динамическим налогом (``tax_type`` / ``tax_rate`` из FSM аудита).
     """
     _ = table_subrole  # зарезервировано для ветвления подролей table_generator
-    rows = _load_cfo_matrix_from_path(file_path)
-    return build_cfo_metrics_dict_from_rows(rows, audit_platform, tax_type, tax_rate)
+    loaded = load_cfo_workbook_from_path(file_path)
+    return build_cfo_metrics_dict_from_rows(
+        loaded.matrix,
+        audit_platform,
+        tax_type,
+        tax_rate,
+        aux_storage_cost=loaded.aux_storage_cost,
+        aux_system_losses=loaded.aux_system_losses,
+    )
 
 
 def build_final_metrics_json(

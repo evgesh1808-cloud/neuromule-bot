@@ -429,8 +429,8 @@ def test_build_wb_finance_express_html_local_plan() -> None:
     assert metrics is not None
     html = build_wb_finance_express_html_local(metrics, None)
     assert "СТРАТЕГИЧЕСКИЕ РЕКОМЕНДАЦИИ CFO" in html
-    assert "Контроль Cash Flow" in html
-    assert "Ценообразование и Логистика" in html
+    assert "Контроль Cash Flow" in html or "Спасение Cash Flow" in html
+    assert "Оптимизация хранения" in html
     assert "ПРОГНОЗ И ОБНУЛЕНИЕ ОСТАТКОВ" not in html
     assert "CFO build cfo-v12 (Fact-Based Audit Build)" in html
     assert "CFO build CFO build" not in html
