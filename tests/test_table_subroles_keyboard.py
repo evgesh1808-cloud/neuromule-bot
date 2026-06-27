@@ -11,10 +11,10 @@ def test_create_table_subroles_keyboard_layout() -> None:
     kb = create_table_subroles_keyboard()
     assert len(kb.inline_keyboard) == 3
     assert len(kb.inline_keyboard[0]) == 2
-    assert len(kb.inline_keyboard[1]) == 2
+    assert len(kb.inline_keyboard[1]) == 1
     labels = [btn.text for row in kb.inline_keyboard[:2] for btn in row]
     assert "📊 Базовый отчёт" in labels
-    assert "💼 Финансы WB/Ozon" in labels
+    assert "💼 Финансы WB/Ozon" not in labels
     assert "📈 Маркетинг ROI" in labels
     assert "📝 SEO (Excel)" in labels
     callbacks = [
@@ -23,7 +23,7 @@ def test_create_table_subroles_keyboard_layout() -> None:
         for btn in row
     ]
     assert f"{msg.CB_TABLE_SUBROLE_PREFIX}standard_report" in callbacks
-    assert f"{msg.CB_TABLE_SUBROLE_PREFIX}wb_ozon_finance" in callbacks
+    assert f"{msg.CB_TABLE_SUBROLE_PREFIX}wb_ozon_finance" not in callbacks
     assert f"{msg.CB_TABLE_SUBROLE_PREFIX}traffic_marketing" in callbacks
     assert f"{msg.CB_TABLE_SUBROLE_PREFIX}mass_seo_generation" in callbacks
     assert msg.CB_BACK_TO_ROLES_MENU in callbacks

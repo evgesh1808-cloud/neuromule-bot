@@ -529,6 +529,7 @@ def build_wb_finance_express_html(
     matrix_rows: list[list[str]] | None = None,
     platform: str | None = None,
     tax_preset_id: str | None = None,
+    file_path: str | None = None,
 ) -> str:
     """
     Динамический финансовый отчёт wb_ozon_finance (cfo-v12 Highload).
@@ -544,12 +545,17 @@ def build_wb_finance_express_html(
         from services.file_processor import (
             build_cfo_metrics_dict_from_rows,
             find_column_index,
+            resolve_wb_cfo_workbook_input,
         )
         from services.table_wb_finance_ai import (
             append_wb_finance_mini_app_cta,
             compute_wb_finance_prompt_metrics,
         )
 
+        matrix_rows, aux_storage, aux_system = resolve_wb_cfo_workbook_input(
+            file_path=file_path,
+            matrix_rows=matrix_rows,
+        )
         headers = [str(h) for h in matrix_rows[0]]
         wb_shaped = any(
             find_column_index(headers, key) is not None
@@ -562,6 +568,8 @@ def build_wb_finance_express_html(
                 platform or "wildberries",
                 preset.regime,
                 preset.rate_percent,
+                aux_storage_cost=aux_storage,
+                aux_system_losses=aux_system,
             )
             if not cfo_metrics.get("error"):
                 prompt_metrics = compute_wb_finance_prompt_metrics(
@@ -570,6 +578,9 @@ def build_wb_finance_express_html(
                     matrix_rows=matrix_rows,
                     platform=platform,
                     tax_preset_id=tax_preset_id,
+                    file_path=file_path,
+                    aux_storage_cost=aux_storage,
+                    aux_system_losses=aux_system,
                 )
                 if prompt_metrics is not None:
                     return append_wb_finance_mini_app_cta(
@@ -587,6 +598,7 @@ def build_wb_finance_express_html(
         matrix_rows=matrix_rows,
         platform=platform,
         tax_preset_id=tax_preset_id,
+        file_path=file_path,
     )
     if prompt_metrics is None:
         return ""

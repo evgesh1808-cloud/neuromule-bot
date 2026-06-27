@@ -620,6 +620,25 @@ def load_cfo_workbook_from_path(file_path: str) -> CfoWorkbookLoadResult:
     )
 
 
+def resolve_wb_cfo_workbook_input(
+    *,
+    file_path: str | Path | None = None,
+    matrix_rows: list[list[str]] | None = None,
+) -> tuple[list[list[str]], float, float]:
+    """
+    Матрица детализации WB + суммы с листов «Хранение» / «Удержания».
+
+    При ``file_path`` читает книгу целиком; иначе сканирует переданную матрицу.
+    """
+    if file_path:
+        loaded = load_cfo_workbook_from_path(str(file_path))
+        matrix = loaded.matrix or list(matrix_rows or [])
+        return matrix, loaded.aux_storage_cost, loaded.aux_system_losses
+    rows = list(matrix_rows or [])
+    storage, system = scan_matrix_deep_costs(rows)
+    return rows, storage, system
+
+
 def apply_deep_workbook_costs_to_engine(
     engine: CfoEngineResult,
     *,

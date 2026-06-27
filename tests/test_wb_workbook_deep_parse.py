@@ -86,6 +86,37 @@ def test_sync_worker_picks_aux_sheet_costs() -> None:
     assert result["top_warehouses"] == ["Рязань (Тюшевское)"]
 
 
+def test_prompt_metrics_include_aux_sheet_costs_from_file() -> None:
+    from services.table_wb_finance_ai import (
+        build_wb_finance_express_html_local,
+        compute_wb_finance_prompt_metrics,
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "wb_multi.xlsx"
+        _write_multi_sheet_wb(path)
+        result = sync_table_cfo_processing_worker(
+            str(path),
+            "wildberries",
+            "wb_ozon_finance",
+            "USN",
+            6.0,
+        )
+        prompt = compute_wb_finance_prompt_metrics(
+            float(result["total_revenue"]),
+            None,
+            file_path=str(path),
+        )
+
+    assert prompt is not None
+    assert prompt.storage_cost == pytest.approx(2782.27)
+    assert prompt.total_system_losses == pytest.approx(8192.77)
+
+    html = build_wb_finance_express_html_local(prompt, None)
+    assert "2,782.27" in html
+    assert "8,192.77" in html
+
+
 def test_supply_chain_warehouse_id_mapping() -> None:
     matrix = [
         _detail_headers(),

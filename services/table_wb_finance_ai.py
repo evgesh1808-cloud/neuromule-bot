@@ -1333,10 +1333,17 @@ def _build_local_wb_finance_html(
     matrix_rows: list[list[str]] | None = None,
     platform: str | None = None,
     tax_preset_id: str | None = None,
+    file_path: str | Path | None = None,
 ) -> str | None:
     """Гарантированный локальный CFO-отчёт (без OpenRouter)."""
     if revenue_total <= 0:
         return None
+    from services.file_processor import resolve_wb_cfo_workbook_input
+
+    matrix_rows, aux_storage, aux_system = resolve_wb_cfo_workbook_input(
+        file_path=file_path,
+        matrix_rows=matrix_rows,
+    )
     if matrix_rows and len(matrix_rows) >= 2:
         from services.audit_tax import resolve_audit_tax_preset
         from services.file_processor import build_cfo_metrics_dict_from_rows
@@ -1347,6 +1354,8 @@ def _build_local_wb_finance_html(
             platform or "wildberries",
             preset.regime,
             preset.rate_percent,
+            aux_storage_cost=aux_storage,
+            aux_system_losses=aux_system,
         )
         if not cfo_metrics.get("error"):
             prompt_metrics = compute_wb_finance_prompt_metrics(
@@ -1355,6 +1364,9 @@ def _build_local_wb_finance_html(
                 matrix_rows=matrix_rows,
                 platform=platform,
                 tax_preset_id=tax_preset_id,
+                file_path=file_path,
+                aux_storage_cost=aux_storage,
+                aux_system_losses=aux_system,
             )
             if prompt_metrics is not None:
                 return append_wb_finance_mini_app_cta(
@@ -1366,6 +1378,7 @@ def _build_local_wb_finance_html(
         matrix_rows=matrix_rows,
         platform=platform,
         tax_preset_id=tax_preset_id,
+        file_path=file_path,
     )
     if prompt_metrics is None:
         return None
@@ -1945,6 +1958,9 @@ def compute_wb_finance_prompt_metrics(
     matrix_rows: list[list[str]] | None = None,
     platform: str | None = None,
     tax_preset_id: str | None = None,
+    file_path: str | Path | None = None,
+    aux_storage_cost: float | None = None,
+    aux_system_losses: float | None = None,
 ) -> WbFinancePromptMetrics | None:
     """Собирает переменные ETL для system/user prompt и локального fallback."""
     if revenue_total <= 0:
@@ -1952,8 +1968,21 @@ def compute_wb_finance_prompt_metrics(
 
     from services.file_processor import (
         aggregate_cfo_engine_v11_1,
+        apply_deep_workbook_costs_to_engine,
         collect_supply_chain_audit_from_rows,
         compute_seller_matrix_etl,
+        resolve_wb_cfo_workbook_input,
+    )
+
+    matrix_rows, resolved_storage, resolved_system = resolve_wb_cfo_workbook_input(
+        file_path=file_path,
+        matrix_rows=matrix_rows,
+    )
+    deep_storage = (
+        resolved_storage if aux_storage_cost is None else float(aux_storage_cost)
+    )
+    deep_system = (
+        resolved_system if aux_system_losses is None else float(aux_system_losses)
     )
 
     matrix_etl = (
@@ -1972,6 +2001,12 @@ def compute_wb_finance_prompt_metrics(
         if matrix_rows
         else None
     )
+    if engine is not None:
+        engine = apply_deep_workbook_costs_to_engine(
+            engine,
+            aux_storage_cost=deep_storage,
+            aux_system_losses=deep_system,
+        )
     storage_cost = wb_metrics.storage_cost if wb_metrics else 0.0
     credit_deductions = wb_metrics.credit_deductions if wb_metrics else 0.0
     ad_cost = wb_metrics.total_advertising_cost if wb_metrics else 0.0
@@ -3286,6 +3321,7 @@ async def generate_wb_finance_consulting_html(
         matrix_rows=matrix_rows,
         platform=platform,
         tax_preset_id=tax_preset_id,
+        file_path=file_path,
     )
 
     use_openrouter = bool(

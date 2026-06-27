@@ -192,7 +192,7 @@ def text_role_menu() -> InlineKeyboardMarkup:
 
 
 def create_table_subroles_keyboard() -> InlineKeyboardMarkup:
-    """Промежуточное меню под-режимов table_generator (компактная сетка 2×2)."""
+    """Промежуточное меню под-режимов table_generator (без дубля финансов WB/Ozon)."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -201,15 +201,11 @@ def create_table_subroles_keyboard() -> InlineKeyboardMarkup:
                     callback_data=f"{msg.CB_TABLE_SUBROLE_PREFIX}standard_report",
                 ),
                 InlineKeyboardButton(
-                    text=msg.BTN_TABLE_SUBROLE_WB_OZON,
-                    callback_data=f"{msg.CB_TABLE_SUBROLE_PREFIX}wb_ozon_finance",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
                     text=msg.BTN_TABLE_SUBROLE_TRAFFIC,
                     callback_data=f"{msg.CB_TABLE_SUBROLE_PREFIX}traffic_marketing",
                 ),
+            ],
+            [
                 InlineKeyboardButton(
                     text=msg.BTN_TABLE_SUBROLE_SEO,
                     callback_data=f"{msg.CB_TABLE_SUBROLE_PREFIX}mass_seo_generation",

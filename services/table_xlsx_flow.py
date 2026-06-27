@@ -406,6 +406,7 @@ async def run_xlsx_fast_path_turn(
                 wb_metrics=wb_metrics,
                 matrix_rows=worker.rows,
                 platform=marketplace_platform,
+                file_path=source_file_path,
                 tax_preset_id=tax_preset_id,
             )
             if ai_caption:

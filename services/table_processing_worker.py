@@ -81,10 +81,23 @@ def _read_csv_rows(path: Path, *, max_rows: int = 5000) -> list[list[str]]:
     return []
 
 
-def _load_rows_from_path(file_path: str, *, is_csv: bool) -> list[list[str]]:
+def _load_rows_from_path(
+    file_path: str,
+    *,
+    is_csv: bool,
+    subrole_id: str | None = None,
+) -> list[list[str]]:
     path = Path(file_path)
     if is_csv:
         return _read_csv_rows(path)
+    from services.table_subrole_types import normalize_table_subrole
+
+    if normalize_table_subrole(subrole_id) == "wb_ozon_finance":
+        from services.file_processor import load_cfo_workbook_from_path
+
+        loaded = load_cfo_workbook_from_path(file_path)
+        if loaded.matrix:
+            return loaded.matrix
     return read_xlsx_rows_from_path(path)
 
 
@@ -315,6 +328,7 @@ def _build_telegram_caption(
     calculated_total: float,
     telegram_rows: list[list[str]] | None,
     marketplace_platform: str | None = None,
+    source_file_path: str | None = None,
 ) -> str:
     if subrole_id == "wb_ozon_finance" and calculated_total > 0:
         wb_metrics = compute_wb_marketplace_metrics(
@@ -327,6 +341,7 @@ def _build_telegram_caption(
             wb_metrics=wb_metrics,
             matrix_rows=rows,
             platform=marketplace_platform,
+            file_path=source_file_path,
         )
         if len(caption) > _CAPTION_MAX:
             caption = caption[: _CAPTION_MAX - 1] + "…"
@@ -396,7 +411,7 @@ def sync_table_processing_worker(
     Вызывать только через :func:`run_table_processing_worker_async`.
     """
     sid = normalize_table_subrole(subrole_id)
-    raw_rows = _load_rows_from_path(file_path, is_csv=is_csv)
+    raw_rows = _load_rows_from_path(file_path, is_csv=is_csv, subrole_id=sid)
     if not raw_rows:
         return None
 
@@ -416,6 +431,7 @@ def sync_table_processing_worker(
         calculated_total=calculated_total,
         telegram_rows=pre.telegram_rows,
         marketplace_platform=marketplace_platform,
+        source_file_path=file_path,
     )
     chart_png, resolved = render_chart_png_bytes(matrix, context_text=pre.title)
 
