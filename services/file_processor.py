@@ -515,10 +515,70 @@ def _matrix_from_header_row(rows: list[list[str]], header_row: int) -> list[list
     return [list(rows[header_row]), *[list(r) for r in rows[header_row + 1 :]]]
 
 
+def _is_plausible_wb_operation_amount(val: float) -> bool:
+    """Одна операция WB: отсекает штрихкоды, ID и фантомные миллионы."""
+    return 0.0 < val <= _WB_MAX_SINGLE_OPERATION_RUB
+
+
+def _is_technical_sku_cell(text: str) -> bool:
+    """Технический мусор шапки/итогов — не SKU для ABC-анализа."""
+    raw = (text or "").strip().lower().replace("\u00a0", " ")
+    if not raw:
+        return True
+    if any(word in raw for word in _SKU_TECHNICAL_JUNK_WORDS):
+        return True
+    compact = raw.replace(" ", "").replace(",", ".")
+    if compact and re.fullmatch(r"[\d.]+", compact):
+        return True
+    return False
+
+
+def validate_wb_finance_detail_structure(matrix: list[list[str]] | None) -> bool:
+    """
+    Шапка главного листа должна содержать маркеры оригинальной детализации WB.
+    """
+    if not matrix:
+        return False
+    header_row = _find_sheet_header_row(matrix, detail=True)
+    if header_row >= len(matrix):
+        return False
+    headers = [_normalize_column_header(str(cell)) for cell in matrix[header_row]]
+    blob = " ".join(header for header in headers if header)
+    if not blob:
+        return False
+    return any(marker in blob for marker in _WB_FINANCE_DETAIL_HEADER_MARKERS)
+
+
+def wb_finance_invalid_structure_payload(**extra: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "error": WB_FINANCE_ERROR_INVALID_STRUCTURE,
+        "cfo_build": _CFO_BUILD,
+    }
+    payload.update(extra)
+    return payload
+
+
+def check_wb_finance_upload_file(file_path: str) -> dict[str, object]:
+    """Быстрая проверка структуры перед ETL (wb_ozon_finance / аудит WB)."""
+    path = Path(file_path)
+    if not path.is_file():
+        return {"error": "empty_file", "cfo_build": _CFO_BUILD}
+    if path.suffix.lower() == ".csv":
+        matrix = _load_csv_matrix(path)
+    else:
+        loaded = load_cfo_workbook_from_path(file_path)
+        matrix = loaded.matrix
+    if not matrix or len(matrix) < 2:
+        return {"error": "empty_file", "cfo_build": _CFO_BUILD}
+    if not validate_wb_finance_detail_structure(matrix):
+        return wb_finance_invalid_structure_payload()
+    return {"ok": True, "cfo_build": _CFO_BUILD}
+
+
 def _looks_like_rub_amount(text: str, val: float) -> bool:
     """Отсекает номера договоров и ID, оставляя денежные суммы."""
     raw = (text or "").strip().replace("\u00a0", " ")
-    if not raw or val < 0.01:
+    if not raw or not _is_plausible_wb_operation_amount(val):
         return False
     if re.search(r"\d[.,]\d{1,2}\b", raw.replace(" ", "")):
         return True
@@ -591,7 +651,7 @@ def _row_workbook_amount(
     for col in amount_cols:
         if col < len(row):
             val = abs(safe_float(row[col]))
-            if val > 0:
+            if _is_plausible_wb_operation_amount(val):
                 return val
     if allow_money_fallback:
         return _row_money_fallback(row)
@@ -616,7 +676,33 @@ def _sum_workbook_sheet_amounts(rows: list[list[str]]) -> float:
     return _round_money(total)
 
 
-def scan_matrix_deep_costs(matrix: list[list[str]]) -> tuple[float, float]:
+def _should_skip_detail_withholding_row(blob: str, doc_type: str, *, kind: str) -> bool:
+    """Строка «Кредит/Удержание» на детализации — дубль листа «Удержания»."""
+    doc = (doc_type or "").strip().lower()
+    text = f"{doc_type} {blob}".lower()
+    if "удержан" in doc:
+        return True
+    if "кредит" in text:
+        return True
+    if kind == "system_loss" and any(k in text for k in ("кредит", "удержан")):
+        return True
+    return False
+
+
+def _should_skip_detail_storage_row(blob: str, doc_type: str, *, kind: str) -> bool:
+    """Строка хранения на детализации — дубль листа «Хранение»."""
+    text = f"{doc_type} {blob}".lower()
+    if kind in ("storage", "acceptance", "utilization"):
+        return True
+    return "хранен" in text
+
+
+def scan_matrix_deep_costs(
+    matrix: list[list[str]],
+    *,
+    skip_withholding_rows: bool = False,
+    skip_storage_rows: bool = False,
+) -> tuple[float, float]:
     """
     Сканирует лист детализации: хранение и системные удержания по обоснованию операции.
     """
@@ -664,6 +750,16 @@ def scan_matrix_deep_costs(matrix: list[list[str]]) -> tuple[float, float]:
         ).lower()
         if not blob.strip():
             continue
+        doc_type = ""
+        if tx_cols is not None and tx_cols.doc_type is not None and tx_cols.doc_type < len(row):
+            doc_type = str(row[tx_cols.doc_type] or "")
+        row_kind = classify_cfo_tx_row(blob, doc_type=doc_type)
+        if skip_withholding_rows and _should_skip_detail_withholding_row(
+            blob, doc_type, kind=row_kind
+        ):
+            continue
+        if skip_storage_rows and _should_skip_detail_storage_row(blob, doc_type, kind=row_kind):
+            continue
         amount = _row_workbook_amount(row, amount_cols, allow_money_fallback=False)
         if amount <= 0 and (
             any(keyword in blob for keyword in _WB_STORAGE_KEYWORDS)
@@ -680,6 +776,16 @@ def scan_matrix_deep_costs(matrix: list[list[str]]) -> tuple[float, float]:
     return _round_money(storage_total), _round_money(system_total)
 
 
+@dataclass(frozen=True)
+class WbCfoAuxCostsContext:
+    """Суммы с вспомогательных листов и флаги приоритета над детализацией."""
+
+    storage: float = 0.0
+    system: float = 0.0
+    storage_from_dedicated_sheet: bool = False
+    system_from_dedicated_sheet: bool = False
+
+
 @dataclass
 class CfoWorkbookLoadResult:
     """Результат глубокого чтения книги WB: детализация + вспомогательные листы."""
@@ -687,6 +793,16 @@ class CfoWorkbookLoadResult:
     matrix: list[list[str]]
     aux_storage_cost: float = 0.0
     aux_system_losses: float = 0.0
+    storage_from_dedicated_sheet: bool = False
+    system_from_dedicated_sheet: bool = False
+
+    def aux_costs_context(self) -> WbCfoAuxCostsContext:
+        return WbCfoAuxCostsContext(
+            storage=self.aux_storage_cost,
+            system=self.aux_system_losses,
+            storage_from_dedicated_sheet=self.storage_from_dedicated_sheet,
+            system_from_dedicated_sheet=self.system_from_dedicated_sheet,
+        )
 
 
 def _read_worksheet_rows(ws: object, *, max_rows: int = 50_000) -> list[list[str]]:
@@ -769,14 +885,28 @@ def load_cfo_workbook_from_path(file_path: str) -> CfoWorkbookLoadResult:
     finally:
         wb.close()
 
-    detail_storage, detail_system = scan_matrix_deep_costs(detail_matrix or [])
-    aux_storage = _round_money(max(sheet_storage, detail_storage))
-    aux_system = _round_money(max(sheet_system, detail_system))
+    storage_from_sheet = sheet_storage > 0
+    system_from_sheet = sheet_system > 0
+    detail_storage, detail_system = scan_matrix_deep_costs(
+        detail_matrix or [],
+        skip_withholding_rows=system_from_sheet,
+        skip_storage_rows=storage_from_sheet,
+    )
+    if storage_from_sheet:
+        aux_storage = _round_money(sheet_storage)
+    else:
+        aux_storage = _round_money(max(sheet_storage, detail_storage))
+    if system_from_sheet:
+        aux_system = _round_money(sheet_system)
+    else:
+        aux_system = _round_money(max(sheet_system, detail_system))
 
     return CfoWorkbookLoadResult(
         matrix=detail_matrix or [],
         aux_storage_cost=aux_storage,
         aux_system_losses=aux_system,
+        storage_from_dedicated_sheet=storage_from_sheet,
+        system_from_dedicated_sheet=system_from_sheet,
     )
 
 
@@ -784,7 +914,7 @@ def resolve_wb_cfo_workbook_input(
     *,
     file_path: str | Path | None = None,
     matrix_rows: list[list[str]] | None = None,
-) -> tuple[list[list[str]], float, float]:
+) -> tuple[list[list[str]], WbCfoAuxCostsContext]:
     """
     Матрица детализации WB + суммы с листов «Хранение» / «Удержания».
 
@@ -793,10 +923,10 @@ def resolve_wb_cfo_workbook_input(
     if file_path:
         loaded = load_cfo_workbook_from_path(str(file_path))
         matrix = loaded.matrix or list(matrix_rows or [])
-        return matrix, loaded.aux_storage_cost, loaded.aux_system_losses
+        return matrix, loaded.aux_costs_context()
     rows = list(matrix_rows or [])
     storage, system = scan_matrix_deep_costs(rows)
-    return rows, storage, system
+    return rows, WbCfoAuxCostsContext(storage=storage, system=system)
 
 
 def apply_deep_workbook_costs_to_engine(
@@ -804,16 +934,28 @@ def apply_deep_workbook_costs_to_engine(
     *,
     aux_storage_cost: float = 0.0,
     aux_system_losses: float = 0.0,
+    aux_storage_from_sheet: bool = False,
+    aux_system_from_sheet: bool = False,
 ) -> CfoEngineResult:
     """Подмешивает суммы с вспомогательных листов и пересчитывает чистую прибыль."""
-    storage = _round_money(max(engine.total_storage_cost, aux_storage_cost))
-    system = _round_money(max(engine.total_system_losses, aux_system_losses))
+    if aux_storage_from_sheet and aux_storage_cost > 0:
+        storage = _round_money(aux_storage_cost + engine.total_storage_cost)
+    else:
+        storage = _round_money(max(engine.total_storage_cost, aux_storage_cost))
+    if aux_system_from_sheet and aux_system_losses > 0:
+        system = _round_money(aux_system_losses + engine.total_system_losses)
+    else:
+        system = _round_money(max(engine.total_system_losses, aux_system_losses))
     if (
         storage == engine.total_storage_cost
         and system == engine.total_system_losses
     ):
         return engine
-    credit = max(engine.credit_deductions, system if aux_system_losses > 0 else 0.0)
+    credit = max(
+        engine.credit_deductions,
+        aux_system_losses if aux_system_from_sheet and aux_system_losses > 0 else 0.0,
+        system if aux_system_losses > 0 and not aux_system_from_sheet else 0.0,
+    )
     clear_profit = _round_money(
         engine.total_sku_margin - storage - system - engine.tax_total
     )
@@ -930,8 +1072,23 @@ async def extract_text_from_document(
 # ─── Локальный ETL товарной матрицы (ABC / FOMO логистики / OOS) ───────────
 
 _USN_RATE = 0.06
-_CFO_BUILD = "cfo-v12 (Fact-Based Audit Build)"
+_CFO_BUILD = "cfo-v12 (SaaS Protected Build)"
 CFO_ENGINE_NAME = "CFO Engine v12 (Highload)"
+WB_FINANCE_ERROR_INVALID_STRUCTURE = "invalid_structure"
+_WB_MAX_SINGLE_OPERATION_RUB = 200_000.0
+_WB_FINANCE_DETAIL_HEADER_MARKERS: Final[tuple[str, ...]] = (
+    "обоснование для оплаты",
+    "тип документа",
+    "цена розничная с учетом согласованной скидки",
+)
+_SKU_TECHNICAL_JUNK_WORDS: Final[tuple[str, ...]] = (
+    "выкупили",
+    "акция",
+    "дата",
+    "номер",
+    "итог",
+    "шт",
+)
 _OOS_CRITICAL_DAYS = 5
 
 # Семантический маппинг колонок WB (CFO Engine v11.1).
@@ -1326,6 +1483,12 @@ def _row_direct_amount(row: list[str], col: int | None) -> float:
 def _cfo_sku_identity(row: list[str], cols: _CfoTxColumns) -> tuple[str, str]:
     name = _cfo_cell(row, cols.name) or _cfo_cell(row, cols.article) or "—"
     article = _cfo_cell(row, cols.article) or name
+    if _is_technical_sku_cell(name) and _is_technical_sku_cell(article):
+        return "—", "—"
+    if _is_technical_sku_cell(name) and not _is_technical_sku_cell(article):
+        name = article
+    elif _is_technical_sku_cell(article) and not _is_technical_sku_cell(name):
+        article = name
     return name[:64], article[:48]
 
 
@@ -1398,6 +1561,8 @@ def _aggregate_cfo_transactions(
     matrix: list[list[str]],
     *,
     tax_preset: object | None = None,
+    skip_detail_withholdings: bool = False,
+    skip_detail_storage: bool = False,
 ) -> CfoEngineResult | None:
     cols = _resolve_cfo_tx_columns(matrix[0])
     if cols is None:
@@ -1418,6 +1583,12 @@ def _aggregate_cfo_transactions(
         doc_type = _cfo_cell(row, cols.doc_type)
         kind = classify_cfo_tx_row(blob, doc_type=doc_type)
         if kind == "skip":
+            continue
+        if skip_detail_withholdings and _should_skip_detail_withholding_row(
+            blob, doc_type, kind=kind
+        ):
+            continue
+        if skip_detail_storage and _should_skip_detail_storage_row(blob, doc_type, kind=kind):
             continue
 
         retail_amount, src = _row_retail_amount(row, cols)
@@ -1637,6 +1808,8 @@ def aggregate_cfo_engine_v11_1(
     *,
     platform: str | None = None,
     tax_preset_id: str | None = None,
+    skip_detail_withholdings: bool = False,
+    skip_detail_storage: bool = False,
 ) -> CfoEngineResult | None:
     """
     CFO Engine v11.1 — единая математическая модель агрегации WB/Ozon xlsx.
@@ -1648,7 +1821,12 @@ def aggregate_cfo_engine_v11_1(
     if not matrix or len(matrix) < 2:
         return None
     preset = resolve_audit_tax_preset(tax_preset_id)
-    tx = _aggregate_cfo_transactions(matrix, tax_preset=preset)
+    tx = _aggregate_cfo_transactions(
+        matrix,
+        tax_preset=preset,
+        skip_detail_withholdings=skip_detail_withholdings,
+        skip_detail_storage=skip_detail_storage,
+    )
     if tx is not None and (tx.sku_buckets or tx.total_storage_cost or tx.total_system_losses):
         return tx
     return _aggregate_cfo_matrix(matrix, platform=platform, tax_preset=preset)
@@ -1903,6 +2081,12 @@ def _row_sku_identity(
     if article_col is not None and article_col < len(row):
         article = (row[article_col] or "").strip() or name
     else:
+        article = name
+    if _is_technical_sku_cell(name) and _is_technical_sku_cell(article):
+        return "—", "—"
+    if _is_technical_sku_cell(name) and not _is_technical_sku_cell(article):
+        name = article
+    elif _is_technical_sku_cell(article) and not _is_technical_sku_cell(name):
         article = name
     return name[:64], article[:48]
 
@@ -2657,6 +2841,8 @@ def build_cfo_metrics_dict_from_rows(
     *,
     aux_storage_cost: float = 0.0,
     aux_system_losses: float = 0.0,
+    aux_storage_from_sheet: bool = False,
+    aux_system_from_sheet: bool = False,
 ) -> dict[str, object]:
     """CFO Engine v11.1: матрица строк → метрики с динамическим налогом."""
     from services.audit_tax import preset_from_regime_rate
@@ -2669,11 +2855,19 @@ def build_cfo_metrics_dict_from_rows(
             "tax_rate": tax_rate,
         }
 
+    if not validate_wb_finance_detail_structure(rows):
+        return wb_finance_invalid_structure_payload(
+            tax_type=tax_type,
+            tax_rate=tax_rate,
+        )
+
     preset = preset_from_regime_rate(tax_type, tax_rate)
     engine = aggregate_cfo_engine_v11_1(
         rows,
         platform=audit_platform,
         tax_preset_id=preset.id,
+        skip_detail_withholdings=aux_system_from_sheet,
+        skip_detail_storage=aux_storage_from_sheet,
     )
     if engine is None:
         return {
@@ -2684,7 +2878,11 @@ def build_cfo_metrics_dict_from_rows(
         }
 
     if aux_storage_cost == 0.0 and aux_system_losses == 0.0:
-        scanned_storage, scanned_system = scan_matrix_deep_costs(rows)
+        scanned_storage, scanned_system = scan_matrix_deep_costs(
+            rows,
+            skip_withholding_rows=aux_system_from_sheet,
+            skip_storage_rows=aux_storage_from_sheet,
+        )
         aux_storage_cost = scanned_storage
         aux_system_losses = scanned_system
 
@@ -2692,6 +2890,8 @@ def build_cfo_metrics_dict_from_rows(
         engine,
         aux_storage_cost=aux_storage_cost,
         aux_system_losses=aux_system_losses,
+        aux_storage_from_sheet=aux_storage_from_sheet,
+        aux_system_from_sheet=aux_system_from_sheet,
     )
     revenue = engine.tax_base_revenue
     etl = compute_seller_matrix_etl(rows, revenue_total=revenue, platform=audit_platform)
@@ -2745,6 +2945,8 @@ def sync_table_cfo_processing_worker(
         tax_rate,
         aux_storage_cost=loaded.aux_storage_cost,
         aux_system_losses=loaded.aux_system_losses,
+        aux_storage_from_sheet=loaded.storage_from_dedicated_sheet,
+        aux_system_from_sheet=loaded.system_from_dedicated_sheet,
     )
 
 
@@ -2867,6 +3069,10 @@ __all__ = (
     "build_final_metrics_json",
     "build_cfo_metrics_dict_from_rows",
     "sync_table_cfo_processing_worker",
+    "check_wb_finance_upload_file",
+    "validate_wb_finance_detail_structure",
+    "WB_FINANCE_ERROR_INVALID_STRUCTURE",
+    "wb_finance_invalid_structure_payload",
     "compute_buyout_coef_pct",
     "find_column_index",
     "resolve_wb_cfo_core_column_indices",

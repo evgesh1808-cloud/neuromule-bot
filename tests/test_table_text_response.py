@@ -71,7 +71,7 @@ def test_build_wb_finance_express_html() -> None:
     assert "РАСХОДЫ НА ХРАНЕНИЕ" in html
     assert "СИСТЕМНЫЕ УДЕРЖАНИЯ" in html
     assert "ПРОГНОЗ И ОБНУЛЕНИЕ ОСТАТКОВ" not in html
-    assert "Fact-Based Audit Build" in html
+    assert "SaaS Protected Build" in html
     assert "НАЛОГ УСН" in html
     assert "ГЛАВНЫЙ АНАЛИТИЧЕСКИЙ ВЫВОД" in html
     assert "ОБЩАЯ ВЫРУЧКА" in html

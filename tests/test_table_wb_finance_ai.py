@@ -432,7 +432,7 @@ def test_build_wb_finance_express_html_local_plan() -> None:
     assert "Контроль Cash Flow" in html or "Спасение Cash Flow" in html
     assert "Оптимизация хранения" in html
     assert "ПРОГНОЗ И ОБНУЛЕНИЕ ОСТАТКОВ" not in html
-    assert "CFO build cfo-v12 (Fact-Based Audit Build)" in html
+    assert "CFO build cfo-v12 (SaaS Protected Build)" in html
     assert "CFO build CFO build" not in html
 
 

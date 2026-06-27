@@ -18,4 +18,4 @@ def test_build_info_text_contains_rev() -> None:
     assert "NeuroMule" in text
     assert "<code>" in text
     assert "CFO" in text
-    assert "Fact-Based Audit Build" in text
+    assert "SaaS Protected Build" in text

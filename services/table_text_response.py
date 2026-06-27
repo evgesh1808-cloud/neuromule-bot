@@ -457,9 +457,11 @@ def format_wb_oos_forecast_block(prompt_metrics: object | None) -> str:
 
 # ─── CFO v12 Fact-Based Audit Build (единый источник подписи) ───
 
-FINANCE_REPORT_BUILD = "cfo-v12 (Fact-Based Audit Build)"
+FINANCE_REPORT_BUILD = "cfo-v12 (SaaS Protected Build)"
 CFO_BUILD_FOOTER_PLAIN = f"CFO build {FINANCE_REPORT_BUILD}"
 CFO_BUILD_FOOTER_HTML = f"<i>{CFO_BUILD_FOOTER_PLAIN}</i>"
+
+WB_FINANCE_ERROR_INVALID_STRUCTURE = "invalid_structure"
 
 _LEGACY_OOS_ZERO_RE = re.compile(
     r"\(\s*0\s*шт\.?\s*—\s*ЗАКОНЧИЛСЯ\s*\)",
@@ -480,6 +482,20 @@ _LEGACY_OOS_SECTION_RE = re.compile(
     r"(?=────────────────────────\s*\n\s*📋|────────────────────────\s*\n\s*<b>📋|📋\s*<b>ПЛАН|CFO\s+build|$)",
     re.IGNORECASE,
 )
+
+
+def is_wb_finance_invalid_structure(result: object) -> bool:
+    """Флаг ``invalid_structure`` из CFO ETL — чужой/брендовый отчёт вместо детализации WB."""
+    if not isinstance(result, dict):
+        return False
+    return str(result.get("error") or "") == WB_FINANCE_ERROR_INVALID_STRUCTURE
+
+
+def wb_finance_invalid_structure_user_html() -> str:
+    """Системное уведомление: структура файла не похожа на детализацию WB."""
+    from content import messages as msg
+
+    return msg.TXT_WB_FINANCE_INVALID_STRUCTURE
 
 
 def normalize_finance_report_build_tag(text: str) -> str:
@@ -552,7 +568,7 @@ def build_wb_finance_express_html(
             compute_wb_finance_prompt_metrics,
         )
 
-        matrix_rows, aux_storage, aux_system = resolve_wb_cfo_workbook_input(
+        matrix_rows, aux_ctx = resolve_wb_cfo_workbook_input(
             file_path=file_path,
             matrix_rows=matrix_rows,
         )
@@ -568,8 +584,10 @@ def build_wb_finance_express_html(
                 platform or "wildberries",
                 preset.regime,
                 preset.rate_percent,
-                aux_storage_cost=aux_storage,
-                aux_system_losses=aux_system,
+                aux_storage_cost=aux_ctx.storage,
+                aux_system_losses=aux_ctx.system,
+                aux_storage_from_sheet=aux_ctx.storage_from_dedicated_sheet,
+                aux_system_from_sheet=aux_ctx.system_from_dedicated_sheet,
             )
             if not cfo_metrics.get("error"):
                 prompt_metrics = compute_wb_finance_prompt_metrics(
@@ -579,8 +597,10 @@ def build_wb_finance_express_html(
                     platform=platform,
                     tax_preset_id=tax_preset_id,
                     file_path=file_path,
-                    aux_storage_cost=aux_storage,
-                    aux_system_losses=aux_system,
+                    aux_storage_cost=aux_ctx.storage,
+                    aux_system_losses=aux_ctx.system,
+                    aux_storage_from_sheet=aux_ctx.storage_from_dedicated_sheet,
+                    aux_system_from_sheet=aux_ctx.system_from_dedicated_sheet,
                 )
                 if prompt_metrics is not None:
                     return append_wb_finance_mini_app_cta(

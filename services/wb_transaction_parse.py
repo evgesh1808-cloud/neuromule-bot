@@ -24,12 +24,27 @@ WbTxKind = Literal[
 ]
 
 _EMPTY_SKU_MARKERS = frozenset({"—", "-", "–", "", "none", "null", "unknown"})
+_SKU_TECHNICAL_JUNK_WORDS = frozenset(
+    {"выкупили", "акция", "дата", "номер", "итог", "шт"}
+)
+
+
+def _is_technical_sku_label(text: str) -> bool:
+    raw = (text or "").strip().lower().replace("\u00a0", " ")
+    if not raw:
+        return True
+    if any(word in raw for word in _SKU_TECHNICAL_JUNK_WORDS):
+        return True
+    compact = raw.replace(" ", "").replace(",", ".")
+    return bool(compact) and compact.replace(".", "").isdigit()
 
 
 def is_valid_wb_sku(name: str, article_id: str) -> bool:
-    """Исключает пустые прочерки «— —» из ABC и светофора."""
+    """Исключает пустые прочерки «— —» и технический мусор из ABC и светофора."""
     n = (name or "").strip()
     a = (article_id or "").strip()
+    if _is_technical_sku_label(n) and (not a or _is_technical_sku_label(a)):
+        return False
     if n.lower() in _EMPTY_SKU_MARKERS and a.lower() in _EMPTY_SKU_MARKERS:
         return False
     combined = f"{n} {a}".strip().lower()

@@ -93,7 +93,7 @@ def test_build_wb_finance_consulting_html_from_cfo_metrics() -> None:
         canceled_skus=("SKU-1",),
     )
     html = build_wb_finance_express_html_local(metrics, None)
-    assert "Fact-Based Audit Build" in html
+    assert "SaaS Protected Build" in html
     assert "НАЛОГ УСН" in html
     assert "SKU-1" in html
     assert "ПРОГНОЗ И ОБНУЛЕНИЕ ОСТАТКОВ" not in html

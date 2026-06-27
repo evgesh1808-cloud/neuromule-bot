@@ -31,7 +31,7 @@ def _detail_headers() -> list[str]:
     ]
 
 
-def _write_multi_sheet_wb(path: Path, *, preamble: bool = False) -> None:
+def _write_multi_sheet_wb(path: Path, *, preamble: bool = False, duplicate_credit_on_detail: bool = False) -> None:
     wb = Workbook()
     ws_detail = wb.active
     ws_detail.title = "Детализация"
@@ -43,6 +43,21 @@ def _write_multi_sheet_wb(path: Path, *, preamble: bool = False) -> None:
     ws_detail.append(
         ["Товар", "SKU-1", "208547", "Продажа", "Продажа", "2", "2400", "1600", "100", "50"]
     )
+    if duplicate_credit_on_detail:
+        ws_detail.append(
+            [
+                "—",
+                "—",
+                "208547",
+                "Удержание",
+                "Предоставление кредита",
+                "",
+                "",
+                "-8192.77",
+                "",
+                "",
+            ]
+        )
 
     ws_storage = wb.create_sheet("Хранение")
     if preamble:
@@ -171,6 +186,23 @@ def test_load_cfo_workbook_unnamed_aux_sheets() -> None:
 
     assert loaded.aux_storage_cost == pytest.approx(2782.27)
     assert loaded.aux_system_losses == pytest.approx(8192.77)
+
+
+def test_sync_worker_no_double_count_credit_on_detail_and_sheet() -> None:
+    """Кредит на детализации + лист «Удержания» не должен суммироваться дважды."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "wb_dup_credit.xlsx"
+        _write_multi_sheet_wb(path, duplicate_credit_on_detail=True)
+        result = sync_table_cfo_processing_worker(
+            str(path),
+            "wildberries",
+            "wb_ozon_finance",
+            "USN",
+            6.0,
+        )
+
+    assert result["total_system_losses"] == pytest.approx(8192.77)
+    assert result["total_storage_cost"] == pytest.approx(2782.27)
 
 
 def test_supply_chain_warehouse_id_mapping() -> None:

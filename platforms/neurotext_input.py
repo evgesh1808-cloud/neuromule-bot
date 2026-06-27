@@ -308,6 +308,10 @@ async def _reply_chat_turn_result(
         )
         return
     if result.outcome in (ChatTurnOutcome.AI_FAILED, ChatTurnOutcome.TABLE_JSON_INVALID):
+        if result.user_notice:
+            await _clear_table_status_on_failure(status_message)
+            await message.answer(result.user_notice, parse_mode=ParseMode.HTML)
+            return
         if table_context or table_subrole or prefer_table_error:
             await message.answer(
                 msg.TXT_TABLE_AI_FAILED_NO_ROWS,
@@ -454,6 +458,26 @@ async def handle_neurotext_user_message(
                 )
                 is_csv = suffix == ".csv"
                 title = Path(file_name).stem or "Отчёт NeuroMule"
+                if is_wb_finance_subrole or xlsx_auto_finance:
+                    from services.file_processor import check_wb_finance_upload_file
+                    from services.table_text_response import (
+                        is_wb_finance_invalid_structure,
+                        wb_finance_invalid_structure_user_html,
+                    )
+
+                    structure_probe = await asyncio.to_thread(
+                        check_wb_finance_upload_file,
+                        file_path,
+                    )
+                    if is_wb_finance_invalid_structure(structure_probe):
+                        if os.path.isfile(file_path):
+                            os.remove(file_path)
+                        await _fail_wb_finance_status(
+                            message,
+                            status_msg,
+                            wb_finance_invalid_structure_user_html(),
+                        )
+                        return
                 xlsx_source_path: str | None = None
                 try:
                     worker = await run_table_processing_worker_async(

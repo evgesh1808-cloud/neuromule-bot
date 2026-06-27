@@ -391,6 +391,8 @@ async def run_xlsx_fast_path_turn(
 
         aux_storage = float(getattr(worker, "aux_storage_cost", 0) or 0)
         aux_system = float(getattr(worker, "aux_system_losses", 0) or 0)
+        aux_storage_from_sheet = bool(getattr(worker, "aux_storage_from_sheet", False))
+        aux_system_from_sheet = bool(getattr(worker, "aux_system_from_sheet", False))
         finance_revenue = float(worker.calculated_total or 0.0)
         if source_file_path:
             preset = resolve_audit_tax_preset(tax_preset_id)
@@ -402,6 +404,19 @@ async def run_xlsx_fast_path_turn(
                 preset.regime,
                 preset.rate_percent,
             )
+            from services.table_text_response import (
+                is_wb_finance_invalid_structure,
+                wb_finance_invalid_structure_user_html,
+            )
+
+            if is_wb_finance_invalid_structure(cfo_pack):
+                if charge_id:
+                    await refund_charge(charge_id)
+                await rollback_last(settings, user_id)
+                return ChatTurnResult(
+                    outcome=ChatTurnOutcome.AI_FAILED,
+                    user_notice=wb_finance_invalid_structure_user_html(),
+                )
             if not cfo_pack.get("error"):
                 aux_storage = float(cfo_pack.get("total_storage_cost") or aux_storage)
                 aux_system = float(cfo_pack.get("total_system_losses") or aux_system)
@@ -429,6 +444,8 @@ async def run_xlsx_fast_path_turn(
                 tax_preset_id=tax_preset_id,
                 aux_storage_cost=aux_storage,
                 aux_system_losses=aux_system,
+                aux_storage_from_sheet=aux_storage_from_sheet,
+                aux_system_from_sheet=aux_system_from_sheet,
             )
             if ai_caption:
                 worker = replace(

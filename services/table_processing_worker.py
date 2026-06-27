@@ -62,6 +62,8 @@ class TableWorkerResult:
     xlsx_filename: str = TABLE_XLSX_FILENAME
     aux_storage_cost: float = 0.0
     aux_system_losses: float = 0.0
+    aux_storage_from_sheet: bool = False
+    aux_system_from_sheet: bool = False
 
 
 @dataclass(frozen=True)
@@ -69,6 +71,8 @@ class _TableFileLoadResult:
     rows: list[list[str]]
     aux_storage_cost: float = 0.0
     aux_system_losses: float = 0.0
+    aux_storage_from_sheet: bool = False
+    aux_system_from_sheet: bool = False
 
 
 def _read_csv_rows(path: Path, *, max_rows: int = 5000) -> list[list[str]]:
@@ -110,6 +114,8 @@ def _load_rows_from_path(
             rows=rows,
             aux_storage_cost=loaded.aux_storage_cost,
             aux_system_losses=loaded.aux_system_losses,
+            aux_storage_from_sheet=loaded.storage_from_dedicated_sheet,
+            aux_system_from_sheet=loaded.system_from_dedicated_sheet,
         )
     return _TableFileLoadResult(rows=read_xlsx_rows_from_path(path))
 
@@ -344,6 +350,8 @@ def _build_telegram_caption(
     source_file_path: str | None = None,
     aux_storage_cost: float = 0.0,
     aux_system_losses: float = 0.0,
+    aux_storage_from_sheet: bool = False,
+    aux_system_from_sheet: bool = False,
 ) -> str:
     if subrole_id == "wb_ozon_finance" and calculated_total > 0:
         wb_metrics = compute_wb_marketplace_metrics(
@@ -361,6 +369,8 @@ def _build_telegram_caption(
             file_path=source_file_path,
             aux_storage_cost=aux_storage_cost,
             aux_system_losses=aux_system_losses,
+            aux_storage_from_sheet=aux_storage_from_sheet,
+            aux_system_from_sheet=aux_system_from_sheet,
         )
         if prompt_metrics is not None:
             from services.table_wb_finance_ai import (
@@ -471,6 +481,8 @@ def sync_table_processing_worker(
         source_file_path=file_path,
         aux_storage_cost=file_load.aux_storage_cost,
         aux_system_losses=file_load.aux_system_losses,
+        aux_storage_from_sheet=file_load.aux_storage_from_sheet,
+        aux_system_from_sheet=file_load.aux_system_from_sheet,
     )
     chart_png, resolved = render_chart_png_bytes(matrix, context_text=pre.title)
 
@@ -484,6 +496,8 @@ def sync_table_processing_worker(
         calculated_total=calculated_total,
         aux_storage_cost=file_load.aux_storage_cost,
         aux_system_losses=file_load.aux_system_losses,
+        aux_storage_from_sheet=file_load.aux_storage_from_sheet,
+        aux_system_from_sheet=file_load.aux_system_from_sheet,
     )
 
 

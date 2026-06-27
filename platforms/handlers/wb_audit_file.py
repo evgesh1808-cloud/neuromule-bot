@@ -73,6 +73,24 @@ async def wb_audit_file_process(message: Message, state: FSMContext) -> None:
             timeout=120.0,
         )
 
+        from services.file_processor import check_wb_finance_upload_file
+        from services.table_text_response import (
+            is_wb_finance_invalid_structure,
+            wb_finance_invalid_structure_user_html,
+        )
+
+        structure_probe = await asyncio.to_thread(
+            check_wb_finance_upload_file,
+            temp_path,
+        )
+        if is_wb_finance_invalid_structure(structure_probe):
+            await _fail_wb_finance_status(
+                message,
+                status_msg,
+                wb_finance_invalid_structure_user_html(),
+            )
+            return
+
         await dismiss_fsm_chat_message(
             state,
             chat_id=message.chat.id,

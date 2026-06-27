@@ -1336,6 +1336,8 @@ def _build_local_wb_finance_html(
     file_path: str | Path | None = None,
     aux_storage_cost: float | None = None,
     aux_system_losses: float | None = None,
+    aux_storage_from_sheet: bool | None = None,
+    aux_system_from_sheet: bool | None = None,
 ) -> str | None:
     """Гарантированный локальный CFO-отчёт (без OpenRouter)."""
     if revenue_total <= 0:
@@ -1344,20 +1346,20 @@ def _build_local_wb_finance_html(
 
     resolved_storage = aux_storage_cost
     resolved_system = aux_system_losses
-    if resolved_storage is None or resolved_system is None:
-        matrix_rows, file_storage, file_system = resolve_wb_cfo_workbook_input(
-            file_path=file_path,
-            matrix_rows=matrix_rows,
-        )
-        if resolved_storage is None:
-            resolved_storage = file_storage
-        if resolved_system is None:
-            resolved_system = file_system
-    else:
-        matrix_rows, _, _ = resolve_wb_cfo_workbook_input(
-            file_path=file_path,
-            matrix_rows=matrix_rows,
-        )
+    storage_from_sheet = aux_storage_from_sheet
+    system_from_sheet = aux_system_from_sheet
+    matrix_rows, aux_ctx = resolve_wb_cfo_workbook_input(
+        file_path=file_path,
+        matrix_rows=matrix_rows,
+    )
+    if resolved_storage is None:
+        resolved_storage = aux_ctx.storage
+    if resolved_system is None:
+        resolved_system = aux_ctx.system
+    if storage_from_sheet is None:
+        storage_from_sheet = aux_ctx.storage_from_dedicated_sheet
+    if system_from_sheet is None:
+        system_from_sheet = aux_ctx.system_from_dedicated_sheet
     if matrix_rows and len(matrix_rows) >= 2:
         from services.audit_tax import resolve_audit_tax_preset
         from services.file_processor import build_cfo_metrics_dict_from_rows
@@ -1370,6 +1372,8 @@ def _build_local_wb_finance_html(
             preset.rate_percent,
             aux_storage_cost=float(resolved_storage or 0.0),
             aux_system_losses=float(resolved_system or 0.0),
+            aux_storage_from_sheet=bool(storage_from_sheet),
+            aux_system_from_sheet=bool(system_from_sheet),
         )
         if not cfo_metrics.get("error"):
             prompt_metrics = compute_wb_finance_prompt_metrics(
@@ -1381,6 +1385,8 @@ def _build_local_wb_finance_html(
                 file_path=file_path,
                 aux_storage_cost=resolved_storage,
                 aux_system_losses=resolved_system,
+                aux_storage_from_sheet=storage_from_sheet,
+                aux_system_from_sheet=system_from_sheet,
             )
             if prompt_metrics is not None:
                 return append_wb_finance_mini_app_cta(
@@ -1395,6 +1401,8 @@ def _build_local_wb_finance_html(
         file_path=file_path,
         aux_storage_cost=resolved_storage,
         aux_system_losses=resolved_system,
+        aux_storage_from_sheet=storage_from_sheet,
+        aux_system_from_sheet=system_from_sheet,
     )
     if prompt_metrics is None:
         return None
@@ -1977,6 +1985,8 @@ def compute_wb_finance_prompt_metrics(
     file_path: str | Path | None = None,
     aux_storage_cost: float | None = None,
     aux_system_losses: float | None = None,
+    aux_storage_from_sheet: bool | None = None,
+    aux_system_from_sheet: bool | None = None,
 ) -> WbFinancePromptMetrics | None:
     """Собирает переменные ETL для system/user prompt и локального fallback."""
     if revenue_total <= 0:
@@ -1990,15 +2000,21 @@ def compute_wb_finance_prompt_metrics(
         resolve_wb_cfo_workbook_input,
     )
 
-    matrix_rows, resolved_storage, resolved_system = resolve_wb_cfo_workbook_input(
+    matrix_rows, aux_ctx = resolve_wb_cfo_workbook_input(
         file_path=file_path,
         matrix_rows=matrix_rows,
     )
-    deep_storage = (
-        resolved_storage if aux_storage_cost is None else float(aux_storage_cost)
+    deep_storage = float(aux_storage_cost) if aux_storage_cost is not None else aux_ctx.storage
+    deep_system = float(aux_system_losses) if aux_system_losses is not None else aux_ctx.system
+    storage_from_sheet = (
+        aux_storage_from_sheet
+        if aux_storage_from_sheet is not None
+        else aux_ctx.storage_from_dedicated_sheet
     )
-    deep_system = (
-        resolved_system if aux_system_losses is None else float(aux_system_losses)
+    system_from_sheet = (
+        aux_system_from_sheet
+        if aux_system_from_sheet is not None
+        else aux_ctx.system_from_dedicated_sheet
     )
 
     matrix_etl = (
@@ -2012,7 +2028,11 @@ def compute_wb_finance_prompt_metrics(
     )
     engine = (
         aggregate_cfo_engine_v11_1(
-            matrix_rows, platform=platform, tax_preset_id=tax_preset_id
+            matrix_rows,
+            platform=platform,
+            tax_preset_id=tax_preset_id,
+            skip_detail_withholdings=system_from_sheet,
+            skip_detail_storage=storage_from_sheet,
         )
         if matrix_rows
         else None
@@ -2022,6 +2042,8 @@ def compute_wb_finance_prompt_metrics(
             engine,
             aux_storage_cost=deep_storage,
             aux_system_losses=deep_system,
+            aux_storage_from_sheet=storage_from_sheet,
+            aux_system_from_sheet=system_from_sheet,
         )
     storage_cost = wb_metrics.storage_cost if wb_metrics else 0.0
     credit_deductions = wb_metrics.credit_deductions if wb_metrics else 0.0
@@ -3307,6 +3329,8 @@ async def generate_wb_finance_consulting_html(
     tax_preset_id: str | None = None,
     aux_storage_cost: float | None = None,
     aux_system_losses: float | None = None,
+    aux_storage_from_sheet: bool | None = None,
+    aux_system_from_sheet: bool | None = None,
 ) -> str | None:
     """
     CFO-отчёт wb_ozon_finance: локальный HTML (мгновенно); OpenRouter — только по флагу.
@@ -3342,6 +3366,8 @@ async def generate_wb_finance_consulting_html(
         file_path=file_path,
         aux_storage_cost=aux_storage_cost,
         aux_system_losses=aux_system_losses,
+        aux_storage_from_sheet=aux_storage_from_sheet,
+        aux_system_from_sheet=aux_system_from_sheet,
     )
 
     use_openrouter = bool(
