@@ -1334,16 +1334,30 @@ def _build_local_wb_finance_html(
     platform: str | None = None,
     tax_preset_id: str | None = None,
     file_path: str | Path | None = None,
+    aux_storage_cost: float | None = None,
+    aux_system_losses: float | None = None,
 ) -> str | None:
     """Гарантированный локальный CFO-отчёт (без OpenRouter)."""
     if revenue_total <= 0:
         return None
     from services.file_processor import resolve_wb_cfo_workbook_input
 
-    matrix_rows, aux_storage, aux_system = resolve_wb_cfo_workbook_input(
-        file_path=file_path,
-        matrix_rows=matrix_rows,
-    )
+    resolved_storage = aux_storage_cost
+    resolved_system = aux_system_losses
+    if resolved_storage is None or resolved_system is None:
+        matrix_rows, file_storage, file_system = resolve_wb_cfo_workbook_input(
+            file_path=file_path,
+            matrix_rows=matrix_rows,
+        )
+        if resolved_storage is None:
+            resolved_storage = file_storage
+        if resolved_system is None:
+            resolved_system = file_system
+    else:
+        matrix_rows, _, _ = resolve_wb_cfo_workbook_input(
+            file_path=file_path,
+            matrix_rows=matrix_rows,
+        )
     if matrix_rows and len(matrix_rows) >= 2:
         from services.audit_tax import resolve_audit_tax_preset
         from services.file_processor import build_cfo_metrics_dict_from_rows
@@ -1354,8 +1368,8 @@ def _build_local_wb_finance_html(
             platform or "wildberries",
             preset.regime,
             preset.rate_percent,
-            aux_storage_cost=aux_storage,
-            aux_system_losses=aux_system,
+            aux_storage_cost=float(resolved_storage or 0.0),
+            aux_system_losses=float(resolved_system or 0.0),
         )
         if not cfo_metrics.get("error"):
             prompt_metrics = compute_wb_finance_prompt_metrics(
@@ -1365,8 +1379,8 @@ def _build_local_wb_finance_html(
                 platform=platform,
                 tax_preset_id=tax_preset_id,
                 file_path=file_path,
-                aux_storage_cost=aux_storage,
-                aux_system_losses=aux_system,
+                aux_storage_cost=resolved_storage,
+                aux_system_losses=resolved_system,
             )
             if prompt_metrics is not None:
                 return append_wb_finance_mini_app_cta(
@@ -1379,6 +1393,8 @@ def _build_local_wb_finance_html(
         platform=platform,
         tax_preset_id=tax_preset_id,
         file_path=file_path,
+        aux_storage_cost=resolved_storage,
+        aux_system_losses=resolved_system,
     )
     if prompt_metrics is None:
         return None
@@ -3289,6 +3305,8 @@ async def generate_wb_finance_consulting_html(
     file_path: str | Path | None = None,
     wb_json_str: str | None = None,
     tax_preset_id: str | None = None,
+    aux_storage_cost: float | None = None,
+    aux_system_losses: float | None = None,
 ) -> str | None:
     """
     CFO-отчёт wb_ozon_finance: локальный HTML (мгновенно); OpenRouter — только по флагу.
@@ -3322,6 +3340,8 @@ async def generate_wb_finance_consulting_html(
         platform=platform,
         tax_preset_id=tax_preset_id,
         file_path=file_path,
+        aux_storage_cost=aux_storage_cost,
+        aux_system_losses=aux_system_losses,
     )
 
     use_openrouter = bool(

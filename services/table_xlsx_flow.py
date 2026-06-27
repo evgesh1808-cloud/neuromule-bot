@@ -381,13 +381,32 @@ async def run_xlsx_fast_path_turn(
     if subrole == "wb_ozon_finance":
         from dataclasses import replace
 
+        from services.audit_tax import resolve_audit_tax_preset
+        from services.file_processor import sync_table_cfo_processing_worker as cfo_etl_from_path
         from services.table_wb_finance_ai import (
             generate_wb_finance_consulting_html,
             resolve_wb_metrics_for_rows,
             resolve_wb_revenue_total,
         )
 
+        aux_storage = float(getattr(worker, "aux_storage_cost", 0) or 0)
+        aux_system = float(getattr(worker, "aux_system_losses", 0) or 0)
         finance_revenue = float(worker.calculated_total or 0.0)
+        if source_file_path:
+            preset = resolve_audit_tax_preset(tax_preset_id)
+            cfo_pack = await asyncio.to_thread(
+                cfo_etl_from_path,
+                source_file_path,
+                marketplace_platform or "wildberries",
+                subrole,
+                preset.regime,
+                preset.rate_percent,
+            )
+            if not cfo_pack.get("error"):
+                aux_storage = float(cfo_pack.get("total_storage_cost") or aux_storage)
+                aux_system = float(cfo_pack.get("total_system_losses") or aux_system)
+                if finance_revenue <= 0:
+                    finance_revenue = float(cfo_pack.get("total_revenue") or 0.0)
         if finance_revenue <= 0 and source_file_path:
             finance_revenue = await asyncio.to_thread(
                 resolve_wb_revenue_total,
@@ -408,6 +427,8 @@ async def run_xlsx_fast_path_turn(
                 platform=marketplace_platform,
                 file_path=source_file_path,
                 tax_preset_id=tax_preset_id,
+                aux_storage_cost=aux_storage,
+                aux_system_losses=aux_system,
             )
             if ai_caption:
                 worker = replace(

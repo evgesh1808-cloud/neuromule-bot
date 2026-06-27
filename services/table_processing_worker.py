@@ -60,6 +60,15 @@ class TableWorkerResult:
     chart_type: ChartType
     calculated_total: float
     xlsx_filename: str = TABLE_XLSX_FILENAME
+    aux_storage_cost: float = 0.0
+    aux_system_losses: float = 0.0
+
+
+@dataclass(frozen=True)
+class _TableFileLoadResult:
+    rows: list[list[str]]
+    aux_storage_cost: float = 0.0
+    aux_system_losses: float = 0.0
 
 
 def _read_csv_rows(path: Path, *, max_rows: int = 5000) -> list[list[str]]:
@@ -86,19 +95,23 @@ def _load_rows_from_path(
     *,
     is_csv: bool,
     subrole_id: str | None = None,
-) -> list[list[str]]:
+) -> _TableFileLoadResult:
     path = Path(file_path)
     if is_csv:
-        return _read_csv_rows(path)
+        return _TableFileLoadResult(rows=_read_csv_rows(path))
     from services.table_subrole_types import normalize_table_subrole
 
     if normalize_table_subrole(subrole_id) == "wb_ozon_finance":
         from services.file_processor import load_cfo_workbook_from_path
 
         loaded = load_cfo_workbook_from_path(file_path)
-        if loaded.matrix:
-            return loaded.matrix
-    return read_xlsx_rows_from_path(path)
+        rows = loaded.matrix or read_xlsx_rows_from_path(path)
+        return _TableFileLoadResult(
+            rows=rows,
+            aux_storage_cost=loaded.aux_storage_cost,
+            aux_system_losses=loaded.aux_system_losses,
+        )
+    return _TableFileLoadResult(rows=read_xlsx_rows_from_path(path))
 
 
 def _match_col(headers: list[str], hints: tuple[str, ...]) -> int | None:
@@ -329,6 +342,8 @@ def _build_telegram_caption(
     telegram_rows: list[list[str]] | None,
     marketplace_platform: str | None = None,
     source_file_path: str | None = None,
+    aux_storage_cost: float = 0.0,
+    aux_system_losses: float = 0.0,
 ) -> str:
     if subrole_id == "wb_ozon_finance" and calculated_total > 0:
         wb_metrics = compute_wb_marketplace_metrics(
@@ -336,13 +351,34 @@ def _build_telegram_caption(
             revenue_total=calculated_total,
             platform=marketplace_platform,
         )
-        caption = build_wb_finance_express_html(
+        from services.table_wb_finance_ai import compute_wb_finance_prompt_metrics
+
+        prompt_metrics = compute_wb_finance_prompt_metrics(
             calculated_total,
-            wb_metrics=wb_metrics,
+            wb_metrics,
             matrix_rows=rows,
             platform=marketplace_platform,
             file_path=source_file_path,
+            aux_storage_cost=aux_storage_cost,
+            aux_system_losses=aux_system_losses,
         )
+        if prompt_metrics is not None:
+            from services.table_wb_finance_ai import (
+                append_wb_finance_mini_app_cta,
+                build_wb_finance_express_html_local,
+            )
+
+            caption = append_wb_finance_mini_app_cta(
+                build_wb_finance_express_html_local(prompt_metrics, wb_metrics)
+            )
+        else:
+            caption = build_wb_finance_express_html(
+                calculated_total,
+                wb_metrics=wb_metrics,
+                matrix_rows=rows,
+                platform=marketplace_platform,
+                file_path=source_file_path,
+            )
         if len(caption) > _CAPTION_MAX:
             caption = caption[: _CAPTION_MAX - 1] + "…"
         return caption
@@ -411,7 +447,8 @@ def sync_table_processing_worker(
     Вызывать только через :func:`run_table_processing_worker_async`.
     """
     sid = normalize_table_subrole(subrole_id)
-    raw_rows = _load_rows_from_path(file_path, is_csv=is_csv, subrole_id=sid)
+    file_load = _load_rows_from_path(file_path, is_csv=is_csv, subrole_id=sid)
+    raw_rows = file_load.rows
     if not raw_rows:
         return None
 
@@ -432,6 +469,8 @@ def sync_table_processing_worker(
         telegram_rows=pre.telegram_rows,
         marketplace_platform=marketplace_platform,
         source_file_path=file_path,
+        aux_storage_cost=file_load.aux_storage_cost,
+        aux_system_losses=file_load.aux_system_losses,
     )
     chart_png, resolved = render_chart_png_bytes(matrix, context_text=pre.title)
 
@@ -443,6 +482,8 @@ def sync_table_processing_worker(
         chart_png_bytes=chart_png,
         chart_type=resolved,
         calculated_total=calculated_total,
+        aux_storage_cost=file_load.aux_storage_cost,
+        aux_system_losses=file_load.aux_system_losses,
     )
 
 

@@ -134,11 +134,15 @@ def _ensure_wb_finance_caption(
     from services.table_wb_finance_ai import resolve_wb_metrics_for_rows
 
     wb_metrics = resolve_wb_metrics_for_rows(rows, revenue, platform=audit_platform)
+    aux_storage = float(getattr(worker, "aux_storage_cost", 0) or 0)
+    aux_system = float(getattr(worker, "aux_system_losses", 0) or 0)
     built = _build_local_wb_finance_html(
         revenue,
         wb_metrics,
         matrix_rows=rows,
         platform=audit_platform,
+        aux_storage_cost=aux_storage,
+        aux_system_losses=aux_system,
     )
     return built or html
 

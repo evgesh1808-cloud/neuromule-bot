@@ -460,6 +460,29 @@ def _wb_aux_sheet_category(sheet_name: str) -> str | None:
         return "storage"
     if any(k in low for k in ("удержан", "кредит", "штраф", "санкц", "маркиров")):
         return "system"
+    if "прочие" in low and any(k in low for k in ("удерж", "списан", "выплат")):
+        return "system"
+    return None
+
+
+def _classify_aux_sheet_by_content(rows: list[list[str]]) -> str | None:
+    """storage | system по тексту листа, если имя вкладки не распознано."""
+    if not rows:
+        return None
+    sample = " ".join(
+        str(cell or "") for row in rows[: min(25, len(rows))] for cell in row
+    ).lower()
+    if not sample.strip():
+        return None
+    if "хранен" in sample or ("платн" in sample and "хран" in sample):
+        return "storage"
+    if "приемк" in sample or "приёмк" in sample:
+        return "storage"
+    if any(
+        k in sample
+        for k in ("кредит", "удержан", "штраф", "санкц", "маркиров", "прочие удерж")
+    ):
+        return "system"
     return None
 
 
@@ -642,6 +665,11 @@ def scan_matrix_deep_costs(matrix: list[list[str]]) -> tuple[float, float]:
         if not blob.strip():
             continue
         amount = _row_workbook_amount(row, amount_cols, allow_money_fallback=False)
+        if amount <= 0 and (
+            any(keyword in blob for keyword in _WB_STORAGE_KEYWORDS)
+            or any(keyword in blob for keyword in _WB_WITHHOLDING_KEYWORDS)
+        ):
+            amount = _row_workbook_amount(row, amount_cols, allow_money_fallback=True)
         if amount <= 0:
             continue
         if any(keyword in blob for keyword in _WB_STORAGE_KEYWORDS):
@@ -722,6 +750,8 @@ def load_cfo_workbook_from_path(file_path: str) -> CfoWorkbookLoadResult:
             if not rows:
                 continue
             category = _wb_aux_sheet_category(sheet_name)
+            if category is None and not _is_likely_wb_detail_sheet(rows):
+                category = _classify_aux_sheet_by_content(rows)
             if category == "storage":
                 sheet_storage += _sum_workbook_sheet_amounts(rows)
                 continue

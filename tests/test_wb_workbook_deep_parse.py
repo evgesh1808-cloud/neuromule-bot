@@ -97,6 +97,8 @@ def test_sync_worker_picks_aux_sheet_costs() -> None:
 
 
 def test_prompt_metrics_include_aux_sheet_costs_from_file() -> None:
+    from services.file_processor import sync_table_cfo_processing_worker as cfo_etl_from_path
+    from services.table_processing_worker import sync_table_processing_worker
     from services.table_wb_finance_ai import (
         build_wb_finance_express_html_local,
         compute_wb_finance_prompt_metrics,
@@ -105,17 +107,26 @@ def test_prompt_metrics_include_aux_sheet_costs_from_file() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "wb_multi.xlsx"
         _write_multi_sheet_wb(path)
-        result = sync_table_cfo_processing_worker(
+        result = cfo_etl_from_path(
             str(path),
             "wildberries",
             "wb_ozon_finance",
             "USN",
             6.0,
         )
+        worker = sync_table_processing_worker(
+            str(path),
+            "wb_ozon_finance",
+            False,
+            title="wb_multi",
+            marketplace_platform="wildberries",
+        )
         prompt = compute_wb_finance_prompt_metrics(
             float(result["total_revenue"]),
             None,
-            file_path=str(path),
+            matrix_rows=worker.rows if worker else None,
+            aux_storage_cost=worker.aux_storage_cost if worker else 0.0,
+            aux_system_losses=worker.aux_system_losses if worker else 0.0,
         )
 
     assert prompt is not None
@@ -131,6 +142,31 @@ def test_load_cfo_workbook_aux_sheets_with_preamble() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "wb_preamble.xlsx"
         _write_multi_sheet_wb(path, preamble=True)
+        loaded = load_cfo_workbook_from_path(str(path))
+
+    assert loaded.aux_storage_cost == pytest.approx(2782.27)
+    assert loaded.aux_system_losses == pytest.approx(8192.77)
+
+
+def test_load_cfo_workbook_unnamed_aux_sheets() -> None:
+    """Вкладки без слова «Хранение» в имени — по содержимому."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "wb_generic_tabs.xlsx"
+        wb = Workbook()
+        ws_detail = wb.active
+        ws_detail.title = "Отчёт"
+        ws_detail.append(_detail_headers())
+        ws_detail.append(
+            ["Товар", "SKU-1", "208547", "Продажа", "Продажа", "2", "2400", "1600", "100", "50"]
+        )
+        ws_storage = wb.create_sheet("Лист2")
+        ws_storage.append(["Склад", "Стоимость хранения, руб."])
+        ws_storage.append(["208547", "2782.27"])
+        ws_hold = wb.create_sheet("Лист3")
+        ws_hold.append(["Вид удержания", "Сумма удержания"])
+        ws_hold.append(["Предоставление кредита", "8192.77"])
+        wb.save(path)
+        wb.close()
         loaded = load_cfo_workbook_from_path(str(path))
 
     assert loaded.aux_storage_cost == pytest.approx(2782.27)
