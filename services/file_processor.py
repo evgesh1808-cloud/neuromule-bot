@@ -533,20 +533,45 @@ def _is_technical_sku_cell(text: str) -> bool:
     return False
 
 
+_WB_HEADER_SKU_MARKERS: Final[tuple[str, ...]] = ("баркод", "артикул", "barcode")
+_WB_HEADER_LOGISTICS_MARKERS: Final[tuple[str, ...]] = (
+    "логистик",
+    "доставк",
+    "delivery",
+)
+_WB_HEADER_CONTEXT_MARKERS: Final[tuple[str, ...]] = (
+    "склад",
+    "обоснован",
+    "сумм",
+)
+
+
+def _wb_header_blob_contains_any(blob: str, markers: tuple[str, ...]) -> bool:
+    return any(marker in blob for marker in markers)
+
+
 def validate_wb_finance_detail_structure(matrix: list[list[str]] | None) -> bool:
     """
-    Шапка главного листа должна содержать маркеры оригинальной детализации WB.
+    Гибкая проверка шапки детализации WB: три группы неизменяемых e-commerce маркеров.
+
+    Файл валиден, если в шапке (после преамбулы, до 40 строк) одновременно есть:
+    артикул/баркод, логистика/доставка и склад/обоснование/сумма.
+    Точные названия колонок различаются по месяцам — их подхватывает COLUMN_SYNONYMS.
     """
     if not matrix:
         return False
-    header_row = _find_sheet_header_row(matrix, detail=True)
-    if header_row >= len(matrix):
-        return False
-    headers = [_normalize_column_header(str(cell)) for cell in matrix[header_row]]
-    blob = " ".join(header for header in headers if header)
-    if not blob:
-        return False
-    return any(marker in blob for marker in _WB_FINANCE_DETAIL_HEADER_MARKERS)
+    for row in matrix[:40]:
+        blob = " ".join(
+            _normalize_column_header(str(cell)) for cell in row
+        ).strip()
+        if not blob:
+            continue
+        has_sku = _wb_header_blob_contains_any(blob, _WB_HEADER_SKU_MARKERS)
+        has_logistics = _wb_header_blob_contains_any(blob, _WB_HEADER_LOGISTICS_MARKERS)
+        has_context = _wb_header_blob_contains_any(blob, _WB_HEADER_CONTEXT_MARKERS)
+        if has_sku and has_logistics and has_context:
+            return True
+    return False
 
 
 def wb_finance_invalid_structure_payload(**extra: object) -> dict[str, object]:
@@ -1076,11 +1101,6 @@ _CFO_BUILD = "cfo-v12 (SaaS Protected Build)"
 CFO_ENGINE_NAME = "CFO Engine v12 (Highload)"
 WB_FINANCE_ERROR_INVALID_STRUCTURE = "invalid_structure"
 _WB_MAX_SINGLE_OPERATION_RUB = 200_000.0
-_WB_FINANCE_DETAIL_HEADER_MARKERS: Final[tuple[str, ...]] = (
-    "обоснование для оплаты",
-    "тип документа",
-    "цена розничная с учетом согласованной скидки",
-)
 _SKU_TECHNICAL_JUNK_WORDS: Final[tuple[str, ...]] = (
     "выкупили",
     "акция",

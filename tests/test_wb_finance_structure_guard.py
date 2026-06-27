@@ -29,8 +29,26 @@ def test_validate_wb_finance_detail_structure_accepts_official_headers() -> None
             "Тип документа",
             "Обоснование для оплаты",
             "К перечислению продавцу за реализованный товар",
+            "Услуги по доставке товара покупателю",
+            "Склад",
         ],
-        ["Товар", "SKU-1", "Продажа", "Продажа", "1000"],
+        ["Товар", "SKU-1", "Продажа", "Продажа", "1000", "30", "Казань"],
+    ]
+    assert validate_wb_finance_detail_structure(matrix) is True
+
+
+def test_validate_wb_finance_detail_structure_accepts_alternate_month_headers() -> None:
+    """Другой месяц WB: без «тип документа» / длинного РРЦ — только базовые маркеры."""
+    matrix = [
+        [
+            "Предмет",
+            "Артикул поставщика",
+            "Баркод",
+            "Склад отгрузки",
+            "Услуги по доставке",
+            "Сумма к перечислению",
+        ],
+        ["Товар", "SKU-2", "4600123456789", "Подольск", "45", "1200"],
     ]
     assert validate_wb_finance_detail_structure(matrix) is True
 
