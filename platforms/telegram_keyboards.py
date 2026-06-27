@@ -238,7 +238,7 @@ def get_wb_tax_keyboard() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="📈 УСН 25% (Макс)", callback_data=f"{p}USN:25.0"),
     )
     builder.row(
-        InlineKeyboardButton(text="⚙️ Другая ставка", callback_data=f"{p}CUSTOM:6.0"),
+        InlineKeyboardButton(text="⚙️ Другая ставка", callback_data=msg.CB_SET_TAX_CUSTOM_ASK),
         InlineKeyboardButton(text="❌ Не учитывать", callback_data=f"{p}NONE:0.0"),
     )
     builder.row(

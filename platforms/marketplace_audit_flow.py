@@ -42,7 +42,10 @@ AUDIT_FILE_WAITING_STATE_KEYS: frozenset[str] = frozenset(
 )
 
 AUDIT_TAX_WAITING_STATE_KEYS: frozenset[str] = frozenset(
-    {WBAuditingStates.wait_for_tax.state}
+    {
+        WBAuditingStates.wait_for_tax.state,
+        WBAuditingStates.wait_for_custom_tax.state,
+    }
 )
 
 

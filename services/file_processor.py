@@ -1321,6 +1321,66 @@ def _matrix_name_and_article_cols(headers: list[str]) -> tuple[int, int | None]:
     return name_col, article_col
 
 
+def resolve_wb_cfo_core_column_indices(
+    headers: list[str],
+) -> tuple[int | None, int | None]:
+    """
+    Критические колонки CFO v11.1: ``idx_sku`` (артикул) и ``idx_rrc`` (выручка/РРЦ).
+
+    Колонки штрафов, кредитов и возвратов не обязательны — при отсутствии считаем 0.
+    """
+    tx_cols = _resolve_cfo_tx_columns(headers)
+    if tx_cols is not None:
+        idx_sku = tx_cols.article if tx_cols.article is not None else tx_cols.name
+        idx_rrc = (
+            tx_cols.retail_price
+            if tx_cols.retail_price is not None
+            else tx_cols.payout_price
+        )
+        return idx_sku, idx_rrc
+
+    idx_sku = find_column_index(headers, "sku")
+    if idx_sku is None:
+        name_col, article_col = _matrix_name_and_article_cols(headers)
+        idx_sku = article_col if article_col is not None else name_col
+
+    idx_rrc = (
+        find_column_index(headers, "retail_price")
+        or find_column_index(headers, "payout_price")
+        or find_column_index(headers, "sale_price")
+        or _matrix_col(headers, _WB_REVENUE_HINTS)
+    )
+    return idx_sku, idx_rrc
+
+
+def wb_core_finance_columns_recognized(matrix: list[list[str]]) -> bool:
+    """Ключевые колонки SKU и выручки (РРЦ) распознаны по шапке отчёта."""
+    if not matrix:
+        return False
+    headers = [str(h or "").strip() for h in matrix[0]]
+    if not headers:
+        return False
+    idx_sku, idx_rrc = resolve_wb_cfo_core_column_indices(headers)
+    return idx_sku is not None and idx_rrc is not None
+
+
+def should_warn_column_structure(
+    matrix: list[list[str]],
+    *,
+    revenue_total: float = 0.0,
+) -> bool:
+    """
+    Предупреждение «не удалось распознать структуру колонок» — только если
+    не найдены ``idx_sku`` или ``idx_rrc``. Штрафы/возвраты без колонок = 0.
+    """
+    _ = revenue_total  # совместимость вызовов
+    if not matrix or len(matrix) < 2:
+        return True
+    headers = [str(h or "").strip() for h in matrix[0]]
+    idx_sku, idx_rrc = resolve_wb_cfo_core_column_indices(headers)
+    return idx_sku is None or idx_rrc is None
+
+
 def _row_sku_identity(
     row: list[str],
     *,
@@ -2044,6 +2104,9 @@ __all__ = (
     "sync_table_cfo_processing_worker",
     "compute_buyout_coef_pct",
     "find_column_index",
+    "resolve_wb_cfo_core_column_indices",
+    "should_warn_column_structure",
+    "wb_core_finance_columns_recognized",
     "compress_extracted_text",
     "compute_seller_matrix_etl",
     "extract_text_from_document",

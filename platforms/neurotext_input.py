@@ -469,7 +469,12 @@ async def handle_neurotext_user_message(
                 force_local_parse, preparse = marketplace_requires_local_path(rows, title=title)
                 if force_local_parse:
                     use_local = True
-                    column_structure_warning = bool(preparse.rows)
+                    from services.file_processor import should_warn_column_structure
+
+                    column_structure_warning = should_warn_column_structure(
+                        rows,
+                        revenue_total=float(preparse.revenue_total or 0.0),
+                    )
                 else:
                     use_local = xlsx_auto_finance or not _use_table_api_path(
                         caption, table_subrole

@@ -53,6 +53,7 @@ class WBAuditingStates(StatesGroup):
     """FSM состояния для модуля ИИ-Аналитик (Excel) — Wildberries."""
 
     wait_for_tax = State()          # Шаг 1: выбор налоговой ставки (стандарт WB)
+    wait_for_custom_tax = State()   # Шаг 1b: ввод произвольной ставки (%)
     wait_for_xlsx = State()         # Шаг 2: ожидание .xlsx / .csv отчёта
 
 

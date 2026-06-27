@@ -55,7 +55,7 @@ from platforms.telegram_keyboards import (
     support_faq_keyboard,
     terms_accept_keyboard,
 )
-from platforms.telegram_states import AdminStates, FeedbackStates, UserFlow, WBAuditingStates
+from platforms.states import UserFlow, WBAuditingStates
 from platforms.telegram_utils import (
     HelpInstructionWordFilter,
     _extract_ticket_user_id,
@@ -298,7 +298,19 @@ async def process_wb_tax_selection(callback: CallbackQuery, state: FSMContext) -
     from platforms.marketplace_audit_flow import save_wb_user_tax_selection
     from services.audit_tax import parse_set_tax_parts
 
-    parsed = parse_set_tax_parts(callback.data or "")
+    callback_data = (callback.data or "").strip()
+
+    if callback_data == msg.CB_SET_TAX_CUSTOM_ASK:
+        await callback.answer()
+        await state.set_state(WBAuditingStates.wait_for_custom_tax)
+        if callback.message:
+            try:
+                await callback.message.edit_text(msg.TXT_AUDIT_WB_TAX_CUSTOM_PROMPT)
+            except TelegramBadRequest:
+                await callback.message.answer(msg.TXT_AUDIT_WB_TAX_CUSTOM_PROMPT)
+        return
+
+    parsed = parse_set_tax_parts(callback_data)
     if parsed is None:
         await callback.answer("Неизвестный режим налогообложения.", show_alert=True)
         return
@@ -320,6 +332,36 @@ async def process_wb_tax_selection(callback: CallbackQuery, state: FSMContext) -
             instruction_msg_id=instruction_msg.message_id,
             audit_upload_prompt_message_id=instruction_msg.message_id,
         )
+
+
+@router.message(WBAuditingStates.wait_for_custom_tax, F.text)
+async def wb_audit_custom_tax_rate(message: Message, state: FSMContext) -> None:
+    """Ввод произвольной ставки (%) после «⚙️ Другая ставка»."""
+    from platforms.marketplace_audit_flow import save_wb_user_tax_selection
+
+    raw = (message.text or "").strip().replace(",", ".")
+    if not re.fullmatch(r"\d+(?:\.\d+)?", raw):
+        await message.answer(msg.TXT_AUDIT_WB_TAX_CUSTOM_INVALID)
+        return
+    pct = float(raw)
+    if pct < 0 or pct > 100:
+        await message.answer(msg.TXT_AUDIT_WB_TAX_CUSTOM_INVALID)
+        return
+
+    await save_wb_user_tax_selection(state, tax_type="CUSTOM", tax_rate=pct)
+    instruction_msg = await message.answer(
+        msg.format_wb_tax_confirmed_instruction("CUSTOM", pct),
+        parse_mode=ParseMode.HTML,
+    )
+    await state.update_data(
+        instruction_msg_id=instruction_msg.message_id,
+        audit_upload_prompt_message_id=instruction_msg.message_id,
+    )
+
+
+@router.message(WBAuditingStates.wait_for_custom_tax)
+async def wb_audit_custom_tax_invalid(message: Message) -> None:
+    await message.answer(msg.TXT_AUDIT_WB_TAX_CUSTOM_INVALID)
 
 
 @router.callback_query(F.data == msg.CB_BACK_TO_AI_ASSISTANT)

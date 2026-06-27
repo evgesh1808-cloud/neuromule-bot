@@ -155,20 +155,32 @@ def render_wb_sales_chart_png(
     """Отрисовка WB-графика: ``barh`` | ``line`` | ``pie`` (Agg, без GUI)."""
     if matplotlib is None:
         return None
-    try:
-        import matplotlib.pyplot as plt
-    except ImportError:
-        return None
 
     kind = _normalize_wb_chart_type(chart_type)
     labels = series.labels
     values = series.values
 
-    if kind in ("line", "pie") and len(values) < 2:
+    if kind == "barh":
+        from services.chart_generator import HorizontalBarSeries, render_horizontal_bar_chart_png
+
+        return render_horizontal_bar_chart_png(
+            HorizontalBarSeries(
+                labels=labels,
+                values=values,
+                value_axis_label=series.value_axis_label,
+                chart_title=series.chart_title,
+            )
+        )
+
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
         return None
 
-    fig_h = max(4.2, 0.45 * len(labels) + 1.8) if kind == "barh" else 4.8
-    fig, ax = plt.subplots(figsize=(8.5, fig_h), dpi=120)
+    if len(values) < 2:
+        return None
+
+    fig, ax = plt.subplots(figsize=(8.5, 4.8), dpi=120)
     fig.patch.set_facecolor(_CHART_BG)
     ax.set_facecolor("#ffffff")
 
@@ -202,39 +214,8 @@ def render_wb_sales_chart_png(
         ax.set_title(series.chart_title, fontsize=13, fontweight="bold", pad=12)
         ax.grid(True, axis="y", linestyle="--", alpha=0.35)
         ax.tick_params(axis="x", labelsize=8)
-    else:
-        y_pos = range(len(labels))
-        bars = ax.barh(
-            list(y_pos),
-            values,
-            color=_CHART_COLOR,
-            alpha=0.9,
-            edgecolor="#27ae60",
-            linewidth=0.6,
-            height=0.62,
-        )
-        ax.set_yticks(list(y_pos))
-        ax.set_yticklabels(labels, fontsize=9)
-        ax.invert_yaxis()
-        ax.set_xlabel(series.value_axis_label, fontsize=10, labelpad=8)
-        ax.set_ylabel("Товары", fontsize=10, labelpad=8)
-        ax.set_title(series.chart_title, fontsize=13, fontweight="bold", pad=12)
-        ax.grid(True, axis="x", linestyle="--", alpha=0.35)
-        ax.tick_params(axis="x", labelsize=8)
 
-        for bar, val in zip(bars, values):
-            fmt = f"{val:,.0f}".replace(",", " ")
-            ax.text(
-                bar.get_width() + max(values) * 0.01,
-                bar.get_y() + bar.get_height() / 2,
-                fmt,
-                va="center",
-                ha="left",
-                fontsize=8,
-                color="#1e293b",
-            )
-
-    fig.tight_layout()
+    plt.tight_layout()
     buf = BytesIO()
     fig.savefig(buf, format="png", bbox_inches="tight", facecolor=fig.get_facecolor())
     plt.close(fig)
@@ -245,14 +226,52 @@ def render_wb_sales_chart_png(
 def render_wb_chart_from_rows(
     rows: list[list[str]],
     chart_type: str = "barh",
+    *,
+    final_metrics: dict | None = None,
+    tax_type: str = "USN",
+    tax_rate: float = 6.0,
 ) -> bytes | None:
-    """Извлекает WB-серию и рисует PNG выбранного типа."""
+    """Извлекает WB-серию и рисует PNG; barh — по ``rrc_revenue`` CFO v11.1."""
+    kind = _normalize_wb_chart_type(chart_type)
+    if kind == "barh":
+        from services.chart_generator import (
+            build_rrc_chart_series_from_final_metrics,
+            build_rrc_chart_series_from_rows,
+            render_horizontal_bar_chart_png,
+        )
+
+        rrc_series = None
+        if final_metrics:
+            rrc_series = build_rrc_chart_series_from_final_metrics(final_metrics)
+        if rrc_series is None:
+            rrc_series = build_rrc_chart_series_from_rows(
+                rows,
+                tax_type=tax_type,
+                tax_rate=tax_rate,
+            )
+        if rrc_series is not None:
+            png = render_horizontal_bar_chart_png(rrc_series)
+            if png is not None:
+                return png
+
     series = extract_wb_sales_series(rows)
     if series is None:
         return None
     return render_wb_sales_chart_png(series, chart_type=chart_type)
 
 
-def try_render_wb_chart_png(rows: list[list[str]]) -> bytes | None:
-    """WB fast-path: barh по умолчанию."""
-    return render_wb_chart_from_rows(rows, chart_type="barh")
+def try_render_wb_chart_png(
+    rows: list[list[str]],
+    *,
+    final_metrics: dict | None = None,
+    tax_type: str = "USN",
+    tax_rate: float = 6.0,
+) -> bytes | None:
+    """WB fast-path: barh по ``rrc_revenue`` CFO v11.1."""
+    return render_wb_chart_from_rows(
+        rows,
+        chart_type="barh",
+        final_metrics=final_metrics,
+        tax_type=tax_type,
+        tax_rate=tax_rate,
+    )

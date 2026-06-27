@@ -555,6 +555,7 @@ CB_TABLE_SUBROLE_PREFIX = "set_table_subrole:"
 CB_AUDIT_PLATFORM_PREFIX = "audit_platform:"
 CB_AUDIT_TAX_PREFIX = "audit_tax:"  # legacy
 CB_SET_TAX_PREFIX = "set_tax:"
+CB_SET_TAX_CUSTOM_ASK = "set_tax:CUSTOM:ask"
 CB_BACK_TO_AI_ASSISTANT = "back_to_ai_assistant"
 TXT_AUDIT_WB_TAX_MENU = (
     "🟣 <b>Wildberries — финансовый аудит</b>\n\n"
@@ -575,6 +576,23 @@ def format_wb_tax_confirmed_instruction(tax_type: str, tax_rate: float) -> str:
     return (
         f"✅ <b>Вид налогообложения зафиксирован:</b> {label}\n"
         "📥 Загрузите и отправьте финансовый отчёт в формате "
+        "<b>.xlsx</b> / <b>.csv</b> для Wildberries."
+    )
+
+
+TXT_AUDIT_WB_TAX_CUSTOM_PROMPT = (
+    "⌨️ Введите вашу налоговую ставку в процентах "
+    "(просто число, например: 4 или 13.5):"
+)
+TXT_AUDIT_WB_TAX_CUSTOM_INVALID = "❌ Пожалуйста, введите корректное число"
+
+
+def format_wb_tax_custom_confirmed_instruction(tax_rate: float) -> str:
+    """Подтверждение после ввода произвольной ставки — шаг 2 (загрузка xlsx)."""
+    rate = f"{float(tax_rate):g}"
+    return (
+        f"📥 <b>Вид налогообложения зафиксирован:</b> Своя ставка ({rate}%).\n"
+        "Теперь загрузите и отправьте финансовый отчёт в формате "
         "<b>.xlsx</b> / <b>.csv</b> для Wildberries."
     )
 TXT_AUDIT_PLATFORM_MENU = (

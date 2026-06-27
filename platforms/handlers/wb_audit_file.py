@@ -108,7 +108,12 @@ async def wb_audit_file_process(message: Message, state: FSMContext) -> None:
             return
 
         _, preparse = marketplace_requires_local_path(worker.rows, title=title)
-        column_structure_warning = bool(preparse.rows)
+        from services.file_processor import should_warn_column_structure
+
+        column_structure_warning = should_warn_column_structure(
+            worker.rows,
+            revenue_total=float(preparse.revenue_total or 0.0),
+        )
 
         async with flood_safe_chat_action_loop(deps.bot(), message.chat.id, "typing"):
             fast_result = await run_xlsx_fast_path_turn(
