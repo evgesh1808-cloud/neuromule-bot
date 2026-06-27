@@ -350,11 +350,22 @@ async def handle_neurotext_user_message(
             )
             xlsx_auto_finance = True
 
+    # WB: без выбора налога файл не принимаем.
+    if is_document and _document_suffix(message.document.file_name) in (".xlsx", ".csv"):
+        from platforms.marketplace_audit_flow import is_audit_tax_waiting_state
+
+        if is_audit_tax_waiting_state(await state.get_state()):
+            await message.answer(msg.TXT_AUDIT_WB_TAX_REQUIRED, parse_mode=ParseMode.HTML)
+            return
+
     await ensure_neurotext_waiting_state(state)
     data = await state.get_data()
     role_id = str(data.get("text_role") or "standard").strip().lower()
     table_subrole = normalize_table_subrole(data.get("table_subrole"))
     audit_platform = data.get("audit_platform")
+    from platforms.marketplace_audit_flow import audit_tax_preset_from_data
+
+    audit_tax_preset = audit_tax_preset_from_data(data).id
     uid = message.from_user.id
 
     user_image_data_url: str | None = None
@@ -409,6 +420,11 @@ async def handle_neurotext_user_message(
                     await dismiss_fsm_chat_message(
                         state,
                         chat_id=message.chat.id,
+                    )
+                    await dismiss_fsm_chat_message(
+                        state,
+                        chat_id=message.chat.id,
+                        data_key="instruction_msg_id",
                     )
                 if not await _table_xlsx_allowed(uid):
                     await _notify_table_status(
@@ -505,6 +521,7 @@ async def handle_neurotext_user_message(
                                 column_structure_warning=column_structure_warning,
                                 marketplace_platform=audit_platform,
                                 source_file_path=xlsx_source_path,
+                                tax_preset_id=str(audit_tax_preset) if audit_tax_preset else None,
                             )
                         if keep_waiting_state and fast_result.outcome is ChatTurnOutcome.SUCCESS:
                             from platforms.marketplace_audit_flow import is_marketplace_audit_context

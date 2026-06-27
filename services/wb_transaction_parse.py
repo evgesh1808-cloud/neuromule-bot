@@ -97,13 +97,17 @@ def resolve_wb_tx_columns(headers: list[str]) -> WbTxColumns | None:
     )
     if qty is None:
         qty = _find_col(lowered, "кол")
-    revenue = _find_col(
-        lowered,
-        "к перечислению",
-        "перечислению продавцу",
-        "перечислению за",
-        "вайлдберриз к перечислению",
-    )
+    revenue = find_column_index(headers, "retail_price")
+    if revenue is None:
+        revenue = find_column_index(headers, "payout_price")
+    if revenue is None:
+        revenue = _find_col(
+            lowered,
+            "к перечислению",
+            "перечислению продавцу",
+            "перечислению за",
+            "вайлдберриз к перечислению",
+        )
     logistics = _find_col(
         lowered,
         "услуги по доставке",
@@ -142,61 +146,31 @@ def _row_text_blob(row: list[str], cols: WbTxColumns) -> str:
 
 def classify_wb_transaction_row(blob: str, *, doc_type: str = "") -> WbTxKind:
     """Разделение удержаний: кредит / хранение / реклама / продажа / сторно / штраф."""
-    text = f"{doc_type} {blob}".lower().strip()
-    if not text:
-        return "skip"
-    if "сторно" in text or "корректировк" in text:
-        return "storno"
-    if any(k in text for k in ("кредит", "выплата по кредиту")):
+    from services.file_processor import classify_cfo_tx_row
+
+    kind = classify_cfo_tx_row(blob, doc_type=doc_type)
+    mapping: dict[str, WbTxKind] = {
+        "sale": "sale",
+        "sale_adjustment": "sale",
+        "return": "return",
+        "cancel": "return",
+        "storno": "storno",
+        "credit": "credit",
+        "storage": "storage",
+        "acceptance": "acceptance",
+        "utilization": "storage",
+        "penalty": "penalty",
+        "system_loss": "credit",
+        "ad": "ad",
+        "forward_logistics": "logistics",
+        "reverse_logistics": "logistics",
+        "commission": "commission",
+        "other": "other",
+        "skip": "skip",
+    }
+    if "кредит" in f"{doc_type} {blob}".lower():
         return "credit"
-    if "хранен" in text or "стоимость хранения" in text:
-        return "storage"
-    if "платная приемка" in text or "платная приёмка" in text:
-        return "acceptance"
-    if "удержание за отсутствие маркировки" in text or (
-        "штраф" in text and "кредит" not in text
-    ):
-        return "penalty"
-    if any(k in text for k in ("реклам", "продвижен", "трафарет", "спецразмещ", "медийн", "буст")):
-        return "ad"
-    doc = (doc_type or "").lower().strip()
-    if doc == "продажа" or text.startswith("продажа"):
-        return "sale"
-    if "возврат" in text and "логистик" not in text:
-        return "return"
-    if "продаж" in text and "возврат" not in text:
-        return "sale"
-    if any(k in text for k in ("логистик", "доставк", "перевоз")) and "хранен" not in text:
-        return "logistics"
-    if any(k in text for k in ("вознагражден", "комисс")):
-        return "commission"
-    if any(k in text for k in ("удержан", "штраф")) and "кредит" not in text:
-        if any(k in text for k in ("реклам", "продвижен")):
-            return "ad"
-        return "other"
-    return "other"
-
-
-def _money_amount(row: list[str], cols: WbTxColumns, *, kind: WbTxKind) -> float:
-    """Сумма по строке: перечисление, удержание или логистика."""
-    amounts: list[float] = []
-    if cols.revenue is not None and cols.revenue < len(row):
-        amounts.append(safe_float(row[cols.revenue]))
-    if cols.deduction is not None and cols.deduction < len(row):
-        amounts.append(safe_float(row[cols.deduction]))
-    if kind in ("logistics", "sale", "return", "storno") and cols.logistics is not None:
-        if cols.logistics < len(row):
-            amounts.append(safe_float(row[cols.logistics]))
-    if kind in ("commission", "sale") and cols.commission is not None:
-        if cols.commission < len(row):
-            amounts.append(safe_float(row[cols.commission]))
-    if not amounts:
-        return 0.0
-    if kind == "sale":
-        return max(0.0, max(amounts))
-    if kind == "storno":
-        return sum(amounts)
-    return sum(abs(v) for v in amounts if v != 0)
+    return mapping.get(kind, "other")
 
 
 @dataclass
@@ -215,7 +189,7 @@ class WbSkuTxBucket:
 
 @dataclass
 class WbTransactionShopAgg:
-    """Агрегат магазина из детализации WB."""
+    """Агрегат магазина из детализации WB (обёртка над CFO Engine v11.1)."""
 
     sales_qty: float = 0.0
     deliveries_qty: float = 0.0
@@ -231,99 +205,41 @@ class WbTransactionShopAgg:
     sku_buckets: dict[tuple[str, str], WbSkuTxBucket] = field(default_factory=dict)
 
 
-def _sku_identity(row: list[str], cols: WbTxColumns) -> tuple[str, str]:
-    name = _cell(row, cols.name) or _cell(row, cols.article) or "—"
-    article = _cell(row, cols.article) or name
-    return name[:64], article[:48]
-
-
 def aggregate_wb_transactions(
     matrix: list[list[str]],
 ) -> WbTransactionShopAgg | None:
-    """
-    Построчная агрегация еженедельного отчёта WB.
+    """Построчная агрегация еженедельного отчёта WB через CFO Engine v11.1."""
+    from services.file_processor import aggregate_cfo_engine_v11_1
 
-  Продажи — только строки «Продажа» / обоснование с фактом выкупа.
-  Кредиты и хранение не попадают в ДРР.
-    """
-    if not matrix or len(matrix) < 2:
-        return None
-    headers = matrix[0]
-    cols = resolve_wb_tx_columns(headers)
-    if cols is None:
+    engine = aggregate_cfo_engine_v11_1(matrix)
+    if engine is None or engine.kind != "transaction":
         return None
 
-    agg = WbTransactionShopAgg()
-    for row in matrix[1:]:
-        blob = _row_text_blob(row, cols)
-        doc_type = _cell(row, cols.doc_type)
-        kind = classify_wb_transaction_row(blob, doc_type=doc_type)
-        if kind == "skip":
-            continue
-        amount = _money_amount(row, cols, kind=kind)
-        qty = abs(safe_float(row[cols.qty])) if cols.qty is not None and cols.qty < len(row) else 0.0
-
-        if kind == "credit":
-            agg.credit_deductions += amount
-            continue
-        if kind == "storage":
-            agg.storage_cost += amount
-            continue
-        if kind == "penalty":
-            agg.other_deductions += amount
-            continue
-        if kind == "acceptance":
-            agg.other_deductions += amount
-            continue
-        if kind == "ad":
-            agg.total_advertising_cost += amount
-            continue
-        if kind == "storno":
-            name, article = _sku_identity(row, cols)
-            if is_valid_wb_sku(name, article):
-                bucket = agg.sku_buckets.get((name, article))
-                if bucket is None:
-                    bucket = WbSkuTxBucket(name=name, article_id=article)
-                    agg.sku_buckets[(name, article)] = bucket
-                bucket.revenue += amount
-            continue
-        if kind == "logistics":
-            agg.logistics_cost += amount
-        elif kind == "commission":
-            agg.commission_cost += amount
-        elif kind == "other":
-            agg.other_deductions += amount
-
-        name, article = _sku_identity(row, cols)
-        if not is_valid_wb_sku(name, article):
-            if kind == "sale":
-                agg.sales_qty += qty if qty > 0 else (1.0 if amount > 0 else 0.0)
-                agg.revenue_from_sales += amount
-                agg.deliveries_qty += qty if qty > 0 else 1.0
-            elif kind == "return":
-                agg.returns_qty += qty if qty > 0 else 1.0
-            continue
-
-        bucket = agg.sku_buckets.get((name, article))
-        if bucket is None:
-            bucket = WbSkuTxBucket(name=name, article_id=article)
-            agg.sku_buckets[(name, article)] = bucket
-
-        if kind == "sale":
-            bucket.sales_qty += qty if qty > 0 else (1.0 if amount > 0 else 0.0)
-            bucket.revenue += amount
-            bucket.deliveries_qty += qty if qty > 0 else 1.0
-            agg.sales_qty += qty if qty > 0 else (1.0 if amount > 0 else 0.0)
-            agg.revenue_from_sales += amount
-            agg.deliveries_qty += qty if qty > 0 else 1.0
-        elif kind == "return":
-            bucket.returns_qty += qty if qty > 0 else 1.0
-            agg.returns_qty += qty if qty > 0 else 1.0
-        elif kind == "logistics":
-            bucket.logistics += amount
-        elif kind == "commission":
-            bucket.commission += amount
-
-    agg.buyout_coef_pct = compute_buyout_coef_pct(agg.sales_qty, agg.returns_qty)
-
+    agg = WbTransactionShopAgg(
+        sales_qty=engine.sales_qty,
+        deliveries_qty=sum(
+            b.deliveries_qty for b in engine.sku_buckets.values()
+        ),
+        returns_qty=engine.returns_qty,
+        buyout_coef_pct=engine.buyout_coef_pct,
+        revenue_from_sales=engine.tax_base_revenue,
+        total_advertising_cost=engine.total_ad_spend,
+        storage_cost=engine.total_storage_cost,
+        credit_deductions=engine.credit_deductions,
+        logistics_cost=engine.logistics_cost,
+        commission_cost=engine.commission_cost,
+        other_deductions=engine.total_system_losses,
+    )
+    for key, bucket in engine.sku_buckets.items():
+        agg.sku_buckets[key] = WbSkuTxBucket(
+            name=bucket.name,
+            article_id=bucket.article_id,
+            revenue=bucket.gross_sales_rrc,
+            sales_qty=bucket.sales_qty,
+            returns_qty=bucket.returns_qty,
+            deliveries_qty=bucket.deliveries_qty,
+            logistics=bucket.forward_logistics + bucket.reverse_logistics,
+            commission=bucket.commission,
+            cost_rub=bucket.cost_rub,
+        )
     return agg

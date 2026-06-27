@@ -157,3 +157,41 @@ def test_empty_sku_excluded_from_abc() -> None:
 def test_is_valid_wb_sku_rejects_dash_dash() -> None:
     assert not is_valid_wb_sku("—", "—")
     assert is_valid_wb_sku("Посуда", "DISH-01")
+
+
+def test_cfo_engine_v11_1_tax_from_rrc_and_clear_profit() -> None:
+    from services.file_processor import aggregate_cfo_engine_v11_1
+
+    matrix = [
+        [
+            "Предмет",
+            "Артикул поставщика",
+            "Тип документа",
+            "Обоснование для оплаты",
+            "Кол-во",
+            "Продажа (РРЦ)",
+            "К перечислению продавцу за реализованный товар",
+            "Услуги по доставке товара покупателю",
+            "Вознаграждение Вайлдберриз",
+        ],
+        ["Товар", "SKU-1", "Продажа", "Продажа", "2", "2400", "1600", "100", "50"],
+        ["Товар", "SKU-1", "Возврат", "Возврат", "1", "600", "400", "30", "20"],
+        ["—", "—", "Удержание", "Стоимость хранения", "", "", "-500", "", ""],
+        ["—", "—", "Удержание", "Штраф", "", "", "-200", "", ""],
+    ]
+    engine = aggregate_cfo_engine_v11_1(matrix)
+    assert engine is not None
+    assert engine.retail_price_source == "rrc"
+    assert engine.tax_base_revenue == pytest.approx(1800.0)
+    assert engine.tax_total == pytest.approx(108.0)
+    assert engine.total_storage_cost == pytest.approx(500.0)
+    assert engine.total_system_losses == pytest.approx(200.0)
+    bucket = engine.sku_buckets[("Товар", "SKU-1")]
+    assert bucket.sales_qty == pytest.approx(2.0)
+    assert bucket.returns_qty == pytest.approx(1.0)
+    assert bucket.buyout_pct == pytest.approx(66.7, rel=0.01)
+    expected_margin = 1800.0 - 0.0 - (50.0 + 20.0) - (100.0 + 30.0)
+    assert engine.total_sku_margin == pytest.approx(expected_margin)
+    assert engine.clear_profit == pytest.approx(
+        expected_margin - 500.0 - 200.0 - 108.0
+    )

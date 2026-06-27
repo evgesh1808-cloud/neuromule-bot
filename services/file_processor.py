@@ -470,9 +470,10 @@ async def extract_text_from_document(
 # ─── Локальный ETL товарной матрицы (ABC / FOMO логистики / OOS) ───────────
 
 _USN_RATE = 0.06
-_CFO_BUILD = "cfo-v11"
+_CFO_BUILD = "cfo-v11.1"
+CFO_ENGINE_NAME = "CFO Engine v11.1"
 
-# Семантический маппинг колонок WB (cfo-v10): lower().strip() + подстрока-синоним.
+# Семантический маппинг колонок WB (CFO Engine v11.1).
 WB_COLUMN_SYNONYMS: dict[str, tuple[str, ...]] = {
     "sku": (
         "артикул",
@@ -480,16 +481,42 @@ WB_COLUMN_SYNONYMS: dict[str, tuple[str, ...]] = {
         "артикул поставщика",
         "supplier_article",
         "sa_name",
+        "barcode",
+        "баркод",
+        "штрихкод",
     ),
-    "sale_price": (
+    "retail_price": (
+        "продажа (ррц)",
+        "цена розничная с учетом согласованной скидки",
+        "розничная с согласованной",
+        "ррц",
+        "retail_price",
+        "retail amount",
+        "finishedprice",
         "доход",
         "выручка",
         "сумма продаж",
-        "продажа (ррц)",
-        "wildberries_amount",
-        "цена розничная с учетом согласованной скидки",
+        "общая сумма продаж",
+    ),
+    "payout_price": (
         "к перечислению",
-        "перечислению",
+        "к перечислению за товар",
+        "перечислению продавцу",
+        "перечислению за",
+        "сумма к перечислению",
+        "вайлдберриз к перечислению",
+        "wildberries_amount",
+        "forpay",
+        "payout_amount",
+        "к начислению",
+    ),
+    "sale_price": (
+        "продажа (ррц)",
+        "цена розничная с учетом согласованной скидки",
+        "розничная с согласованной",
+        "ррц",
+        "retail_price",
+        "retail amount",
     ),
     "cost": ("себестоимость", "себес", "закупка", "cost", "supplier_price"),
     "delivery": (
@@ -508,8 +535,25 @@ WB_COLUMN_SYNONYMS: dict[str, tuple[str, ...]] = {
         "обоснование для оплаты",
         "тип транзакции",
         "doc_type_name",
+        "тип обоснования",
         "обоснован",
     ),
+}
+
+# Публичные ключи как в интеграциях / ЛК WB (алиасы семантических полей).
+COLUMN_SYNONYMS: dict[str, tuple[str, ...]] = {
+    "sku": WB_COLUMN_SYNONYMS["sku"],
+    "rrc_price": WB_COLUMN_SYNONYMS["retail_price"],
+    "payout": WB_COLUMN_SYNONYMS["payout_price"],
+    "delivery": WB_COLUMN_SYNONYMS["delivery"],
+    "return_delivery": WB_COLUMN_SYNONYMS["return_delivery"],
+    "op_type": WB_COLUMN_SYNONYMS["operation_type"],
+}
+
+_COLUMN_KEY_ALIASES: dict[str, str] = {
+    "rrc_price": "retail_price",
+    "payout": "payout_price",
+    "op_type": "operation_type",
 }
 
 _WB_QTY_UNIT_HINTS = ("шт", "кол-во", "количество", "единиц")
@@ -531,6 +575,7 @@ def find_column_index(
 
     Возвращает индекс или ``None`` (вызывающий код инициализирует нулями).
     """
+    key_name = _COLUMN_KEY_ALIASES.get(key_name, key_name)
     synonyms = WB_COLUMN_SYNONYMS.get(key_name, ())
     if not synonyms:
         return None
@@ -565,6 +610,556 @@ def compute_buyout_coef_pct(sales_qty: float, returns_qty: float) -> float:
     if sales > 0:
         return 100.0
     return 0.0
+
+
+def _round_money(value: float) -> float:
+    return round(float(value), 2)
+
+
+@dataclass
+class CfoSkuBucket:
+    """Поартикульный агрегат CFO Engine v11.1."""
+
+    name: str
+    article_id: str
+    gross_sales_rrc: float = 0.0
+    sales_qty: float = 0.0
+    returns_qty: float = 0.0
+    deliveries_qty: float = 0.0
+    commission: float = 0.0
+    forward_logistics: float = 0.0
+    reverse_logistics: float = 0.0
+    cost_rub: float = 0.0
+    stock_qty: float = 0.0
+
+    @property
+    def revenue(self) -> float:
+        return self.gross_sales_rrc
+
+    @property
+    def direct_expenses_rub(self) -> float:
+        return self.commission + self.forward_logistics + self.reverse_logistics
+
+    @property
+    def margin_rub(self) -> float:
+        return self.gross_sales_rrc - self.cost_rub - self.direct_expenses_rub
+
+    @property
+    def logistics(self) -> float:
+        return self.forward_logistics + self.reverse_logistics
+
+    @property
+    def buyout_pct(self) -> float:
+        return compute_buyout_coef_pct(self.sales_qty, self.returns_qty)
+
+
+@dataclass
+class CfoEngineResult:
+    """Итог CFO Engine v11.1: налоговая база, корзины затрат, чистая прибыль."""
+
+    kind: str
+    tax_base_revenue: float
+    tax_total: float
+    total_sku_margin: float
+    total_storage_cost: float
+    total_system_losses: float
+    total_ad_spend: float
+    credit_deductions: float
+    clear_profit: float
+    sales_qty: float
+    returns_qty: float
+    buyout_coef_pct: float
+    sku_buckets: dict[tuple[str, str], CfoSkuBucket]
+    retail_price_source: str = "rrc"
+
+    @property
+    def commission_cost(self) -> float:
+        return _round_money(sum(b.commission for b in self.sku_buckets.values()))
+
+    @property
+    def logistics_cost(self) -> float:
+        return _round_money(
+            sum(b.forward_logistics + b.reverse_logistics for b in self.sku_buckets.values())
+        )
+
+    @property
+    def cost_of_goods(self) -> float:
+        return _round_money(sum(b.cost_rub for b in self.sku_buckets.values()))
+
+    @property
+    def operational_profit(self) -> float:
+        return _round_money(
+            self.total_sku_margin - self.total_storage_cost - self.total_ad_spend - self.tax_total
+        )
+
+
+@dataclass(frozen=True)
+class _CfoTxColumns:
+    doc_type: int | None
+    justification: int | None
+    name: int | None
+    article: int | None
+    qty: int | None
+    retail_price: int | None
+    payout_price: int | None
+    forward_logistics: int | None
+    reverse_logistics: int | None
+    commission: int | None
+    cost: int | None
+    stock: int | None
+
+
+def _cfo_cell(row: list[str], col: int | None) -> str:
+    if col is None or col >= len(row):
+        return ""
+    return str(row[col] or "").strip()
+
+
+def _cfo_row_blob(row: list[str], cols: _CfoTxColumns) -> str:
+    return " ".join(
+        part
+        for part in (
+            _cfo_cell(row, cols.doc_type),
+            _cfo_cell(row, cols.justification),
+        )
+        if part
+    ).lower()
+
+
+def classify_cfo_tx_row(blob: str, *, doc_type: str = "") -> str:
+    """Классификация строки детализации WB для CFO Engine v11.1."""
+    text = f"{doc_type} {blob}".lower().strip()
+    if not text:
+        return "skip"
+    if "утилизац" in text:
+        return "utilization"
+    if "платная приемка" in text or "платная приёмка" in text:
+        return "acceptance"
+    if "хранен" in text or "стоимость хранения" in text:
+        return "storage"
+    if any(k in text for k in ("кредит", "взыскан", "честный знак")):
+        return "system_loss"
+    if "штраф" in text and "кредит" not in text:
+        return "system_loss"
+    if any(k in text for k in ("реклам", "продвижен", "трафарет", "спецразмещ", "медийн", "буст")):
+        return "ad"
+    if "сторно" in text:
+        return "storno"
+    if "отмена" in text:
+        return "cancel"
+    if "корректировк" in text and "продаж" in text:
+        return "sale_adjustment"
+    doc = (doc_type or "").lower().strip()
+    if doc == "продажа" or text.startswith("продажа"):
+        return "sale"
+    if "возврат" in text and "логистик" not in text:
+        return "return"
+    if any(k in text for k in ("удержан", "штраф")) and "кредит" not in text:
+        if any(k in text for k in ("реклам", "продвижен")):
+            return "ad"
+        return "system_loss"
+    if any(k in text for k in ("логистик", "доставк", "перевоз")) and "хранен" not in text:
+        if "обратн" in text or "от клиента" in text or ("возврат" in text and "логистик" in text):
+            return "reverse_logistics"
+        return "forward_logistics"
+    if any(k in text for k in ("вознагражден", "комисс")):
+        return "commission"
+    return "other"
+
+
+def _resolve_cfo_tx_columns(headers: list[str]) -> _CfoTxColumns | None:
+    from services.wb_transaction_parse import is_wb_transaction_report
+
+    if not is_wb_transaction_report(headers):
+        return None
+    lowered = [_normalize_column_header(h) for h in headers]
+
+    def _find(*patterns: str, exclude: tuple[str, ...] = ()) -> int | None:
+        for idx, header in enumerate(lowered):
+            if not header:
+                continue
+            if exclude and any(ex in header for ex in exclude):
+                continue
+            if any(p in header for p in patterns):
+                return idx
+        return None
+
+    doc_type = find_column_index(headers, "operation_type")
+    if doc_type is None:
+        doc_type = _find("тип документа")
+    retail_price = find_column_index(headers, "retail_price")
+    payout_price = find_column_index(headers, "payout_price")
+    if payout_price is None:
+        payout_price = _find("к перечислению", "перечислению продавцу", "перечислению за")
+    reverse_logistics = find_column_index(headers, "return_delivery")
+    forward_logistics = find_column_index(headers, "delivery", exclude_substrings=("хранен",))
+    if forward_logistics is None:
+        forward_logistics = _find("услуги по доставке", "логистик", "доставк", exclude=("хранен", "обратн", "возврат"))
+    return _CfoTxColumns(
+        doc_type=doc_type,
+        justification=_find("обоснован"),
+        name=_find("предмет", "наименование", "номенклатур", "бренд", "товар"),
+        article=_find("артикул", "vendor", "sku", "barcode", "nmid", "штрих"),
+        qty=_find("кол-во", "количество", "кол во", exclude=("возврат", "доставк", "заказ"))
+        or _find("кол"),
+        retail_price=retail_price,
+        payout_price=payout_price,
+        forward_logistics=forward_logistics,
+        reverse_logistics=reverse_logistics,
+        commission=_find("вознагражден", "комисс"),
+        cost=find_column_index(headers, "cost"),
+        stock=_find("остаток", "склад", "stock"),
+    )
+
+
+def _row_retail_amount(row: list[str], cols: _CfoTxColumns) -> tuple[float, str]:
+    """Сумма продажи для налоговой базы: строго РРЦ, иначе fallback на перечисление."""
+    if cols.retail_price is not None and cols.retail_price < len(row):
+        val = safe_float(row[cols.retail_price])
+        if val != 0:
+            return val, "rrc"
+    if cols.payout_price is not None and cols.payout_price < len(row):
+        val = safe_float(row[cols.payout_price])
+        if val != 0:
+            return val, "payout_fallback"
+    return 0.0, "missing"
+
+
+def _row_direct_amount(row: list[str], col: int | None) -> float:
+    if col is None or col >= len(row):
+        return 0.0
+    return abs(safe_float(row[col]))
+
+
+def _cfo_sku_identity(row: list[str], cols: _CfoTxColumns) -> tuple[str, str]:
+    name = _cfo_cell(row, cols.name) or _cfo_cell(row, cols.article) or "—"
+    article = _cfo_cell(row, cols.article) or name
+    return name[:64], article[:48]
+
+
+def _cfo_get_bucket(
+    buckets: dict[tuple[str, str], CfoSkuBucket],
+    name: str,
+    article: str,
+) -> CfoSkuBucket:
+    key = (name, article)
+    bucket = buckets.get(key)
+    if bucket is None:
+        bucket = CfoSkuBucket(name=name, article_id=article)
+        buckets[key] = bucket
+    return bucket
+
+
+def _finalize_cfo_engine(
+    *,
+    kind: str,
+    buckets: dict[tuple[str, str], CfoSkuBucket],
+    tax_base_revenue: float,
+    total_storage_cost: float,
+    total_system_losses: float,
+    total_ad_spend: float,
+    credit_deductions: float,
+    sales_qty: float,
+    returns_qty: float,
+    retail_price_source: str,
+    tax_preset: object | None = None,
+) -> CfoEngineResult:
+    from services.audit_tax import compute_audit_tax_total, default_wb_audit_tax_preset
+    from services.wb_transaction_parse import is_valid_wb_sku
+
+    preset = tax_preset or default_wb_audit_tax_preset()
+    buckets = {
+        key: bucket
+        for key, bucket in buckets.items()
+        if is_valid_wb_sku(bucket.name, bucket.article_id)
+    }
+    revenue_rrc = _round_money(max(0.0, tax_base_revenue))
+    total_sku_margin = _round_money(sum(b.margin_rub for b in buckets.values()))
+    _tax_base, tax_total = compute_audit_tax_total(
+        preset=preset,
+        tax_base_revenue=revenue_rrc,
+        total_sku_margin=total_sku_margin,
+    )
+    clear_profit = _round_money(
+        total_sku_margin - total_storage_cost - total_system_losses - tax_total
+    )
+    buyout = compute_buyout_coef_pct(sales_qty, returns_qty)
+    return CfoEngineResult(
+        kind=kind,
+        tax_base_revenue=revenue_rrc,
+        tax_total=tax_total,
+        total_sku_margin=total_sku_margin,
+        total_storage_cost=_round_money(total_storage_cost),
+        total_system_losses=_round_money(total_system_losses),
+        total_ad_spend=_round_money(total_ad_spend),
+        credit_deductions=_round_money(credit_deductions),
+        clear_profit=clear_profit,
+        sales_qty=_round_money(sales_qty),
+        returns_qty=_round_money(returns_qty),
+        buyout_coef_pct=round(buyout, 1),
+        sku_buckets=buckets,
+        retail_price_source=retail_price_source,
+    )
+
+
+def _aggregate_cfo_transactions(
+    matrix: list[list[str]],
+    *,
+    tax_preset: object | None = None,
+) -> CfoEngineResult | None:
+    cols = _resolve_cfo_tx_columns(matrix[0])
+    if cols is None:
+        return None
+
+    buckets: dict[tuple[str, str], CfoSkuBucket] = {}
+    tax_base_revenue = 0.0
+    total_storage_cost = 0.0
+    total_system_losses = 0.0
+    total_ad_spend = 0.0
+    credit_deductions = 0.0
+    sales_qty = 0.0
+    returns_qty = 0.0
+    retail_sources: set[str] = set()
+
+    for row in matrix[1:]:
+        blob = _cfo_row_blob(row, cols)
+        doc_type = _cfo_cell(row, cols.doc_type)
+        kind = classify_cfo_tx_row(blob, doc_type=doc_type)
+        if kind == "skip":
+            continue
+
+        retail_amount, src = _row_retail_amount(row, cols)
+        if src != "missing":
+            retail_sources.add(src)
+        qty = abs(safe_float(row[cols.qty])) if cols.qty is not None and cols.qty < len(row) else 0.0
+        loss_amount = _row_direct_amount(row, cols.payout_price) or abs(retail_amount)
+        if kind in ("storage", "acceptance", "utilization"):
+            total_storage_cost += loss_amount or _row_direct_amount(row, cols.commission)
+            continue
+        if kind == "ad":
+            total_ad_spend += loss_amount
+            continue
+        if kind == "system_loss":
+            total_system_losses += loss_amount
+            if "кредит" in blob or "кредит" in doc_type.lower():
+                credit_deductions += loss_amount
+            continue
+
+        name, article = _cfo_sku_identity(row, cols)
+        from services.wb_transaction_parse import is_valid_wb_sku
+
+        has_sku = is_valid_wb_sku(name, article)
+        bucket = _cfo_get_bucket(buckets, name, article) if has_sku else None
+
+        if kind in ("sale", "sale_adjustment"):
+            signed = abs(retail_amount) if retail_amount else loss_amount
+            unit_qty = qty if qty > 0 else (1.0 if signed > 0 else 0.0)
+            if has_sku and bucket is not None:
+                bucket.gross_sales_rrc += signed
+                bucket.sales_qty += unit_qty
+                bucket.deliveries_qty += unit_qty
+                bucket.forward_logistics += _row_direct_amount(row, cols.forward_logistics)
+                bucket.reverse_logistics += _row_direct_amount(row, cols.reverse_logistics)
+                bucket.commission += _row_direct_amount(row, cols.commission)
+                if cols.cost is not None and cols.cost < len(row):
+                    bucket.cost_rub += abs(safe_float(row[cols.cost]))
+                if cols.stock is not None and cols.stock < len(row):
+                    bucket.stock_qty = max(bucket.stock_qty, max(0.0, safe_float(row[cols.stock])))
+            tax_base_revenue += signed
+            sales_qty += unit_qty
+            continue
+
+        if kind in ("return", "storno", "cancel"):
+            signed = abs(retail_amount) if retail_amount else loss_amount
+            unit_qty = qty if qty > 0 else (1.0 if signed > 0 else 0.0)
+            if has_sku and bucket is not None:
+                bucket.gross_sales_rrc -= signed
+                bucket.returns_qty += unit_qty
+                bucket.forward_logistics += _row_direct_amount(row, cols.forward_logistics)
+                bucket.reverse_logistics += _row_direct_amount(row, cols.reverse_logistics)
+                bucket.commission += _row_direct_amount(row, cols.commission)
+            tax_base_revenue -= signed
+            returns_qty += unit_qty
+            continue
+
+        if kind == "forward_logistics":
+            amount = _row_direct_amount(row, cols.forward_logistics) or loss_amount
+            if has_sku and bucket is not None:
+                bucket.forward_logistics += amount
+            continue
+        if kind == "reverse_logistics":
+            amount = _row_direct_amount(row, cols.reverse_logistics) or loss_amount
+            if has_sku and bucket is not None:
+                bucket.reverse_logistics += amount
+            continue
+        if kind == "commission":
+            amount = _row_direct_amount(row, cols.commission) or loss_amount
+            if has_sku and bucket is not None:
+                bucket.commission += amount
+            continue
+
+    retail_source = "rrc" if "rrc" in retail_sources else (
+        "payout_fallback" if "payout_fallback" in retail_sources else "missing"
+    )
+    return _finalize_cfo_engine(
+        kind="transaction",
+        buckets=buckets,
+        tax_base_revenue=tax_base_revenue,
+        total_storage_cost=total_storage_cost,
+        total_system_losses=total_system_losses,
+        total_ad_spend=total_ad_spend,
+        credit_deductions=credit_deductions,
+        sales_qty=sales_qty,
+        returns_qty=returns_qty,
+        retail_price_source=retail_source,
+        tax_preset=tax_preset,
+    )
+
+
+def _aggregate_cfo_matrix(
+    matrix: list[list[str]],
+    *,
+    platform: str | None,
+    tax_preset: object | None = None,
+) -> CfoEngineResult | None:
+    from services.marketplace_platform import get_marketplace_profile
+    from services.wb_transaction_parse import is_valid_wb_sku
+
+    if not matrix or len(matrix) < 2:
+        return None
+    profile = get_marketplace_profile(platform)
+    headers = matrix[0]
+
+    name_col = _matrix_col(headers, ("предмет", "наименование", "номенклатур", "бренд", "товар")) or 0
+    article_col = _matrix_col(headers, _WB_ARTICLE_HINTS)
+    retail_col = find_column_index(headers, "retail_price")
+    payout_col = find_column_index(headers, "payout_price")
+    if retail_col is None:
+        retail_col = _matrix_col(headers, profile.revenue_hints)
+    sales_col = _matrix_col(headers, profile.sales_hints, require_qty=True) or _matrix_col(
+        headers, profile.sales_hints
+    )
+    del_col = _matrix_col(headers, profile.delivery_hints, require_qty=True) or _matrix_col(
+        headers, profile.delivery_hints
+    )
+    ret_col = _matrix_col(headers, profile.return_hints, require_qty=True) or _matrix_col(
+        headers, profile.return_hints
+    )
+    comm_col = _matrix_col(headers, profile.commission_hints)
+    return_log_cols = _matrix_return_logistics_cols(headers)
+    forward_log_col = find_column_index(headers, "delivery", exclude_substrings=("хранен",))
+    if forward_log_col is None:
+        forward_log_col = _matrix_forward_logistics_col(headers, return_log_cols)
+    cost_col = find_column_index(headers, "cost") or _matrix_col(headers, _MATRIX_COST_HINTS)
+    stock_col = _matrix_col(headers, profile.stock_hints)
+    ad_cols = [
+        idx
+        for idx, h in enumerate(headers)
+        if any(x in (h or "").lower() for x in profile.ad_hints)
+        and "кредит" not in (h or "").lower()
+        and "хранен" not in (h or "").lower()
+    ]
+
+    buckets: dict[tuple[str, str], CfoSkuBucket] = {}
+    tax_base_revenue = 0.0
+    total_ad_spend = 0.0
+    retail_sources: set[str] = set()
+
+    for row in matrix[1:]:
+        name, article = _row_sku_identity(row, name_col=name_col, article_col=article_col)
+        if _is_total_row(name) or not is_valid_wb_sku(name, article):
+            continue
+        bucket = _cfo_get_bucket(buckets, name, article)
+
+        retail_val = 0.0
+        if retail_col is not None and retail_col < len(row):
+            retail_val = safe_float(row[retail_col])
+            if retail_val != 0:
+                retail_sources.add("rrc")
+        if retail_val == 0 and payout_col is not None and payout_col < len(row):
+            retail_val = safe_float(row[payout_col])
+            if retail_val != 0:
+                retail_sources.add("payout_fallback")
+        if retail_val > 0:
+            bucket.gross_sales_rrc += retail_val
+            tax_base_revenue += retail_val
+
+        if sales_col is not None and sales_col < len(row):
+            bucket.sales_qty += safe_float(row[sales_col])
+        if del_col is not None and del_col < len(row):
+            bucket.deliveries_qty += safe_float(row[del_col])
+        if ret_col is not None and ret_col < len(row):
+            bucket.returns_qty += safe_float(row[ret_col])
+        if comm_col is not None and comm_col < len(row):
+            bucket.commission += abs(safe_float(row[comm_col]))
+        if forward_log_col is not None and forward_log_col < len(row):
+            low_hdr = (headers[forward_log_col] or "").lower()
+            if "хранен" not in low_hdr:
+                bucket.forward_logistics += abs(safe_float(row[forward_log_col]))
+        for rl_col in return_log_cols:
+            if rl_col < len(row):
+                bucket.reverse_logistics += abs(safe_float(row[rl_col]))
+        if cost_col is not None and cost_col < len(row):
+            bucket.cost_rub += abs(safe_float(row[cost_col]))
+        if stock_col is not None and stock_col < len(row):
+            bucket.stock_qty += max(0.0, safe_float(row[stock_col]))
+
+    if not buckets:
+        return None
+
+    if total_ad_spend <= 0:
+        for ac in ad_cols:
+            for row in matrix[1:]:
+                if ac < len(row):
+                    total_ad_spend += abs(safe_float(row[ac]))
+
+    sales_qty = sum(b.sales_qty for b in buckets.values())
+    returns_qty = sum(b.returns_qty for b in buckets.values())
+    if returns_qty > 0:
+        deliveries_qty = sum(b.deliveries_qty for b in buckets.values())
+        if deliveries_qty > 0:
+            returns_qty = min(returns_qty, deliveries_qty)
+        if sales_qty > 0:
+            returns_qty = min(returns_qty, sales_qty * 2.0)
+
+    retail_source = "rrc" if "rrc" in retail_sources else (
+        "payout_fallback" if "payout_fallback" in retail_sources else "missing"
+    )
+    return _finalize_cfo_engine(
+        kind="matrix",
+        buckets=buckets,
+        tax_base_revenue=tax_base_revenue,
+        total_storage_cost=0.0,
+        total_system_losses=0.0,
+        total_ad_spend=total_ad_spend,
+        credit_deductions=0.0,
+        sales_qty=sales_qty,
+        returns_qty=returns_qty,
+        retail_price_source=retail_source,
+        tax_preset=tax_preset,
+    )
+
+
+def aggregate_cfo_engine_v11_1(
+    matrix: list[list[str]],
+    *,
+    platform: str | None = None,
+    tax_preset_id: str | None = None,
+) -> CfoEngineResult | None:
+    """
+    CFO Engine v11.1 — единая математическая модель агрегации WB/Ozon xlsx.
+
+    Налоговая база — РРЦ; прямые расходы SKU; хранение и системные потери — глобально.
+    """
+    from services.audit_tax import resolve_audit_tax_preset
+
+    if not matrix or len(matrix) < 2:
+        return None
+    preset = resolve_audit_tax_preset(tax_preset_id)
+    tx = _aggregate_cfo_transactions(matrix, tax_preset=preset)
+    if tx is not None and (tx.sku_buckets or tx.total_storage_cost or tx.total_system_losses):
+        return tx
+    return _aggregate_cfo_matrix(matrix, platform=platform, tax_preset=preset)
 
 
 _TOP_A_SHARE = 0.20
@@ -768,12 +1363,12 @@ class _SkuBucket:
 
     @property
     def net_profit(self) -> float:
+        """Маржа SKU = продажи − себестоимость − прямые расходы (комиссия + логистика)."""
         return (
             self.revenue
             - self.commission
             - self.logistics
-            - self.ad_cost
-            - self.extra_cost
+            - self.return_logistics_rub
             - self.cost_rub
         )
 
@@ -985,25 +1580,10 @@ def compute_seller_matrix_etl(
                 returns_qty=sm.returns_qty,
                 logistics=sm.logistics,
                 commission=sm.commission,
-                ad_cost=sm.ad_cost,
-                extra_cost=sm.extra_cost,
                 cost_rub=sm.cost_rub,
                 stock_qty=sm.stock_qty,
                 return_logistics_rub=sm.return_logistics_rub,
             )
-        if report.kind == "matrix":
-            return_log_cols = _matrix_return_logistics_cols(headers)
-            name_col, article_col = _matrix_name_and_article_cols(headers)
-            for row in rows[1:]:
-                name, article_id = _row_sku_identity(row, name_col=name_col, article_col=article_col)
-                if not is_valid_wb_sku(name, article_id):
-                    continue
-                bucket = buckets.get((name, article_id))
-                if bucket is None:
-                    continue
-                for rl_col in return_log_cols:
-                    if rl_col < len(row):
-                        bucket.return_logistics_rub += abs(safe_float(row[rl_col]))
     else:
         for row in rows[1:]:
             name, article_id = _row_sku_identity(row, name_col=name_col, article_col=article_col)
@@ -1199,59 +1779,186 @@ def _format_sku_label_for_json(name: str, article_id: str) -> str:
     return name
 
 
+def _load_cfo_matrix_from_path(file_path: str) -> list[list[str]]:
+    """Читает .xlsx / .csv с диска в матрицу строк (потоково для Excel)."""
+    import csv
+
+    path = Path(file_path)
+    suffix = path.suffix.lower()
+    if suffix == ".csv":
+        for encoding in ("utf-8-sig", "utf-8", "cp1251"):
+            try:
+                with path.open("r", encoding=encoding, newline="") as fh:
+                    reader = csv.reader(fh)
+                    rows: list[list[str]] = []
+                    for i, row in enumerate(reader):
+                        if i >= 5000:
+                            break
+                        cells = [str(c).strip() for c in row]
+                        if any(cells):
+                            rows.append(cells)
+                    if rows:
+                        return rows
+            except UnicodeDecodeError:
+                continue
+        return []
+    return read_xlsx_rows_from_path(path)
+
+
+def _cfo_engine_to_sku_data(engine: CfoEngineResult) -> dict[str, dict[str, float | int]]:
+    """Словарь поартикульных метрик (формат интеграций CFO)."""
+    out: dict[str, dict[str, float | int]] = {}
+    for _key, bucket in engine.sku_buckets.items():
+        sku = (bucket.article_id or bucket.name or "").strip()
+        if not sku or sku == "—" or len(sku) < 2:
+            continue
+        payout_est = bucket.gross_sales_rrc - bucket.commission
+        out[sku] = {
+            "sales_count": int(bucket.sales_qty),
+            "returns_count": int(bucket.returns_qty),
+            "rrc_revenue": _round_money(bucket.gross_sales_rrc),
+            "payout": _round_money(payout_est),
+            "delivery": _round_money(bucket.logistics),
+            "stock": int(bucket.stock_qty),
+        }
+    return out
+
+
+def _cfo_oos_lists_from_etl(
+    etl: SellerMatrixEtl | None,
+    *,
+    critical_days: int = 4,
+) -> tuple[list[str], list[dict[str, object]]]:
+    """OOS: нулевой остаток и критический запас (дней до обнуления)."""
+    if etl is None:
+        return [], []
+    zero_stock: list[str] = []
+    critical: list[dict[str, object]] = []
+    for forecast in etl.oos_forecasts:
+        if forecast.stock_qty <= 0 and forecast.sales_period_qty > 0:
+            zero_stock.append(forecast.label)
+            continue
+        days = forecast.days_until_stockout
+        if (
+            forecast.stock_qty > 0
+            and days is not None
+            and days <= critical_days
+        ):
+            critical.append({"sku": forecast.label, "days": int(days)})
+    critical.sort(key=lambda item: int(item["days"]))  # type: ignore[arg-type]
+    return zero_stock, critical
+
+
+def build_cfo_metrics_dict_from_rows(
+    rows: list[list[str]],
+    audit_platform: str,
+    tax_type: str,
+    tax_rate: float,
+) -> dict[str, object]:
+    """CFO Engine v11.1: матрица строк → метрики с динамическим налогом."""
+    from services.audit_tax import preset_from_regime_rate
+
+    if not rows or len(rows) < 2:
+        return {
+            "error": "empty_file",
+            "cfo_build": _CFO_BUILD,
+            "tax_type": tax_type,
+            "tax_rate": tax_rate,
+        }
+
+    preset = preset_from_regime_rate(tax_type, tax_rate)
+    engine = aggregate_cfo_engine_v11_1(
+        rows,
+        platform=audit_platform,
+        tax_preset_id=preset.id,
+    )
+    if engine is None:
+        return {
+            "error": "unparsed_report",
+            "cfo_build": _CFO_BUILD,
+            "tax_type": tax_type,
+            "tax_rate": tax_rate,
+        }
+
+    revenue = engine.tax_base_revenue
+    etl = compute_seller_matrix_etl(rows, revenue_total=revenue, platform=audit_platform)
+    sku_data = _cfo_engine_to_sku_data(engine)
+    oos_zero, oos_critical = _cfo_oos_lists_from_etl(etl)
+    margin_pct = (
+        round(engine.clear_profit / revenue * 100.0, 2) if revenue > 0 else 0.0
+    )
+
+    return {
+        "cfo_build": _CFO_BUILD,
+        "engine": CFO_ENGINE_NAME,
+        "tax_type": preset.regime,
+        "tax_rate": preset.rate_percent,
+        "total_revenue": revenue,
+        "tax_total": engine.tax_total,
+        "net_profit": engine.clear_profit,
+        "margin_pct": margin_pct,
+        "sku_data": sku_data,
+        "total_storage_cost": engine.total_storage_cost,
+        "total_system_losses": engine.total_system_losses,
+        "total_sku_margin": engine.total_sku_margin,
+        "oos_zero_stock_items": oos_zero,
+        "oos_critical_sku": oos_critical,
+    }
+
+
+def sync_table_cfo_processing_worker(
+    file_path: str,
+    audit_platform: str,
+    table_subrole: str,
+    tax_type: str,
+    tax_rate: float,
+) -> dict[str, object]:
+    """
+    Высокоскоростной бухгалтерский ETL-парсер ядра CFO Engine v11.1.
+
+    Читает xlsx/csv с диска, агрегирует транзакции WB и возвращает метрики
+    с динамическим налогом (``tax_type`` / ``tax_rate`` из FSM аудита).
+    """
+    _ = table_subrole  # зарезервировано для ветвления подролей table_generator
+    rows = _load_cfo_matrix_from_path(file_path)
+    return build_cfo_metrics_dict_from_rows(rows, audit_platform, tax_type, tax_rate)
+
+
 def build_final_metrics_json(
     rows: list[list[str]],
     *,
     revenue_total: float,
     platform: str | None = None,
+    tax_preset_id: str | None = None,
 ) -> dict[str, Any]:
     """
-    Гибридный ETL cfo-v10: все математические метрики в Python.
+    CFO Engine v11.1: все математические метрики в Python.
 
     OpenRouter получает только этот JSON — без пересчёта на стороне LLM.
     """
-    from services.wb_report_parser import parse_wb_report
-
     if revenue_total <= 0 or not rows or len(rows) < 2:
-        return {"error": "empty_or_no_revenue", "cfo_build": _CFO_BUILD}
+        return {"error": "empty_or_no_revenue", "cfo_build": _CFO_BUILD, "engine": CFO_ENGINE_NAME}
 
-    report = parse_wb_report(rows, platform=platform)
+    engine = aggregate_cfo_engine_v11_1(
+        rows, platform=platform, tax_preset_id=tax_preset_id
+    )
     etl = compute_seller_matrix_etl(rows, revenue_total=revenue_total, platform=platform)
 
-    if report is not None:
-        sales_qty = report.sales_qty
-        returns_qty = report.returns_qty
-        buyout_coef_pct = report.buyout_coef_pct
-        ad_spend = report.ad_spend
-        storage_cost = report.storage_cost
-        credit_deductions = report.credit_deductions
-        logistics_cost = report.logistics_cost
-        commission_cost = report.commission_cost
-        other_deductions = report.other_deductions
-        cost_of_goods = report.cost_of_goods
-    else:
-        sales_qty = returns_qty = 0.0
-        buyout_coef_pct = ad_spend = storage_cost = 0.0
-        credit_deductions = logistics_cost = commission_cost = other_deductions = 0.0
-        cost_of_goods = 0.0
+    if engine is None:
+        return {"error": "unparsed_report", "cfo_build": _CFO_BUILD, "engine": CFO_ENGINE_NAME}
 
-    tax_usn = round(revenue_total * _USN_RATE, 2)
-    operational_profit = round(
-        revenue_total
-        - cost_of_goods
-        - storage_cost
-        - ad_spend
-        - logistics_cost
-        - commission_cost
-        - other_deductions
-        - tax_usn,
-        2,
-    )
-    clear_profit = round(operational_profit - credit_deductions, 2)
+    tax_base = engine.tax_base_revenue if engine.tax_base_revenue > 0 else revenue_total
+    tax_usn = engine.tax_total if engine.tax_total > 0 else _round_money(tax_base * _USN_RATE)
+    clear_profit = engine.clear_profit
+    operational_profit = engine.operational_profit
     margin_rate = (
-        round(clear_profit / revenue_total * 100.0, 1) if revenue_total > 0 else 0.0
+        round(clear_profit / tax_base * 100.0, 1) if tax_base > 0 else 0.0
     )
-    drr_pct = round(ad_spend / revenue_total * 100.0, 1) if revenue_total > 0 and ad_spend > 0 else 0.0
+    drr_pct = (
+        round(engine.total_ad_spend / tax_base * 100.0, 1)
+        if tax_base > 0 and engine.total_ad_spend > 0
+        else 0.0
+    )
 
     sku_rows: list[dict[str, Any]] = []
     group_a: list[str] = []
@@ -1288,24 +1995,31 @@ def build_final_metrics_json(
 
     return {
         "cfo_build": _CFO_BUILD,
-        "parser": "wb_final_metrics_v10",
+        "engine": CFO_ENGINE_NAME,
+        "parser": "wb_final_metrics_v11_1",
+        "retail_price_source": engine.retail_price_source,
         "shop": {
-            "total_revenue": round(revenue_total, 2),
+            "total_revenue": round(tax_base, 2),
+            "tax_base_revenue": round(tax_base, 2),
             "tax_usn": tax_usn,
+            "tax_total": tax_usn,
             "clear_profit": clear_profit,
             "operational_profit": operational_profit,
+            "total_sku_margin": engine.total_sku_margin,
             "margin_rate_pct": margin_rate,
-            "buyout_coef_pct": round(buyout_coef_pct, 1),
+            "buyout_coef_pct": round(engine.buyout_coef_pct, 1),
             "drr_pct": drr_pct,
-            "storage_cost": round(storage_cost, 2),
-            "credit_deductions": round(credit_deductions, 2),
-            "penalties_and_other_rub": round(other_deductions, 2),
-            "ad_spend": round(ad_spend, 2),
-            "logistics_cost": round(logistics_cost, 2),
-            "commission_cost": round(commission_cost, 2),
-            "cost_of_goods": round(cost_of_goods, 2),
-            "sales_qty": round(sales_qty, 2),
-            "returns_qty": round(returns_qty, 2),
+            "total_storage_cost": round(engine.total_storage_cost, 2),
+            "total_system_losses": round(engine.total_system_losses, 2),
+            "storage_cost": round(engine.total_storage_cost, 2),
+            "credit_deductions": round(engine.credit_deductions, 2),
+            "penalties_and_other_rub": round(engine.total_system_losses, 2),
+            "ad_spend": round(engine.total_ad_spend, 2),
+            "logistics_cost": engine.logistics_cost,
+            "commission_cost": engine.commission_cost,
+            "cost_of_goods": engine.cost_of_goods,
+            "sales_qty": round(engine.sales_qty, 2),
+            "returns_qty": round(engine.returns_qty, 2),
         },
         "sku_catalog": sku_rows,
         "abc_analysis": {
@@ -1314,13 +2028,20 @@ def build_final_metrics_json(
             "total_group_c_count": len(group_c),
         },
         "oos_predictions": oos_predictions,
-        "year_forecast_rub": round(revenue_total * 12, 0),
+        "year_forecast_rub": round(tax_base * 12, 0),
     }
 
 
 __all__ = (
     "WB_COLUMN_SYNONYMS",
+    "COLUMN_SYNONYMS",
+    "CFO_ENGINE_NAME",
+    "CfoEngineResult",
+    "CfoSkuBucket",
+    "aggregate_cfo_engine_v11_1",
     "build_final_metrics_json",
+    "build_cfo_metrics_dict_from_rows",
+    "sync_table_cfo_processing_worker",
     "compute_buyout_coef_pct",
     "find_column_index",
     "compress_extracted_text",

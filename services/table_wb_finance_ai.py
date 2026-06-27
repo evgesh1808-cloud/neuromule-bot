@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import json
 import logging
 import re
@@ -1218,6 +1219,7 @@ def build_wb_mpstats_ai_context(
     *,
     revenue_total: float,
     platform: str | None = "wildberries",
+    tax_preset_id: str | None = None,
 ) -> dict[str, Any]:
     """
     MPSTATS-стиль JSON для OpenRouter: гибридный ETL cfo-v10.
@@ -1234,6 +1236,7 @@ def build_wb_mpstats_ai_context(
         matrix_rows,
         revenue_total=revenue_total,
         platform=platform,
+        tax_preset_id=tax_preset_id,
     )
     if final_metrics.get("error"):
         return final_metrics
@@ -1245,6 +1248,7 @@ def build_wb_mpstats_ai_context(
         wb_metrics,
         matrix_rows=matrix_rows,
         platform=platform,
+        tax_preset_id=tax_preset_id,
     )
 
     ballast, non_liquid = _extract_problem_zones_structured(etl)
@@ -1356,15 +1360,32 @@ def _build_local_wb_finance_html(
     *,
     matrix_rows: list[list[str]] | None = None,
     platform: str | None = None,
+    tax_preset_id: str | None = None,
 ) -> str | None:
     """Гарантированный локальный CFO-отчёт (без OpenRouter)."""
     if revenue_total <= 0:
         return None
+    if matrix_rows and len(matrix_rows) >= 2:
+        from services.audit_tax import resolve_audit_tax_preset
+        from services.file_processor import build_cfo_metrics_dict_from_rows
+
+        preset = resolve_audit_tax_preset(tax_preset_id)
+        cfo_metrics = build_cfo_metrics_dict_from_rows(
+            matrix_rows,
+            platform or "wildberries",
+            preset.regime,
+            preset.rate_percent,
+        )
+        if not cfo_metrics.get("error"):
+            return append_wb_finance_mini_app_cta(
+                build_wb_finance_consulting_html_from_cfo_metrics(cfo_metrics)
+            )
     prompt_metrics = compute_wb_finance_prompt_metrics(
         revenue_total,
         wb_metrics,
         matrix_rows=matrix_rows,
         platform=platform,
+        tax_preset_id=tax_preset_id,
     )
     if prompt_metrics is None:
         return None
@@ -1661,7 +1682,7 @@ _WB_FINANCE_MAX_OUTPUT_TOKENS = 1400
 _WB_FINANCE_TELEGRAM_SOFT_MAX_CHARS = 2000
 _FINANCE_SEPARATOR = "────────────────────────"
 # Меняйте при каждом релизе CFO-шаблона — видно внизу отчёта для проверки деплоя.
-_FINANCE_REPORT_BUILD = "cfo-v11"
+_FINANCE_REPORT_BUILD = "cfo-v11.1"
 _OLD_FINALE_MARKERS = (
     "Финальный Excel",
     "интерактивный дашборд",
@@ -1962,12 +1983,13 @@ def compute_wb_finance_prompt_metrics(
     *,
     matrix_rows: list[list[str]] | None = None,
     platform: str | None = None,
+    tax_preset_id: str | None = None,
 ) -> WbFinancePromptMetrics | None:
     """Собирает переменные ETL для system/user prompt и локального fallback."""
     if revenue_total <= 0:
         return None
 
-    from services.file_processor import compute_seller_matrix_etl
+    from services.file_processor import aggregate_cfo_engine_v11_1, compute_seller_matrix_etl
 
     matrix_etl = (
         compute_seller_matrix_etl(
@@ -1978,12 +2000,26 @@ def compute_wb_finance_prompt_metrics(
         if matrix_rows
         else None
     )
+    engine = (
+        aggregate_cfo_engine_v11_1(
+            matrix_rows, platform=platform, tax_preset_id=tax_preset_id
+        )
+        if matrix_rows
+        else None
+    )
     storage_cost = wb_metrics.storage_cost if wb_metrics else 0.0
     credit_deductions = wb_metrics.credit_deductions if wb_metrics else 0.0
     ad_cost = wb_metrics.total_advertising_cost if wb_metrics else 0.0
     logistics_cost = wb_metrics.logistics_cost if wb_metrics else 0.0
     commission_cost = wb_metrics.commission_cost if wb_metrics else 0.0
     other_deductions = wb_metrics.other_deductions if wb_metrics else 0.0
+    if engine is not None:
+        storage_cost = engine.total_storage_cost
+        credit_deductions = engine.credit_deductions
+        ad_cost = engine.total_ad_spend
+        logistics_cost = engine.logistics_cost
+        commission_cost = engine.commission_cost
+        other_deductions = engine.total_system_losses
     cost_of_goods = 0.0
     if matrix_etl:
         for detail in matrix_etl.sku_catalog:
@@ -1991,19 +2027,28 @@ def compute_wb_finance_prompt_metrics(
                 cost_of_goods += detail.unit_cost_rub * detail.sales_qty
             elif detail.unit_cost_rub > 0:
                 cost_of_goods += detail.unit_cost_rub
-    tax = revenue_total * _USN_RATE
-    operational_profit = (
-        revenue_total
-        - cost_of_goods
-        - storage_cost
-        - ad_cost
-        - logistics_cost
-        - commission_cost
-        - other_deductions
-        - tax
+    tax_base = (
+        engine.tax_base_revenue
+        if engine is not None and engine.tax_base_revenue > 0
+        else revenue_total
     )
-    clear_profit = operational_profit - credit_deductions
-    profitability = (clear_profit / revenue_total * 100.0) if revenue_total > 0 else 0.0
+    tax = engine.tax_total if engine is not None else tax_base * _USN_RATE
+    if engine is not None:
+        operational_profit = engine.operational_profit
+        clear_profit = engine.clear_profit
+    else:
+        operational_profit = (
+            revenue_total
+            - cost_of_goods
+            - storage_cost
+            - ad_cost
+            - logistics_cost
+            - commission_cost
+            - other_deductions
+            - tax
+        )
+        clear_profit = operational_profit - credit_deductions
+    profitability = (clear_profit / tax_base * 100.0) if tax_base > 0 else 0.0
     adv_load = wb_metrics.ad_load_pct if wb_metrics else 0.0
     buy_ratio = wb_metrics.buyout_coef_pct if wb_metrics else 0.0
     worst_unit = None
@@ -2140,19 +2185,23 @@ def compute_wb_finance_prompt_metrics(
                 (d.unit_cost_rub * d.sales_qty if d.sales_qty > 0 else d.unit_cost_rub)
                 for d in matrix_etl.sku_catalog
             )
-            operational_profit = (
-                revenue_total
-                - cost_of_goods
-                - storage_cost
-                - ad_cost
-                - logistics_cost
-                - commission_cost
-                - other_deductions
-                - tax
-            )
-            clear_profit = round(operational_profit - credit_deductions, 2)
+            if engine is not None:
+                operational_profit = engine.operational_profit
+                clear_profit = engine.clear_profit
+            else:
+                operational_profit = (
+                    revenue_total
+                    - cost_of_goods
+                    - storage_cost
+                    - ad_cost
+                    - logistics_cost
+                    - commission_cost
+                    - other_deductions
+                    - tax
+                )
+                clear_profit = round(operational_profit - credit_deductions, 2)
             profitability = (
-                (clear_profit / revenue_total * 100.0) if revenue_total > 0 else 0.0
+                (clear_profit / tax_base * 100.0) if tax_base > 0 else 0.0
             )
             business_score = compute_business_score(
                 profitability_pct=profitability,
@@ -2744,6 +2793,209 @@ def _format_abc_a_leader_html(prompt_metrics: WbFinancePromptMetrics) -> list[st
     return lines
 
 
+def _cfo_metrics_health_band(
+    margin_pct: float,
+    *,
+    total_system_losses: float,
+    total_storage_cost: float,
+) -> tuple[float, str, str, str]:
+    """Индекс здоровья магазина из CFO-метрик (1–10, эмодзи, вывод, статус)."""
+    score = 10.0
+    emoji = "🟢"
+    conclusion = "Высокая маржинальность — фокус на масштабировании лидеров ассортимента."
+    if margin_pct < 10:
+        score -= 4.0
+        emoji = "🔴"
+        conclusion = (
+            "Критически низкая рентабельность — угроза кассового разрыва в ближайшем цикле."
+        )
+    elif margin_pct < 15:
+        score -= 1.0
+        emoji = "🟡"
+        conclusion = "Рентабельность ниже целевой — пересмотрите рекламу и складские издержки."
+    if total_system_losses > 1000 or total_storage_cost > 2000:
+        score -= 1.5
+    score = max(1.0, min(10.0, score))
+    if score >= 8.0:
+        status = "ВЫСОКИЙ УРОВЕНЬ"
+    elif score >= 5.0:
+        status = "СРЕДНИЙ УРОВЕНЬ"
+    else:
+        status = "КРИТИЧЕСКИЙ УРОВЕНЬ"
+    return score, emoji, conclusion, status
+
+
+def _pick_cfo_top_sku(sku_data: dict[str, dict[str, float | int]]) -> tuple[str, float]:
+    """Лидер группы A по выручке РРЦ и выкуп (%)."""
+    if not sku_data:
+        return "Товары не найдены", 0.0
+    top_sku = max(
+        sku_data,
+        key=lambda sku: float(sku_data[sku].get("rrc_revenue", 0.0)),
+    )
+    stats = sku_data[top_sku]
+    sales = int(stats.get("sales_count", 0))
+    returns = int(stats.get("returns_count", 0))
+    denom = sales + returns
+    buyout = (sales / denom * 100.0) if denom > 0 else 100.0
+    return top_sku, buyout
+
+
+def _fmt_cfo_pre_money(value: float) -> str:
+    return f"{float(value):,.2f}".replace(",", " ")
+
+
+def build_wb_finance_consulting_html_from_cfo_metrics(metrics: dict[str, object]) -> str:
+    """
+    Генерирует финальный HTML-отчёт CFO Engine v11.1 из словаря ``sync_table_cfo_processing_worker``.
+
+    Алиас для интеграций: ``generate_wb_finance_consulting_html(metrics)`` в документации.
+    """
+    if metrics.get("error"):
+        return (
+            f"<pre>❌ Не удалось построить CFO-отчёт: "
+            f"{html.escape(str(metrics.get('error')))}</pre>"
+        )
+
+    margin_pct = float(metrics.get("margin_pct", 0.0) or 0.0)
+    total_revenue = float(metrics.get("total_revenue", 0.0) or 0.0)
+    tax_total = float(metrics.get("tax_total", 0.0) or 0.0)
+    net_profit = float(metrics.get("net_profit", 0.0) or 0.0)
+    storage = float(metrics.get("total_storage_cost", 0.0) or 0.0)
+    system_losses = float(metrics.get("total_system_losses", 0.0) or 0.0)
+    tax_type = str(metrics.get("tax_type") or "USN")
+    tax_rate = float(metrics.get("tax_rate", 6.0) or 0.0)
+    sku_data = dict(metrics.get("sku_data") or {})
+    oos_zero = list(metrics.get("oos_zero_stock_items") or [])
+    oos_critical = list(metrics.get("oos_critical_sku") or [])
+
+    health_score, health_emoji, conclusion, health_status = _cfo_metrics_health_band(
+        margin_pct,
+        total_system_losses=system_losses,
+        total_storage_cost=storage,
+    )
+
+    if tax_type == "NONE":
+        tax_string = "📉 НАЛОГ: Не учитывается (0.00 руб.)"
+    else:
+        tax_string = (
+            f"📉 НАЛОГ {tax_type} ({tax_rate:.0f}%): "
+            f"{_fmt_cfo_pre_money(tax_total)} руб."
+        )
+
+    total_oos_count = len(oos_zero) + len(oos_critical)
+    if total_oos_count > 0:
+        oos_header = (
+            f"⚠️ Заканчивается товар: ⚠️ ВНИМАНИЕ: "
+            f"Зафиксирован дефицит по {total_oos_count} артикулам:"
+        )
+        oos_block_lines = [oos_header]
+        for item in oos_zero:
+            oos_block_lines.append(f"  • {html.escape(str(item))} (0 шт. — ЗАКОНЧИЛСЯ)")
+        for item in oos_critical:
+            if isinstance(item, dict):
+                sku = html.escape(str(item.get("sku", "—")))
+                days = int(item.get("days", 0))
+            else:
+                sku = html.escape(str(item))
+                days = 0
+            oos_block_lines.append(
+                f"  • {sku} (остаток на {days} дн. — КРИТИЧЕСКИЙ ОСТАТК)"
+            )
+        oos_string = "\n".join(oos_block_lines)
+    else:
+        oos_string = (
+            "⚠️ Заканчивается товар: критических рисков обнуления остатков не выявлено"
+        )
+
+    top_sku, top_buyout = _pick_cfo_top_sku(sku_data)
+    top_sku_esc = html.escape(top_sku)
+
+    if top_sku in oos_zero:
+        action_1 = (
+            f"Срочно пополните остатки Лидера [{top_sku_esc}] на складе. "
+            "До момента приемки поставки удерживайте или остановите рекламные кампании, "
+            "чтобы карточка не улетела вниз в поисковой выдаче WB."
+        )
+    else:
+        action_1 = (
+            f"Усилить закуп и рекламу на {top_sku_esc} — чистая прибыль со штуки в норме."
+        )
+
+    if oos_zero:
+        names = ", ".join(html.escape(str(x)) for x in oos_zero)
+        action_3 = (
+            f"Срочно пополните остатки: {names} — "
+            "товар закончился на складе при сохранённом спросе."
+        )
+    else:
+        action_3 = (
+            "Контролируйте остатки по рисковым артикулам: "
+            "критических рисков обнуления остатков не выявлено."
+        )
+
+    loss_pool = storage + system_losses
+    year_forecast = total_revenue * 12.0
+
+    report_html = f"""<pre>
+📊 ФИНАНСОВЫЙ ЭКСПРЕСС-АНАЛИЗ МАГАЗИНА
+
+────────────────────────
+
+🎯 ИНДЕКС ЗДОРОВЬЯ БИЗНЕСА: {health_emoji} {health_score:.1f} / 10 {health_status}
+📉 Балл рассчитан автоматически на основе рентабельности и издержек хранения.
+
+💡 ГЛАВНЫЙ АНАЛИТИЧЕСКИЙ ВЫВОД:
+{html.escape(conclusion)}
+
+────────────────────────
+
+💰 ОБЩАЯ ВЫРУЧКА: {_fmt_cfo_pre_money(total_revenue)} руб.
+{tax_string}
+💵 ЧИСТАЯ ПРИБЫЛЬ: {_fmt_cfo_pre_money(net_profit)} руб.
+
+Эффективность (рентабельность) чистой прибыли: {margin_pct:.1f}%
+
+────────────────────────
+
+📦 ABC-АНАЛИЗ ПРОДАЖ
+🅰️ Товары-лидеры (Приносят основные деньги группы А):
+• {top_sku_esc} (выкуп: {top_buyout:.1f}%)
+
+🅲 Товары-аутсайдеры (Слабые продажи или убытки):
+убыточных товаров не выявлено
+
+────────────────────────
+
+📈 СВЕТОФОР ЭФФЕКТИВНОСТИ
+🟢 ЗОНА УСПЕХА: Масштабируйте {top_sku_esc} при условии наличия остатков на складах отгрузки.
+🟡 ЗОНА ВНИМАНИЯ: Списания за Хранение: {_fmt_cfo_pre_money(storage)} руб. Контролируйте оборачиваемость.
+🔴 КРИТИЧЕСКАЯ ЗОНА: Штрафы/Кредиты WB: {_fmt_cfo_pre_money(system_losses)} руб. Реклама и удержания съедают маржу.
+
+────────────────────────
+
+💸 КАЛЬКУЛЯТОР ПОТЕРЬ И УПУЩЕННОЙ ВЫГОДЫ
+Потенциально можно вернуть в оборот: {_fmt_cfo_pre_money(loss_pool)} руб.
+• Потери на пустых покатушках, штрафах и переплатах за складское хранение.
+
+────────────────────────
+
+🛡️ ПРОГНОЗ И ОБНУЛЕНИЕ ОСТАТКОВ
+При сохранении текущего темпа годовой оборот составит около {_fmt_cfo_pre_money(year_forecast)} руб.
+{oos_string}
+
+────────────────────────
+
+📋 ПЛАН ДЕЙСТВИЙ ДЛЯ ПРЕДПРИНИМАТЕЛЯ НА СЕГОДНЯ
+1. {action_1}
+2. Держите ДРР не выше 15-20% — еженедельно чистите неокупаемые поисковые ключи в кампаниях.
+3. {action_3}
+
+CFO build {_FINANCE_REPORT_BUILD}</pre>
+"""
+    return report_html
+
+
 def build_wb_finance_express_html_local(
     prompt_metrics: WbFinancePromptMetrics,
     wb_metrics: WbMarketplaceMetrics | None,
@@ -3003,6 +3255,7 @@ async def generate_wb_finance_consulting_html(
     platform: str | None = None,
     file_path: str | Path | None = None,
     wb_json_str: str | None = None,
+    tax_preset_id: str | None = None,
 ) -> str | None:
     """
     CFO-отчёт wb_ozon_finance: локальный HTML (мгновенно); OpenRouter — только по флагу.
@@ -3034,6 +3287,7 @@ async def generate_wb_finance_consulting_html(
         wb_metrics,
         matrix_rows=matrix_rows,
         platform=platform,
+        tax_preset_id=tax_preset_id,
     )
 
     use_openrouter = bool(
@@ -3087,7 +3341,7 @@ async def generate_wb_finance_consulting_html(
         )
         raw = sanitize_wb_finance_html(completion.get("content") or "")
         if _is_publishable_wb_finance_html(raw):
-            if "cfo-v11" not in raw.lower():
+            if "cfo-v11.1" not in raw.lower():
                 raw = f"{raw}\n\n<i>CFO build {_FINANCE_REPORT_BUILD}</i>"
             return append_wb_finance_mini_app_cta(raw)
         logger.warning(

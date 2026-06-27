@@ -177,17 +177,30 @@ async def text_role_unsupported(message: Message) -> None:
 
 
 @router.message(
-    WBAuditingStates.wait_for_xlsx,
+    WBAuditingStates.wait_for_tax,
+    F.document | F.text,
+)
+async def wb_audit_wait_for_tax_guard(message: Message) -> None:
+    await message.answer(msg.TXT_AUDIT_WB_TAX_REQUIRED, parse_mode=ParseMode.HTML)
+
+
+@router.message(
     OzonAuditingStates.wait_for_xlsx,
     YandexAuditingStates.wait_for_xlsx,
     OneCAuditingStates.wait_for_xlsx,
     F.document | F.text,
 )
 async def marketplace_audit_file_process(message: Message, state: FSMContext) -> None:
-    """Финансовый аудит площадки: ожидание .xlsx / .csv."""
+    """Финансовый аудит Ozon / Яндекс / 1С: ожидание .xlsx / .csv."""
     from platforms.neurotext_input import handle_neurotext_user_message
 
     await handle_neurotext_user_message(message, state, keep_waiting_state=True)
+
+
+@router.message(WBAuditingStates.wait_for_xlsx, F.text)
+async def wb_audit_wait_for_xlsx_text(message: Message) -> None:
+    await message.answer(msg.TXT_AUDIT_WB_WAIT_FOR_FILE, parse_mode=ParseMode.HTML)
+
 
 @router.message(UserFlow.waiting_for_photo, F.text)
 async def photo_process(message: Message, state: FSMContext) -> None:

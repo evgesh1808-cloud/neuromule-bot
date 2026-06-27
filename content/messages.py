@@ -553,6 +553,30 @@ TXT_SPREADSHEET_REQUIRES_ANALYST_ROLE = (
 )
 CB_TABLE_SUBROLE_PREFIX = "set_table_subrole:"
 CB_AUDIT_PLATFORM_PREFIX = "audit_platform:"
+CB_AUDIT_TAX_PREFIX = "audit_tax:"  # legacy
+CB_SET_TAX_PREFIX = "set_tax:"
+CB_BACK_TO_AI_ASSISTANT = "back_to_ai_assistant"
+TXT_AUDIT_WB_TAX_MENU = (
+    "🟣 <b>Wildberries — финансовый аудит</b>\n\n"
+    "<b>Шаг 1 из 2.</b> Выберите режим налогообложения — как в настройках магазина WB.\n\n"
+    "Ставка участвует в расчёте налога в CFO-отчёте (база — РРЦ или маржа SKU)."
+)
+TXT_AUDIT_WB_TAX_PICK_SCREEN = (
+    "🧮 <b>Вид налогообложения на Wildberries:</b>\n\n"
+    "Выберите вашу налоговую ставку или режим для точного расчёта "
+    "чистой прибыли и маржи со штуки."
+)
+
+def format_wb_tax_confirmed_instruction(tax_type: str, tax_rate: float) -> str:
+    """Сообщение после выбора налога — шаг 2 (загрузка xlsx)."""
+    from services.audit_tax import wb_tax_selection_label
+
+    label = wb_tax_selection_label(tax_type, tax_rate)
+    return (
+        f"✅ <b>Вид налогообложения зафиксирован:</b> {label}\n"
+        "📥 Загрузите и отправьте финансовый отчёт в формате "
+        "<b>.xlsx</b> / <b>.csv</b> для Wildberries."
+    )
 TXT_AUDIT_PLATFORM_MENU = (
     f"{TXT_AI_ANALYST_CARD_TITLE}\n\n"
     "🔌 <b>Выберите канал продаж или учётную систему</b> "
@@ -644,9 +668,38 @@ def audit_platform_upload_instruction(platform: str) -> str:
     """Инструкция после выбора площадки для финансового аудита."""
     from services.marketplace_platform import platform_display_name
 
-    return TXT_AUDIT_PLATFORM_UPLOAD.format(
-        platform_name=platform_display_name(platform),
-    )
+    name = platform_display_name(platform)
+    if (platform or "").strip().lower() in {"wildberries", "wb"}:
+        return (
+            f"📥 <b>Шаг 2 из 2.</b> Загрузите финансовый отчёт Wildberries "
+            f"в формате <b>.xlsx</b> / <b>.csv</b>.\n\n"
+            f"Налог в расчёте: выбранный на предыдущем шаге режим УСН."
+        )
+    return TXT_AUDIT_PLATFORM_UPLOAD.format(platform_name=name)
+
+
+TXT_AUDIT_WB_TAX_REQUIRED = (
+    "Сначала выберите режим налогообложения кнопкой выше — "
+    "это <b>шаг 1</b> перед загрузкой отчёта Wildberries."
+)
+TXT_AUDIT_WB_FILE_BAD_FORMAT = (
+    "❌ Формат файла не поддерживается. Пожалуйста, отправьте <b>.xlsx</b> или <b>.csv</b>."
+)
+TXT_AUDIT_WB_FILE_TOO_BIG = (
+    "❌ Файл слишком тяжелый. Максимальный лимит оцифровки — <b>10 МБ</b>."
+)
+TXT_AUDIT_WB_TARIFF_BLOCKED = (
+    f"⚠️ Модуль «{TXT_AI_ANALYST_ROLE_PHRASE}» доступен на тарифах <b>MINI</b> и выше."
+)
+TXT_AUDIT_WB_PROCESSING_MATRIX = (
+    "🤖 ИИ-Ядро проводит многопроходную очистку матриц…"
+)
+TXT_AUDIT_WB_DIGITIZE_FAILED = (
+    "❌ Сбой оцифровки. Проверьте, что загружен верный файл детализации WB."
+)
+TXT_AUDIT_WB_WAIT_FOR_FILE = (
+    "📥 Отправьте финансовый отчёт Wildberries в формате <b>.xlsx</b> или <b>.csv</b>."
+)
 
 
 TXT_TABLE_AI_DEGRADATION_NOTICE = (

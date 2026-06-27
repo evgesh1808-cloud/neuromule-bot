@@ -8,6 +8,7 @@ from datetime import date
 from aiogram import types
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from config import settings
 from content import messages as msg
@@ -222,6 +223,36 @@ def create_table_subroles_keyboard() -> InlineKeyboardMarkup:
             ],
         ]
     )
+
+
+def get_wb_tax_keyboard() -> InlineKeyboardMarkup:
+    """Инлайн-меню налогов по интерфейсу настроек Wildberries."""
+    builder = InlineKeyboardBuilder()
+    p = msg.CB_SET_TAX_PREFIX
+    builder.row(
+        InlineKeyboardButton(text="🏢 ОСН (НДС 20%)", callback_data=f"{p}OSN:20.0"),
+        InlineKeyboardButton(text="📊 УСН 6% (Доходы)", callback_data=f"{p}USN:6.0"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="📉 УСН 15% (Дох-Расх)", callback_data=f"{p}USN:15.0"),
+        InlineKeyboardButton(text="📈 УСН 25% (Макс)", callback_data=f"{p}USN:25.0"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="⚙️ Другая ставка", callback_data=f"{p}CUSTOM:6.0"),
+        InlineKeyboardButton(text="❌ Не учитывать", callback_data=f"{p}NONE:0.0"),
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text="⬅️ Назад в меню",
+            callback_data=msg.CB_BACK_TO_AI_ASSISTANT,
+        )
+    )
+    return builder.as_markup()
+
+
+def create_wb_audit_tax_keyboard() -> InlineKeyboardMarkup:
+    """Алиас для шага 1 WB (налог перед xlsx)."""
+    return get_wb_tax_keyboard()
 
 
 def create_marketplace_audit_platform_keyboard() -> InlineKeyboardMarkup:

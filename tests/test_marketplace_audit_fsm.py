@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from unittest.mock import AsyncMock
 
-from platforms.marketplace_audit_flow import activate_marketplace_audit
+from platforms.marketplace_audit_flow import activate_marketplace_audit, audit_entry_state_for_platform
 from platforms.telegram_states import WBAuditingStates
 
 
@@ -22,4 +22,5 @@ async def test_activate_marketplace_audit_sets_state_and_data() -> None:
     kwargs = state.update_data.await_args.kwargs
     assert kwargs["table_subrole"] == "wb_ozon_finance"
     assert kwargs["audit_platform"] == "wildberries"
-    state.set_state.assert_awaited_once_with(WBAuditingStates.wait_for_xlsx)
+    state.set_state.assert_awaited_once_with(WBAuditingStates.wait_for_tax)
+    assert audit_entry_state_for_platform("wildberries") is WBAuditingStates.wait_for_tax

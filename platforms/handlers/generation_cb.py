@@ -55,7 +55,7 @@ from platforms.telegram_keyboards import (
     support_faq_keyboard,
     terms_accept_keyboard,
 )
-from platforms.telegram_states import AdminStates, FeedbackStates, UserFlow
+from platforms.telegram_states import AdminStates, FeedbackStates, UserFlow, WBAuditingStates
 from platforms.telegram_utils import (
     HelpInstructionWordFilter,
     _extract_ticket_user_id,
@@ -231,9 +231,40 @@ async def back_to_roles_menu(callback: CallbackQuery, state: FSMContext) -> None
     await handle_back_to_roles_menu(callback, state)
 
 
-@router.callback_query(F.data.startswith(msg.CB_AUDIT_PLATFORM_PREFIX))
+@router.callback_query(F.data == f"{msg.CB_AUDIT_PLATFORM_PREFIX}wildberries")
+async def pick_audit_platform_wb(callback: CallbackQuery, state: FSMContext) -> None:
+    """🟣 Wildberries → меню налогов (шаг 1)."""
+    from platforms.telegram_keyboards import get_wb_tax_keyboard
+
+    await callback.answer()
+    await state.set_state(WBAuditingStates.wait_for_tax)
+    await state.update_data(
+        text_role="table_generator",
+        table_subrole="wb_ozon_finance",
+        audit_platform="wildberries",
+    )
+    if callback.message:
+        try:
+            await callback.message.edit_text(
+                msg.TXT_AUDIT_WB_TAX_PICK_SCREEN,
+                reply_markup=get_wb_tax_keyboard(),
+                parse_mode=ParseMode.HTML,
+            )
+        except TelegramBadRequest:
+            reply = await callback.message.answer(
+                msg.TXT_AUDIT_WB_TAX_PICK_SCREEN,
+                reply_markup=get_wb_tax_keyboard(),
+                parse_mode=ParseMode.HTML,
+            )
+            await state.update_data(audit_tax_prompt_message_id=reply.message_id)
+
+
+@router.callback_query(
+    F.data.startswith(msg.CB_AUDIT_PLATFORM_PREFIX),
+    ~F.data.endswith("wildberries"),
+)
 async def pick_audit_platform(callback: CallbackQuery, state: FSMContext) -> None:
-    """Выбор площадки → FSM ожидания файла и инструкция загрузки."""
+    """Ozon / Яндекс / 1С → сразу ожидание файла."""
     from platforms.marketplace_audit_flow import activate_marketplace_audit
     from services.marketplace_platform import VALID_MARKETPLACE_PLATFORMS
 
@@ -244,7 +275,6 @@ async def pick_audit_platform(callback: CallbackQuery, state: FSMContext) -> Non
 
     await callback.answer()
     await activate_marketplace_audit(state, platform=platform_raw)
-    instruction = msg.audit_platform_upload_instruction(platform_raw)
 
     if callback.message:
         try:
@@ -254,8 +284,51 @@ async def pick_audit_platform(callback: CallbackQuery, state: FSMContext) -> Non
                 await callback.message.edit_reply_markup(reply_markup=None)
             except TelegramBadRequest:
                 pass
+        instruction = msg.audit_platform_upload_instruction(platform_raw)
         reply = await callback.message.answer(instruction, parse_mode=ParseMode.HTML)
         await state.update_data(audit_upload_prompt_message_id=reply.message_id)
+
+
+@router.callback_query(
+    WBAuditingStates.wait_for_tax,
+    F.data.startswith(msg.CB_SET_TAX_PREFIX),
+)
+async def process_wb_tax_selection(callback: CallbackQuery, state: FSMContext) -> None:
+    """Сохраняет налог WB в FSM и запрашивает Excel-файл."""
+    from platforms.marketplace_audit_flow import save_wb_user_tax_selection
+    from services.audit_tax import parse_set_tax_parts
+
+    parsed = parse_set_tax_parts(callback.data or "")
+    if parsed is None:
+        await callback.answer("Неизвестный режим налогообложения.", show_alert=True)
+        return
+
+    tax_type, tax_rate = parsed
+    await callback.answer()
+    await save_wb_user_tax_selection(state, tax_type=tax_type, tax_rate=tax_rate)
+
+    if callback.message:
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        instruction_msg = await callback.message.answer(
+            msg.format_wb_tax_confirmed_instruction(tax_type, tax_rate),
+            parse_mode=ParseMode.HTML,
+        )
+        await state.update_data(
+            instruction_msg_id=instruction_msg.message_id,
+            audit_upload_prompt_message_id=instruction_msg.message_id,
+        )
+
+
+@router.callback_query(F.data == msg.CB_BACK_TO_AI_ASSISTANT)
+async def back_to_ai_assistant(callback: CallbackQuery, state: FSMContext) -> None:
+    """Назад с экрана налога WB → меню площадок ИИ-Аналитика."""
+    from platforms.neurotext_flow import handle_show_table_subcategories
+
+    await state.clear()
+    await handle_show_table_subcategories(callback, state, answered=True)
 
 
 @router.callback_query(F.data.startswith(msg.CB_TABLE_SUBROLE_PREFIX))

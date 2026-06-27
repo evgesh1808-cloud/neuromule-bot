@@ -25,6 +25,7 @@ from platforms.handlers import (
     start_admin,
     start_onboarding,
     table_chart_cb,
+    wb_audit_file,
 )
 
 
@@ -39,6 +40,7 @@ def register_all(dp: Dispatcher) -> None:
         reviews,
         generation_cb,
         table_chart_cb,
+        wb_audit_file,
         hd,
         memory_family,
         generation_fsm,

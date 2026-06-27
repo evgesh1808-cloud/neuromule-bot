@@ -36,7 +36,7 @@ def test_wb_analytics_system_prompt_cfo_v8_static() -> None:
     assert "2000 символов" in prompt
     assert "ABC-АНАЛИЗ ПРОДАЖ" in prompt
     assert "BENOVY" not in prompt
-    assert "cfo-v11" in prompt
+    assert "cfo-v11.1" in prompt
     assert "20%" in prompt
     assert "group_A" in prompt
     assert "loss_calculator" in prompt
@@ -76,7 +76,7 @@ def test_build_wb_finance_openrouter_prompt_pair_from_matrix() -> None:
     pair = build_wb_finance_openrouter_prompt_pair(matrix, revenue_total=100_000.0)
     assert pair is not None
     system, user = pair
-    assert "cfo-v11" in system
+    assert "cfo-v11.1" in system
     data = json.loads(user.split("\n\n", 1)[-1])
     assert data["finance"]["total_revenue"] == 100_000.0
     assert "health_index" in data
@@ -114,7 +114,7 @@ def test_build_wb_finance_system_prompt_from_totals() -> None:
     )
     system = build_wb_finance_system_prompt_from_totals(100_000.0, wb)
     assert system is not None
-    assert "cfo-v11" in system
+    assert "cfo-v11.1" in system
 
 
 def test_compute_business_score_bounds() -> None:
@@ -302,7 +302,7 @@ def test_build_wb_finance_express_html_local_abc_header() -> None:
     assert metrics is not None
     html = build_wb_finance_express_html_local(metrics, None)
     assert "ABC-АНАЛИЗ ПРОДАЖ" in html
-    assert "cfo-v11" in html
+    assert "cfo-v11.1" in html
 
 
 def test_build_wb_finance_express_html_local_no_ii_word() -> None:
@@ -625,13 +625,13 @@ def test_build_final_metrics_json_cfo_v10() -> None:
         ["GOOD", "80000", "8", "2"],
     ]
     final = build_final_metrics_json(matrix, revenue_total=80_000.0)
-    assert final.get("cfo_build") == "cfo-v11"
+    assert final.get("cfo_build") == "cfo-v11.1"
     assert final["shop"]["total_revenue"] == 80_000.0
     assert "sku_catalog" in final
     assert "abc_analysis" in final
 
     ctx = build_wb_mpstats_ai_context(matrix, revenue_total=80_000.0)
-    assert ctx.get("cfo_build") == "cfo-v11"
+    assert ctx.get("cfo_build") == "cfo-v11.1"
     assert "finance" in ctx
     assert "health_index" in ctx
     assert "strategic_plan_hints" in ctx
