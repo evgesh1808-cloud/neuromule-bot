@@ -28,6 +28,18 @@ from services.rate_limit_service import allow_request
 
 logger = logging.getLogger(__name__)
 
+REPLY_NAV_BUTTON_TEXTS = frozenset(
+    {
+        *msg.ALL_REPLY_NAV_BUTTONS,
+        msg.BTN_REPLY_NEUROTEXT_LEGACY,
+        msg.BTN_PROFILE_LEGACY,
+        msg.BTN_SUPPORT_LEGACY,
+        msg.BTN_SUPPORT_LEGACY2,
+        msg.BTN_HD_SECTION,
+        msg.ADMIN_MAIN_MENU_BUTTON,
+    }
+)
+
 _SUMMARY_HINT = (
     "📄 <b>Режим «Саммари» включён</b>\n\n"
     "Пришлите одним сообщением:\n"
@@ -84,6 +96,11 @@ async def handle_summary_neurotext_message(
     uid = message.from_user.id
     is_document = bool(message.document)
     is_photo = bool(message.photo)
+
+    if not is_photo and not is_document:
+        user_text = (message.text or "").strip()
+        if user_text in REPLY_NAV_BUTTON_TEXTS or user_text.startswith("/"):
+            return
 
     if is_photo:
         await message.answer(

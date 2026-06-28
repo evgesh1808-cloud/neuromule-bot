@@ -8,10 +8,7 @@ from aiogram.filters import BaseFilter, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
-from platforms.summarizer_flow import (
-    handle_summary_neurotext_message,
-    send_summary_mode_hint,
-)
+from platforms.summarizer_flow import REPLY_NAV_BUTTON_TEXTS, handle_summary_neurotext_message
 from platforms.telegram_states import UserFlow
 
 logger = logging.getLogger(__name__)
@@ -27,17 +24,27 @@ class SummaryRoleFilter(BaseFilter):
         return str(data.get("text_role") or "").strip().lower() == "summary"
 
 
+class SummaryUserTextFilter(BaseFilter):
+    """Не перехватывать Reply-кнопки меню («🎨 Создать», «🚀 Тарифы» и т.д.)."""
+
+    async def __call__(self, message: Message) -> bool:
+        text = (message.text or "").strip()
+        if not text or text.startswith("/"):
+            return False
+        return text not in REPLY_NAV_BUTTON_TEXTS
+
+
 _summary_state = StateFilter(UserFlow.waiting_for_text_prompt)
 _summary_role = SummaryRoleFilter()
+_summary_text = SummaryUserTextFilter()
 
 
 @summarizer_router.message(_summary_state, _summary_role, F.document)
-@summarizer_router.message(_summary_state, _summary_role, F.text)
 @summarizer_router.message(_summary_state, _summary_role, F.photo)
-async def summary_mode_input(message: Message, state: FSMContext) -> None:
+async def summary_mode_input_media(message: Message, state: FSMContext) -> None:
     await handle_summary_neurotext_message(message, state)
 
 
-@summarizer_router.message(_summary_state, _summary_role)
-async def summary_mode_unsupported(message: Message) -> None:
-    await send_summary_mode_hint(message)
+@summarizer_router.message(_summary_state, _summary_role, _summary_text)
+async def summary_mode_input_text(message: Message, state: FSMContext) -> None:
+    await handle_summary_neurotext_message(message, state)
