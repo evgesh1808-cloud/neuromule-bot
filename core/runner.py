@@ -39,8 +39,8 @@ async def run_summarizer_platforms() -> None:
     Telegram намеренно НЕ стартует (один TG_TOKEN → иначе Conflict с основным ботом).
     Telegram-саммари: ``summarizer_router`` в ``platforms/telegram_bot.py``.
     """
-    if not settings.openai_api_key.strip():
-        raise RuntimeError("Задайте OPENAI_API_KEY в .env")
+    if not summarizer_llm_configured():
+        raise RuntimeError("Задайте OPENAI_API_KEY или OPENROUTER_API_KEY в .env")
 
     async with asyncio.TaskGroup() as group:
         group.create_task(_run_summarizer_api())

@@ -15,6 +15,7 @@ from core.summarizer import (
     SummarizeResult,
     chunk_text,
     resolve_raw_text,
+    summarizer_llm_configured,
     summarize_from_file,
     summarize_text,
 )
@@ -91,9 +92,10 @@ async def handle_summary_neurotext_message(
         )
         return
 
-    if not settings.openai_api_key.strip():
+    if not summarizer_llm_configured():
         await message.answer(
-            "⚠️ Саммаризатор временно недоступен (не задан <code>OPENAI_API_KEY</code>).",
+            "⚠️ Саммаризатор временно недоступен: задайте "
+            "<code>OPENAI_API_KEY</code> или <code>OPENROUTER_API_KEY</code> в .env.",
             parse_mode=ParseMode.HTML,
         )
         return

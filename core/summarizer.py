@@ -74,6 +74,18 @@ def chunk_text(text: str, limit: int = DEFAULT_CHUNK) -> list[str]:
     return [text[i : i + limit] for i in range(0, len(text), limit)]
 
 
+def summarizer_llm_configured() -> bool:
+    """Достаточно OPENAI_API_KEY или уже используемого OPENROUTER_API_KEY."""
+    return bool(settings.openai_api_key.strip() or settings.openrouter_key.strip())
+
+
+def _openrouter_model_id() -> str:
+    model = settings.summarizer_model.strip() or "gpt-4o-mini"
+    if "/" in model:
+        return model
+    return f"openai/{model}"
+
+
 def _openai() -> AsyncOpenAI:
     global _openai_client
     key = settings.openai_api_key.strip()
@@ -152,6 +164,30 @@ async def extract_web_article_text(url: str) -> str | None:
     return await asyncio.to_thread(_web_sync, url)
 
 
+async def _complete_summarizer_llm(messages: list[dict[str, str]]) -> str:
+    if settings.openai_api_key.strip():
+        response = await _openai().chat.completions.create(
+            model=settings.summarizer_model,
+            messages=messages,
+            temperature=0.2,
+        )
+        return (response.choices[0].message.content or "").strip()
+
+    if settings.openrouter_key.strip():
+        from services.ai_text import ask_ai_messages
+
+        result = await ask_ai_messages(
+            settings,
+            messages,
+            models=[_openrouter_model_id()],
+            temperature=0.2,
+            max_tokens=settings.openrouter_premium_max_output_tokens,
+        )
+        return (result.get("content") or "").strip()
+
+    raise RuntimeError("Задайте OPENAI_API_KEY или OPENROUTER_API_KEY в .env")
+
+
 def _file_sync(path: Path, extension: str) -> str | None:
     ext = extension.lower().lstrip(".")
     try:
@@ -212,16 +248,19 @@ async def summarize_text(raw_text: str | None) -> SummarizeResult:
         )
 
     payload = cleaned[:MAX_INPUT_CHARS]
-    try:
-        response = await _openai().chat.completions.create(
-            model=settings.summarizer_model,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": f"Сделай саммари этого материала:\n\n{payload}"},
-            ],
-            temperature=0.2,
+    if not summarizer_llm_configured():
+        return SummarizeResult(
+            ok=False,
+            error_code="no_api_key",
+            error_message="Саммаризатор недоступен: задайте OPENAI_API_KEY или OPENROUTER_API_KEY в .env.",
         )
-        summary = (response.choices[0].message.content or "").strip()
+
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": f"Сделай саммари этого материала:\n\n{payload}"},
+    ]
+    try:
+        summary = await _complete_summarizer_llm(messages)
         if not summary:
             return SummarizeResult(
                 ok=False,
@@ -229,8 +268,8 @@ async def summarize_text(raw_text: str | None) -> SummarizeResult:
                 error_message="Модель вернула пустой ответ.",
             )
         return SummarizeResult(ok=True, summary=summary)
-    except Exception as exc:
-        logger.exception("summarizer OpenAI error")
+    except Exception:
+        logger.exception("summarizer LLM error")
         return SummarizeResult(
             ok=False,
             error_code="ai_failed",
