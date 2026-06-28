@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from core.summarizer import chunk_text, resolve_raw_text, summarize_text
+from core.summarizer import chunk_text, is_vk_video_url, resolve_raw_text, summarize_text
 
 
 @pytest.mark.asyncio
@@ -12,6 +12,19 @@ async def test_resolve_plain_text() -> None:
     raw, kind = await resolve_raw_text(text)
     assert kind == "plain"
     assert raw == text
+
+
+@pytest.mark.asyncio
+async def test_resolve_vk_video_url() -> None:
+    raw, kind = await resolve_raw_text("https://vkvideo.ru/video-1415705_456253353")
+    assert kind == "vk_video"
+    assert raw is None
+
+
+def test_is_vk_video_url() -> None:
+    assert is_vk_video_url("https://vkvideo.ru/video-1_2")
+    assert is_vk_video_url("https://vk.com/video-1_2")
+    assert not is_vk_video_url("https://youtube.com/watch?v=dQw4w9WgXcQ")
 
 
 @pytest.mark.asyncio

@@ -32,9 +32,9 @@ _SUMMARY_HINT = (
     "📄 <b>Режим «Саммари» включён</b>\n\n"
     "Пришлите одним сообщением:\n"
     "• текст статьи или лекции\n"
-    "• ссылку на <b>YouTube</b> или сайт\n"
+    "• ссылку на <b>YouTube</b> (не VK Video) или статью на сайте\n"
     "• файл <b>PDF</b>, <b>DOCX</b> или <b>TXT</b>\n\n"
-    "Выжимка — по шаблону Senior BA (gpt-4o-mini)."
+    "Выжимка по шаблону глубокого анализа видео-транскриптов (без галлюцинаций)."
 )
 
 _STATUS = {
@@ -147,12 +147,30 @@ async def handle_summary_neurotext_message(
                 return
             status_msg = await message.answer("⏳ <b>Обрабатываю…</b>", parse_mode=ParseMode.HTML)
             raw, kind = await resolve_raw_text(user_text)
+            if kind == "vk_video":
+                await _fail(
+                    message,
+                    status_msg,
+                    "❌ <b>VK Video</b> пока не поддерживается.\n"
+                    "Пришлите ссылку на <b>YouTube</b> (с субтитрами), текст статьи или файл PDF/DOCX/TXT.",
+                    charge_id=charge_id,
+                )
+                return
             if kind == "youtube" and not raw:
                 await _fail(
                     message,
                     status_msg,
                     "❌ Не удалось скачать субтитры с YouTube. "
                     "Проверьте, что у видео включены субтитры (RU или EN).",
+                    charge_id=charge_id,
+                )
+                return
+            if kind == "article" and not raw:
+                await _fail(
+                    message,
+                    status_msg,
+                    "❌ Не удалось извлечь текст со страницы "
+                    "(сайт закрыл доступ, требует вход или это не статья).",
                     charge_id=charge_id,
                 )
                 return
