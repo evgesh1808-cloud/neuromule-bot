@@ -92,21 +92,37 @@ def _youtube_video_id(url: str) -> str | None:
 def _youtube_sync(video_id: str) -> str | None:
     from youtube_transcript_api import YouTubeTranscriptApi
 
+    def _join_transcript(items: object) -> str:
+        if not items:
+            return ""
+        first = items[0] if isinstance(items, list) and items else items
+        if isinstance(first, dict):
+            return " ".join(str(item.get("text", "")) for item in items)
+        return " ".join(str(getattr(snippet, "text", snippet)) for snippet in items)
+
     try:
-        api = YouTubeTranscriptApi()
         try:
-            fetched = api.fetch(video_id, languages=["ru"])
+            transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=["ru"])
         except Exception:
-            fetched = api.fetch(video_id, languages=["en"])
-        text = " ".join(snippet.text for snippet in fetched)
-        return text[:MAX_INPUT_CHARS] if text.strip() else None
-    except Exception:
+            transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=["en"])
+        text = _join_transcript(transcript).strip()
+        if len(text) > MIN_TEXT_LEN:
+            return text[:MAX_INPUT_CHARS]
+        return None
+    except Exception as exc:
+        logger.warning("YouTube subtitles failed for %s: %s", video_id, exc)
         try:
-            transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=["ru", "en"])
-            text = " ".join(item["text"] for item in transcript)
-            return text[:MAX_INPUT_CHARS] if text.strip() else None
-        except Exception:
-            return None
+            api = YouTubeTranscriptApi()
+            try:
+                fetched = api.fetch(video_id, languages=["ru"])
+            except Exception:
+                fetched = api.fetch(video_id, languages=["en"])
+            text = _join_transcript(fetched).strip()
+            if len(text) > MIN_TEXT_LEN:
+                return text[:MAX_INPUT_CHARS]
+        except Exception as exc2:
+            logger.warning("YouTube subtitles fallback failed for %s: %s", video_id, exc2)
+        return None
 
 
 async def extract_youtube_text(url: str) -> str | None:
