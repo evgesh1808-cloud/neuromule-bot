@@ -344,12 +344,20 @@ async def handle_neurotext_user_message(
 
     xlsx_auto_finance = False
 
+    data_early = await state.get_data()
+    role_id_early = str(data_early.get("text_role") or "standard").strip().lower()
+
     if (
         not is_photo
         and not is_document
         and not has_neurotext_message_input(message)
     ):
-        await send_neurotext_role_menu(message, state)
+        if role_id_early == "summary":
+            from platforms.summarizer_flow import send_summary_mode_hint
+
+            await send_summary_mode_hint(message)
+        else:
+            await send_neurotext_role_menu(message, state)
         return
 
     # Финансовый аудит площадки — только после выбора WB/Ozon/…, не в любой роли Нейротекста.

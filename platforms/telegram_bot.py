@@ -154,6 +154,10 @@ def build_dispatcher() -> tuple[Bot, Dispatcher]:
     dp.message.outer_middleware(channel_gate)
     dp.callback_query.outer_middleware(channel_gate)
 
+    from platforms.summarizer_telegram import summarizer_router
+
+    # До generation_fsm: перехват ввода в режиме «📄 Саммари» (ИИ-Ассистент).
+    dp.include_router(summarizer_router)
     register_all(dp)
     return bot, dp
 

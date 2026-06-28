@@ -185,6 +185,11 @@ async def handle_neurotext_role_pick(
 
     await open_neurotext_from_callback(callback, state)
 
+    if pick.role_id == "summary" and callback.message:
+        from platforms.summarizer_flow import send_summary_mode_hint
+
+        await send_summary_mode_hint(callback.message)
+
 
 async def handle_show_table_subcategories(
     callback: CallbackQuery,

@@ -7,6 +7,8 @@ NEUROMULE_PLATFORM:
   vk — vkbottle (заглушка, общий сервисный слой подключается позже)
   max — maxgram (заглушка до реализации polling/webhook)
   api — FastAPI для Mini App backend
+  summarizer — API + VK + Discord (Telegram — в основном боте, кнопка «Саммари»)
+  summarizer_api — только FastAPI саммари (core/api.py)
   wb_worker — ночной батч WB API + утренние уведомления 09:00 МСК
 """
 from __future__ import annotations
@@ -126,6 +128,21 @@ def main() -> None:
 
         port = int(os.getenv("API_PORT", "8000"))
         uvicorn.run("api.mini_app:app", host="0.0.0.0", port=port, reload=False)
+    elif mode == "summarizer":
+        from core.runner import run_summarizer_platforms
+
+        asyncio.run(run_summarizer_platforms())
+    elif mode == "summarizer_api":
+        import uvicorn
+
+        from config import settings
+
+        uvicorn.run(
+            "core.api:app",
+            host=settings.summarizer_api_host,
+            port=settings.summarizer_api_port,
+            reload=False,
+        )
     elif mode in ("wb_worker", "wb_api_worker"):
         from workers.wb_api_worker import run_wb_api_worker
 

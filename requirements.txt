@@ -22,5 +22,10 @@ matplotlib>=3.8
 pypdf>=4.0
 pypdfium2>=4.0
 tiktoken>=0.7
+openai>=1.40
+beautifulsoup4>=4.12
+youtube-transcript-api>=0.6
+python-docx>=1.1
+discord.py>=2.3
 # MAX Bot API (поставьте пакет, который актуален для вашего окружения):
 # maxgram

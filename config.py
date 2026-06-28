@@ -212,6 +212,28 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("ADMIN_CHAT_ID", "admin_chat_id"),
     )
     vk_token: str = ""
+    discord_token: str = Field(default="", validation_alias="DISCORD_TOKEN")
+    openai_api_key: str = Field(default="", validation_alias="OPENAI_API_KEY")
+    summarizer_model: Annotated[str, _nonempty_str("gpt-4o-mini")] = Field(
+        default="gpt-4o-mini",
+        validation_alias=AliasChoices("SUMMARIZER_MODEL", "summarizer_model"),
+    )
+    summarizer_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("SUMMARIZER_API_KEY", "summarizer_api_key"),
+    )
+    summarizer_api_host: Annotated[str, _nonempty_str("0.0.0.0")] = Field(
+        default="0.0.0.0",
+        validation_alias=AliasChoices("SUMMARIZER_API_HOST", "summarizer_api_host"),
+    )
+    summarizer_api_port: Annotated[int, _coerce_int(8010)] = Field(
+        default=8010,
+        validation_alias=AliasChoices("SUMMARIZER_API_PORT", "summarizer_api_port"),
+    )
+    summarizer_api_docs: Annotated[bool, _coerce_bool(False)] = Field(
+        default=False,
+        validation_alias=AliasChoices("SUMMARIZER_API_DOCS", "summarizer_api_docs"),
+    )
     max_token: str = ""
 
     # ── Reviews & Gallery cross-posting (NeuroMule 🐎⚡️ • Виральный конвейер) ──
