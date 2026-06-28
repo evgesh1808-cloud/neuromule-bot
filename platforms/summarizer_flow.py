@@ -145,6 +145,15 @@ async def handle_summary_neurotext_message(
                 return
             status_msg = await message.answer("⏳ <b>Обрабатываю…</b>", parse_mode=ParseMode.HTML)
             raw, kind = await resolve_raw_text(user_text)
+            if kind == "youtube" and not raw:
+                await _fail(
+                    message,
+                    status_msg,
+                    "❌ Не удалось скачать субтитры с YouTube. "
+                    "Проверьте, что у видео включены субтитры (RU или EN).",
+                    charge_id=charge_id,
+                )
+                return
             if kind != "plain":
                 try:
                     await status_msg.edit_text(_STATUS[kind], parse_mode=ParseMode.HTML)

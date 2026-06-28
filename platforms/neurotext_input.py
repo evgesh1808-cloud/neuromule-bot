@@ -384,6 +384,17 @@ async def handle_neurotext_user_message(
     await ensure_neurotext_waiting_state(state)
     data = await state.get_data()
     role_id = str(data.get("text_role") or "standard").strip().lower()
+
+    if role_id == "summary":
+        from platforms.summarizer_flow import handle_summary_neurotext_message
+
+        await handle_summary_neurotext_message(
+            message,
+            state,
+            keep_waiting_state=keep_waiting_state,
+        )
+        return
+
     table_subrole = normalize_table_subrole(data.get("table_subrole"))
     audit_platform = data.get("audit_platform")
     from platforms.marketplace_audit_flow import audit_tax_preset_from_data
