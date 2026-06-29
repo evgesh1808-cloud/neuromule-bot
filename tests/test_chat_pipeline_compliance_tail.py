@@ -48,4 +48,4 @@ def test_prepare_openrouter_chat_messages() -> None:
     ]
     out = prepare_openrouter_chat_messages(payload, use_premium_prompt=True)
     assert out is payload
-    assert "ПРАВИЛО ОДНОЙ ТОЧКИ" in payload[1]["content"]
+    assert "премиум-комплаенс" in payload[1]["content"]

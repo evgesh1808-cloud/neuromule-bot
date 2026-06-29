@@ -117,6 +117,7 @@ class ChatRoutePlan:
     is_expert_role: bool
     max_tokens: int = 640
     use_premium_prompt: bool = False
+    fallback_model_ids: tuple[str, ...] = ()
     blocked: bool = False
     block_reason: str = ""
 

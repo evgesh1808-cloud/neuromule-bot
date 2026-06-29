@@ -274,10 +274,9 @@ async def run_chat_turn(
     if is_table_role:
         stream_callback = None
 
-    # Основная модель из биллинга + резерв из ``free_models``, если OpenRouter
-    # отклонит ID (смена каталога моделей на стороне провайдера).
+    # Основная модель из биллинга + резервный каскад (FREE/MINI → free_models, SMART/ULTRA → smart_models).
     model_chain: list[str] = []
-    for mid in (plan.model_id, *settings.free_models):
+    for mid in (plan.model_id, *plan.fallback_model_ids):
         mid = str(mid).strip()
         if mid and mid not in model_chain:
             model_chain.append(mid)
