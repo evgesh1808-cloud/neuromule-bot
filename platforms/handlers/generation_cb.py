@@ -423,6 +423,21 @@ async def neurotext_clear_context(callback: CallbackQuery, state: FSMContext) ->
 async def neurotext_new_dialog(callback: CallbackQuery, state: FSMContext) -> None:
     await handle_clear_context(callback, state)
 
+
+@router.callback_query(F.data == "clear_persistent_memory_vip")
+async def neurotext_clear_persistent_memory_vip(callback: CallbackQuery) -> None:
+    """Полный сброс: история диалога + долгосрочная ИИ-Память."""
+    await callback.answer()
+    await clear_user_dialog_and_memory(callback.from_user.id)
+    if callback.message:
+        await callback.message.edit_text(
+            text="🐎⚡️ <b>Долгосрочная память успешно очищена.</b>\n\n"
+            "Система сброшена до исходного состояния. Все сохраненные факты, "
+            "персональные настройки и история профиля полностью стерты из нейронов.\n\n"
+            "<i>Чтобы начать новый маршрут, отправьте любую команду или выберите роль в меню.</i>",
+            parse_mode=ParseMode.HTML,
+        )
+
 @router.callback_query(F.data == msg.CB_CREATE_IMAGE)
 async def create_image_menu(callback: CallbackQuery) -> None:
     from services.billing.types import TariffTier

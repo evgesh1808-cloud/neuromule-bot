@@ -288,7 +288,8 @@ async def handle_clear_context(callback: CallbackQuery, state: FSMContext) -> No
     """🔔 Новый диалог — очищает ТОЛЬКО историю чата.
 
     По ТЗ NeuroMule 🐎⚡️ ИИ-Память (``persistent_memory``) НЕ стирается этой
-    кнопкой — она доступна только из раздела «🧠 Моя память» в ЛК.
+    кнопкой для роли «Стандарт». Для остальных ролей — подсказка и VIP-кнопка
+    полного сброса долгосрочной памяти.
     """
     from services.repository import clear_user_dialog
 
@@ -299,5 +300,29 @@ async def handle_clear_context(callback: CallbackQuery, state: FSMContext) -> No
     await state.set_state(UserFlow.waiting_for_text_prompt)
     await state.update_data(text_role=role_id)
     if callback.message:
-        await callback.message.answer(msg.TXT_NEUROTEXT_CLEAR_DONE, parse_mode=ParseMode.HTML)
+        if role_id == "standard":
+            await callback.message.answer(msg.TXT_NEUROTEXT_CLEAR_DONE, parse_mode=ParseMode.HTML)
+        else:
+            welcome_text = (
+                "🐎⚡️ <b>Режим очищен и готов к работе!</b>\n\n"
+                "Все systems сброшены в исходное состояние, а оперативная память нейронов чиста.\n\n"
+                "<b>NeuroMule готов к работе:</b> отправьте текстовый запрос, задачу, код или описание, "
+                "чтобы проложить новый маршрут.\n\n"
+                "<i>Для удаления долгосрочной памяти ИИ нажмите кнопку ниже:</i>"
+            )
+            vip_kb = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="🧠 Стереть долгосрочную память",
+                            callback_data="clear_persistent_memory_vip",
+                        )
+                    ]
+                ]
+            )
+            await callback.message.answer(
+                welcome_text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=vip_kb,
+            )
         await open_neurotext_from_callback(callback, state)
