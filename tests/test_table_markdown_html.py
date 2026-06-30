@@ -48,8 +48,14 @@ def test_non_table_role_unchanged_pipe_behavior() -> None:
     assert "<pre>" not in out
 
 
-def test_format_assistant_collapses_double_newlines() -> None:
-    raw = "Первый абзац.\n\nВторой абзац.\n\n\n• пункт списка"
+def test_format_assistant_collapses_triple_newlines() -> None:
+    raw = "Первый абзац.\n\nВторой абзац.\n\n\n⚙️ пункт списка"
     out = format_assistant_for_role(raw, "standard")
-    assert "\n\n" not in out
-    assert "Первый абзац.\nВторой абзац.\nпункт списка" in out
+    assert "\n\n\n" not in out
+    assert "Первый абзац.\n\nВторой абзац.\n\n⚙️ пункт списка" in out
+
+
+def test_format_assistant_preserves_single_blank_line_between_blocks() -> None:
+    raw = "Блок один.\n\nБлок два."
+    out = format_assistant_for_role(raw, "standard")
+    assert "Блок один.\n\nБлок два." in out
