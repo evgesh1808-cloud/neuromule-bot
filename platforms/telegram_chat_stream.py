@@ -6,27 +6,50 @@ Live-отображение ответа бота: первое сообщени
 
 from __future__ import annotations
 
+import logging
 import time
-from typing import TYPE_CHECKING
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
 
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest
 
 from config import Settings
-from services.ai_text import StreamCallback
 from services.telegram_safe_text import prepare_telegram_html_text, sanitize_telegram_plain_text
 
 if TYPE_CHECKING:
     from aiogram import Bot
     from aiogram.types import Message
 
+logger = logging.getLogger(__name__)
 
-def create_throttled_stream_reply(message: "Message", bot: "Bot", settings: Settings) -> StreamCallback:
+
+@dataclass
+class StreamReplyHandle:
     """
-    Фабрика колбэка для ``ask_ai_messages(..., stream_callback=...)``.
+    Колбэк SSE для ``ask_ai_messages`` и принудительная финальная правка полным текстом.
 
-    При первом чанке создаётся новое сообщение в чате; далее текст обновляется не чаще,
-    чем раз в ``telegram_stream_edit_interval_sec`` секунд (и обязательно на финальном чанке).
+    Передавайте ``handle.on_stream`` в ``stream_callback``; после ``run_chat_turn`` вызовите
+    ``await handle.finalize(assistant_message)``.
+    """
+
+    _apply_text: Any = field(repr=False)
+
+    async def on_stream(self, full_text: str, done: bool) -> None:
+        capped = prepare_telegram_html_text(full_text or "")
+        await self._apply_text(capped, force=done)
+
+    async def finalize(self, full_text: str) -> None:
+        capped = prepare_telegram_html_text(full_text or "")
+        await self._apply_text(capped, force=True)
+
+
+def create_throttled_stream_reply(message: "Message", bot: "Bot", settings: Settings) -> StreamReplyHandle:
+    """
+    Фабрика live-ответа в чате.
+
+    При первом чанке создаётся новое сообщение; далее текст обновляется не чаще
+    ``telegram_stream_edit_interval_sec`` (и на финальном чанке SSE).
     """
 
     state: dict = {
@@ -45,9 +68,9 @@ def create_throttled_stream_reply(message: "Message", bot: "Bot", settings: Sett
                 state["use_html"] = False
         return await message.answer(sanitize_telegram_plain_text(text))
 
-    async def _edit(text: str) -> None:
+    async def _edit(text: str) -> bool:
         if state["sent_msg"] is None:
-            return
+            return False
         payload = text if text else "…"
         if state["use_html"]:
             try:
@@ -57,35 +80,42 @@ def create_throttled_stream_reply(message: "Message", bot: "Bot", settings: Sett
                     text=payload,
                     parse_mode=ParseMode.HTML,
                 )
-                return
+                return True
             except TelegramBadRequest:
                 state["use_html"] = False
-        await bot.edit_message_text(
-            chat_id=state["sent_msg"].chat.id,
-            message_id=state["sent_msg"].message_id,
-            text=sanitize_telegram_plain_text(payload),
-        )
+        try:
+            await bot.edit_message_text(
+                chat_id=state["sent_msg"].chat.id,
+                message_id=state["sent_msg"].message_id,
+                text=sanitize_telegram_plain_text(payload),
+            )
+            return True
+        except TelegramBadRequest:
+            return False
 
-    async def on_stream(full_text: str, done: bool) -> None:
-        """Вызывается из слоя AI на каждую дельту и один раз в конце (``done=True``)."""
-        capped = prepare_telegram_html_text(full_text or "")
+    async def _apply_text(capped: str, *, force: bool = False) -> None:
+        if not capped:
+            return
         now = time.monotonic()
         if state["sent_msg"] is None:
-            if not capped:
-                return
             state["sent_msg"] = await _send(capped)
             state["last_edit_mono"] = now
             state["last_text"] = capped
             return
-
+        if capped == state["last_text"]:
+            return
         elapsed = now - state["last_edit_mono"]
-        should_edit = done or elapsed >= interval
-        if should_edit and capped != state["last_text"]:
-            try:
-                await _edit(capped)
-                state["last_text"] = capped
-                state["last_edit_mono"] = now
-            except TelegramBadRequest:
-                pass
+        if not force and elapsed < interval:
+            return
+        if await _edit(capped):
+            state["last_text"] = capped
+            state["last_edit_mono"] = now
+        elif force:
+            logger.warning(
+                "stream reply finalize edit failed chat_id=%s message_id=%s len=%s",
+                state["sent_msg"].chat.id,
+                state["sent_msg"].message_id,
+                len(capped),
+            )
 
-    return on_stream
+    return StreamReplyHandle(_apply_text=_apply_text)

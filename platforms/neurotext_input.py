@@ -230,7 +230,7 @@ async def _reply_chat_turn_result(
     message: Message,
     result,
     *,
-    stream_cb,
+    stream_handle,
     table_context: str = "",
     prefer_table_error: bool = False,
     status_message: Message | None = None,
@@ -244,7 +244,9 @@ async def _reply_chat_turn_result(
                 reply_markup=paycat.shop_packages_keyboard(),
                 parse_mode=ParseMode.HTML,
             )
-        if stream_cb is None:
+        if stream_handle is not None and result.assistant_message:
+            await stream_handle.finalize(result.assistant_message)
+        elif stream_handle is None:
             if result.table_raw_json:
                 try:
                     delivered = await send_table_generator_pack(
@@ -568,7 +570,7 @@ async def handle_neurotext_user_message(
                         await _reply_chat_turn_result(
                             message,
                             fast_result,
-                            stream_cb=None,
+                            stream_handle=None,
                             table_context=f"[📝 SEO {file_name}]",
                             prefer_table_error=True,
                             status_message=status_msg,
@@ -611,7 +613,7 @@ async def handle_neurotext_user_message(
                         await _reply_chat_turn_result(
                             message,
                             fast_result,
-                            stream_cb=None,
+                            stream_handle=None,
                             table_context=f"[📊 Excel {file_name}]",
                             prefer_table_error=True,
                             status_message=status_msg,
@@ -774,7 +776,7 @@ async def handle_neurotext_user_message(
 
     table_context = raw if role_id == "table_generator" or is_xlsx_api_path else ""
     is_table_flow = role_id == "table_generator" or is_xlsx_api_path
-    stream_cb = None
+    stream_handle = None
 
     if is_table_flow:
         if status_msg is None:
@@ -812,7 +814,7 @@ async def handle_neurotext_user_message(
             and not user_image_data_url
         )
         async with chat_action_loop(deps.bot(), message.chat.id, "typing"):
-            stream_cb = (
+            stream_handle = (
                 create_throttled_stream_reply(message, deps.bot(), settings)
                 if use_stream
                 else None
@@ -823,7 +825,7 @@ async def handle_neurotext_user_message(
                 raw,
                 dialog_user_text=dialog_text,
                 user_image_data_url=user_image_data_url,
-                stream_callback=stream_cb,
+                stream_callback=stream_handle.on_stream if stream_handle else None,
                 text_role=role_id,
             )
 
@@ -835,7 +837,7 @@ async def handle_neurotext_user_message(
     await _reply_chat_turn_result(
         message,
         result,
-        stream_cb=None if is_table_flow else stream_cb,
+        stream_handle=None if is_table_flow else stream_handle,
         table_context=table_context,
         prefer_table_error=is_xlsx_api_path,
         status_message=status_msg if is_table_flow else None,

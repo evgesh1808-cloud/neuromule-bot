@@ -286,9 +286,11 @@ async def run_chat_turn(
 
     safe_stream_callback: StreamCallback | None = None
     if stream_callback is not None:
+        stream_fn = getattr(stream_callback, "on_stream", stream_callback)
+
         async def _safe_stream_callback(full_text: str, done: bool) -> None:
             try:
-                await stream_callback(
+                await stream_fn(
                     format_assistant_for_role(full_text, effective_role, for_stream=True),
                     done,
                 )

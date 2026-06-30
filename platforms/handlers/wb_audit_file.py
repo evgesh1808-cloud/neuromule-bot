@@ -145,7 +145,7 @@ async def wb_audit_file_process(message: Message, state: FSMContext) -> None:
         await _reply_chat_turn_result(
             message,
             fast_result,
-            stream_cb=None,
+            stream_handle=None,
             table_context=f"[📊 Excel {file_name}]",
             prefer_table_error=True,
             status_message=status_msg,

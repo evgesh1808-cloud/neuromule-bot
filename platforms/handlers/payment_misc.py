@@ -397,7 +397,7 @@ async def chat_handler(message: Message) -> None:
     max_len = settings.chat_max_message_chars
     raw = user_prompt[:max_len]
     dialog_text: str | None = user_text[:max_len] if quoted_text else None
-    stream_cb = (
+    stream_handle = (
         create_throttled_stream_reply(message, deps.bot(), settings)
         if settings.telegram_chat_streaming
         else None
@@ -408,10 +408,12 @@ async def chat_handler(message: Message) -> None:
             uid,
             raw,
             dialog_user_text=dialog_text,
-            stream_callback=stream_cb,
+            stream_callback=stream_handle.on_stream if stream_handle else None,
         )
     if result.outcome is ChatTurnOutcome.SUCCESS:
-        if stream_cb is None:
+        if stream_handle is not None and result.assistant_message:
+            await stream_handle.finalize(result.assistant_message)
+        elif stream_handle is None:
             await answer_chat_text(message, result.assistant_message or "", settings)
         return
     if result.outcome is ChatTurnOutcome.EMPTY_INPUT:
