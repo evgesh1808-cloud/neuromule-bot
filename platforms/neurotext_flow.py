@@ -285,44 +285,62 @@ async def handle_back_to_roles_menu(callback: CallbackQuery, state: FSMContext) 
 
 
 async def handle_clear_context(callback: CallbackQuery, state: FSMContext) -> None:
-    """🔔 Новый диалог — очищает ТОЛЬКО историю чата.
-
-    По ТЗ NeuroMule 🐎⚡️ ИИ-Память (``persistent_memory``) НЕ стирается этой
-    кнопкой для роли «Стандарт». Для остальных ролей — подсказка и VIP-кнопка
-    полного сброса долгосрочной памяти.
-    """
+    """🔔 Новый диалог в меню ИИ Ассистент — универсальная очистка чата, зачистка экрана и вывод VIP-интерфейса."""
     from services.repository import clear_user_dialog
 
-    await callback.answer("Контекст очищен")
-    await clear_user_dialog(callback.from_user.id)
+    user_id = callback.from_user.id
+
+    # ФИШКА 1: Авто-зачистка экрана (удаляем старую клавиатуру меню ИИ Ассистент)
+    if callback.message:
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+
+    # Базовый SQL-запрос: вырезаем оперативную историю сообщений сеанса из БД SQLite
+    await clear_user_dialog(user_id)
+    await callback.answer("Контекст Системы очищен")
+
+    # Определяем текущую активную роль пользователя и удерживаем её в FSM
     data = await state.get_data()
     role_id = normalize_text_role_id(str(data.get("text_role") or "standard"))
     await state.set_state(UserFlow.waiting_for_text_prompt)
     await state.update_data(text_role=role_id)
+
+    # ФИШКА 2: Создаем единую инлайн-кнопку тотального сброса ИИ-памяти
+    vip_kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🧠 Очистить долгосрочную память ИИ",
+                    callback_data="clear_persistent_memory_vip",
+                )
+            ]
+        ]
+    )
+
+    # ФИШКА 3: Разделенный, лаконичный и адаптивный премиальный микрокопирайтинг
+    if role_id == "standard":
+        welcome_text = (
+            "🐎⚡️ <b>История чата успешно очищена.</b>\n\n"
+            "<b>Отправьте новый запрос:</b>\n"
+            "• Напишите ваш вопрос, задачу или код.\n"
+            "• Загрузите файл (<code>.txt</code>, <code>.pdf</code>, <code>.docx</code>) для анализа.\n\n"
+            "<i>Для удаления долгосрочной памяти ИИ нажмите кнопку ниже:</i>"
+        )
+    else:
+        welcome_text = (
+            "🐎⚡️ <b>Режим очищен и готов к работе!</b>\n\n"
+            "Все системы сброшены в исходное состояние, а оперативная память нейронов чиста.\n\n"
+            "<b>NeuroMule готов к работе:</b> отправьте текстовый запрос, задачу, код или описание, "
+            "чтобы проложить новый маршрут.\n\n"
+            "<i>Для удаления долгосрочной памяти ИИ нажмите кнопку ниже:</i>"
+        )
+
+    # Чистое сообщение с VIP-кнопкой (без автоматического возврата меню ролей)
     if callback.message:
-        if role_id == "standard":
-            await callback.message.answer(msg.TXT_NEUROTEXT_CLEAR_DONE, parse_mode=ParseMode.HTML)
-        else:
-            welcome_text = (
-                "🐎⚡️ <b>Режим очищен и готов к работе!</b>\n\n"
-                "Все systems сброшены в исходное состояние, а оперативная память нейронов чиста.\n\n"
-                "<b>NeuroMule готов к работе:</b> отправьте текстовый запрос, задачу, код или описание, "
-                "чтобы проложить новый маршрут.\n\n"
-                "<i>Для удаления долгосрочной памяти ИИ нажмите кнопку ниже:</i>"
-            )
-            vip_kb = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        InlineKeyboardButton(
-                            text="🧠 Стереть долгосрочную память",
-                            callback_data="clear_persistent_memory_vip",
-                        )
-                    ]
-                ]
-            )
-            await callback.message.answer(
-                welcome_text,
-                parse_mode=ParseMode.HTML,
-                reply_markup=vip_kb,
-            )
-        await open_neurotext_from_callback(callback, state)
+        await callback.message.answer(
+            text=welcome_text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=vip_kb,
+        )
