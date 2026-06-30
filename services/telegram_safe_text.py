@@ -80,6 +80,14 @@ def _is_list_section_header(body: str) -> bool:
     return len(plain.split()) <= 15
 
 
+def collapse_excessive_line_breaks(text: str) -> str:
+    """Плотная верстка: не более одного \\n подряд (без двойных пустых строк)."""
+    if not text:
+        return ""
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    return re.sub(r"\n{2,}", "\n", normalized)
+
+
 def normalize_telegram_list_markup(text: str) -> str:
     """
     Постобработка верстки: снимает отступы слева и устаревшие маркеры •/-/*,

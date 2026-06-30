@@ -2,6 +2,9 @@
 Сборка payload для чат-комплишена и фоновое обновление persistent_memory.
 
 Работает поверх ``services.repository`` (aiosqlite).
+
+Выбор модели для прямого ответа пользователю в чате — в ``services/billing/chat_pipeline.py``
+(``plan_text_chat``) и ``services/use_cases/chat_turn.py``; этот модуль модель по тарифу не маршрутизирует.
 """
 
 from __future__ import annotations
@@ -15,6 +18,26 @@ from services import repository as repo
 from services.dialog_sanitize import sanitize_dialog_content_for_chat
 
 logger = logging.getLogger(__name__)
+
+# Фоновое сжатие persistent_memory — только бесплатный шлюз OpenRouter, без VIP-линии.
+_PERSISTENT_MEMORY_MODEL_CHAIN: tuple[str, ...] = (
+    "google/gemini-2.5-flash:free",
+    "google/gemini-2.5-flash-lite:free",
+)
+
+_PERSISTENT_MEMORY_FORMAT_RULE = (
+    "Всегда структурируй и разделяй итоговый текст памяти строго по трем блокам через эмодзи, "
+    "если данные присутствуют:\n"
+    "💼 Проекты (сфера деятельности, задачи);\n"
+    "📐 Стиль (предпочтения по ответам);\n"
+    "⚙️ Контекст (серверы, стек технологий).\n"
+    "Текст внутри блоков пиши ультра-кратко, тезисно, без воды."
+)
+
+_MEMORY_COMPRESSION_SYSTEM = (
+    "Ты — служебный компрессор долгосрочной памяти пользователя. "
+    "Сжимай факты из диалога в краткие тезисы на русском. Не отвечай пользователю напрямую."
+)
 
 
 async def build_openrouter_messages(
@@ -61,11 +84,43 @@ async def _dialog_transcript_for_memory(user_id: int, max_pairs: int = 5) -> str
     return "\n".join(lines)
 
 
+async def _ask_memory_compression(settings: Settings, prompt: str) -> str:
+    """Служебный вызов OpenRouter только через бесплатные модели (:free)."""
+    from services.ai_text import ask_ai_messages
+
+    try:
+        completion = await ask_ai_messages(
+            settings,
+            [
+                {"role": "system", "content": _MEMORY_COMPRESSION_SYSTEM},
+                {"role": "user", "content": prompt},
+            ],
+            timeout=25.0,
+            max_context_chars=50_000,
+            max_context_tokens=16_000,
+            models=list(_PERSISTENT_MEMORY_MODEL_CHAIN),
+            max_tokens=512,
+        )
+        return (completion.get("content") or "").strip()
+    except RuntimeError as e:
+        if str(e) in ("context_too_long", "context_too_long_tokens"):
+            return ""
+        logger.error("memory compression: all free models failed or unavailable")
+        return ""
+    except Exception:
+        logger.exception("memory compression unexpected error")
+        return ""
+
+
 async def maybe_refresh_persistent_memory(settings: Settings, user_id: int) -> None:
     """
     Периодически обновляет поле persistent_memory в БД через отдельный вызов модели.
 
     Вызывается в ``asyncio.create_task`` после ответа пользователю, ошибки глушатся в лог.
+
+    Модель жёстко зафиксирована на бесплатном шлюзе ``google/gemini-2.5-flash:free``
+    (резерв — ``google/gemini-2.5-flash-lite:free``) на всех тарифах; тариф пользователя
+    не учитывается. Платная VIP-линия не расходуется.
 
     Вход:
         settings — конфиг.
@@ -80,11 +135,11 @@ async def maybe_refresh_persistent_memory(settings: Settings, user_id: int) -> N
         transcript = await _dialog_transcript_for_memory(user_id)
         if len(transcript) < 40:
             return
-        from services.ai_text import ask_ai_text
-
-        prompt = build_memory_update_prompt(transcript[:12000])
-        raw = await ask_ai_text(settings, prompt, timeout_override=25.0)
-        cleaned = (raw or "").strip()
+        prompt = (
+            f"{build_memory_update_prompt(transcript[:12000])}\n\n"
+            f"{_PERSISTENT_MEMORY_FORMAT_RULE}"
+        )
+        cleaned = await _ask_memory_compression(settings, prompt)
         if not cleaned or "недоступен" in cleaned or "слишком длинным" in cleaned:
             return
         if len(cleaned) > 2000:

@@ -46,3 +46,10 @@ def test_non_table_role_unchanged_pipe_behavior() -> None:
     raw = "| not | a table row alone |"
     out = format_assistant_for_role(raw, "standard")
     assert "<pre>" not in out
+
+
+def test_format_assistant_collapses_double_newlines() -> None:
+    raw = "Первый абзац.\n\nВторой абзац.\n\n\n• пункт списка"
+    out = format_assistant_for_role(raw, "standard")
+    assert "\n\n" not in out
+    assert "Первый абзац.\nВторой абзац.\nпункт списка" in out

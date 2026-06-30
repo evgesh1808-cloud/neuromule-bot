@@ -29,6 +29,7 @@ from services.repository import dialog_append, dialog_pop_last_for_user, insert_
 from services.table_json import canonicalize_table_json
 from services.table_text_response import extract_table_ai_insights
 from services.telegram_safe_text import (
+    collapse_excessive_line_breaks,
     markdown_tables_to_telegram_html,
     markdown_to_html,
     normalize_telegram_list_markup,
@@ -70,7 +71,9 @@ def clean_markdown_to_html(text: str) -> str:
     """Обёртка для ответов чата: thinking → markdown → нормализация верстки → починка HTML."""
     text = strip_redacted_thinking(text)
     text = markdown_to_html(text)
-    return repair_telegram_html(normalize_telegram_list_markup(text))
+    text = normalize_telegram_list_markup(text)
+    text = collapse_excessive_line_breaks(text)
+    return repair_telegram_html(text)
 
 
 def format_assistant_for_role(text: str, text_role: str, *, for_stream: bool = False) -> str:
