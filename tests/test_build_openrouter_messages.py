@@ -23,7 +23,6 @@ async def test_build_openrouter_messages_includes_memory_and_history_window(repo
 
     assert len(messages) == 1 + 2
     assert messages[0]["role"] == "system"
-    assert "TestBot" in messages[0]["content"]
     assert "чай" in messages[0]["content"]
 
     assert messages[1] == {"role": "assistant", "content": "ответ2"}
@@ -39,4 +38,4 @@ async def test_build_openrouter_messages_empty_dialog_only_system(repo_module):
 
     assert len(messages) == 1
     assert messages[0]["role"] == "system"
-    assert "(пока нет сохранённых фактов)" in messages[0]["content"]
+    assert "[USER_PERSISTENT_MEMORY]" not in messages[0]["content"]

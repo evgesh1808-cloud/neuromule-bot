@@ -44,7 +44,9 @@ from services.billing.translator import (
     translate_prompt_to_english,
 )
 from services.billing.video_pipeline import VIDEO_SCENARIOS
+from services.photo_share import resolve_photo_share_url
 from services.repository import get_user_row
+from services.tariffs import normalize_tariff
 
 if TYPE_CHECKING:
     from aiogram import Bot
@@ -219,7 +221,13 @@ async def _send_generated_photo(
         f"🤖 Модель: {display}\n"
         f"💎 Стоимость: {task.charged_crystals} 💎"
     )
-    markup = result_photo_keyboard(task_id=task.task_id)
+    row = await get_user_row(task.user_id)
+    photo_share_url = resolve_photo_share_url(
+        normalize_tariff(row.tariff),
+        task.prompt or "",
+        task.user_id,
+    )
+    markup = result_photo_keyboard(task_id=task.task_id, photo_share_url=photo_share_url)
     if photo_url:
         sent = await bot.send_photo(
             chat_id,

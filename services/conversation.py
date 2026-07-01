@@ -15,6 +15,7 @@ import logging
 from config import Settings
 from content.chat_prompt import build_memory_update_prompt, build_system_prompt
 from services import repository as repo
+from services.dialog_platform import DEFAULT_DIALOG_PLATFORM
 from services.dialog_sanitize import sanitize_dialog_content_for_chat
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,7 @@ async def build_openrouter_messages(
     text_role: str = "standard",
     *,
     premium: bool = False,
+    platform: str = DEFAULT_DIALOG_PLATFORM,
 ) -> list[dict[str, str]]:
     """
     Формирует список сообщений в формате OpenAI Chat для OpenRouter.
@@ -63,7 +65,7 @@ async def build_openrouter_messages(
     """
     mem = await repo.get_persistent_memory(user_id)
     system = build_system_prompt(settings, mem, text_role, premium=premium)
-    rows = await repo.dialog_fetch_last(user_id, settings.chat_history_limit)
+    rows = await repo.dialog_fetch_last(user_id, settings.chat_history_limit, platform=platform)
     out: list[dict[str, str]] = [{"role": "system", "content": system}]
     for role, content in rows:
         if role in ("user", "assistant"):
@@ -71,13 +73,18 @@ async def build_openrouter_messages(
     return out
 
 
-async def _dialog_transcript_for_memory(user_id: int, max_pairs: int = 5) -> str:
+async def _dialog_transcript_for_memory(
+    user_id: int,
+    max_pairs: int = 5,
+    *,
+    platform: str = DEFAULT_DIALOG_PLATFORM,
+) -> str:
     """
     Собирает текст последних реплик для служебного запроса «сжать память».
 
     Возвращает многострочную строку или пустую, если истории нет.
     """
-    rows = await repo.dialog_fetch_last(user_id, max_pairs * 2)
+    rows = await repo.dialog_fetch_last(user_id, max_pairs * 2, platform=platform)
     lines: list[str] = []
     for role, content in rows:
         lines.append(f"{role}: {content}")
@@ -112,7 +119,12 @@ async def _ask_memory_compression(settings: Settings, prompt: str) -> str:
         return ""
 
 
-async def maybe_refresh_persistent_memory(settings: Settings, user_id: int) -> None:
+async def maybe_refresh_persistent_memory(
+    settings: Settings,
+    user_id: int,
+    *,
+    platform: str = DEFAULT_DIALOG_PLATFORM,
+) -> None:
     """
     Периодически обновляет поле persistent_memory в БД через отдельный вызов модели.
 
@@ -129,10 +141,10 @@ async def maybe_refresh_persistent_memory(settings: Settings, user_id: int) -> N
     Возвращает: ничего.
     """
     try:
-        n = await repo.dialog_total_messages(user_id)
+        n = await repo.dialog_total_messages(user_id, platform=platform)
         if n == 0 or n % 10 != 0:
             return
-        transcript = await _dialog_transcript_for_memory(user_id)
+        transcript = await _dialog_transcript_for_memory(user_id, platform=platform)
         if len(transcript) < 40:
             return
         prompt = (
@@ -149,7 +161,12 @@ async def maybe_refresh_persistent_memory(settings: Settings, user_id: int) -> N
         logger.exception("persistent_memory refresh failed user_id=%s", user_id)
 
 
-def schedule_memory_refresh(settings: Settings, user_id: int) -> None:
+def schedule_memory_refresh(
+    settings: Settings,
+    user_id: int,
+    *,
+    platform: str = DEFAULT_DIALOG_PLATFORM,
+) -> None:
     """
     Планирует фоновое обновление памяти (не блокирует хендлер).
 
@@ -160,4 +177,4 @@ def schedule_memory_refresh(settings: Settings, user_id: int) -> None:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         return
-    loop.create_task(maybe_refresh_persistent_memory(settings, user_id))
+    loop.create_task(maybe_refresh_persistent_memory(settings, user_id, platform=platform))

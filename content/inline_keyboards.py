@@ -24,15 +24,36 @@ def _gallery_share_row(task_id: str | None = None) -> list[InlineKeyboardButton]
     ]
 
 
-def result_photo_keyboard(task_id: str | None = None) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
+def result_photo_keyboard(
+    task_id: str | None = None,
+    *,
+    photo_share_url: str | None = None,
+) -> InlineKeyboardMarkup:
+    """Клавиатура под сгенерированным фото.
+
+    B2B-правило: ``photo_share_url`` (↪️ Поделиться результатом) — только FREE,
+    всегда на **первой** строке. MINI/SMART/ULTRA передают ``photo_share_url=None``.
+    Ряд «🚀 Переслать другу в ЛС`` (``switch_inline_query``) — на всех тарифах.
+    """
+    rows: list[list[InlineKeyboardButton]] = []
+    if photo_share_url:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=msg.TXT_PHOTO_SHARE_RESULT_BTN,
+                    url=photo_share_url,
+                )
+            ]
+        )
+    rows.extend(
+        [
             [InlineKeyboardButton(text="🪄 Оживить это фото (Видео)", callback_data=msg.CB_RESULT_ANIMATE)],
             [InlineKeyboardButton(text="🔄 Повторить генерацию", callback_data=msg.CB_RESULT_REPEAT_PHOTO)],
             [InlineKeyboardButton(text="📥 Скачать в максимальном качестве — PRO", callback_data=msg.CB_RESULT_HD_PRO)],
             _gallery_share_row(task_id),
         ]
     )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def result_video_keyboard() -> InlineKeyboardMarkup:

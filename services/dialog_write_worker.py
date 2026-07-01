@@ -25,6 +25,7 @@ class _CommitJob:
     user_id: int
     assistant_text: str
     prune_keep: int
+    platform: str
     done: asyncio.Future[None]
 
 
@@ -58,8 +59,17 @@ async def start_dialog_write_worker() -> None:
             try:
                 text_to_save = _normalize_assistant_text(job.assistant_text)
                 async with _worker_lock:
-                    await repo.dialog_append(job.user_id, "assistant", text_to_save)
-                    await repo.dialog_prune_keep_last(job.user_id, job.prune_keep)
+                    await repo.dialog_append(
+                        job.user_id,
+                        "assistant",
+                        text_to_save,
+                        platform=job.platform,
+                    )
+                    await repo.dialog_prune_keep_last(
+                        job.user_id,
+                        job.prune_keep,
+                        platform=job.platform,
+                    )
                 if not job.done.done():
                     job.done.set_result(None)
             except Exception as e:
@@ -76,7 +86,13 @@ async def start_dialog_write_worker() -> None:
     _worker_task = asyncio.create_task(_run(), name="dialog_write_worker")
 
 
-async def commit_assistant_turn_queued(user_id: int, assistant_text: str | None, prune_keep: int) -> None:
+async def commit_assistant_turn_queued(
+    user_id: int,
+    assistant_text: str | None,
+    prune_keep: int,
+    *,
+    platform: str | None = None,
+) -> None:
     """
     Сохраняет реплику ассистента и prune: через очередь воркера или напрямую (если воркер не запущен).
 
@@ -84,18 +100,21 @@ async def commit_assistant_turn_queued(user_id: int, assistant_text: str | None,
     """
     from config import settings
 
+    from services.dialog_platform import DEFAULT_DIALOG_PLATFORM
+
     assistant_text = _normalize_assistant_text(assistant_text)
+    platform_key = platform or DEFAULT_DIALOG_PLATFORM
 
     if not settings.dialog_write_worker_enabled or _queue is None:
         from services.dialog_history import serialized_assistant_commit
         from services.repository import dialog_append, dialog_prune_keep_last
 
         async with serialized_assistant_commit():
-            await dialog_append(user_id, "assistant", assistant_text)
-            await dialog_prune_keep_last(user_id, prune_keep)
+            await dialog_append(user_id, "assistant", assistant_text, platform=platform_key)
+            await dialog_prune_keep_last(user_id, prune_keep, platform=platform_key)
         return
 
     loop = asyncio.get_running_loop()
     fut: asyncio.Future[None] = loop.create_future()
-    await _queue.put(_CommitJob(user_id, assistant_text, prune_keep, fut))
+    await _queue.put(_CommitJob(user_id, assistant_text, prune_keep, platform_key, fut))
     await fut

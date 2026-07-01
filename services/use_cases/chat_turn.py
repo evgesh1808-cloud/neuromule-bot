@@ -20,11 +20,13 @@ from services import metrics
 from services.ai_text import StreamCallback, ask_ai_messages, estimate_messages_prompt_tokens
 from services.dialog_sanitize import compact_table_history_from_json
 from services.dialog_write_worker import commit_assistant_turn_queued
+from services.dialog_platform import DEFAULT_DIALOG_PLATFORM
 from services.neurotext_media import build_openrouter_user_content
 from services.rate_limit_service import allow_request, rollback_last
 from services.billing import billing
 from services.billing.chat_pipeline import prepare_openrouter_chat_messages
 from services.billing.store import refund_charge
+from services.context_pruning import prune_context_messages
 from services.repository import dialog_append, dialog_pop_last_for_user, insert_table_report
 from services.table_json import canonicalize_table_json
 from services.table_text_response import extract_table_ai_insights
@@ -190,6 +192,7 @@ async def run_chat_turn(
     http_client: object | None = None,
     stream_callback: StreamCallback | None = None,
     text_role: str = "standard",
+    platform: str = DEFAULT_DIALOG_PLATFORM,
 ) -> ChatTurnResult:
     """
     Выполняет один «ход» чата с нейросетью (без отправки сообщений в Telegram).
@@ -233,12 +236,13 @@ async def run_chat_turn(
             return ChatTurnResult(outcome=ChatTurnOutcome.ROLE_NOT_ALLOWED)
         return ChatTurnResult(outcome=ChatTurnOutcome.INSUFFICIENT_BALANCE)
 
-    await dialog_append(user_id, "user", history_text)
+    await dialog_append(user_id, "user", history_text, platform=platform)
     payload = await conv.build_openrouter_messages(
         settings,
         user_id,
         effective_role,
         premium=plan.use_premium_prompt,
+        platform=platform,
     )
     user_content = build_openrouter_user_content(
         raw_user_text,
@@ -256,12 +260,14 @@ async def run_chat_turn(
     def _estimate_payload_tokens(msgs: list) -> int:
         return estimate_messages_prompt_tokens(msgs, settings=settings)
 
-    est_tokens = _estimate_payload_tokens(payload)
-    while est_tokens > settings.chat_max_context_tokens_est and len(payload) > 2:
-        payload.pop(1)
-        est_tokens = _estimate_payload_tokens(payload)
-    if est_tokens > settings.chat_max_context_tokens_est:
-        await dialog_pop_last_for_user(user_id)
+    payload, fits_limit = prune_context_messages(
+        payload,
+        max_messages=settings.chat_history_limit,
+        max_tokens_est=settings.chat_max_context_tokens_est,
+        estimate_tokens=_estimate_payload_tokens,
+    )
+    if not fits_limit:
+        await dialog_pop_last_for_user(user_id, platform=platform)
         if charge_id:
             await refund_charge(charge_id)
         await rollback_last(settings, user_id)
@@ -314,7 +320,7 @@ async def run_chat_turn(
         )
     except Exception:
         logger.exception("run_chat_turn: OpenRouter failed user_id=%s", user_id)
-        await dialog_pop_last_for_user(user_id)
+        await dialog_pop_last_for_user(user_id, platform=platform)
         if charge_id:
             await refund_charge(charge_id)
         await rollback_last(settings, user_id)
@@ -350,9 +356,10 @@ async def run_chat_turn(
                 user_id,
                 compact_table_history_from_json(table_json, table_subrole=effective_role),
                 settings.dialog_prune_keep,
+                platform=platform,
             )
             report_id = await insert_table_report(user_id, table_json)
-            conv.schedule_memory_refresh(settings, user_id)
+            conv.schedule_memory_refresh(settings, user_id, platform=platform)
             _record_chat_success_billing(
                 role=effective_role,
                 energy_cost=plan.energy_cost,
@@ -374,7 +381,7 @@ async def run_chat_turn(
                 raw_answer[:500],
                 exc_info=True,
             )
-            await dialog_pop_last_for_user(user_id)
+            await dialog_pop_last_for_user(user_id, platform=platform)
             if charge_id:
                 await refund_charge(charge_id)
             await rollback_last(settings, user_id)
@@ -385,8 +392,8 @@ async def run_chat_turn(
         ans_trim = ans_trim[: min(settings.chat_max_message_chars, 4090)]
     else:
         ans_trim = ans_trim[: settings.chat_max_message_chars]
-    await commit_assistant_turn_queued(user_id, ans_trim, settings.dialog_prune_keep)
-    conv.schedule_memory_refresh(settings, user_id)
+    await commit_assistant_turn_queued(user_id, ans_trim, settings.dialog_prune_keep, platform=platform)
+    conv.schedule_memory_refresh(settings, user_id, platform=platform)
     _record_chat_success_billing(
         role=effective_role,
         energy_cost=plan.energy_cost,

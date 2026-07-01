@@ -477,7 +477,7 @@ class Settings(BaseSettings):
     crystals_100_rub_kopecks: Annotated[int, _coerce_int(149000)] = 149000
     crystals_100_stars: Annotated[int, _coerce_int(1080)] = 1080
 
-    chat_history_limit: Annotated[int, _coerce_int(10)] = 10
+    chat_history_limit: Annotated[int, _coerce_int(6)] = 6
     chat_max_message_chars: Annotated[int, _coerce_int(8000)] = 8000
     dialog_prune_keep: Annotated[int, _coerce_int(50)] = 50
     chat_rate_limit_per_minute: Annotated[int, _coerce_int(30)] = 30
@@ -503,9 +503,9 @@ class Settings(BaseSettings):
     # Лимит ответа модели (выходные токены) — FREE / базовый чат; 500–800 — разумный дефолт.
     openrouter_max_output_tokens: Annotated[int, _coerce_int(640)] = 640
     # Лимит ответа для платных тарифов и экспертных ролей за 💎.
-    openrouter_premium_max_output_tokens: Annotated[int, _coerce_int(2500)] = 2500
+    openrouter_premium_max_output_tokens: Annotated[int, _coerce_int(1500)] = 1500
     # Роль table_generator: компактный JSON вместо Markdown-таблицы.
-    openrouter_table_max_output_tokens: Annotated[int, _coerce_int(1024)] = 1024
+    openrouter_table_max_output_tokens: Annotated[int, _coerce_int(1500)] = 1500
 
     # Стриминг в Telegram: минимальный интервал между edit_message_text (антифлуд API).
     telegram_chat_streaming: bool = True

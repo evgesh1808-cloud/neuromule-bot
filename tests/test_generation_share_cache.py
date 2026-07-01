@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 
+from content import messages as msg
 from services import generation_jobs, last_share_media
 from services.generation_jobs import GenTask
 
@@ -92,6 +93,11 @@ async def test_photo_worker_caches_share_media(monkeypatch) -> None:
     user_id = 70_001
     last_share_media.clear(user_id)
 
+    async def _fake_user_row(uid: int):
+        return SimpleNamespace(tariff="Free", crystals=10)
+
+    monkeypatch.setattr(generation_jobs, "get_user_row", _fake_user_row)
+
     # Стабим внешний клиент Imagen — возвращаем URL, никакого HTTP не нужно.
     async def _fake_generate(model_key: str, prompt: str):
         return "https://cdn.fake/imagen.png"
@@ -121,6 +127,60 @@ async def test_photo_worker_caches_share_media(monkeypatch) -> None:
     assert entry.file_id == "tg_photo_xl"     # самый крупный размер
     assert entry.media_url == "https://cdn.fake/imagen.png"
     assert entry.prompt == "epic test"
+
+    markup = log.photo_calls[0]["kwargs"]["reply_markup"]
+    share_btn = markup.inline_keyboard[0][0]
+    assert share_btn.url is not None
+    assert share_btn.url.startswith("https://t.me/share/url?")
+    assert "ref70001" in share_btn.url
+    assert msg.TXT_PHOTO_SHARE_RESULT_BTN in share_btn.text
+
+    gallery_row = markup.inline_keyboard[-1]
+    forward_btns = [b for b in gallery_row if b.switch_inline_query]
+    assert len(forward_btns) == 1
+    assert forward_btns[0].text == msg.TXT_GALLERY_FORWARD_FRIEND_BTN
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tariff", ("Smart", "Mini", "Ultra"))
+async def test_photo_worker_paid_tariff_has_no_share_button(monkeypatch, tariff: str) -> None:
+    log = _SentLog()
+    bot = _make_bot(log)
+    user_id = 70_002
+
+    async def _fake_generate(model_key: str, prompt: str):
+        return "https://cdn.fake/imagen.png"
+
+    async def _fake_user_row(uid: int):
+        return SimpleNamespace(tariff=tariff, crystals=50)
+
+    monkeypatch.setattr(generation_jobs, "_generate_photo_result", _fake_generate)
+    monkeypatch.setattr(generation_jobs, "get_user_row", _fake_user_row)
+
+    class _NoopAction:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(generation_jobs, "chat_action_loop", lambda *a, **kw: _NoopAction())
+
+    task = _task(user_id=user_id, task_id="ph_paid", task_type="photo", bot=bot)
+    await generation_jobs._photo_stub_worker(task)
+
+    markup = log.photo_calls[0]["kwargs"]["reply_markup"]
+    for row in markup.inline_keyboard:
+        for btn in row:
+            assert btn.url is None or "share/url" not in (btn.url or "")
+            assert msg.TXT_PHOTO_SHARE_RESULT_BTN not in (btn.text or "")
+
+    first_btn = markup.inline_keyboard[0][0]
+    assert first_btn.text.startswith("🪄")
+
+    gallery_row = markup.inline_keyboard[-1]
+    forward_btns = [b for b in gallery_row if b.switch_inline_query]
+    assert len(forward_btns) == 1
+    assert forward_btns[0].text == msg.TXT_GALLERY_FORWARD_FRIEND_BTN
 
 
 # ─── video ──────────────────────────────────────────────────────────────────

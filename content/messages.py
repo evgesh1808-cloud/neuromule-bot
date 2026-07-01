@@ -102,6 +102,7 @@ TXT_REVIEW_REJECT_BTN = "❌ Отклонить"
 
 TXT_GALLERY_SHARE_BTN = "📢 Поделиться в Галерее"
 TXT_GALLERY_FORWARD_FRIEND_BTN = "🚀 Переслать другу в ЛС"
+TXT_PHOTO_SHARE_RESULT_BTN = "↪️ Поделиться результатом"
 TXT_GALLERY_VIRAL_INVITE_BTN = "🎸 Создать свой шедевр в NeuroMule"
 TXT_GALLERY_CONFIRM_TEXT = (
     "📢 <b>Публикация в Галерее NeuroMule 2026</b>\n\n"

@@ -11,6 +11,7 @@ from pathlib import Path
 import aiosqlite
 
 from services.db_timing import TimedQuery
+from services.dialog_platform import DEFAULT_DIALOG_PLATFORM, normalize_dialog_platform
 
 
 def _resolve_db_path() -> str:
@@ -263,15 +264,26 @@ async def _migrate_dialog_messages(db: aiosqlite.Connection) -> None:
         CREATE TABLE IF NOT EXISTS dialog_messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
+            platform TEXT NOT NULL DEFAULT 'tg',
             role TEXT NOT NULL,
             content TEXT NOT NULL,
             created_at TEXT NOT NULL
         )
         """
     )
+    async with db.execute("PRAGMA table_info(dialog_messages)") as cur:
+        cols = {row[1] for row in await cur.fetchall()}
+    if "platform" not in cols:
+        await db.execute(
+            "ALTER TABLE dialog_messages ADD COLUMN platform TEXT NOT NULL DEFAULT 'tg'"
+        )
     await db.execute(
         "CREATE INDEX IF NOT EXISTS idx_dialog_messages_user_created "
         "ON dialog_messages (user_id, created_at)"
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_dialog_messages_user_platform_created "
+        "ON dialog_messages (user_id, platform, created_at)"
     )
 
 
@@ -1035,71 +1047,110 @@ async def try_redeem_promo(user_id: int, raw_code: str) -> tuple[bool, str, int,
     return True, "redeemed", energy_bonus, crystal_bonus
 
 
-async def dialog_append(user_id: int, role: str, content: str) -> None:
+async def dialog_append(
+    user_id: int,
+    role: str,
+    content: str,
+    *,
+    platform: str = DEFAULT_DIALOG_PLATFORM,
+) -> None:
     if role not in ("user", "assistant"):
         raise ValueError("role must be 'user' or 'assistant'")
+    platform_key = normalize_dialog_platform(platform)
     await ensure_user(user_id)
     ts = datetime.now(timezone.utc).isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "INSERT INTO dialog_messages (user_id, role, content, created_at) VALUES (?, ?, ?, ?)",
-            (user_id, role, content, ts),
+            """
+            INSERT INTO dialog_messages (user_id, platform, role, content, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (user_id, platform_key, role, content, ts),
         )
         await db.commit()
 
 
-async def dialog_fetch_last(user_id: int, limit: int) -> list[tuple[str, str]]:
+async def dialog_fetch_last(
+    user_id: int,
+    limit: int,
+    *,
+    platform: str = DEFAULT_DIALOG_PLATFORM,
+) -> list[tuple[str, str]]:
     if limit <= 0:
         return []
+    platform_key = normalize_dialog_platform(platform)
     await ensure_user(user_id)
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
             """
             SELECT role, content FROM dialog_messages
-            WHERE user_id = ?
+            WHERE user_id = ? AND platform = ?
             ORDER BY datetime(created_at) DESC, id DESC
             LIMIT ?
             """,
-            (user_id, limit),
+            (user_id, platform_key, limit),
         ) as cur:
             rows = list(await cur.fetchall())
     rows.reverse()
     return [(str(r[0]), str(r[1])) for r in rows]
 
 
-async def dialog_total_messages(user_id: int) -> int:
+async def dialog_total_messages(
+    user_id: int,
+    *,
+    platform: str = DEFAULT_DIALOG_PLATFORM,
+) -> int:
+    platform_key = normalize_dialog_platform(platform)
     await ensure_user(user_id)
     async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT COUNT(*) FROM dialog_messages WHERE user_id = ?", (user_id,)) as cur:
+        async with db.execute(
+            "SELECT COUNT(*) FROM dialog_messages WHERE user_id = ? AND platform = ?",
+            (user_id, platform_key),
+        ) as cur:
             row = await cur.fetchone()
     return int(row[0])
 
 
-async def dialog_pop_last_for_user(user_id: int) -> None:
+async def dialog_pop_last_for_user(
+    user_id: int,
+    *,
+    platform: str = DEFAULT_DIALOG_PLATFORM,
+) -> None:
+    platform_key = normalize_dialog_platform(platform)
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """
             DELETE FROM dialog_messages
             WHERE id = (
                 SELECT id FROM dialog_messages
-                WHERE user_id = ?
+                WHERE user_id = ? AND platform = ?
                 ORDER BY datetime(created_at) DESC, id DESC
                 LIMIT 1
             )
             """,
-            (user_id,),
+            (user_id, platform_key),
         )
         await db.commit()
 
 
-async def dialog_prune_keep_last(user_id: int, keep: int) -> None:
+async def dialog_prune_keep_last(
+    user_id: int,
+    keep: int,
+    *,
+    platform: str = DEFAULT_DIALOG_PLATFORM,
+) -> None:
     if keep <= 0:
         return
+    platform_key = normalize_dialog_platform(platform)
     await ensure_user(user_id)
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
-            "SELECT id FROM dialog_messages WHERE user_id = ? ORDER BY datetime(created_at) ASC, id ASC",
-            (user_id,),
+            """
+            SELECT id FROM dialog_messages
+            WHERE user_id = ? AND platform = ?
+            ORDER BY datetime(created_at) ASC, id ASC
+            """,
+            (user_id, platform_key),
         ) as cur:
             rows = await cur.fetchall()
         ids = [int(r[0]) for r in rows]
@@ -1141,10 +1192,18 @@ async def clear_user_dialog_and_memory(user_id: int) -> None:
         await db.commit()
 
 
-async def clear_user_dialog(user_id: int) -> None:
-    """Очищает только историю диалога. ИИ-Память (persistent_memory) сохраняется."""
+async def clear_user_dialog(
+    user_id: int,
+    *,
+    platform: str = DEFAULT_DIALOG_PLATFORM,
+) -> None:
+    """Очищает историю диалога на одной платформе. ИИ-Память (persistent_memory) сохраняется."""
+    platform_key = normalize_dialog_platform(platform)
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("DELETE FROM dialog_messages WHERE user_id = ?", (user_id,))
+        await db.execute(
+            "DELETE FROM dialog_messages WHERE user_id = ? AND platform = ?",
+            (user_id, platform_key),
+        )
         await db.commit()
 
 

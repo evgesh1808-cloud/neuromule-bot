@@ -286,6 +286,7 @@ async def handle_back_to_roles_menu(callback: CallbackQuery, state: FSMContext) 
 
 async def handle_clear_context(callback: CallbackQuery, state: FSMContext) -> None:
     """🔔 Новый диалог в меню ИИ Ассистент — универсальная очистка чата, зачистка экрана и вывод VIP-интерфейса."""
+    from services.dialog_platform import DIALOG_PLATFORM_TELEGRAM
     from services.repository import clear_user_dialog
 
     user_id = callback.from_user.id
@@ -298,7 +299,7 @@ async def handle_clear_context(callback: CallbackQuery, state: FSMContext) -> No
             pass
 
     # Базовый SQL-запрос: вырезаем оперативную историю сообщений сеанса из БД SQLite
-    await clear_user_dialog(user_id)
+    await clear_user_dialog(user_id, platform=DIALOG_PLATFORM_TELEGRAM)
     await callback.answer("Контекст Системы очищен")
 
     # Определяем текущую активную роль пользователя и удерживаем её в FSM
