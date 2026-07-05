@@ -19,7 +19,7 @@ from services.telegram_safe_text import prepare_telegram_html_text, sanitize_tel
 
 if TYPE_CHECKING:
     from aiogram import Bot
-    from aiogram.types import Message
+    from aiogram.types import InlineKeyboardMarkup, Message
 
 logger = logging.getLogger(__name__)
 
@@ -39,9 +39,14 @@ class StreamReplyHandle:
         capped = prepare_telegram_html_text(full_text or "")
         await self._apply_text(capped, force=done)
 
-    async def finalize(self, full_text: str) -> None:
+    async def finalize(
+        self,
+        full_text: str,
+        *,
+        reply_markup: "InlineKeyboardMarkup | None" = None,
+    ) -> None:
         capped = prepare_telegram_html_text(full_text or "")
-        await self._apply_text(capped, force=True)
+        await self._apply_text(capped, force=True, reply_markup=reply_markup)
 
 
 def create_throttled_stream_reply(message: "Message", bot: "Bot", settings: Settings) -> StreamReplyHandle:
@@ -93,7 +98,12 @@ def create_throttled_stream_reply(message: "Message", bot: "Bot", settings: Sett
         except TelegramBadRequest:
             return False
 
-    async def _apply_text(capped: str, *, force: bool = False) -> None:
+    async def _apply_text(
+        capped: str,
+        *,
+        force: bool = False,
+        reply_markup: "InlineKeyboardMarkup | None" = None,
+    ) -> None:
         if not capped:
             return
         now = time.monotonic()
@@ -101,21 +111,31 @@ def create_throttled_stream_reply(message: "Message", bot: "Bot", settings: Sett
             state["sent_msg"] = await _send(capped)
             state["last_edit_mono"] = now
             state["last_text"] = capped
+            if reply_markup is not None:
+                await _apply_reply_markup(reply_markup)
             return
-        if capped == state["last_text"]:
+        if capped == state["last_text"] and reply_markup is None:
             return
         elapsed = now - state["last_edit_mono"]
-        if not force and elapsed < interval:
+        if not force and elapsed < interval and reply_markup is None:
             return
-        if await _edit(capped):
-            state["last_text"] = capped
-            state["last_edit_mono"] = now
-        elif force:
-            logger.warning(
-                "stream reply finalize edit failed chat_id=%s message_id=%s len=%s",
-                state["sent_msg"].chat.id,
-                state["sent_msg"].message_id,
-                len(capped),
+        if capped != state["last_text"]:
+            if await _edit(capped):
+                state["last_text"] = capped
+                state["last_edit_mono"] = now
+        if reply_markup is not None:
+            await _apply_reply_markup(reply_markup)
+
+    async def _apply_reply_markup(reply_markup: "InlineKeyboardMarkup") -> None:
+        if state["sent_msg"] is None:
+            return
+        try:
+            await bot.edit_message_reply_markup(
+                chat_id=state["sent_msg"].chat.id,
+                message_id=state["sent_msg"].message_id,
+                reply_markup=reply_markup,
             )
+        except TelegramBadRequest:
+            logger.debug("stream reply edit_reply_markup failed", exc_info=True)
 
     return StreamReplyHandle(_apply_text=_apply_text)

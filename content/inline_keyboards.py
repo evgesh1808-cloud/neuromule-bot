@@ -1,5 +1,6 @@
 """Inline-клавиатуры (aiogram), чтобы не тянуть types в messages.py."""
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from content import messages as msg
 
@@ -103,6 +104,33 @@ def music_studio_keyboard() -> InlineKeyboardMarkup:
             ],
         ]
     )
+
+
+def get_blogger_keyboard(post_id: str) -> InlineKeyboardMarkup:
+    """Клавиатура конструктора режима «Блогер» под последним постом.
+
+    ``post_id`` связывает кнопки с черновиком в in-memory кэше (``blogger_post_cache``).
+    """
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(
+            text="#️⃣ Подобрать хэштеги",
+            callback_data=f"{msg.CB_BLOG_HASH_PREFIX}{post_id}",
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text="🔄 Адаптировать (Reels/Shorts)",
+            callback_data=f"{msg.CB_BLOG_ADAPT_PREFIX}{post_id}",
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text="🎨 Создать AI-обложку",
+            callback_data=f"{msg.CB_BLOG_ART_PREFIX}{post_id}",
+        )
+    )
+    return builder.as_markup()
 
 
 def result_music_keyboard_pro(task_id: str | None = None) -> InlineKeyboardMarkup:

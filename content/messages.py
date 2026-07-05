@@ -17,6 +17,9 @@ CB_MUSIC_CLIP = "music_clip"
 CB_MUSIC_EXTEND = "music_extend"
 CB_MUSIC_VOICE_CLONE = "music_voice_clone"
 CB_MUSIC_PUBLISH = "music_publish"
+CB_BLOG_HASH_PREFIX = "blog_hash:"      # blog_hash:<post_id>
+CB_BLOG_ADAPT_PREFIX = "blog_adapt:"    # blog_adapt:<post_id>
+CB_BLOG_ART_PREFIX = "blog_art:"        # blog_art:<post_id>
 
 # ─── TOS-gate (Telegra.ph оферта/политика/подписка) ─────────────────────────
 CB_ACCEPT_LEGAL_TOS = "accept_legal_tos"
@@ -1283,6 +1286,14 @@ TXT_MUSIC_EXTEND_NO_HISTORY = (
 TXT_MUSIC_PUBLISH_NO_CHANNEL = (
     "📢 Публичная ИИ-радио-витрина пока в настройке. Скоро трек сможет "
     "выкладываться в наш канал в один клик 🐎⚡️."
+)
+TXT_BLOGGER_POST_NOT_FOUND = (
+    "⚠️ Не нашёл этот черновик поста. Сгенерируй новый пост в режиме "
+    "«📱 Блогер» — кнопки конструктора привязаны к последнему ответу."
+)
+TXT_BLOGGER_UPSELL_SOON = (
+    "🚧 Эта кнопка конструктора блогера скоро заработает в полном объёме. "
+    "Пока можно копировать блоки из ответа вручную 🐎⚡️."
 )
 TXT_RESULT_ANIMATE_CAPTION = (
     "✨ ОЖИВЛЕНИЕ ГОТОВО!\n\n"

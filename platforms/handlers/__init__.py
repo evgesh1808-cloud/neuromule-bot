@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from aiogram import Dispatcher
 
-from platforms import music_studio
+from platforms import blogger_flow, music_studio
 from platforms.handlers import (
     gallery_flow,
     generation_cb,
@@ -34,6 +34,7 @@ def register_all(dp: Dispatcher) -> None:
         start_onboarding,
         start_admin,
         menu_support,
+        blogger_flow,
         music_studio,
         inline_flow,
         gallery_flow,

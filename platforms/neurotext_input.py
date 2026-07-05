@@ -61,6 +61,18 @@ from services.use_cases.chat_turn import ChatTurnOutcome, ChatTurnResult, run_ch
 
 logger = logging.getLogger(__name__)
 
+_BLOGGER_ROLE_IDS = frozenset({"blogger_content", "blogger"})
+
+
+def _blogger_reply_markup(user_id: int, assistant_message: str):
+    """Кэширует черновик поста и возвращает клавиатуру конструктора блогера."""
+    from content.inline_keyboards import get_blogger_keyboard
+    from services import blogger_post_cache
+
+    post_id = blogger_post_cache.remember(user_id, assistant_message)
+    return get_blogger_keyboard(post_id)
+
+
 _ZERO_WIDTH_CHARS = ("\u200b", "\u200c", "\u200d", "\ufeff", "\xa0")
 
 
@@ -245,7 +257,13 @@ async def _reply_chat_turn_result(
                 parse_mode=ParseMode.HTML,
             )
         if stream_handle is not None and result.assistant_message:
-            await stream_handle.finalize(result.assistant_message)
+            blogger_kb = None
+            if (result.effective_text_role or "") in _BLOGGER_ROLE_IDS:
+                blogger_kb = _blogger_reply_markup(
+                    message.from_user.id,
+                    result.assistant_message,
+                )
+            await stream_handle.finalize(result.assistant_message, reply_markup=blogger_kb)
         elif stream_handle is None:
             if result.table_raw_json:
                 try:
@@ -283,7 +301,18 @@ async def _reply_chat_turn_result(
                         parse_mode=ParseMode.HTML,
                     )
                 else:
-                    await answer_chat_text(message, result.assistant_message, settings)
+                    blogger_kb = None
+                    if (result.effective_text_role or "") in _BLOGGER_ROLE_IDS:
+                        blogger_kb = _blogger_reply_markup(
+                            message.from_user.id,
+                            result.assistant_message,
+                        )
+                    await answer_chat_text(
+                        message,
+                        result.assistant_message,
+                        settings,
+                        reply_markup=blogger_kb,
+                    )
         return
     await _clear_table_status_on_failure(status_message)
     if result.outcome is ChatTurnOutcome.EMPTY_INPUT:
