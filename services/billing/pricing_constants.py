@@ -47,3 +47,6 @@ COST_CUSTOM_VIDEO = _v.custom_video
 # --- Human Design ---
 COST_HD_FULL = catalog.hd_full_report_cost
 COST_HD_MATCH = catalog.hd_match_cost
+
+# --- Блогер: мультиформатная адаптация ---
+BLOGGER_ADAPT_COST = 3

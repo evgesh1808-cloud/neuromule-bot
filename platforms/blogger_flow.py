@@ -11,9 +11,17 @@ from aiogram.types import CallbackQuery
 
 from config import settings
 from content import messages as msg
-from content.inline_keyboards import get_blogger_keyboard
+from content.inline_keyboards import get_blogger_adapt_keyboard, get_blogger_keyboard
 from services import payments_catalog as paycat
 from services import blogger_post_cache
+from services.billing import refund_charge
+from services.billing.blogger_pipeline import spend_blogger_adapt
+from services.blogger_adaptation import (
+    adapt_blogger_post_body,
+    adapt_platform_label,
+    is_valid_adapt_platform,
+)
+from services.god_mode import billing_bypass
 from services.telegram_safe_text import prepare_telegram_html_text
 
 logger = logging.getLogger(__name__)
@@ -28,6 +36,21 @@ def _post_id_from_callback(data: str, prefix: str) -> str | None:
         return None
     post_id = data[len(prefix) :].strip()
     return post_id or None
+
+
+def _parse_run_adapt(data: str) -> tuple[str, str] | None:
+    prefix = msg.CB_BLOG_RUN_ADAPT_PREFIX
+    if not data.startswith(prefix):
+        return None
+    rest = data[len(prefix) :]
+    if ":" not in rest:
+        return None
+    post_id, platform = rest.rsplit(":", 1)
+    post_id = post_id.strip()
+    platform = platform.strip()
+    if not post_id or not platform:
+        return None
+    return post_id, platform
 
 
 async def _guard_blogger_post(callback: CallbackQuery, prefix: str) -> blogger_post_cache.BloggerPostDraft | None:
@@ -101,12 +124,112 @@ async def cb_blogger_hashtags(callback: CallbackQuery) -> None:
 
 
 @router.callback_query(F.data.startswith(msg.CB_BLOG_ADAPT_PREFIX))
-async def cb_blogger_adapt_reels(callback: CallbackQuery) -> None:
+async def cb_blogger_adapt_menu(callback: CallbackQuery) -> None:
+    """Карусель выбора площадки для реформата поста."""
     draft = await _guard_blogger_post(callback, msg.CB_BLOG_ADAPT_PREFIX)
-    if draft is None:
+    if draft is None or callback.message is None:
         return
-    logger.info("blogger adapt upsell uid=%s post_id=%s", draft.user_id, draft.post_id)
-    await callback.answer(msg.TXT_BLOGGER_UPSELL_SOON, show_alert=True)
+
+    if not draft.parsed.body:
+        await callback.answer(msg.TXT_BLOGGER_ADAPT_BODY_MISSING, show_alert=True)
+        return
+
+    try:
+        await callback.message.edit_reply_markup(
+            reply_markup=get_blogger_adapt_keyboard(draft.post_id),
+        )
+    except TelegramBadRequest:
+        logger.warning(
+            "blogger adapt menu edit_reply_markup failed uid=%s post_id=%s",
+            draft.user_id,
+            draft.post_id,
+            exc_info=True,
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith(msg.CB_BLOG_RUN_ADAPT_PREFIX))
+async def cb_blogger_run_adapt(callback: CallbackQuery) -> None:
+    """Точечный запрос к Gemini: только тело поста → формат соцсети."""
+    if callback.from_user is None or callback.message is None:
+        await callback.answer()
+        return
+
+    parsed = _parse_run_adapt(callback.data or "")
+    if parsed is None:
+        await callback.answer()
+        return
+    post_id, platform = parsed
+    if not is_valid_adapt_platform(platform):
+        await callback.answer()
+        return
+
+    draft = blogger_post_cache.get(post_id, callback.from_user.id)
+    if draft is None:
+        await callback.answer(msg.TXT_BLOGGER_POST_NOT_FOUND, show_alert=True)
+        return
+
+    source_body = draft.parsed.body
+    if not source_body:
+        await callback.answer(msg.TXT_BLOGGER_ADAPT_BODY_MISSING, show_alert=True)
+        return
+
+    charge_id: str | None = None
+    if not billing_bypass(callback.from_user.id):
+        spend = await spend_blogger_adapt(callback.from_user.id)
+        if not spend.ok:
+            await callback.answer(msg.TXT_BLOGGER_ADAPT_INSUFFICIENT, show_alert=True)
+            return
+        charge_id = spend.charge.charge_id if spend.charge else None
+
+    await callback.answer(msg.TXT_BLOGGER_ADAPT_QUEUED)
+
+    adapted = await adapt_blogger_post_body(
+        settings,
+        source_body=source_body,
+        platform=platform,
+    )
+    if not adapted:
+        if charge_id:
+            await refund_charge(charge_id)
+        await callback.message.answer(msg.TXT_BLOGGER_ADAPT_FAILED, parse_mode=ParseMode.HTML)
+        return
+
+    body_html = prepare_telegram_html_text(adapted)
+    platform_label = adapt_platform_label(platform)
+    await callback.message.answer(
+        msg.TXT_BLOGGER_ADAPT_RESULT.format(platform=platform_label, body=body_html),
+        parse_mode=ParseMode.HTML,
+    )
+    logger.info(
+        "blogger adapt done uid=%s post_id=%s platform=%s",
+        draft.user_id,
+        draft.post_id,
+        platform,
+    )
+
+
+@router.callback_query(F.data.startswith(msg.CB_BLOG_BACK_PREFIX))
+async def cb_blogger_back_to_constructor(callback: CallbackQuery) -> None:
+    """Возврат из подменю адаптации к основным кнопкам конструктора."""
+    draft = await _guard_blogger_post(callback, msg.CB_BLOG_BACK_PREFIX)
+    if draft is None or callback.message is None:
+        return
+
+    reply_markup = get_blogger_keyboard(
+        draft.post_id,
+        include_hashtags=not draft.hashtags_applied,
+    )
+    try:
+        await callback.message.edit_reply_markup(reply_markup=reply_markup)
+    except TelegramBadRequest:
+        logger.warning(
+            "blogger back edit_reply_markup failed uid=%s post_id=%s",
+            draft.user_id,
+            draft.post_id,
+            exc_info=True,
+        )
+    await callback.answer()
 
 
 @router.callback_query(F.data.startswith(msg.CB_BLOG_ART_PREFIX))

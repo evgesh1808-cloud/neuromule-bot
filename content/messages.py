@@ -20,6 +20,8 @@ CB_MUSIC_PUBLISH = "music_publish"
 CB_BLOG_HASH_PREFIX = "blog_hash:"      # blog_hash:<post_id>
 CB_BLOG_ADAPT_PREFIX = "blog_adapt:"    # blog_adapt:<post_id>
 CB_BLOG_ART_PREFIX = "blog_art:"        # blog_art:<post_id>
+CB_BLOG_RUN_ADAPT_PREFIX = "blog_run_adapt:"  # blog_run_adapt:<post_id>:<platform>
+CB_BLOG_BACK_PREFIX = "blog_back:"      # blog_back:<post_id>
 
 # ─── TOS-gate (Telegra.ph оферта/политика/подписка) ─────────────────────────
 CB_ACCEPT_LEGAL_TOS = "accept_legal_tos"
@@ -1304,6 +1306,13 @@ TXT_BLOGGER_ART_PROMPT_SENT = (
     "<code>{prompt}</code>\n\n"
     "<i>Здесь бэкенд вызовет API картинки и пришлёт готовый арт.</i>"
 )
+TXT_BLOGGER_ADAPT_INSUFFICIENT = (
+    "🤖 Недостаточно 💎! Нужно 3 кристалла для реформата."
+)
+TXT_BLOGGER_ADAPT_QUEUED = "💎 Списано 3 кристалла. Gemini адаптирует текст..."
+TXT_BLOGGER_ADAPT_BODY_MISSING = "❌ Сначала сгенерируйте пост!"
+TXT_BLOGGER_ADAPT_FAILED = "❌ Ошибка API при адаптации. Кристаллы возвращены."
+TXT_BLOGGER_ADAPT_RESULT = "✨ <b>Ваш текст адаптирован под {platform}:</b>\n\n{body}"
 TXT_RESULT_ANIMATE_CAPTION = (
     "✨ ОЖИВЛЕНИЕ ГОТОВО!\n\n"
     "💎 Списано: {cost} 💎\n"

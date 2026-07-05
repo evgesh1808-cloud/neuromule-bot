@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from content import messages as msg
-from content.inline_keyboards import get_blogger_keyboard
+from content.inline_keyboards import get_blogger_adapt_keyboard, get_blogger_keyboard
 from services import blogger_post_cache
 from services.blogger_post_parser import parse_blogger_post
 
@@ -31,6 +31,8 @@ def test_parse_blogger_post_sections() -> None:
     assert "#AI" in parsed.hashtags
     assert parsed.image_prompt is not None
     assert "sunset" in parsed.image_prompt
+    assert parsed.body is not None
+    assert "инсайтом" in parsed.body
     assert "===ХЭШТЕГИ===" not in parsed.display_plain()
     assert "===ПРОМПТ" not in parsed.display_plain()
     assert "инсайтом" in parsed.display_plain()
@@ -50,6 +52,15 @@ def test_get_blogger_keyboard_without_hashtags() -> None:
     kb = get_blogger_keyboard("a1b2c3d4", include_hashtags=False)
     assert len(kb.inline_keyboard) == 2
     assert kb.inline_keyboard[0][0].text.startswith("🔄")
+
+
+def test_get_blogger_adapt_keyboard() -> None:
+    kb = get_blogger_adapt_keyboard("a1b2c3d4")
+    assert len(kb.inline_keyboard) == 4
+    reels_btn = kb.inline_keyboard[0][0]
+    assert reels_btn.callback_data == f"{msg.CB_BLOG_RUN_ADAPT_PREFIX}a1b2c3d4:reels"
+    back_btn = kb.inline_keyboard[-1][0]
+    assert back_btn.callback_data == f"{msg.CB_BLOG_BACK_PREFIX}a1b2c3d4"
 
 
 def test_blogger_post_cache_remember_and_get() -> None:

@@ -29,6 +29,11 @@ class BloggerPostParsed:
         block = (self.sections.get("ПРОМПТ ДЛЯ КАРТИНКИ") or "").strip()
         return block or None
 
+    @property
+    def body(self) -> str | None:
+        block = (self.sections.get("ТЕЛО ПОСТА") or "").strip()
+        return block or None
+
     def display_plain(self) -> str:
         parts = [
             (self.sections.get(name) or "").strip()

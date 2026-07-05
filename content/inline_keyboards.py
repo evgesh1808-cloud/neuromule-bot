@@ -138,6 +138,36 @@ def get_blogger_keyboard(
     return builder.as_markup()
 
 
+def get_blogger_adapt_keyboard(post_id: str) -> InlineKeyboardMarkup:
+    """Подменю выбора площадки для реформата поста (3 💎)."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(
+            text="📱 Сценарий Reels/Shorts (3 💎)",
+            callback_data=f"{msg.CB_BLOG_RUN_ADAPT_PREFIX}{post_id}:reels",
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text="💼 Экспертная статья VC.ru (3 💎)",
+            callback_data=f"{msg.CB_BLOG_RUN_ADAPT_PREFIX}{post_id}:vc",
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text="🐦 Короткий твит / Хайп (3 💎)",
+            callback_data=f"{msg.CB_BLOG_RUN_ADAPT_PREFIX}{post_id}:twitter",
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text="⬅️ Вернуться назад",
+            callback_data=f"{msg.CB_BLOG_BACK_PREFIX}{post_id}",
+        )
+    )
+    return builder.as_markup()
+
+
 def result_music_keyboard_pro(task_id: str | None = None) -> InlineKeyboardMarkup:
     """PRO-клавиатура апсейла под готовым треком NeuroMule 🐎⚡️.
 
