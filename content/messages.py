@@ -1295,6 +1295,15 @@ TXT_BLOGGER_UPSELL_SOON = (
     "🚧 Эта кнопка конструктора блогера скоро заработает в полном объёме. "
     "Пока можно копировать блоки из ответа вручную 🐎⚡️."
 )
+TXT_BLOGGER_GENERATE_FIRST = "Сначала сгенерируйте пост!"
+TXT_BLOGGER_HASHTAGS_ADDED = "Хэштеги добавлены к посту! ✨"
+TXT_BLOGGER_IMAGE_PROMPT_NOT_FOUND = "Промпт для картинки не найден."
+TXT_BLOGGER_ART_QUEUED = "💎 Списываем 1 кристалл. Нейросеть генерирует обложку..."
+TXT_BLOGGER_ART_PROMPT_SENT = (
+    "🎨 <b>Ваш промпт отправлен в генератор обложек:</b>\n"
+    "<code>{prompt}</code>\n\n"
+    "<i>Здесь бэкенд вызовет API картинки и пришлёт готовый арт.</i>"
+)
 TXT_RESULT_ANIMATE_CAPTION = (
     "✨ ОЖИВЛЕНИЕ ГОТОВО!\n\n"
     "💎 Списано: {cost} 💎\n"

@@ -1,10 +1,39 @@
-"""Тесты клавиатуры и кэша конструктора режима «Блогер»."""
+"""Тесты парсера, клавиатуры и кэша режима «Блогер»."""
 
 from __future__ import annotations
 
 from content import messages as msg
 from content.inline_keyboards import get_blogger_keyboard
 from services import blogger_post_cache
+from services.blogger_post_parser import parse_blogger_post
+
+_SAMPLE = """===ХУКИ===
+[Вариант 1 (Интрига)]: Заголовок
+
+===ТЕЛО ПОСТА===
+Текст с <b>инсайтом</b>.
+
+===ПРИЗЫВЫ К ДЕЙСТВИЮ===
+[Вариант А (Вовлечение)]: Вопрос?
+
+===ХЭШТЕГИ===
+[Тематические]: #AI #Tech
+[Навигационные]: #Блог_инсайт
+
+===ПРОМПТ ДЛЯ КАРТИНКИ===
+A professional cinematic photo of sunset, 4k --ar 16:9
+"""
+
+
+def test_parse_blogger_post_sections() -> None:
+    parsed = parse_blogger_post(_SAMPLE)
+    assert parsed.hashtags is not None
+    assert "#AI" in parsed.hashtags
+    assert parsed.image_prompt is not None
+    assert "sunset" in parsed.image_prompt
+    assert "===ХЭШТЕГИ===" not in parsed.display_plain()
+    assert "===ПРОМПТ" not in parsed.display_plain()
+    assert "инсайтом" in parsed.display_plain()
 
 
 def test_get_blogger_keyboard_three_rows() -> None:
@@ -17,12 +46,19 @@ def test_get_blogger_keyboard_three_rows() -> None:
     assert art_btn.callback_data == f"{msg.CB_BLOG_ART_PREFIX}a1b2c3d4"
 
 
+def test_get_blogger_keyboard_without_hashtags() -> None:
+    kb = get_blogger_keyboard("a1b2c3d4", include_hashtags=False)
+    assert len(kb.inline_keyboard) == 2
+    assert kb.inline_keyboard[0][0].text.startswith("🔄")
+
+
 def test_blogger_post_cache_remember_and_get() -> None:
-    post_id = blogger_post_cache.remember(9001, "===ХУКИ===\ntest")
+    post_id = blogger_post_cache.remember(9001, _SAMPLE)
     draft = blogger_post_cache.get(post_id, 9001)
     assert draft is not None
-    assert draft.raw_text.startswith("===ХУКИ===")
+    assert draft.hashtags is not None
+    assert draft.image_prompt is not None
     assert blogger_post_cache.get(post_id, 9002) is None
-    last = blogger_post_cache.get_last(9001)
-    assert last is not None
-    assert last.post_id == post_id
+    updated = blogger_post_cache.mark_hashtags_applied(post_id, 9001)
+    assert updated is not None
+    assert updated.hashtags_applied is True

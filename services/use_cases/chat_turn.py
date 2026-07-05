@@ -84,7 +84,13 @@ def format_assistant_for_role(text: str, text_role: str, *, for_stream: bool = F
     if role_id == "table_generator":
         converted = markdown_tables_to_telegram_html(strip_redacted_thinking(text))
         return repair_telegram_html(converted)
-    result = clean_markdown_to_html(text)
+    if role_id in ("blogger_content", "blogger"):
+        from services.blogger_post_parser import parse_blogger_post
+
+        display_plain = parse_blogger_post(strip_redacted_thinking(text)).display_plain()
+        result = clean_markdown_to_html(display_plain or text)
+    else:
+        result = clean_markdown_to_html(text)
     if for_stream:
         # Автозакрытие <b>/<i>/<code>/<pre> в частичных SSE-чанках — без BadRequest.
         result = repair_telegram_html(result)

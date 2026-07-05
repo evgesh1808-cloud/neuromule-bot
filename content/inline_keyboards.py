@@ -106,18 +106,23 @@ def music_studio_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def get_blogger_keyboard(post_id: str) -> InlineKeyboardMarkup:
+def get_blogger_keyboard(
+    post_id: str,
+    *,
+    include_hashtags: bool = True,
+) -> InlineKeyboardMarkup:
     """Клавиатура конструктора режима «Блогер» под последним постом.
 
     ``post_id`` связывает кнопки с черновиком в in-memory кэше (``blogger_post_cache``).
     """
     builder = InlineKeyboardBuilder()
-    builder.row(
-        InlineKeyboardButton(
-            text="#️⃣ Подобрать хэштеги",
-            callback_data=f"{msg.CB_BLOG_HASH_PREFIX}{post_id}",
+    if include_hashtags:
+        builder.row(
+            InlineKeyboardButton(
+                text="#️⃣ Подобрать хэштеги",
+                callback_data=f"{msg.CB_BLOG_HASH_PREFIX}{post_id}",
+            )
         )
-    )
     builder.row(
         InlineKeyboardButton(
             text="🔄 Адаптировать (Reels/Shorts)",
