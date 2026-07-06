@@ -4,7 +4,7 @@ from services.billing.chat_pipeline import (
     inject_compliance_rules_into_last_user_message,
     prepare_openrouter_chat_messages,
 )
-from content.chat_prompt import USER_COMPLIANCE_TAIL_MARKER
+from content.chat_prompt import BLOGGER_USER_COMPLIANCE_TAIL_MARKER, USER_COMPLIANCE_TAIL_MARKER
 
 
 def test_inject_appends_to_last_user_only() -> None:
@@ -38,6 +38,20 @@ def test_prepare_openrouter_skips_compliance_for_table_generator() -> None:
         use_premium_prompt=True,
         text_role="table_generator",
     )
+    assert USER_COMPLIANCE_TAIL_MARKER not in payload[1]["content"]
+
+
+def test_prepare_openrouter_uses_blogger_tail_for_blogger_content() -> None:
+    payload = [
+        {"role": "system", "content": "x"},
+        {"role": "user", "content": "тема поста"},
+    ]
+    prepare_openrouter_chat_messages(
+        payload,
+        use_premium_prompt=True,
+        text_role="blogger_content",
+    )
+    assert BLOGGER_USER_COMPLIANCE_TAIL_MARKER in payload[1]["content"]
     assert USER_COMPLIANCE_TAIL_MARKER not in payload[1]["content"]
 
 

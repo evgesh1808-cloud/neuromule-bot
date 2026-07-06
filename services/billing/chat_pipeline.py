@@ -21,7 +21,12 @@ from services.billing.pricing import (
     PAID_CHAT_MODEL,
 )
 from config import settings
-from content.chat_prompt import USER_COMPLIANCE_TAIL_MARKER, build_user_compliance_tail
+from content.chat_prompt import (
+    BLOGGER_USER_COMPLIANCE_TAIL_MARKER,
+    USER_COMPLIANCE_TAIL_MARKER,
+    build_blogger_compliance_tail,
+    build_user_compliance_tail,
+)
 from services.god_mode import billing_bypass
 from services.billing.types import (
     ChatRoutePlan,
@@ -88,6 +93,30 @@ def inject_compliance_rules_into_last_user_message(
         return
 
 
+def inject_blogger_format_reminder(messages: list[dict[str, Any]]) -> None:
+    """Дубль жёстких правил ``===`` в конец последнего user-сообщения (роль блогера)."""
+    suffix = build_blogger_compliance_tail()
+    for i in range(len(messages) - 1, -1, -1):
+        msg = messages[i]
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if isinstance(content, list):
+            for part in content:
+                if part.get("type") != "text":
+                    continue
+                text = (part.get("text") or "").strip()
+                if BLOGGER_USER_COMPLIANCE_TAIL_MARKER in text:
+                    return
+                part["text"] = f"{text}{suffix}" if text else suffix.lstrip()
+            return
+        text_content = (content or "").strip()
+        if BLOGGER_USER_COMPLIANCE_TAIL_MARKER in text_content:
+            return
+        msg["content"] = f"{text_content}{suffix}" if text_content else suffix.lstrip()
+        return
+
+
 def prepare_openrouter_chat_messages(
     messages: list[dict[str, str]],
     *,
@@ -95,7 +124,10 @@ def prepare_openrouter_chat_messages(
     text_role: str | None = None,
 ) -> list[dict[str, str]]:
     """Финальная подготовка payload чата непосредственно перед OpenRouter."""
-    if (text_role or "").strip().lower() != "table_generator":
+    role_id = (text_role or "").strip().lower()
+    if role_id in ("blogger_content", "blogger"):
+        inject_blogger_format_reminder(messages)
+    elif role_id != "table_generator":
         inject_compliance_rules_into_last_user_message(
             messages,
             use_premium_prompt=use_premium_prompt,

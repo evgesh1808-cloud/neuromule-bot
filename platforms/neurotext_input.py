@@ -64,12 +64,13 @@ logger = logging.getLogger(__name__)
 _BLOGGER_ROLE_IDS = frozenset({"blogger_content", "blogger"})
 
 
-def _blogger_reply_markup(user_id: int, assistant_message: str):
+def _blogger_reply_markup(user_id: int, assistant_message: str, *, blogger_post_raw: str | None = None):
     """Кэширует черновик поста и возвращает клавиатуру конструктора блогера."""
     from content.inline_keyboards import get_blogger_keyboard
     from services import blogger_post_cache
 
-    post_id = blogger_post_cache.remember(user_id, assistant_message)
+    raw_for_cache = blogger_post_raw or assistant_message
+    post_id = blogger_post_cache.remember(user_id, raw_for_cache)
     return get_blogger_keyboard(post_id)
 
 
@@ -262,6 +263,7 @@ async def _reply_chat_turn_result(
                 blogger_kb = _blogger_reply_markup(
                     message.from_user.id,
                     result.assistant_message,
+                    blogger_post_raw=result.blogger_post_raw,
                 )
             await stream_handle.finalize(result.assistant_message, reply_markup=blogger_kb)
         elif stream_handle is None:
@@ -306,6 +308,7 @@ async def _reply_chat_turn_result(
                         blogger_kb = _blogger_reply_markup(
                             message.from_user.id,
                             result.assistant_message,
+                            blogger_post_raw=result.blogger_post_raw,
                         )
                     await answer_chat_text(
                         message,
