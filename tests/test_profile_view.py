@@ -70,3 +70,15 @@ async def test_upscale_fallback_to_energy(repo_module) -> None:
     assert res.ok is True
     user_after = await store.load_user_billing(uid)
     assert user_after.total_energy == user_before.total_energy - 10
+
+
+@pytest.mark.asyncio
+async def test_profile_includes_blogger_constructor_block(repo_module) -> None:
+    uid = 66006
+    await repo_module.ensure_user(uid)
+    text = await build_user_profile_html(Settings(), uid)
+    assert "Конструктор «Блогер»" in text
+    assert "Адаптация поста:" in text
+    assert "AI-обложка:" in text
+    assert "3 💎" in text
+    assert "4 💎" in text

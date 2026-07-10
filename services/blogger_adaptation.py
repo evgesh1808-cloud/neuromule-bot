@@ -1,47 +1,147 @@
-"""Точечные LLM-запросы для адаптации тела поста блогера под соцсети."""
+"""Адаптация тела поста блогера под площадки СНГ (отдельные LLM-запросы)."""
 
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
+
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from config import Settings
+from content import messages as msg
+from content.chat_prompt import (
+    SYSTEM_ADAPT_TG_MAX,
+    SYSTEM_ADAPT_VC,
+    SYSTEM_ADAPT_VIDEO,
+    SYSTEM_ADAPT_VK,
+)
 from services.ai_text import ask_ai_messages
 from services.billing.pricing import PAID_CHAT_MODEL
+from services.blogger_post_parser import repair_blogger_telegram_html
+from services.telegram_safe_text import prepare_telegram_html_text
 
 logger = logging.getLogger(__name__)
 
-_ADAPT_PLATFORMS = frozenset({"reels", "vc", "twitter"})
+ADAPT_VC_MODEL = "deepseek/deepseek-chat"
 
-_PLATFORM_INSTRUCTIONS: dict[str, str] = {
-    "reels": (
-        "Ты — сценарист коротких видео. Возьми текст пользователя и перепиши его в сценарий для Reels/Shorts. "
-        "Разбей текст на сцены, добавь таймкоды (00:00-00:03...) и краткие визуальные подсказки для кадра "
-        "в квадратных скобках. Никакого лишнего текста от себя, пиши строго сценарий."
-    ),
-    "vc": (
-        "Ты — b2b-редактор vc.ru. Разверни этот текст в экспертную статью. "
-        "Добавь подзаголовки, углуби тезисы, сделай тон более аналитическим и серьезным. "
-        "Обязательно сохрани структуру воздушных абзацев и HTML-теги жирного шрифта <b>тезис</b>."
-    ),
-    "twitter": (
-        "Сожми этот текст до одного хлёсткого, хайпового твита (до 280 символов). "
-        "Выжми максимум пользы или провокации, уложись в лимит, не используй эмодзи и лишнюю воду."
-    ),
-}
+_ADAPT_TARGETS: frozenset[str] = frozenset({"video", "vc", "vk", "tg_max"})
 
-_PLATFORM_LABELS: dict[str, str] = {
-    "reels": "Reels/Shorts",
-    "vc": "VC.ru",
-    "twitter": "Twitter/X",
-}
+
+@dataclass(frozen=True)
+class BloggerAdaptRoute:
+    """Маршрут адаптации: промпт, модель(и), температура и лейбл для UX."""
+
+    key: str
+    label: str
+    callback_data: str
+    button_text: str
+    system_prompt: str
+    models: tuple[str, ...]
+    temperature: float
+    max_tokens: int
+
+
+@dataclass(frozen=True)
+class BloggerAdaptBillingResult:
+    ok: bool
+    content: str | None = None
+    error: str = ""
+
+
+BLOGGER_ADAPT_ROUTES: tuple[BloggerAdaptRoute, ...] = (
+    BloggerAdaptRoute(
+        key="video",
+        label="Видео (Reels/TikTok/Shorts/Likee)",
+        callback_data=msg.CB_ADAPT_TARGET_VIDEO,
+        button_text=msg.BTN_BLOGGER_ADAPT_VIDEO,
+        system_prompt=SYSTEM_ADAPT_VIDEO,
+        models=(PAID_CHAT_MODEL,),
+        temperature=0.7,
+        max_tokens=2200,
+    ),
+    BloggerAdaptRoute(
+        key="vc",
+        label="Статья (VC.ru / Дзен)",
+        callback_data=msg.CB_ADAPT_TARGET_VC,
+        button_text=msg.BTN_BLOGGER_ADAPT_VC,
+        system_prompt=SYSTEM_ADAPT_VC,
+        models=(ADAPT_VC_MODEL,),
+        temperature=0.3,
+        max_tokens=3500,
+    ),
+    BloggerAdaptRoute(
+        key="vk",
+        label="Пост (ВКонтакте / VK)",
+        callback_data=msg.CB_ADAPT_TARGET_VK,
+        button_text=msg.BTN_BLOGGER_ADAPT_VK,
+        system_prompt=SYSTEM_ADAPT_VK,
+        models=(PAID_CHAT_MODEL,),
+        temperature=0.5,
+        max_tokens=2000,
+    ),
+    BloggerAdaptRoute(
+        key="tg_max",
+        label="Канал (Telegram / суперапп МАКС)",
+        callback_data=msg.CB_ADAPT_TARGET_TG_MAX,
+        button_text=msg.BTN_BLOGGER_ADAPT_TG_MAX,
+        system_prompt=SYSTEM_ADAPT_TG_MAX,
+        models=(PAID_CHAT_MODEL,),
+        temperature=0.4,
+        max_tokens=900,
+    ),
+)
+
+_ROUTE_BY_KEY: dict[str, BloggerAdaptRoute] = {route.key: route for route in BLOGGER_ADAPT_ROUTES}
+
+
+def get_blogger_adapt_keyboard(post_id: str) -> InlineKeyboardMarkup:
+    """Подменю «🔄 Адаптировать»: 4 площадки СНГ (3 💎).
+
+    ``adapt_target:*`` не содержит ``post_id`` — черновик резолвится по привязке
+    ``(chat_id, message_id)`` в ``blogger_post_cache``.
+    """
+    builder = InlineKeyboardBuilder()
+    for route in BLOGGER_ADAPT_ROUTES:
+        builder.row(
+            InlineKeyboardButton(
+                text=route.button_text,
+                callback_data=route.callback_data,
+            )
+        )
+    builder.row(
+        InlineKeyboardButton(
+            text="⬅️ Вернуться назад",
+            callback_data=f"{msg.CB_BLOG_BACK_PREFIX}{post_id}",
+        )
+    )
+    return builder.as_markup()
+
+
+def parse_adapt_target(data: str) -> str | None:
+    """Из ``adapt_target:video`` возвращает ключ площадки или ``None``."""
+    prefix = msg.CB_ADAPT_TARGET_PREFIX
+    if not (data or "").startswith(prefix):
+        return None
+    target = data[len(prefix) :].strip().lower()
+    if target not in _ADAPT_TARGETS:
+        return None
+    return target
 
 
 def adapt_platform_label(platform: str) -> str:
-    return _PLATFORM_LABELS.get(platform, platform.upper())
+    route = _ROUTE_BY_KEY.get((platform or "").strip().lower())
+    return route.label if route else platform.upper()
 
 
 def is_valid_adapt_platform(platform: str) -> bool:
-    return platform in _ADAPT_PLATFORMS
+    return (platform or "").strip().lower() in _ADAPT_TARGETS
+
+
+def prepare_adapted_telegram_html(text: str) -> str:
+    """Markdown → HTML, дозакрытие ``<b>``, безопасная подготовка для Telegram."""
+    repaired = repair_blogger_telegram_html(text or "")
+    return prepare_telegram_html_text(repaired)
 
 
 async def adapt_blogger_post_body(
@@ -50,24 +150,26 @@ async def adapt_blogger_post_body(
     source_body: str,
     platform: str,
 ) -> str | None:
-    """Один дешёвый запрос: system-инструкция + только тело поста."""
-    if not source_body.strip():
-        return None
-    if platform not in _ADAPT_PLATFORMS:
+    """Один запрос OpenRouter: system-промпт + только ``===ТЕЛО ПОСТА===`` из кэша."""
+    body = (source_body or "").strip()
+    if not body:
         return None
 
-    instruction = _PLATFORM_INSTRUCTIONS[platform]
+    route = _ROUTE_BY_KEY.get(platform.strip().lower())
+    if route is None:
+        return None
+
     messages = [
-        {"role": "system", "content": instruction},
-        {"role": "user", "content": source_body},
+        {"role": "system", "content": route.system_prompt},
+        {"role": "user", "content": body},
     ]
     try:
         result = await ask_ai_messages(
             settings,
             messages,
-            models=[PAID_CHAT_MODEL],
-            max_tokens=1500,
-            temperature=0.3,
+            models=list(route.models),
+            max_tokens=route.max_tokens,
+            temperature=route.temperature,
         )
     except Exception:
         logger.exception("blogger adapt ask_ai_messages failed platform=%s", platform)
@@ -75,3 +177,45 @@ async def adapt_blogger_post_body(
 
     content = (result.content or "").strip()
     return content or None
+
+
+async def adapt_blogger_post_with_billing(
+    settings: Settings,
+    *,
+    source_body: str,
+    platform: str,
+    user_id: int,
+) -> BloggerAdaptBillingResult:
+    """Проверка 3💎 → списание → OpenRouter; при сбое API — возврат кристаллов."""
+    from services.billing import refund_charge
+    from services.billing.blogger_pipeline import can_afford_blogger_adapt, spend_blogger_adapt
+    from services.god_mode import billing_bypass
+
+    body = (source_body or "").strip()
+    if not body:
+        return BloggerAdaptBillingResult(ok=False, error="empty_body")
+
+    if not is_valid_adapt_platform(platform):
+        return BloggerAdaptBillingResult(ok=False, error="invalid_platform")
+
+    if not billing_bypass(user_id) and not await can_afford_blogger_adapt(user_id):
+        return BloggerAdaptBillingResult(ok=False, error="insufficient_crystals")
+
+    charge_id: str | None = None
+    if not billing_bypass(user_id):
+        spend = await spend_blogger_adapt(user_id)
+        if not spend.ok:
+            return BloggerAdaptBillingResult(ok=False, error="insufficient_crystals")
+        charge_id = spend.charge.charge_id if spend.charge else None
+
+    content = await adapt_blogger_post_body(
+        settings,
+        source_body=body,
+        platform=platform,
+    )
+    if not content:
+        if charge_id:
+            await refund_charge(charge_id)
+        return BloggerAdaptBillingResult(ok=False, error="api_failed")
+
+    return BloggerAdaptBillingResult(ok=True, content=content)

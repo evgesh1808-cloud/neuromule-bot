@@ -30,6 +30,16 @@ class ProfileView:
     text: str
 
 
+@dataclass(frozen=True)
+class BloggerResourcesSnapshot:
+    """Снимок ресурсов пользователя для режима «Блогер» и личного кабинета."""
+
+    tariff: TariffTier
+    energy: int
+    energy_max: int
+    diamonds: int
+
+
 # --- утилиты ---
 
 
@@ -174,6 +184,40 @@ def _hd_block(has_pro: bool, hd_type: str | None, hd_birth_data: str | None) -> 
     return f"🧬 <b>Дизайн Человека:</b>\n✅ Твой тип: <b>{hd} ({profile})</b>"
 
 
+def _blogger_constructor_block(snapshot: BloggerResourcesSnapshot) -> str:
+    from services.billing.pricing_constants import BLOGGER_ADAPT_COST, BLOGGER_COVER_COST
+
+    return (
+        "📱 <b>Конструктор «Блогер»</b>\n"
+        f"• <b>Тариф:</b> <code>{snapshot.tariff.value}</code>\n"
+        f"• <b>Энергия:</b> <code>{snapshot.energy}</code> / {snapshot.energy_max} ⚡\n"
+        f"• <b>Алмазы:</b> <code>{snapshot.diamonds}</code> 💎\n"
+        f"• <b>Адаптация поста:</b> {BLOGGER_ADAPT_COST} 💎 за площадку\n"
+        f"• <b>AI-обложка:</b> {BLOGGER_COVER_COST} 💎 за генерацию"
+    )
+
+
+async def get_blogger_resources_snapshot(user_id: int, settings: Settings) -> BloggerResourcesSnapshot:
+    """Актуальные ресурсы пользователя для режима «Блогер»."""
+    from services.billing import billing
+
+    row = await get_user_row(user_id)
+    billing_user = await billing.load_user(user_id)
+    tariff = TariffTier.from_db(row.tariff)
+    sub = int(row.sub_crystals or 0)
+    buy = int(row.buy_crystals or 0)
+    energy = int(billing_user.total_energy)
+    energy_max = (
+        catalog.daily_free_energy if tariff is TariffTier.FREE else max(1, energy or settings.mini_energy)
+    )
+    return BloggerResourcesSnapshot(
+        tariff=tariff,
+        energy=energy,
+        energy_max=energy_max,
+        diamonds=sub + buy,
+    )
+
+
 def _limits_footer(tariff: TariffTier) -> str:
     if tariff is TariffTier.FREE:
         return (
@@ -218,10 +262,14 @@ async def build_user_profile_html(settings: Settings, user_id: int) -> str:
         catalog.daily_free_energy if tariff is TariffTier.FREE else max(1, energy or settings.mini_energy)
     )
 
+    blogger_snapshot = await get_blogger_resources_snapshot(user_id, settings)
+
     parts: list[str] = [
         _header_block(user_id),
         _crystals_block(tariff, sub, buy),
     ]
+    parts.append("\n———————————————")
+    parts.append(_blogger_constructor_block(blogger_snapshot))
     parts.append("\n———————————————")
     parts.append(_tariff_block(tariff, row.subscription_ends_at))
     parts.append(_energy_block(energy, catalog.daily_free_energy if tariff is TariffTier.FREE else energy_max))

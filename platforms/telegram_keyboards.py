@@ -459,6 +459,22 @@ def cabinet_keyboard(is_duo_owner: bool = False, *, is_ultra_owner: bool | None 
                 callback_data=msg.CB_REFRESH_PROFILE,
             )
         ],
+        [
+            InlineKeyboardButton(
+                text="⚡ Пополнить энергию",
+                callback_data=msg.CB_BUY_ENERGY,
+            ),
+            InlineKeyboardButton(
+                text="💎 Купить алмазы",
+                callback_data=msg.CB_BUY_DIAMONDS,
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                text="🚀 Улучшить тариф",
+                callback_data=msg.CB_UPGRADE_TARIFF,
+            )
+        ],
         [_tariffs_topup_button()],
         [
             InlineKeyboardButton(

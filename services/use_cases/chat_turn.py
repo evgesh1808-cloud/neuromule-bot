@@ -85,11 +85,16 @@ def format_assistant_for_role(text: str, text_role: str, *, for_stream: bool = F
         converted = markdown_tables_to_telegram_html(strip_redacted_thinking(text))
         return repair_telegram_html(converted)
     if role_id in ("blogger_content", "blogger"):
-        from services.blogger_post_parser import normalize_blogger_raw_output, parse_blogger_post
+        from services.blogger_post_parser import (
+            BloggerPostParsed,
+            normalize_blogger_raw_output,
+            reassemble_blogger_sections,
+        )
 
-        normalized = normalize_blogger_raw_output(strip_redacted_thinking(text))
-        display_plain = parse_blogger_post(normalized).display_plain()
-        result = clean_markdown_to_html(display_plain or normalized)
+        sections = normalize_blogger_raw_output(strip_redacted_thinking(text))
+        display_plain = BloggerPostParsed(sections=sections).display_plain()
+        fallback_text = reassemble_blogger_sections(sections)
+        result = clean_markdown_to_html(display_plain or fallback_text)
     else:
         result = clean_markdown_to_html(text)
     if for_stream:
@@ -398,9 +403,13 @@ async def run_chat_turn(
     blogger_post_raw: str | None = None
     content_for_format = content
     if (effective_role or "").strip().lower() in ("blogger_content", "blogger"):
-        from services.blogger_post_parser import normalize_blogger_raw_output
+        from services.blogger_post_parser import (
+            normalize_blogger_raw_output,
+            reassemble_blogger_sections,
+        )
 
-        blogger_post_raw = normalize_blogger_raw_output(content)
+        blogger_sections = normalize_blogger_raw_output(content)
+        blogger_post_raw = reassemble_blogger_sections(blogger_sections)
         content_for_format = blogger_post_raw
 
     ans_trim = format_assistant_for_role(content_for_format, effective_role)

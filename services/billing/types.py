@@ -57,6 +57,7 @@ class SpendFeature(str, Enum):
     MUSIC = "music"
     UPSCALE = "upscale"
     BLOGGER_ADAPT = "blogger_adapt"
+    BLOGGER_COVER = "blogger_cover"
 
 
 @dataclass(frozen=True)

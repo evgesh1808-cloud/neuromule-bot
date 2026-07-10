@@ -316,6 +316,21 @@ async def tariffs_open_crystals_menu(callback: CallbackQuery) -> None:
     await edit_tariffs_screen(callback, text, keyboard)
 
 
+@router.callback_query(F.data == msg.CB_BUY_ENERGY)
+async def profile_buy_energy(callback: CallbackQuery) -> None:
+    await tariffs_open_bundle_menu(callback)
+
+
+@router.callback_query(F.data == msg.CB_BUY_DIAMONDS)
+async def profile_buy_diamonds(callback: CallbackQuery) -> None:
+    await tariffs_open_crystals_menu(callback)
+
+
+@router.callback_query(F.data == msg.CB_UPGRADE_TARIFF)
+async def profile_upgrade_tariff(callback: CallbackQuery) -> None:
+    await tariffs_open_main(callback)
+
+
 @router.callback_query(F.data == msg.CB_CLOSE_TARIFFS)
 async def tariffs_close(callback: CallbackQuery) -> None:
     if callback.message:

@@ -207,6 +207,7 @@ def _chat_payload(
         body["response_format"] = response_format
     if temperature is not None:
         body["temperature"] = temperature
+    body["extra_body"] = {"prompt_caching": True}
     return body
 
 

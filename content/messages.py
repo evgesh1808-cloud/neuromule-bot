@@ -19,8 +19,23 @@ CB_MUSIC_VOICE_CLONE = "music_voice_clone"
 CB_MUSIC_PUBLISH = "music_publish"
 CB_BLOG_HASH_PREFIX = "blog_hash:"      # blog_hash:<post_id>
 CB_BLOG_ADAPT_PREFIX = "blog_adapt:"    # blog_adapt:<post_id>
-CB_BLOG_ART_PREFIX = "blog_art:"        # blog_art:<post_id>
-CB_BLOG_RUN_ADAPT_PREFIX = "blog_run_adapt:"  # blog_run_adapt:<post_id>:<platform>
+CB_BLOG_ART_PREFIX = "blog_art:"        # legacy: blog_art:<post_id>
+CB_BLOGGER_COVER_PREFIX = "blogger_cover:"  # blogger_cover:<post_id>
+CB_BLOG_RUN_ADAPT_PREFIX = "blog_run_adapt:"  # legacy: blog_run_adapt:<post_id>:<platform>
+
+CB_ADAPT_TARGET_PREFIX = "adapt_target:"  # adapt_target:<video|vc|vk|tg_max>
+CB_ADAPT_TARGET_VIDEO = "adapt_target:video"
+CB_ADAPT_TARGET_VC = "adapt_target:vc"
+CB_ADAPT_TARGET_VK = "adapt_target:vk"
+CB_ADAPT_TARGET_TG_MAX = "adapt_target:tg_max"
+
+BTN_BLOGGER_ADAPT_VIDEO = "🎬 Видео (Reels/TikTok/Shorts/Likee) [3💎]"
+BTN_BLOGGER_ADAPT_VC = "💼 Статья (VC.ru / Дзен) [3💎]"
+BTN_BLOGGER_ADAPT_VK = "📱 Пост (ВКонтакте / VK) [3💎]"
+BTN_BLOGGER_ADAPT_TG_MAX = "🚀 Канал (Telegram / суперапп МАКС) [3💎]"
+
+# Обратная совместимость
+BTN_BLOGGER_ADAPT_SHORT_VIDEO = BTN_BLOGGER_ADAPT_VIDEO
 CB_BLOG_BACK_PREFIX = "blog_back:"      # blog_back:<post_id>
 
 # ─── TOS-gate (Telegra.ph оферта/политика/подписка) ─────────────────────────
@@ -203,6 +218,9 @@ CB_REFRESH_PROFILE = "refresh_profile"
 CB_OPEN_TARIFFS = "open_tariffs"
 CB_BUY_BUNDLE_MENU = "buy_bundle_menu"
 CB_BUY_CRYSTALS_ONLY_MENU = "buy_crystals_only_menu"
+CB_BUY_ENERGY = "buy_energy"
+CB_BUY_DIAMONDS = "buy_diamonds"
+CB_UPGRADE_TARIFF = "upgrade_tariff"
 CB_CLOSE_TARIFFS = "close_tariffs"
 CB_ENTER_PROMOCODE = "enter_promocode"
 CB_OPEN_MEMORY = "open_memory"
@@ -1299,7 +1317,13 @@ TXT_BLOGGER_UPSELL_SOON = (
 )
 TXT_BLOGGER_GENERATE_FIRST = "Сначала сгенерируйте пост!"
 TXT_BLOGGER_HASHTAGS_ADDED = "Хэштеги добавлены к посту! ✨"
-TXT_BLOGGER_IMAGE_PROMPT_NOT_FOUND = "Промпт для картинки не найден."
+TXT_BLOGGER_IMAGE_PROMPT_NOT_FOUND = "❌ Исходный промпт не найден"
+TXT_BLOGGER_COVER_GENERATING = "🎨 Генерирую обложку для вашего поста..."
+TXT_BLOGGER_COVER_READY = (
+    "🖼 <b>Обложка для вашего поста готова!</b>\n\n"
+    "Промпт: <code>{prompt}</code>"
+)
+TXT_BLOGGER_COVER_FAILED = "❌ Не удалось сгенерировать обложку. Баланс возвращён."
 TXT_BLOGGER_ART_QUEUED = "💎 Списываем 1 кристалл. Нейросеть генерирует обложку..."
 TXT_BLOGGER_ART_PROMPT_SENT = (
     "🎨 <b>Ваш промпт отправлен в генератор обложек:</b>\n"
@@ -1307,7 +1331,10 @@ TXT_BLOGGER_ART_PROMPT_SENT = (
     "<i>Здесь бэкенд вызовет API картинки и пришлёт готовый арт.</i>"
 )
 TXT_BLOGGER_ADAPT_INSUFFICIENT = (
-    "🤖 Недостаточно 💎! Нужно 3 кристалла для реформата."
+    "❌ Недостаточно алмазов для адаптации. Требуется 3💎"
+)
+TXT_BLOGGER_COVER_INSUFFICIENT = (
+    "❌ Недостаточно алмазов для создания AI-обложки. Требуется 4💎"
 )
 TXT_BLOGGER_ADAPT_QUEUED = "💎 Списано 3 кристалла. Gemini адаптирует текст..."
 TXT_BLOGGER_ADAPT_BODY_MISSING = "❌ Сначала сгенерируйте пост!"
