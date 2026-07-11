@@ -6,21 +6,56 @@ on:
       - main
   workflow_dispatch:
 
+concurrency:
+  group: vdsina-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
+
+      - name: Validate deploy secrets
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+        run: |
+          set -euo pipefail
+          missing=0
+          if [ -z "${SSH_HOST}" ]; then
+            echo "ERROR: secret SSH_HOST is empty"
+            missing=1
+          fi
+          if [ -z "${SSH_USER}" ]; then
+            echo "ERROR: secret SSH_USER is empty"
+            missing=1
+          fi
+          if [ -z "${SSH_KEY}" ]; then
+            echo "ERROR: secret SSH_KEY is empty"
+            missing=1
+          fi
+          if [ "${missing}" -ne 0 ]; then
+            exit 1
+          fi
+          echo "Deploy secrets present (SSH_HOST, SSH_USER, SSH_KEY)."
 
       - name: Deploy to VDSina via SSH
-        uses: appleboy/ssh-action@v1.2.0
+        uses: appleboy/ssh-action@v1.2.5
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SSH_PORT != '' && secrets.SSH_PORT || '22' }}
+          timeout: 60s
           command_timeout: 15m
+          debug: true
           script: |
             set -euo pipefail
             DEPLOY_DIR="/root/neuromule-bot"
@@ -46,16 +81,45 @@ jobs:
             cd "${DEPLOY_DIR}"
 
             if [ ! -d ".git" ]; then
+              echo "==> Fresh clone into ${DEPLOY_DIR}"
               git clone "${REPO_URL}" .
             fi
 
+            if ! git remote get-url origin >/dev/null 2>&1; then
+              git remote add origin "${REPO_URL}"
+            fi
+
+            fetch_ok=0
+            for attempt in 1 2 3; do
+              if git fetch --prune origin "${EXPECTED_SHA}" main; then
+                fetch_ok=1
+                break
+              fi
+              echo "WARN: git fetch retry ${attempt}/3"
+              sleep 3
+            done
+            if [ "${fetch_ok}" -ne 1 ]; then
+              echo "ERROR: git fetch origin failed after 3 attempts"
+              exit 1
+            fi
+
+            if git cat-file -e "${EXPECTED_SHA}^{commit}" 2>/dev/null; then
+              git reset --hard "${EXPECTED_SHA}"
+            else
+              echo "ERROR: commit ${EXPECTED_SHA} not found after fetch"
+              exit 1
+            fi
+
             rm -f data/telegram_bot.lock 2>/dev/null || true
+
+            export DEPLOY_SHA="${EXPECTED_SHA}"
             bash scripts/vdsina-update.sh
 
             ACTUAL_SHA="$(git rev-parse HEAD)"
             echo "==> Server HEAD: ${ACTUAL_SHA} ($(git log -1 --oneline))"
             if [ "${ACTUAL_SHA}" != "${EXPECTED_SHA}" ]; then
-              echo "WARN: HEAD != workflow SHA (возможен параллельный push)."
+              echo "ERROR: deployed SHA ${ACTUAL_SHA} != workflow SHA ${EXPECTED_SHA}"
+              exit 1
             fi
 
             echo "==> UI: $(grep -m1 'BTN_REPLY_NEUROTEXT =' content/messages.py || true)"

@@ -10,32 +10,67 @@ echo "==> Dir: ${DEPLOY_DIR}"
 echo "==> Remote: $(git remote get-url origin 2>/dev/null || echo 'no remote')"
 echo "==> Before: $(git log -1 --oneline 2>/dev/null || echo 'no git')"
 
-REMOTE_SHA="$(git ls-remote origin refs/heads/main 2>/dev/null | awk '{print $1}')"
-if [ -z "${REMOTE_SHA}" ]; then
-  echo "ERROR: git ls-remote origin main — пустой ответ (сеть или remote)"
-  exit 1
+DEPLOY_SHA="${DEPLOY_SHA:-}"
+LOCAL_SHA="$(git rev-parse HEAD)"
+if [ -n "${DEPLOY_SHA}" ]; then
+  echo "==> Deploy SHA (from workflow): ${DEPLOY_SHA:0:7}"
+  if [ "${LOCAL_SHA}" != "${DEPLOY_SHA}" ]; then
+    fetch_ok=0
+    for attempt in 1 2 3; do
+      if git fetch --prune origin "${DEPLOY_SHA}" main; then
+        fetch_ok=1
+        break
+      fi
+      echo "git fetch retry ${attempt}/3"
+      sleep 3
+    done
+    if [ "${fetch_ok}" -ne 1 ]; then
+      echo "ERROR: git fetch origin failed after 3 attempts"
+      exit 1
+    fi
+    if ! git cat-file -e "${DEPLOY_SHA}^{commit}" 2>/dev/null; then
+      echo "ERROR: commit ${DEPLOY_SHA} not found after fetch"
+      exit 1
+    fi
+    git reset --hard "${DEPLOY_SHA}"
+    LOCAL_SHA="$(git rev-parse HEAD)"
+  fi
+else
+  REMOTE_SHA="$(git ls-remote origin refs/heads/main 2>/dev/null | awk '{print $1}')"
+  if [ -z "${REMOTE_SHA}" ]; then
+    echo "ERROR: git ls-remote origin main — пустой ответ (сеть или remote)"
+    exit 1
+  fi
+  echo "==> GitHub main: ${REMOTE_SHA:0:7}"
+
+  fetch_ok=0
+  for attempt in 1 2 3; do
+    if git fetch origin main; then
+      fetch_ok=1
+      break
+    fi
+    echo "git fetch retry ${attempt}/3"
+    sleep 3
+  done
+  if [ "${fetch_ok}" -ne 1 ]; then
+    echo "ERROR: git fetch origin main failed after 3 attempts"
+    exit 1
+  fi
+  git reset --hard origin/main
+
+  LOCAL_SHA="$(git rev-parse HEAD)"
+  if [ "${LOCAL_SHA}" != "${REMOTE_SHA}" ]; then
+    echo "ERROR: HEAD (${LOCAL_SHA:0:7}) != GitHub main (${REMOTE_SHA:0:7}) после fetch/reset"
+    echo "       Попробуйте: git fetch origin main && git reset --hard ${REMOTE_SHA}"
+    exit 1
+  fi
 fi
-echo "==> GitHub main: ${REMOTE_SHA:0:7}"
 
 for svc in neuromule-bot neuromule_bot; do
   systemctl stop "${svc}" 2>/dev/null || true
 done
 pkill -f '[n]euromule-bot.*main.py' 2>/dev/null || true
 rm -f data/telegram_bot.lock 2>/dev/null || true
-
-for attempt in 1 2 3; do
-  git fetch origin main && break
-  echo "git fetch retry ${attempt}/3"
-  sleep 3
-done
-git reset --hard origin/main
-
-LOCAL_SHA="$(git rev-parse HEAD)"
-if [ "${LOCAL_SHA}" != "${REMOTE_SHA}" ]; then
-  echo "ERROR: HEAD (${LOCAL_SHA:0:7}) != GitHub main (${REMOTE_SHA:0:7}) после fetch/reset"
-  echo "       Попробуйте: git fetch origin main && git reset --hard ${REMOTE_SHA}"
-  exit 1
-fi
 
 if ! grep -q reply_build_version platforms/build_info.py; then
   echo "ERROR: нет /version в коде — проверьте git remote и push в main"
