@@ -352,9 +352,9 @@ async def _reply_chat_turn_result(
                 parse_mode=ParseMode.HTML,
             )
         else:
-            await message.answer(msg.TXT_GEN_JOB_FAILED)
+            await message.answer(msg.TXT_CHAT_AI_UNAVAILABLE, parse_mode=ParseMode.HTML)
         return
-    await message.answer(msg.TXT_GEN_JOB_FAILED)
+    await message.answer(msg.TXT_CHAT_AI_UNAVAILABLE, parse_mode=ParseMode.HTML)
 
 
 async def handle_neurotext_user_message(

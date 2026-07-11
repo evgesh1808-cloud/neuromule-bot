@@ -20,11 +20,20 @@ from services.dialog_sanitize import sanitize_dialog_content_for_chat
 
 logger = logging.getLogger(__name__)
 
-# Фоновое сжатие persistent_memory — только бесплатный шлюз OpenRouter, без VIP-линии.
-_PERSISTENT_MEMORY_MODEL_CHAIN: tuple[str, ...] = (
-    "google/gemini-2.5-flash:free",
-    "google/gemini-2.5-flash-lite:free",
+_MEMORY_MODEL_FALLBACK: tuple[str, ...] = (
+    "google/gemini-2.5-flash",
+    "google/gemini-2.5-flash-lite",
 )
+
+
+def _persistent_memory_model_chain(settings: Settings) -> list[str]:
+    """Лёгкий каскад для служебного сжатия памяти (без VIP-линии)."""
+    chain: list[str] = []
+    for mid in (settings.free_text_model, *settings.free_models):
+        mid = str(mid).strip()
+        if mid and mid not in chain:
+            chain.append(mid)
+    return chain or list(_MEMORY_MODEL_FALLBACK)
 
 _PERSISTENT_MEMORY_FORMAT_RULE = (
     "Всегда структурируй и разделяй итоговый текст памяти строго по трем блокам через эмодзи, "
@@ -92,7 +101,7 @@ async def _dialog_transcript_for_memory(
 
 
 async def _ask_memory_compression(settings: Settings, prompt: str) -> str:
-    """Служебный вызов OpenRouter только через бесплатные модели (:free)."""
+    """Служебный вызов OpenRouter через каскад free_models (без VIP-линии)."""
     from services.ai_text import ask_ai_messages
 
     try:
@@ -105,7 +114,7 @@ async def _ask_memory_compression(settings: Settings, prompt: str) -> str:
             timeout=25.0,
             max_context_chars=50_000,
             max_context_tokens=16_000,
-            models=list(_PERSISTENT_MEMORY_MODEL_CHAIN),
+            models=_persistent_memory_model_chain(settings),
             max_tokens=512,
         )
         return (completion.get("content") or "").strip()
@@ -130,9 +139,8 @@ async def maybe_refresh_persistent_memory(
 
     Вызывается в ``asyncio.create_task`` после ответа пользователю, ошибки глушатся в лог.
 
-    Модель жёстко зафиксирована на бесплатном шлюзе ``google/gemini-2.5-flash:free``
-    (резерв — ``google/gemini-2.5-flash-lite:free``) на всех тарифах; тариф пользователя
-    не учитывается. Платная VIP-линия не расходуется.
+    Модель берётся из ``settings.free_text_model`` / ``free_models`` (без VIP-линии).
+    Тариф пользователя не учитывается.
 
     Вход:
         settings — конфиг.

@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Annotated, Any
 
 from pydantic import AliasChoices, BeforeValidator, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger(__name__)
 
 _ENV_FILE = Path(__file__).resolve().with_name(".env")
 
@@ -18,6 +21,7 @@ _DEFAULT_GEMINI_FLASH_FREE = _DEFAULT_GEMINI_FLASH
 _DEFAULT_FREE_MODELS: list[str] = [
     _DEFAULT_GEMINI_FLASH,
     _DEFAULT_GEMINI_FLASH_LITE,
+    "meta-llama/llama-3-8b-instruct",
 ]
 
 _DEFAULT_SMART_MODELS: list[str] = [
@@ -132,6 +136,70 @@ def _nonempty_str(default: str) -> BeforeValidator:
             return str(v)
         stripped = v.strip()
         return stripped if stripped else default
+
+    return BeforeValidator(_parse)
+
+
+def _strip_deprecated_free_suffix(model_id: str) -> str:
+    """OpenRouter снял ``:free``-эндпоинты (404) — нормализуем к платному slug."""
+    mid = (model_id or "").strip()
+    if mid.endswith(":free"):
+        return mid[:-5].rstrip()
+    return mid
+
+
+def _dedupe_model_ids(model_ids: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for mid in model_ids:
+        norm = _strip_deprecated_free_suffix(mid)
+        if norm and norm not in seen:
+            seen.add(norm)
+            out.append(norm)
+    return out
+
+
+def _openrouter_model_id(default: str) -> BeforeValidator:
+    """Парсит model ID из env и снимает устаревший суффикс ``:free``."""
+
+    def _parse(v: Any) -> str:
+        if v is None:
+            raw = default
+        elif not isinstance(v, str):
+            raw = str(v).strip()
+        else:
+            raw = v.strip() or default
+        normalized = _strip_deprecated_free_suffix(raw)
+        if normalized != raw:
+            logger.warning(
+                "OpenRouter model ID normalized (deprecated :free suffix): %r -> %r",
+                raw,
+                normalized,
+            )
+        return normalized
+
+    return BeforeValidator(_parse)
+
+
+def _openrouter_model_list(default: list[str]) -> BeforeValidator:
+    """Парсит список model ID и снимает ``:free`` у каждого элемента."""
+
+    def _parse(v: Any) -> list[str]:
+        if v is None:
+            items = list(default)
+        elif isinstance(v, list):
+            items = [str(x).strip() for x in v if str(x).strip()]
+        else:
+            s = str(v).strip()
+            items = [item.strip() for item in s.split(",") if item.strip()] if s else list(default)
+        normalized = _dedupe_model_ids(items or list(default))
+        if normalized != items:
+            logger.warning(
+                "OpenRouter model list normalized (deprecated :free suffix): %r -> %r",
+                items,
+                normalized,
+            )
+        return normalized
 
     return BeforeValidator(_parse)
 
@@ -411,19 +479,19 @@ class Settings(BaseSettings):
     # Максимальный возраст Telegram WebApp initData (секунды).
     mini_app_init_data_max_age_sec: Annotated[int, _coerce_int(86_400)] = 86_400
 
-    free_models: Annotated[list[str], _coerce_str_list(_DEFAULT_FREE_MODELS)] = Field(
+    free_models: Annotated[list[str], _openrouter_model_list(_DEFAULT_FREE_MODELS)] = Field(
         default_factory=lambda: list(_DEFAULT_FREE_MODELS)
     )
-    smart_models: Annotated[list[str], _coerce_str_list(_DEFAULT_SMART_MODELS)] = Field(
+    smart_models: Annotated[list[str], _openrouter_model_list(_DEFAULT_SMART_MODELS)] = Field(
         default_factory=lambda: list(_DEFAULT_SMART_MODELS)
     )
     free_text_model: Annotated[
         str,
-        _nonempty_str(_DEFAULT_GEMINI_FLASH),
+        _openrouter_model_id(_DEFAULT_GEMINI_FLASH),
     ] = _DEFAULT_GEMINI_FLASH
     paid_text_model: Annotated[
         str,
-        _nonempty_str(_DEFAULT_GEMINI_FLASH),
+        _openrouter_model_id(_DEFAULT_GEMINI_FLASH),
     ] = _DEFAULT_GEMINI_FLASH
     free_image_model: Annotated[str, _nonempty_str("imagen4")] = "imagen4"
     free_daily_text_limit: Annotated[int, _coerce_int(30)] = 30

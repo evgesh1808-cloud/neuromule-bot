@@ -199,15 +199,16 @@ def plan_text_chat(user: UserBillingState, role_type: str) -> ChatRoutePlan:
                 fallback_model_ids=_free_model_fallbacks(),
             )
         if user.crystals >= crystal_cost:
+            # FREE + 💎: тот же каскад, что MINI — FREE_TEXT_MODEL + FREE_MODELS (резерв при 429).
             return ChatRoutePlan(
-                model_id=PAID_CHAT_MODEL,
+                model_id=FREE_CHAT_MODEL,
                 price_type=CurrencyKind.CRYSTALS,
                 energy_cost=energy_cost,
                 crystal_cost=crystal_cost,
                 is_expert_role=True,
                 max_tokens=_max_tokens_for_role(),
                 use_premium_prompt=True,
-                fallback_model_ids=_paid_model_fallbacks(),
+                fallback_model_ids=_free_model_fallbacks(),
             )
         return ChatRoutePlan(
             model_id=FREE_CHAT_MODEL,
