@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-06-27T14:15:19.510126+00:00",
+  "updated_at": "2026-07-13T17:41:07.837001+00:00",
   "source": "https://common-api.wildberries.ru",
   "build": "cfo-v12-tariffs-cache",
   "default_return_base_rub": 50.0,
@@ -1177,6 +1177,15 @@
     },
     "сц архангельск": {
       "warehouse_name": "СЦ Архангельск",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
+    "красный бор": {
+      "warehouse_name": "Красный Бор",
       "return_base_rub": 0.0,
       "return_liter_rub": 0.0,
       "delivery_base_rub": 0.0,

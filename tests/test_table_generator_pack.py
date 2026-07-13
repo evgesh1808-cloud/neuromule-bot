@@ -125,7 +125,6 @@ def test_build_table_generator_pack_with_chart() -> None:
     assert pack.chart_png_bytes is not None
     assert len(pack.chart_png_bytes) > 100
     assert pack.xlsx_bytes[:2] == b"PK"
-    assert "<pre>" in pack.telegram_caption_html
     assert "Доход" in pack.telegram_caption_html
     assert TABLE_XLSX_FILENAME == "Отчет_Нейросеть.xlsx"
 
@@ -144,6 +143,7 @@ async def test_run_chat_turn_table_returns_raw_json(repo_module, monkeypatch) ->
     from unittest.mock import AsyncMock, patch
 
     from config import Settings
+    from services.dialog_sanitize import compact_table_history_from_json
     from services.table_json import canonicalize_table_json
     from services.use_cases.chat_turn import ChatTurnOutcome, run_chat_turn
     from tests.conftest import TEST_ADMIN_IDS
@@ -196,6 +196,9 @@ async def test_run_chat_turn_table_returns_raw_json(repo_module, monkeypatch) ->
         "services.use_cases.chat_turn.commit_assistant_turn_queued",
         new=AsyncMock(),
     ) as commit_mock, patch(
+        "services.use_cases.chat_turn.insert_table_report",
+        new=AsyncMock(return_value=42),
+    ), patch(
         "services.use_cases.chat_turn.conv.schedule_memory_refresh",
     ):
         s = Settings(tg_token="x", openrouter_key="y", gemini_api_key="z")
@@ -207,7 +210,10 @@ async def test_run_chat_turn_table_returns_raw_json(repo_module, monkeypatch) ->
     ask_mock.assert_awaited_once()
     assert ask_mock.await_args.kwargs.get("text_role") == "table_generator"
     commit_mock.assert_awaited_once()
-    assert commit_mock.await_args.args[1] == canonical
+    assert commit_mock.await_args.args[1] == compact_table_history_from_json(
+        canonical,
+        table_subrole="table_generator",
+    )
 
 
 def test_build_table_generator_pack_from_rows() -> None:

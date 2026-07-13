@@ -25,6 +25,13 @@ from services.app_logging import setup_logging
 from services.dialog_write_worker import start_dialog_write_worker
 from services.last_share_media import clear_expired_cache_loop
 from services.metrics_http import serve_metrics
+from services.openrouter_http import (
+    _wait_openrouter_api,
+    close_openrouter_http_client,
+    init_openrouter_http_client,
+    log_openrouter_proxy_configuration,
+    probe_openrouter_proxy,
+)
 from services.repository import init_db
 from services.runtime_gc import controlled_gc_loop, setup_optimized_gc
 
@@ -169,6 +176,11 @@ async def run_telegram() -> None:
     if not settings.openrouter_key:
         raise RuntimeError("Задайте OPENROUTER_API_KEY в .env")
 
+    log_openrouter_proxy_configuration(settings)
+    probe_openrouter_proxy(settings)
+    await init_openrouter_http_client(settings)
+    await _wait_openrouter_api(settings)
+
     # Отключаем авто-GC ДО старта polling. Дальше GC живёт исключительно
     # под controlled_gc_loop — никаких спонтанных 100-500 мс пауз на
     # горячем callback'е.
@@ -204,6 +216,10 @@ async def run_telegram() -> None:
     try:
         await dp.start_polling(bot)
     finally:
+        try:
+            await close_openrouter_http_client()
+        except Exception:
+            logger.exception("openrouter http client close failed")
         if pg_pool is not None:
             try:
                 await pg_pool.close()

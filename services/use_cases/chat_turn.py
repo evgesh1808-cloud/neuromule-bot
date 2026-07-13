@@ -298,7 +298,7 @@ async def run_chat_turn(
 
     # Основная модель из биллинга + резервный каскад (FREE/MINI → free_models, SMART/ULTRA → smart_models).
     model_chain: list[str] = []
-    for mid in (plan.model_id, *plan.fallback_model_ids):
+    for mid in (plan.model_id, *getattr(plan, "fallback_model_ids", ())):
         mid = str(mid).strip()
         if mid and mid not in model_chain:
             model_chain.append(mid)

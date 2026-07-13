@@ -63,7 +63,17 @@ async def test_ask_ai_messages_multimodal_payload(monkeypatch) -> None:
     s = Settings(tg_token="x", openrouter_key="y", gemini_api_key="z")
     captured: dict = {}
 
-    async def _fake_post(client, settings, model, messages, *, timeout, max_tokens=None, response_format=None):
+    async def _fake_post(
+        client,
+        settings,
+        model,
+        messages,
+        *,
+        timeout,
+        max_tokens=None,
+        response_format=None,
+        temperature=None,
+    ):
         captured["messages"] = messages
         captured["model"] = model
         return {"content": "vision ok", "prompt_tokens": 0, "completion_tokens": 0}
@@ -100,6 +110,9 @@ async def test_run_chat_turn_with_photo_billing_bypass(repo_module, monkeypatch)
         model_id="google/gemini-2.5-flash",
         max_tokens=640,
         use_premium_prompt=True,
+        fallback_model_ids=(),
+        energy_cost=0,
+        crystal_cost=0,
     )
     billing_result = SimpleNamespace(
         plan=fake_plan,

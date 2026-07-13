@@ -220,6 +220,11 @@ class Settings(BaseSettings):
         default=None,
         validation_alias=AliasChoices("TELEGRAM_PROXY_URL", "telegram_proxy_url"),
     )
+    # Опциональный HTTP/SOCKS5-прокси для OpenRouter (если Cloudflare блокирует IP хостинга).
+    ai_proxy: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("AI_PROXY", "ai_proxy"),
+    )
     payment_token: str = Field(
         default="",
         validation_alias=AliasChoices("PAYMENT_TOKEN", "UKASSA_PROVIDER_TOKEN"),

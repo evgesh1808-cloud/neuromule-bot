@@ -111,25 +111,33 @@ def test_pr_b_negative_provider_token_invalid() -> None:
 
 @pytest.fixture
 def _patch_invoice_builder(mocker: MockerFixture):
-    """Подменяет payment_invoice_turn.build_payment_invoice_draft, чтобы
-    не зависеть от реального каталога цен и DI-настроек."""
+    """Подменяет ``payment_shop.create_*_invoice``, чтобы не зависеть от каталога."""
     from platforms.handlers import payment_misc
-    from services.use_cases import payment_invoice_turn as inv_mod
+    from services.billing.shop import (
+        InvoiceBuildOutcome,
+        InvoiceBuildResult,
+        InvoicePriceLine,
+        PaymentInvoiceDraft,
+    )
 
-    draft = inv_mod.PaymentInvoiceDraft(
+    draft = PaymentInvoiceDraft(
         title="t",
         description="d",
         payload="p",
         currency="XTR",
-        prices=(inv_mod.InvoicePriceLine(label="L", amount=10),),
+        prices=(InvoicePriceLine(label="L", amount=10),),
         provider_token="",
     )
-    result_ok = inv_mod.BuildPaymentInvoiceResult(
-        outcome=inv_mod.InvoiceBuildOutcome.OK, draft=draft
+    result_ok = InvoiceBuildResult(outcome=InvoiceBuildOutcome.OK, draft=draft)
+
+    mocker.patch.object(
+        payment_misc.payment_shop,
+        "create_telegram_stars_invoice",
+        new=mocker.AsyncMock(return_value=result_ok),
     )
     mocker.patch.object(
-        payment_misc,
-        "build_payment_invoice_draft",
+        payment_misc.payment_shop,
+        "create_yookassa_invoice",
         new=mocker.AsyncMock(return_value=result_ok),
     )
     return payment_misc

@@ -78,26 +78,41 @@ def test_whitelist_is_uppercased() -> None:
 
 @pytest.fixture
 def _payment_test_env(monkeypatch: pytest.MonkeyPatch):
-    """Изоляция от реального aiogram-роутера и БД: моки use-case'а и keyboards."""
+    """Изоляция от реального aiogram-роутера и БД: моки shop API и keyboards."""
     from platforms.handlers import payment_misc
-    from services.use_cases import payment_invoice_turn as inv_mod
+    from services.billing.shop import (
+        InvoiceBuildOutcome,
+        InvoiceBuildResult,
+        InvoicePriceLine,
+        PaymentInvoiceDraft,
+    )
 
-    draft = inv_mod.PaymentInvoiceDraft(
+    draft = PaymentInvoiceDraft(
         title="t",
         description="d",
         payload="p",
         currency="XTR",
-        prices=(inv_mod.InvoicePriceLine(label="L", amount=10),),
+        prices=(InvoicePriceLine(label="L", amount=10),),
         provider_token="",
     )
-    result_ok = inv_mod.BuildPaymentInvoiceResult(
-        outcome=inv_mod.InvoiceBuildOutcome.OK, draft=draft
-    )
+    result_ok = InvoiceBuildResult(outcome=InvoiceBuildOutcome.OK, draft=draft)
 
-    async def _build(*a, **kw):
+    async def _stars_invoice(*_a, **_kw):
         return result_ok
 
-    monkeypatch.setattr(payment_misc, "build_payment_invoice_draft", _build)
+    async def _yookassa_invoice(*_a, **_kw):
+        return result_ok
+
+    monkeypatch.setattr(
+        payment_misc.payment_shop,
+        "create_telegram_stars_invoice",
+        _stars_invoice,
+    )
+    monkeypatch.setattr(
+        payment_misc.payment_shop,
+        "create_yookassa_invoice",
+        _yookassa_invoice,
+    )
     return payment_misc
 
 

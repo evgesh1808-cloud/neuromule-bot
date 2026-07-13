@@ -9,11 +9,10 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING
 
-import httpx
-
 from config import Settings
 from services import blogger_post_cache
-from services.ai_text import _chat_headers
+from services.ai_text import _mask_openrouter_error_body, get_chat_headers
+from services.openrouter_http import get_openrouter_http_client
 from services.blogger_image_prompt import sanitize_blogger_image_prompt_for_imagen
 from services.blogger_post_cache import BloggerPostDraft
 from services.blogger_post_parser import MISSING_SECTION_PLACEHOLDER
@@ -187,38 +186,39 @@ async def _generate_cover_via_openrouter(settings: Settings, prompt: str) -> Gem
         raise RuntimeError("OPENROUTER_API_KEY is not configured")
 
     last_error: str | None = None
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        for model in _OPENROUTER_COVER_MODELS:
-            payload = {
-                "model": model,
-                "messages": [{"role": "user", "content": prompt}],
-                "modalities": ["image", "text"],
-                "max_tokens": 1024,
-            }
-            try:
-                response = await client.post(
-                    settings.openrouter_chat_url,
-                    headers=_chat_headers(settings),
-                    json=payload,
+    client = await get_openrouter_http_client(settings)
+    for model in _OPENROUTER_COVER_MODELS:
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "modalities": ["image", "text"],
+            "max_tokens": 1024,
+        }
+        try:
+            response = await client.post(
+                settings.openrouter_chat_url,
+                headers=get_chat_headers(settings),
+                json=payload,
+                timeout=120.0,
+            )
+            if response.status_code != 200:
+                last_error = f"{model}: HTTP {response.status_code}"
+                logger.warning(
+                    "OpenRouter cover model=%s failed: %s",
+                    model,
+                    _mask_openrouter_error_body(response.text),
                 )
-                if response.status_code != 200:
-                    last_error = f"{model}: HTTP {response.status_code}"
-                    logger.warning(
-                        "OpenRouter cover model=%s failed: %s",
-                        model,
-                        response.text[:400],
-                    )
-                    continue
-                data = response.json()
-                message = ((data.get("choices") or [{}])[0]).get("message") or {}
-                result = _parse_openrouter_image_message(message)
-                if result.has_image():
-                    logger.info("blogger cover generated via OpenRouter model=%s", model)
-                    return result
-                last_error = f"{model}: empty image payload"
-            except Exception as exc:
-                last_error = f"{model}: {exc}"
-                logger.warning("OpenRouter cover model=%s error", model, exc_info=True)
+                continue
+            data = response.json()
+            message = ((data.get("choices") or [{}])[0]).get("message") or {}
+            result = _parse_openrouter_image_message(message)
+            if result.has_image():
+                logger.info("blogger cover generated via OpenRouter model=%s", model)
+                return result
+            last_error = f"{model}: empty image payload"
+        except Exception as exc:
+            last_error = f"{model}: {exc}"
+            logger.warning("OpenRouter cover model=%s error", model, exc_info=True)
 
     raise RuntimeError(last_error or "OpenRouter image generation failed")
 

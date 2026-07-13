@@ -85,7 +85,7 @@ async def test_table_generator_bare_xlsx_uses_fast_path() -> None:
         table_raw_json='{"title":"T","headers":["A"],"rows":[["1"]]}',
         table_report_id=1,
     )
-    worker = SimpleNamespace(rows=[["A"], ["1"]])
+    worker = SimpleNamespace(rows=[["A"], ["1"]], calculated_total=0.0)
 
     with patch(
         "platforms.neurotext_input.download_telegram_document_to_path",

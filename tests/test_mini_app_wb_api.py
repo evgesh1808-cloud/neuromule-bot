@@ -20,6 +20,10 @@ def wb_client(tmp_path, monkeypatch):
     monkeypatch.setattr(repo, "DB_PATH", str(db_path))
     monkeypatch.setattr("api.auth._bot_token", lambda: _TEST_BOT_TOKEN)
 
+    from config import settings
+
+    object.__setattr__(settings, "wb_user_statistics_api_enabled", True)
+
     from importlib import reload
 
     import api.mini_app as mini_app_module

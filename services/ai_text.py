@@ -15,6 +15,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable, TypedDict
 import httpx
 
 from config import Settings
+from services.openrouter_http import get_openrouter_http_client
 
 logger = logging.getLogger(__name__)
 
@@ -160,24 +161,53 @@ def estimate_messages_prompt_tokens(
     return _estimate_messages_prompt_tokens_chars(messages, cpt)
 
 
+def _mask_openrouter_error_body(raw: str | bytes) -> str:
+    """Укорачивает тело ошибки OpenRouter, чтобы не утекали фрагменты промптов в лог."""
+    if isinstance(raw, bytes):
+        text = raw.decode("utf-8", errors="replace")
+    else:
+        text = str(raw or "")
+    snippet = text[:100].replace("\n", " ").replace("\r", " ")
+    if len(text) > 100:
+        snippet += "…[truncated]"
+    return snippet
+
+
 @asynccontextmanager
 async def _http_client_scope(
     http_client: httpx.AsyncClient | None,
+    settings: Settings,
 ) -> AsyncIterator[httpx.AsyncClient]:
-    """Отдаёт переданный клиент или создаёт временный ``AsyncClient`` и закрывает его по выходу."""
+    """Отдаёт переданный клиент или переиспользуемый singleton OpenRouter-клиент."""
     if http_client is not None:
         yield http_client
         return
-    async with httpx.AsyncClient() as client:
-        yield client
+    yield await get_openrouter_http_client(settings)
 
 
-def _chat_headers(settings: Settings) -> dict[str, str]:
+def get_chat_headers(settings: Settings) -> dict[str, str]:
     """Заголовки авторизации для OpenRouter (Bearer + JSON)."""
     return {
         "Authorization": f"Bearer {settings.openrouter_key}",
         "Content-Type": "application/json",
     }
+
+
+def _sanitize_openrouter_model_id(model_id: str) -> str:
+    """OpenRouter снял ``:free``-slug (404) — очищаем перед каждым запросом."""
+    return str(model_id or "").strip().replace(":free", "")
+
+
+def _build_openrouter_model_chain(model_ids: list[str]) -> list[str]:
+    """Собирает каскад моделей без ``:free`` и без дубликатов после нормализации."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for mid in model_ids:
+        clean = _sanitize_openrouter_model_id(mid)
+        if clean and clean not in seen:
+            seen.add(clean)
+            out.append(clean)
+    return out
 
 
 def _chat_payload(
@@ -234,7 +264,7 @@ async def _post_chat_completion(
     )
     response = await client.post(
         settings.openrouter_chat_url,
-        headers=_chat_headers(settings),
+        headers=get_chat_headers(settings),
         json=payload,
         timeout=timeout,
     )
@@ -252,7 +282,7 @@ async def _post_chat_completion(
             "OpenRouter model=%s status=%s body=%s",
             model,
             response.status_code,
-            response.text[:500],
+            _mask_openrouter_error_body(response.text),
         )
         return None
     try:
@@ -350,7 +380,7 @@ async def _post_chat_completion_stream(
         async with client.stream(
             "POST",
             settings.openrouter_chat_url,
-            headers=_chat_headers(settings),
+            headers=get_chat_headers(settings),
             json=payload,
             timeout=timeout,
         ) as resp:
@@ -360,7 +390,7 @@ async def _post_chat_completion_stream(
                     "OpenRouter stream model=%s status=%s body=%s",
                     model,
                     resp.status_code,
-                    body,
+                    _mask_openrouter_error_body(body),
                 )
                 return None
             async for raw in _iter_sse_data_payloads(resp):
@@ -461,7 +491,9 @@ async def ask_ai_messages(
 
     t = timeout if timeout is not None else settings.openrouter_timeout_sec
 
-    model_chain = [m for m in (models or settings.free_models) if str(m).strip()]
+    model_chain = _build_openrouter_model_chain(
+        [m for m in (models or settings.free_models) if str(m).strip()]
+    )
     use_stream = (
         stream_callback is not None
         and not _messages_contain_image(messages)
@@ -470,8 +502,11 @@ async def ask_ai_messages(
     if stream_callback is not None and not use_stream:
         logger.debug("OpenRouter: multimodal request — streaming disabled")
 
-    async with _http_client_scope(http_client) as client:
-        for model in model_chain:
+    async with _http_client_scope(http_client, settings) as client:
+        for raw_model in model_chain:
+            model = _sanitize_openrouter_model_id(raw_model)
+            if not model:
+                continue
             try:
                 if use_stream:
                     result = await _post_chat_completion_stream(

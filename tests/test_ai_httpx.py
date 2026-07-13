@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import httpx
+import pytest
 from config import Settings
 from services.ai_text import ask_ai_messages, ask_ai_text
 
@@ -102,6 +103,33 @@ async def test_ask_ai_messages_token_limit_raises():
         raise AssertionError("expected RuntimeError")
 
 
+async def test_ask_ai_messages_strips_free_suffix_before_request():
+    s = Settings().model_copy(update={"free_models": ["m1"], "openrouter_key": "k"})
+    seen_models: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = __import__("json").loads(request.content.decode())
+        seen_models.append(body["model"])
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "ok"}}]},
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        out = await ask_ai_messages(
+            s,
+            [{"role": "user", "content": "x"}],
+            models=[
+                "google/gemini-2.5-flash:free",
+                "google/gemini-2.5-flash",
+            ],
+            http_client=client,
+        )
+    assert out["content"] == "ok"
+    assert seen_models == ["google/gemini-2.5-flash"]
+
+
 async def test_ask_ai_text_maps_unavailable_to_user_string():
     s = Settings().model_copy(update={"free_models": ["m1"], "openrouter_key": "k"})
 
@@ -113,3 +141,55 @@ async def test_ask_ai_text_maps_unavailable_to_user_string():
         out = await ask_ai_text(s, "ping", http_client=client)
 
     assert "недоступен" in out.lower()
+
+
+@pytest.mark.asyncio
+async def test_ask_ai_messages_shared_client_scope_e2e(monkeypatch):
+    """Сквозной путь: ``_http_client_scope`` + singleton без инжекта ``http_client``."""
+    from services import openrouter_http as or_http
+
+    await or_http.close_openrouter_http_client()
+
+    requests_made: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests_made.append(str(request.url))
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "via-shared"}}],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 2},
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    s = Settings().model_copy(
+        update={
+            "free_models": ["m1"],
+            "openrouter_key": "k",
+            "ai_proxy": "http://127.0.0.1:7890",
+        }
+    )
+
+    async def _init_mock_client(settings):
+        await or_http.close_openrouter_http_client()
+        kwargs = or_http.openrouter_client_kwargs(settings)
+        kwargs.pop("proxy", None)
+        or_http._shared_client = httpx.AsyncClient(transport=transport, **kwargs)
+        return or_http._shared_client
+
+    monkeypatch.setattr(or_http, "init_openrouter_http_client", _init_mock_client)
+    monkeypatch.setattr(
+        or_http,
+        "get_openrouter_http_client",
+        _init_mock_client,
+    )
+
+    out = await ask_ai_messages(s, [{"role": "user", "content": "x"}])
+    assert out["content"] == "via-shared"
+    assert requests_made
+    kw = or_http.openrouter_client_kwargs(s)
+    assert kw["trust_env"] is False
+    assert kw["proxy"] == "http://127.0.0.1:7890"
+
+    await or_http.close_openrouter_http_client()

@@ -140,8 +140,21 @@ def role_costs(role_id: str) -> tuple[int, int]:
     return TEXT_ROLE_COSTS.get((role_id or "standard").strip().lower(), (CHAT_STANDARD_ENERGY, CHAT_STANDARD_CRYSTALS))
 
 
+_LEGACY_EXPERT_TEXT_ROLE_IDS: frozenset[str] = frozenset(
+    {
+        "psychologist",
+        "academic",
+        "speaker",
+        "blogger",
+        "analyst",
+        "storyteller",
+    }
+)
+
+
 def is_expert_role(role_id: str) -> bool:
-    return (role_id or "standard").strip().lower() in PREMIUM_TEXT_ROLE_IDS
+    rid = (role_id or "standard").strip().lower()
+    return rid in PREMIUM_TEXT_ROLE_IDS or rid in _LEGACY_EXPERT_TEXT_ROLE_IDS
 
 
 def use_premium_system_prompt(tariff: TariffTier, *, is_expert_role: bool) -> bool:

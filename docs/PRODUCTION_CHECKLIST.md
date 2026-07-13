@@ -31,12 +31,47 @@
 | Telegram | `TG_TOKEN` | Бот не стартует |
 | Pay (RUB) | `UKASSA_PROVIDER_TOKEN` либо `PAYMENT_TOKEN` | RUB-оплата выключена (останутся только Stars) |
 | AI text | `OPENROUTER_API_KEY` | RuntimeError при старте |
+| AI proxy (VDSina) | `AI_PROXY` | Cloudflare блокирует IP датацентра → все AI-запросы падают в runtime; при старте бот упадёт на smoke-check OpenRouter |
+| Telegram proxy | `TELEGRAM_PROXY_URL` | Только если `api.telegram.org` недоступен напрямую (независимо от `AI_PROXY`) |
 | AI Imagen | `GEMINI_API_KEY` | Daily-advice без иллюстраций |
 | Replicate | `REPLICATE_API_TOKEN` | Видео-генерация выключена |
 | Suno | `SUNO_API_KEY` | Музыка выключена |
 | Gallery mod | `GALLERY_MODERATION_CHAT_ID` | Премодерация деградирует в авто-публикацию + WARNING лог |
 | Metrics | `METRICS_HTTP_PORT` | Эндпоинт `/metrics` не поднимается (всё работает, но Prometheus слепой) |
 | Lock | `NEUROMULE_TELEGRAM_LOCK_PORT` | Если запустить два процесса на хосте — Telegram Conflict |
+
+#### OpenRouter на VDSina (обход Cloudflare)
+
+На ряде VDS/VPS (включая VDSina) IP датацентра блокируется Cloudflare на стороне
+`openrouter.ai`. Telegram при этом часто доступен напрямую — прокси для AI и для
+Telegram **настраиваются отдельно**.
+
+1. Проверьте прямой доступ с хоста:
+   ```bash
+   curl -sI https://openrouter.ai/api/v1/models
+   ```
+   HTTP `403` или таймаут → задайте `AI_PROXY` в `.env`.
+
+2. Примеры (см. также `.env.example`):
+   ```env
+   AI_PROXY=http://user:pass@proxy-host:8080
+   # или SOCKS5 (нужен httpx[socks] из requirements.txt):
+   AI_PROXY=socks5://127.0.0.1:1080
+   ```
+
+3. `TELEGRAM_PROXY_URL` и `AI_PROXY` независимы: один может быть пуст, второй — задан.
+
+4. При старте бот выполняет probe прокси и smoke-check OpenRouter. Если прокси мёртв
+   или API недоступен — процесс падает с явным `RuntimeError` в `journalctl` (не молчит
+   до первого чата).
+
+5. После деплоя:
+   ```bash
+   python tools/probe_openrouter_model_slugs.py
+   journalctl -u neuromule-bot -n 50 | grep -i openrouter
+   ```
+   Ожидаемые строки: `OpenRouter proxy probe OK` или `прямое подключение`, затем
+   `OpenRouter API OK`.
 
 ### 1.2 Файловая система
 
