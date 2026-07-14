@@ -74,6 +74,8 @@ jobs:
                 pkill -f "${alt}.*main.py" 2>/dev/null || true
               fi
             done
+            # Старое PM2-имя «neuromule» + новый neuromule-tg = Conflict на TG_TOKEN.
+            pm2 delete neuromule 2>/dev/null || true
             pkill -f '[n]euromule-bot.*main.py' 2>/dev/null || true
             pkill -f '[N]EUROMULE_PLATFORM=telegram' 2>/dev/null || true
 

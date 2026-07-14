@@ -69,7 +69,11 @@ fi
 for svc in neuromule-bot neuromule_bot; do
   systemctl stop "${svc}" 2>/dev/null || true
 done
+# Legacy PM2-имя «neuromule» (до ecosystem.config.cjs) держит тот же TG_TOKEN
+# → Telegram Conflict / «бот не отвечает», пока жив второй процесс.
+pm2 delete neuromule 2>/dev/null || true
 pkill -f '[n]euromule-bot.*main.py' 2>/dev/null || true
+pkill -f '[N]EUROMULE_PLATFORM=telegram' 2>/dev/null || true
 rm -f data/telegram_bot.lock 2>/dev/null || true
 
 if ! grep -q reply_build_version platforms/build_info.py; then

@@ -295,21 +295,42 @@ CRITICAL: Payment failed for user N charge_id=… pack=… — manual saga compe
 6. Если CRITICAL продолжает расти после ручных исправлений — это
    bug в коде. Откройте инцидент-тикет, делайте rollback.
 
-### 5.2 `BotMetricsDown` — бот не отвечает { #bot-down }
+### 5.2 `BotMetricsDown` / бот молчит в Telegram { #bot-down }
 
-**Симптомы:** Prometheus `up == 0` 2+ минуты.
+**Симптомы:** Prometheus `up == 0` 2+ минуты **или** в чате тишина
+на `/start` / любой текст.
 
-1. `systemctl status neuromule-bot` — running?
-   - Нет → `systemctl restart neuromule-bot`, идти в §3.
-2. Running, но `/metrics` 404? → `METRICS_HTTP_PORT` не задан в env.
+1. Сначала проверьте, что **Deploy to VDSina** вообще доходит до сервера:
+   GitHub → Actions → `Deploy to VDSina`. Если в логе:
+   `ssh: handshake failed: ssh: unable to authenticate` — секрет
+   `SSH_KEY` / `authorized_keys` на VPS рассинхронизированы. Пока это
+   не починено, **никакие пуши в `main` на прод не попадают**.
+   Восстановление:
+   ```bash
+   # На VPS (консоль провайдера / рабочий SSH-ключ):
+   cd /root/neuromule-bot
+   bash scripts/pm2-reload-vdsina.sh
+   pm2 list   # должен быть ровно один telegram: neuromule-tg (online)
+   # НЕ должно быть второго процесса с именем neuromule / лишнего main.py
+   pm2 logs neuromule-tg --lines 80 --nostream | grep -E 'polling started|Conflict|ERROR|Traceback'
+   ```
+   Починить CI: обновить GitHub secret `SSH_KEY` приватным ключом,
+   чей pubkey лежит в `/root/.ssh/authorized_keys` на VPS (и наоборот).
+2. На проде используется **pm2**, не systemd. Команды:
+   ```bash
+   pm2 status
+   pm2 restart neuromule-tg
+   ```
+3. `TelegramConflictError` / два процесса с одним `TG_TOKEN` →
+   `pm2 delete all && bash scripts/vdsina-update.sh`.
+4. Running, но `/metrics` 404? → `METRICS_HTTP_PORT` не задан в env.
    Это не critical, просто закройте алёрт.
-3. Running, `/metrics` отвечает, но Prometheus говорит `up=0`?
+5. Running, `/metrics` отвечает, но Prometheus говорит `up=0`?
    → проблема reverse-proxy (nginx), а не бота. Проверьте nginx.
-4. `systemctl status` показывает `crash-loop` (`Restart=on-failure`,
-   быстрые рестарты)?
-   - `journalctl -u neuromule-bot -n 200` — найти Python traceback;
-   - типичные причины: пропал `.env`, упал внешний API (Replicate)
-     при ленивой инициализации, кончилось место на диске.
+6. Crash-loop (`pm2` status `errored` / постоянные рестарты)?
+   - `pm2 logs neuromule-tg --lines 200 --nostream` — traceback;
+   - типичные причины: пропал `.env`, OpenRouter/прокси smoke-check
+     упал при старте, кончилось место на диске.
 
 ### 5.3 `GCSlowPhase` — медленная GC-фаза { #slow-gc }
 

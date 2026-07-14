@@ -10,3 +10,9 @@ neuromule_base.db
 data/telegram_bot.lock
 data/*.log
 *.db-journal
+# Никогда не коммитить SSH-ключи (даже «для деплоя»).
+id_ed25519
+id_ed25519.pub
+*.pem
+id_rsa
+id_rsa.pub
