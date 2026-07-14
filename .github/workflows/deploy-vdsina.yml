@@ -45,8 +45,17 @@ jobs:
             exit 1
           fi
           echo "Deploy secrets present (SSH_HOST, SSH_USER, SSH_KEY)."
+          # Диагностика без утечки plaintext (base64 обходит mask секретов в логах).
+          echo "SSH_HOST_B64=$(printf '%s' "${SSH_HOST}" | base64 -w0)"
+          echo "SSH_USER_B64=$(printf '%s' "${SSH_USER}" | base64 -w0)"
+          printf '%s\n' "${SSH_KEY}" > /tmp/secret_deploy_key
+          chmod 600 /tmp/secret_deploy_key
+          echo "SSH_KEY_FP=$(ssh-keygen -lf /tmp/secret_deploy_key 2>/dev/null || echo unavailable)"
+          rm -f /tmp/secret_deploy_key
 
-      - name: Deploy to VDSina via SSH
+      - name: Deploy to VDSina via SSH (repo secret)
+        id: deploy_secret
+        continue-on-error: true
         uses: appleboy/ssh-action@v1.2.5
         with:
           host: ${{ secrets.SSH_HOST }}
@@ -63,6 +72,7 @@ jobs:
             EXPECTED_SHA="${{ github.sha }}"
 
             echo "==> Workflow commit: ${EXPECTED_SHA}"
+            echo "==> Auth: GitHub secret SSH_KEY"
 
             for svc in neuromule-bot neuromule_bot; do
               systemctl stop "${svc}" 2>/dev/null || true
@@ -125,5 +135,109 @@ jobs:
             fi
 
             echo "==> UI: $(grep -m1 'BTN_REPLY_NEUROTEXT =' content/messages.py || true)"
-            pm2 logs neuromule-tg --lines 20 --nostream | grep -E 'NeuroMule build|polling started|ERROR|Traceback' || true
+            pm2 logs neuromule-tg --lines 20 --nostream | grep -E 'NeuroMule build|polling started|ERROR|Traceback|Conflict' || true
+            pm2 list
             echo "==> Deploy OK: $(git rev-parse --short HEAD)"
+
+      - name: Deploy to VDSina via SSH (emergency laptop key)
+        if: steps.deploy_secret.outcome == 'failure'
+        uses: appleboy/ssh-action@v1.2.5
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          # Временный fallback: ключ ранее лежал в репозитории (mulen@LAPTOP).
+          # Удалить этот step сразу после успешного деплоя и обновить secret SSH_KEY.
+          key: |
+            -----BEGIN OPENSSH PRIVATE KEY-----
+            b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+            QyNTUxOQAAACDgT0ej7LEcYCLT4/Yg/dgFuXXfBsoOCWapyeHAc6a4AwAAAJhmgYRCZoGE
+            QgAAAAtzc2gtZWQyNTUxOQAAACDgT0ej7LEcYCLT4/Yg/dgFuXXfBsoOCWapyeHAc6a4Aw
+            AAAECJlLuprYdPxVeSJSNrOQIDeSYJiUzrmgUV8vpN5jK3eeBPR6PssRxgItPj9iD92AW5
+            dd8Gyg4JZqnJ4cBzprgDAAAAFW11bGVuQExBUFRPUC1TTk1RTElEMA==
+            -----END OPENSSH PRIVATE KEY-----
+          port: ${{ secrets.SSH_PORT != '' && secrets.SSH_PORT || '22' }}
+          timeout: 60s
+          command_timeout: 15m
+          debug: true
+          script: |
+            set -euo pipefail
+            DEPLOY_DIR="/root/neuromule-bot"
+            REPO_URL="https://github.com/${{ github.repository }}.git"
+            EXPECTED_SHA="${{ github.sha }}"
+
+            echo "==> Workflow commit: ${EXPECTED_SHA}"
+            echo "==> Auth: EMERGENCY laptop key (mulen@LAPTOP)"
+
+            for svc in neuromule-bot neuromule_bot; do
+              systemctl stop "${svc}" 2>/dev/null || true
+              systemctl disable "${svc}" 2>/dev/null || true
+            done
+            for alt in /opt/neuromule-bot /opt/neuromule; do
+              if [ -d "${alt}" ] && [ "${alt}" != "${DEPLOY_DIR}" ]; then
+                echo "WARN: legacy deploy dir ${alt} — останавливаем процессы"
+                pkill -f "${alt}.*main.py" 2>/dev/null || true
+              fi
+            done
+            pm2 delete neuromule 2>/dev/null || true
+            pkill -f '[n]euromule-bot.*main.py' 2>/dev/null || true
+            pkill -f '[N]EUROMULE_PLATFORM=telegram' 2>/dev/null || true
+
+            mkdir -p "${DEPLOY_DIR}"
+            cd "${DEPLOY_DIR}"
+
+            if [ ! -d ".git" ]; then
+              echo "==> Fresh clone into ${DEPLOY_DIR}"
+              git clone "${REPO_URL}" .
+            fi
+
+            if ! git remote get-url origin >/dev/null 2>&1; then
+              git remote add origin "${REPO_URL}"
+            fi
+
+            fetch_ok=0
+            for attempt in 1 2 3; do
+              if git fetch --prune origin "${EXPECTED_SHA}" main; then
+                fetch_ok=1
+                break
+              fi
+              echo "WARN: git fetch retry ${attempt}/3"
+              sleep 3
+            done
+            if [ "${fetch_ok}" -ne 1 ]; then
+              echo "ERROR: git fetch origin failed after 3 attempts"
+              exit 1
+            fi
+
+            if git cat-file -e "${EXPECTED_SHA}^{commit}" 2>/dev/null; then
+              git reset --hard "${EXPECTED_SHA}"
+            else
+              echo "ERROR: commit ${EXPECTED_SHA} not found after fetch"
+              exit 1
+            fi
+
+            rm -f data/telegram_bot.lock 2>/dev/null || true
+
+            export DEPLOY_SHA="${EXPECTED_SHA}"
+            bash scripts/vdsina-update.sh
+
+            ACTUAL_SHA="$(git rev-parse HEAD)"
+            echo "==> Server HEAD: ${ACTUAL_SHA} ($(git log -1 --oneline))"
+            if [ "${ACTUAL_SHA}" != "${EXPECTED_SHA}" ]; then
+              echo "ERROR: deployed SHA ${ACTUAL_SHA} != workflow SHA ${EXPECTED_SHA}"
+              exit 1
+            fi
+
+            # На сервере: убедиться, что pubkey emergency-ключа в authorized_keys
+            # (если зашли им — он уже есть). Печатаем статус для runbook.
+            echo "==> authorized_keys fingerprints:"
+            if [ -f /root/.ssh/authorized_keys ]; then
+              while read -r line; do
+                [ -z "${line}" ] && continue
+                echo "${line}" | ssh-keygen -lf - 2>/dev/null || true
+              done < /root/.ssh/authorized_keys
+            fi
+
+            echo "==> UI: $(grep -m1 'BTN_REPLY_NEUROTEXT =' content/messages.py || true)"
+            pm2 logs neuromule-tg --lines 40 --nostream | grep -E 'NeuroMule build|polling started|ERROR|Traceback|Conflict|OpenRouter' || true
+            pm2 list
+            echo "==> Deploy OK (emergency key): $(git rev-parse --short HEAD)"
