@@ -298,7 +298,8 @@ CRITICAL: Payment failed for user N charge_id=… pack=… — manual saga compe
 ### 5.2 `BotMetricsDown` / бот молчит в Telegram { #bot-down }
 
 Подробный runbook по сломанному SSH: [`docs/RECOVERY_SSH_DEPLOY.md`](./RECOVERY_SSH_DEPLOY.md).
-Аварийный one-liner из VNC Timeweb:
+
+Аварийный one-liner из **консоли VDSina** (VNC):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/evgesh1808-cloud/neuromule-bot/main/scripts/vnc-emergency-fix.sh | bash
@@ -307,22 +308,23 @@ curl -fsSL https://raw.githubusercontent.com/evgesh1808-cloud/neuromule-bot/main
 **Симптомы:** Prometheus `up == 0` 2+ минуты **или** в чате тишина
 на `/start` / любой текст.
 
-1. Сначала проверьте, что **Deploy to VDSina** вообще доходит до сервера:
-   GitHub → Actions → `Deploy to VDSina`. Если в логе:
-   `ssh: handshake failed: ssh: unable to authenticate` — секрет
-   `SSH_KEY` / `authorized_keys` на VPS рассинхронизированы. Пока это
-   не починено, **никакие пуши в `main` на прод не попадают**.
+1. Сначала проверьте, что **Deploy to VDSina** вообще доходит до **вашего** сервера:
+   GitHub → Actions → `Deploy to VDSina`.
+   - Если `SSH_HOST` указывает не на IP из панели VDSina (часто ошибочно
+     попадает чужой хост) — деплой идёт мимо прода. Исправьте secret.
+   - Если в логе `ssh: unable to authenticate` — рассинхрон `SSH_KEY` /
+     `authorized_keys`. Пока это не починено, пуши в `main` на прод не попадают.
    Восстановление:
    ```bash
-   # На VPS (консоль провайдера / рабочий SSH-ключ):
+   # В консоли VDSina (VNC), под root:
    cd /root/neuromule-bot
    bash scripts/pm2-reload-vdsina.sh
    pm2 list   # должен быть ровно один telegram: neuromule-tg (online)
    # НЕ должно быть второго процесса с именем neuromule / лишнего main.py
    pm2 logs neuromule-tg --lines 80 --nostream | grep -E 'polling started|Conflict|ERROR|Traceback'
    ```
-   Починить CI: обновить GitHub secret `SSH_KEY` приватным ключом,
-   чей pubkey лежит в `/root/.ssh/authorized_keys` на VPS (и наоборот).
+   Починить CI: `SSH_HOST` = IPv4 из панели VDSina; `SSH_KEY` = private key,
+   чей pubkey в `/root/.ssh/authorized_keys` на этом же сервере.
 2. На проде используется **pm2**, не systemd. Команды:
    ```bash
    pm2 status
