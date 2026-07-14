@@ -417,6 +417,17 @@ async def run_chat_turn(
         ans_trim = ans_trim[: min(settings.chat_max_message_chars, 4090)]
     else:
         ans_trim = ans_trim[: settings.chat_max_message_chars]
+    if not (ans_trim or "").strip():
+        logger.warning(
+            "run_chat_turn: empty assistant output user_id=%s role=%s",
+            user_id,
+            effective_role,
+        )
+        await dialog_pop_last_for_user(user_id, platform=platform)
+        if charge_id:
+            await refund_charge(charge_id)
+        await rollback_last(settings, user_id)
+        return ChatTurnResult(outcome=ChatTurnOutcome.AI_FAILED)
     await commit_assistant_turn_queued(user_id, ans_trim, settings.dialog_prune_keep, platform=platform)
     conv.schedule_memory_refresh(settings, user_id, platform=platform)
     _record_chat_success_billing(

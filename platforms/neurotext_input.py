@@ -316,6 +316,8 @@ async def _reply_chat_turn_result(
                         settings,
                         reply_markup=blogger_kb,
                     )
+        elif not result.user_notice and not result.table_raw_json:
+            await message.answer(msg.TXT_CHAT_AI_UNAVAILABLE, parse_mode=ParseMode.HTML)
         return
     await _clear_table_status_on_failure(status_message)
     if result.outcome is ChatTurnOutcome.EMPTY_INPUT:
