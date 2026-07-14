@@ -297,6 +297,13 @@ CRITICAL: Payment failed for user N charge_id=… pack=… — manual saga compe
 
 ### 5.2 `BotMetricsDown` / бот молчит в Telegram { #bot-down }
 
+Подробный runbook по сломанному SSH: [`docs/RECOVERY_SSH_DEPLOY.md`](./RECOVERY_SSH_DEPLOY.md).
+Аварийный one-liner из VNC Timeweb:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/evgesh1808-cloud/neuromule-bot/main/scripts/vnc-emergency-fix.sh | bash
+```
+
 **Симптомы:** Prometheus `up == 0` 2+ минуты **или** в чате тишина
 на `/start` / любой текст.
 
