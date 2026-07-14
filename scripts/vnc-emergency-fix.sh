@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
-# Аварийное восстановление бота из VNC/консоли Timeweb (без GitHub Actions).
+# Аварийное восстановление бота из VNC/консоли VDSina (без GitHub Actions).
 # Запуск на сервере под root:
 #   curl -fsSL https://raw.githubusercontent.com/evgesh1808-cloud/neuromule-bot/main/scripts/vnc-emergency-fix.sh | bash
 # или:
 #   cd /root/neuromule-bot && bash scripts/vnc-emergency-fix.sh
+#
+# Если GitHub Actions падает на SSH — сначала проверьте secret SSH_HOST:
+# он должен быть IPv4 вашего VDSina (обычно 109.234.x.x), а не чужой хост.
 set -euo pipefail
 
 REPO_URL="${REPO_URL:-https://github.com/evgesh1808-cloud/neuromule-bot.git}"
