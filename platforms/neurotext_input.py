@@ -239,6 +239,14 @@ async def _clear_table_status_on_failure(status_message: Message | None) -> None
         logger.debug("table status cleanup on failure failed", exc_info=True)
 
 
+def _chat_ai_failure_text(result) -> str:
+    """Понятное сообщение при сбое OpenRouter (не generic «подкова» для медиа-очереди)."""
+    role = (result.effective_text_role or "").strip().lower()
+    if role in _BLOGGER_ROLE_IDS:
+        return msg.TXT_BLOGGER_AI_FAILED
+    return msg.TXT_CHAT_AI_UNAVAILABLE
+
+
 async def _reply_chat_turn_result(
     message: Message,
     result,
@@ -343,6 +351,12 @@ async def _reply_chat_turn_result(
             parse_mode=ParseMode.HTML,
         )
         return
+    if result.outcome is ChatTurnOutcome.DAILY_LIMIT_EXCEEDED:
+        await message.answer(
+            msg.TXT_CHAT_DAILY_LIMIT,
+            reply_markup=paycat.shop_packages_keyboard(),
+        )
+        return
     if result.outcome in (ChatTurnOutcome.AI_FAILED, ChatTurnOutcome.TABLE_JSON_INVALID):
         if result.user_notice:
             await _clear_table_status_on_failure(status_message)
@@ -354,9 +368,15 @@ async def _reply_chat_turn_result(
                 parse_mode=ParseMode.HTML,
             )
         else:
-            await message.answer(msg.TXT_CHAT_AI_UNAVAILABLE, parse_mode=ParseMode.HTML)
+            await message.answer(
+                _chat_ai_failure_text(result),
+                parse_mode=ParseMode.HTML,
+            )
         return
-    await message.answer(msg.TXT_CHAT_AI_UNAVAILABLE, parse_mode=ParseMode.HTML)
+    await message.answer(
+        _chat_ai_failure_text(result),
+        parse_mode=ParseMode.HTML,
+    )
 
 
 async def handle_neurotext_user_message(
@@ -853,15 +873,22 @@ async def handle_neurotext_user_message(
                 if use_stream
                 else None
             )
-            result = await run_chat_turn(
-                settings,
-                uid,
-                raw,
-                dialog_user_text=dialog_text,
-                user_image_data_url=user_image_data_url,
-                stream_callback=stream_handle.on_stream if stream_handle else None,
-                text_role=role_id,
-            )
+            try:
+                result = await run_chat_turn(
+                    settings,
+                    uid,
+                    raw,
+                    dialog_user_text=dialog_text,
+                    user_image_data_url=user_image_data_url,
+                    stream_callback=stream_handle.on_stream if stream_handle else None,
+                    text_role=role_id,
+                )
+            except Exception:
+                logger.exception("run_chat_turn failed uid=%s role=%s", uid, role_id)
+                result = ChatTurnResult(
+                    outcome=ChatTurnOutcome.AI_FAILED,
+                    effective_text_role=role_id,
+                )
 
     if keep_waiting_state and result.outcome is ChatTurnOutcome.SUCCESS:
         await state.set_state(UserFlow.waiting_for_text_prompt)

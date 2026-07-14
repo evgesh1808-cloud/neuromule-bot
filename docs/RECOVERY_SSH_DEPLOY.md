@@ -6,7 +6,7 @@ GitHub Actions ходит **не на ваш VDSina**, а на чужой хос
 
 | Secret | Фактическое значение | Проблема |
 |---|---|---|
-| `SSH_HOST` | `72.56.236.252` | Это **Timeweb** (AS9123), не VDSina |
+| `SSH_HOST` | `72.56.236.252` (Timeweb) | Это **не VDSina**. Ваш хост: `hosted-by-vdsina.ru` → **`109.234.33.9`** |
 | `SSH_USER` | `root` | ок |
 | `SSH_KEY` | laptop-ключ `mulen@LAPTOP…` | на целевом сервере не принят |
 
@@ -20,7 +20,7 @@ GitHub Actions ходит **не на ваш VDSina**, а на чужой хос
 
 ### 1. Узнать IP вашего VPS
 
-VDSina → ваш сервер → скопируйте **IPv4** (обычно `109.234.…`).
+VDSina → ваш сервер → скопируйте **IPv4** (для `hosted-by-vdsina.ru` это **`109.234.33.9`**).
 
 ### 2. Поднять бота из консоли VDSina (VNC / «Консоль»)
 
@@ -48,9 +48,15 @@ GitHub → Settings → Secrets and variables → Actions:
 
 | Secret | Значение |
 |---|---|
-| `SSH_HOST` | **ваш реальный IPv4 VDSina** (не `72.56.236.252`) |
+| `SSH_HOST` | **`109.234.33.9`** (IPv4 VDSina; не `72.56.236.252`) |
 | `SSH_USER` | `root` (или ваш SSH-пользователь) |
 | `SSH_KEY` | private key, чей **pubkey** лежит в `/root/.ssh/authorized_keys` на VDSina |
+
+Сгенерировать новую пару ключей на ноутбуке:
+
+```bash
+bash scripts/generate-deploy-key.sh
+```
 
 Проверка ключа на сервере:
 

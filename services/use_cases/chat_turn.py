@@ -298,7 +298,7 @@ async def run_chat_turn(
 
     # Основная модель из биллинга + резервный каскад (FREE/MINI → free_models, SMART/ULTRA → smart_models).
     model_chain: list[str] = []
-    for mid in (plan.model_id, *getattr(plan, "fallback_model_ids", ())):
+    for mid in (plan.model_id, *plan.fallback_model_ids):
         mid = str(mid).strip()
         if mid and mid not in model_chain:
             model_chain.append(mid)
@@ -331,15 +331,36 @@ async def run_chat_turn(
             max_tokens=plan.max_tokens,
             text_role=effective_role,
         )
+    except RuntimeError as exc:
+        err = str(exc)
+        if err in ("context_too_long", "context_too_long_tokens"):
+            await dialog_pop_last_for_user(user_id, platform=platform)
+            if charge_id:
+                await refund_charge(charge_id)
+            await rollback_last(settings, user_id)
+            return ChatTurnResult(outcome=ChatTurnOutcome.CONTEXT_TOO_LARGE)
+        logger.exception("run_chat_turn: OpenRouter failed user_id=%s err=%s", user_id, err)
+        await dialog_pop_last_for_user(user_id, platform=platform)
+        if charge_id:
+            await refund_charge(charge_id)
+        await rollback_last(settings, user_id)
+        return ChatTurnResult(outcome=ChatTurnOutcome.AI_FAILED, effective_text_role=effective_role)
     except Exception:
         logger.exception("run_chat_turn: OpenRouter failed user_id=%s", user_id)
         await dialog_pop_last_for_user(user_id, platform=platform)
         if charge_id:
             await refund_charge(charge_id)
         await rollback_last(settings, user_id)
-        return ChatTurnResult(outcome=ChatTurnOutcome.AI_FAILED)
+        return ChatTurnResult(outcome=ChatTurnOutcome.AI_FAILED, effective_text_role=effective_role)
 
     content = completion.get("content") or ""
+    if not strip_redacted_thinking(content).strip() and not is_table_role:
+        logger.warning("run_chat_turn: empty model content user_id=%s role=%s", user_id, effective_role)
+        await dialog_pop_last_for_user(user_id, platform=platform)
+        if charge_id:
+            await refund_charge(charge_id)
+        await rollback_last(settings, user_id)
+        return ChatTurnResult(outcome=ChatTurnOutcome.AI_FAILED, effective_text_role=effective_role)
     try:
         prompt_tokens = int(completion.get("prompt_tokens") or 0)
         completion_tokens = int(completion.get("completion_tokens") or 0)

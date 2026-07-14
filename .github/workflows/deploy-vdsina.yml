@@ -45,6 +45,13 @@ jobs:
             exit 1
           fi
           echo "Deploy secrets present (SSH_HOST, SSH_USER, SSH_KEY)."
+          # Timeweb AS9123 — частая ошибка: деплой уходит мимо VDSina.
+          if echo "${SSH_HOST}" | grep -Eq '^(72\.56\.|5\.35\.|85\.193\.)'; then
+            echo "ERROR: SSH_HOST=${SSH_HOST} похож на Timeweb, не на VDSina."
+            echo "       Укажите IPv4 из панели VDSina (обычно 109.234.x.x)."
+            echo "       См. docs/RECOVERY_SSH_DEPLOY.md"
+            exit 1
+          fi
           printf '%s\n' "${SSH_KEY}" > /tmp/secret_deploy_key
           chmod 600 /tmp/secret_deploy_key
           echo "SSH_KEY_FP=$(ssh-keygen -lf /tmp/secret_deploy_key 2>/dev/null || echo unavailable)"
@@ -67,6 +74,7 @@ jobs:
             EXPECTED_SHA="${{ github.sha }}"
 
             echo "==> Workflow commit: ${EXPECTED_SHA}"
+            echo "==> Host: $(hostname) $(uname -a)"
 
             for svc in neuromule-bot neuromule_bot; do
               systemctl stop "${svc}" 2>/dev/null || true

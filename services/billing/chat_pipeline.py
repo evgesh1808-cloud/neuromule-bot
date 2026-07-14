@@ -183,6 +183,8 @@ def plan_text_chat(user: UserBillingState, role_type: str) -> ChatRoutePlan:
     def _max_tokens_for_role() -> int:
         if role_id == "table_generator":
             return table_max
+        if role_id in ("blogger_content", "blogger"):
+            return max(premium_max, table_max)
         return premium_max if expert or tariff is not TariffTier.FREE else free_max
 
     if not role_allowed_for_tariff(role_id, tariff):
