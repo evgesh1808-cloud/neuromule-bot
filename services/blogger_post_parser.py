@@ -388,8 +388,19 @@ def _parse_sections_flat_heuristic(text: str) -> dict[str, str]:
     rest = t[variant3.end() :]
 
     variant_a = re.search(r"\[Вариант А \(", rest)
-    thematic = re.search(r"\[Тематические\]", rest)
-    image = re.search(r"A professional cinematic photo", rest, re.IGNORECASE)
+    # Новый формат: #Тематические: …; legacy: [Тематические]: …
+    thematic = re.search(r"(?:#Тематические\s*:|\[Тематические\])", rest)
+    image = re.search(
+        r"(?:"
+        r"A professional cinematic photo|"
+        r"High-end editorial|"
+        r"high-end editorial lifestyle photography|"
+        r"magazine cover style|"
+        r"soft dramatic lighting"
+        r")",
+        rest,
+        re.IGNORECASE,
+    )
 
     sections: dict[str, str] = {"ХУКИ": hooks}
 

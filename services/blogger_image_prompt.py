@@ -1,4 +1,4 @@
-"""Подготовка промпта обложки блогера для Imagen 4 (конкретные объекты, без абстракций)."""
+"""Подготовка промпта обложки блогера для Flux (premium lifestyle / editorial)."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 _CYRILLIC_RE = re.compile(r"[а-яА-ЯёЁ]")
 
-# Абстрактные метафоры, которые Imagen плохо интерпретирует.
+# Абстрактные метафоры, которые генераторы плохо интерпретируют.
 _ABSTRACT_CLAUSE_RE = re.compile(
     r",?\s*(?:"
     r"representing|symbolizing|symbolising|signifying|illustrating|"
@@ -44,17 +44,38 @@ _OPTIMIZER_PREAMBLE_RE = re.compile(
     re.IGNORECASE,
 )
 
-IMAGEN4_OPTIMIZER_SYSTEM_PROMPT = """You are a technical prompt optimizer for Imagen 4 image generation.
-Your task is to translate the input to English (if it is in Russian) and completely remove abstract concepts, metaphors, and intangible ideas.
+# Модель иногда эхом повторяет инструкцию вместо готового промпта.
+_INSTRUCTION_ECHO_RE = re.compile(
+    r"(?:"
+    r"Generate a highly descriptive.*?formula precisely:\s*"
+    r"|Follow this prompt formula precisely:\s*"
+    r"|Output ONLY the clean.*?keywords\.?\s*"
+    r"|1\.\s*Composition & Aesthetic:.*?(?=2\.|$)"
+    r"|2\.\s*Subject Placement:.*?(?=3\.|$)"
+    r"|3\.\s*Details & Textures:.*?(?=4\.|$)"
+    r"|4\.\s*Lighting & Lens:.*?(?=Output|$)"
+    r")",
+    re.IGNORECASE | re.DOTALL,
+)
 
-FORBIDDEN: Use words like "symbolizing", "representing", "concept of", "feelings", "success", "future", and any abstract metaphors (for example, "a chart soaring into the sky as a symbol of hope").
-ALLOWED: Write only physical, tangible objects, clothing, people, light, camera angle, location, and style.
-OUTPUT FORMAT: Output strictly the final English prompt on a single line. No intro text, no "Here is your prompt:".
+_ASPECT_OR_TECH_SUFFIX_RE = re.compile(
+    r"(?:,\s*)?(?:4k|8k|photorealistic|commercial lighting|\s*--ar\s*\d+:\d+)+\s*",
+    re.IGNORECASE,
+)
 
-Example:
-Input: "A professional photo representing crypto success and human happiness"
-Output: "A professional cinematic photo of a smiling man in a modern office looking at a laptop, neon soft lighting, depth of field, 8k resolution"
+FLUX_OPTIMIZER_SYSTEM_PROMPT = """You are a technical prompt optimizer for Flux image generation (premium lifestyle / editorial blog covers).
+Your task is to translate the input to English (if it is in Russian) and produce one clean, highly descriptive Flux prompt.
+
+REQUIRED STYLE:
+- high-end editorial lifestyle photography, magazine cover style, authentic aesthetic
+- clear central subject/focal point suitable for later face or product reference integration
+- realistic textures, natural/soft dramatic lighting, shallow depth of field, 35mm lens feel
+FORBIDDEN: "3D render", "plastic texture", "cartoon", "generic illustration", aspect ratio flags (--ar), negative prompts, intro phrases.
+OUTPUT: Only the final English prompt text. No markdown, no quotes wrapper, no "Here is your prompt".
 """
+
+# Обратная совместимость импорта
+IMAGEN4_OPTIMIZER_SYSTEM_PROMPT = FLUX_OPTIMIZER_SYSTEM_PROMPT
 
 
 def _has_cyrillic(text: str) -> bool:
@@ -73,36 +94,31 @@ def _strip_optimizer_preamble(text: str) -> str:
 
 
 def sanitize_blogger_image_prompt_for_imagen(raw: str) -> str:
-    """Синхронная очистка: убирает абстракции, нормализует шаблон Imagen."""
+    """Очистка Flux-промпта обложки: без --ar/meta-инструкций, без жёсткого Imagen-шаблона."""
     prompt = (raw or "").strip()
     if not prompt:
         return prompt
 
+    prompt = _INSTRUCTION_ECHO_RE.sub(" ", prompt)
     prompt = _ABSTRACT_CLAUSE_RE.sub("", prompt)
     prompt = _BANNED_ABSTRACT_TERMS_RE.sub("", prompt)
     prompt = re.sub(r"\{[^}]+\}", "", prompt)
+    prompt = _ASPECT_OR_TECH_SUFFIX_RE.sub(" ", prompt)
+    prompt = re.sub(r"\s*--ar\s*\d+:\d+", " ", prompt, flags=re.IGNORECASE)
     prompt = re.sub(r"\s{2,}", " ", prompt).strip(" ,;")
+    prompt = _strip_optimizer_preamble(prompt)
 
-    match = re.search(
-        r"(?:professional cinematic photo of\s+)?(.+?)(?:,\s*4k|--ar\s*\d+:\d+|$)",
-        prompt,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-    subject = (match.group(1).strip() if match else prompt).strip(" ,;")
-    subject = _ABSTRACT_CLAUSE_RE.sub("", subject).strip(" ,;")
-    subject = _BANNED_ABSTRACT_TERMS_RE.sub("", subject).strip(" ,;")
-    subject = re.sub(r"\s{2,}", " ", subject).strip(" ,;")
-    if not subject:
-        subject = "a clear photorealistic scene with concrete objects and natural lighting"
-
-    return (
-        f"A professional cinematic photo of {subject}, "
-        "4k, photorealistic, commercial lighting --ar 16:9"
-    )
+    if not prompt:
+        return (
+            "High-end editorial lifestyle photography, magazine cover style, "
+            "clear central subject, soft dramatic lighting, shallow depth of field, "
+            "shot on 35mm lens, sharp focus, authentic aesthetic"
+        )
+    return prompt
 
 
 async def optimize_image_prompt_for_imagen(settings: Settings, raw: str) -> str:
-    """LLM-оптимизатор Imagen 4: перевод RU→EN + замена абстракций на физические объекты."""
+    """LLM-оптимизатор Flux: перевод RU→EN + editorial lifestyle формулировка."""
     cleaned = sanitize_blogger_image_prompt_for_imagen(raw)
     if not settings.openrouter_key:
         return cleaned
@@ -112,7 +128,7 @@ async def optimize_image_prompt_for_imagen(settings: Settings, raw: str) -> str:
         out = await ask_ai_messages(
             settings,
             [
-                {"role": "system", "content": IMAGEN4_OPTIMIZER_SYSTEM_PROMPT},
+                {"role": "system", "content": FLUX_OPTIMIZER_SYSTEM_PROMPT},
                 {"role": "user", "content": user_block},
             ],
             timeout=settings.openrouter_timeout_sec,

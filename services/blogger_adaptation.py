@@ -12,6 +12,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from config import Settings
 from content import messages as msg
 from content.chat_prompt import (
+    SYSTEM_ADAPT_META,
     SYSTEM_ADAPT_TG_MAX,
     SYSTEM_ADAPT_VC,
     SYSTEM_ADAPT_VIDEO,
@@ -25,7 +26,27 @@ from services.use_cases.chat_turn import strip_redacted_thinking
 
 logger = logging.getLogger(__name__)
 
-_ADAPT_TARGETS: frozenset[str] = frozenset({"video", "vc", "vk", "tg_max"})
+PLATFORM_VIDEO = msg.PLATFORM_VIDEO
+PLATFORM_VC = msg.PLATFORM_VC
+PLATFORM_VK = msg.PLATFORM_VK
+PLATFORM_TG_MAX = msg.PLATFORM_TG_MAX
+PLATFORM_META = msg.PLATFORM_META
+_ADAPT_TARGETS: frozenset[str] = frozenset(
+    {PLATFORM_VIDEO, PLATFORM_VC, PLATFORM_VK, PLATFORM_TG_MAX, PLATFORM_META}
+)
+# Старые callback/legacy-ключи → канонический platform key
+_ADAPT_PLATFORM_ALIASES: dict[str, str] = {
+    "vc": PLATFORM_VC,
+    "vk": PLATFORM_VK,
+    "twitter": PLATFORM_VK,
+    "tg_max": PLATFORM_TG_MAX,
+    "tg": PLATFORM_TG_MAX,
+    "meta": PLATFORM_META,
+    "facebook": PLATFORM_META,
+    "instagram": PLATFORM_META,
+    "fb": PLATFORM_META,
+    "ig": PLATFORM_META,
+}
 
 _ADAPT_PREAMBLE_RE = re.compile(
     r"^(?:"
@@ -63,8 +84,8 @@ class BloggerAdaptBillingResult:
 
 BLOGGER_ADAPT_ROUTES: tuple[BloggerAdaptRoute, ...] = (
     BloggerAdaptRoute(
-        key="video",
-        label="Видео (Reels/TikTok/Shorts/Likee)",
+        key=PLATFORM_VIDEO,
+        label=msg.PLATFORM_LABEL_VIDEO,
         callback_data=msg.CB_ADAPT_TARGET_VIDEO,
         button_text=msg.BTN_BLOGGER_ADAPT_VIDEO,
         system_prompt=SYSTEM_ADAPT_VIDEO,
@@ -73,8 +94,8 @@ BLOGGER_ADAPT_ROUTES: tuple[BloggerAdaptRoute, ...] = (
         max_tokens=1600,
     ),
     BloggerAdaptRoute(
-        key="vc",
-        label="Статья (VC.ru / Дзен)",
+        key=PLATFORM_VC,
+        label=msg.PLATFORM_LABEL_VC,
         callback_data=msg.CB_ADAPT_TARGET_VC,
         button_text=msg.BTN_BLOGGER_ADAPT_VC,
         system_prompt=SYSTEM_ADAPT_VC,
@@ -83,8 +104,8 @@ BLOGGER_ADAPT_ROUTES: tuple[BloggerAdaptRoute, ...] = (
         max_tokens=2800,
     ),
     BloggerAdaptRoute(
-        key="vk",
-        label="Пост (ВКонтакте / VK)",
+        key=PLATFORM_VK,
+        label=msg.PLATFORM_LABEL_VK,
         callback_data=msg.CB_ADAPT_TARGET_VK,
         button_text=msg.BTN_BLOGGER_ADAPT_VK,
         system_prompt=SYSTEM_ADAPT_VK,
@@ -93,8 +114,8 @@ BLOGGER_ADAPT_ROUTES: tuple[BloggerAdaptRoute, ...] = (
         max_tokens=1600,
     ),
     BloggerAdaptRoute(
-        key="tg_max",
-        label="Канал (Telegram / суперапп МАКС)",
+        key=PLATFORM_TG_MAX,
+        label=msg.PLATFORM_LABEL_TG_MAX,
         callback_data=msg.CB_ADAPT_TARGET_TG_MAX,
         button_text=msg.BTN_BLOGGER_ADAPT_TG_MAX,
         system_prompt=SYSTEM_ADAPT_TG_MAX,
@@ -102,32 +123,80 @@ BLOGGER_ADAPT_ROUTES: tuple[BloggerAdaptRoute, ...] = (
         temperature=0.3,
         max_tokens=800,
     ),
+    BloggerAdaptRoute(
+        key=PLATFORM_META,
+        label=msg.PLATFORM_LABEL_META,
+        callback_data=msg.CB_ADAPT_TARGET_META,
+        button_text=msg.BTN_BLOGGER_ADAPT_META,
+        system_prompt=SYSTEM_ADAPT_META,
+        models=(FREE_CHAT_MODEL,),
+        temperature=0.35,
+        max_tokens=1600,
+    ),
 )
 
 _ROUTE_BY_KEY: dict[str, BloggerAdaptRoute] = {route.key: route for route in BLOGGER_ADAPT_ROUTES}
 
 
-def get_blogger_adapt_keyboard(post_id: str) -> InlineKeyboardMarkup:
-    """Подменю «🔄 Адаптировать»: 4 площадки СНГ (3 💎).
+def normalize_adapt_platform(platform: str) -> str:
+    """Канонический ключ площадки адаптации (с учётом legacy-алиасов)."""
+    key = (platform or "").strip().lower()
+    return _ADAPT_PLATFORM_ALIASES.get(key, key)
 
-    ``adapt_target:*`` не содержит ``post_id`` — черновик резолвится по привязке
-    ``(chat_id, message_id)`` в ``blogger_post_cache``.
+
+def get_adaptation_prompt(target_platform: str) -> str:
+    """System-промпт для площадки; fallback — Telegram / МАКС."""
+    route = _ROUTE_BY_KEY.get(normalize_adapt_platform(target_platform))
+    if route is not None:
+        return route.system_prompt
+    return SYSTEM_ADAPT_TG_MAX
+
+
+def get_blogger_adapt_keyboard(post_id: str) -> InlineKeyboardMarkup:
+    """Клавиатура выбора площадки при нажатии «🔄 Адаптировать».
+
+    Раскладка под смартфон: 1 + 2 + 2 + «Назад».
+    Callback-контракт: ``adapt_target:<platform>:<post_id>``, назад — ``blog_back:``.
     """
+    pid = (post_id or "").strip()
     builder = InlineKeyboardBuilder()
-    for route in BLOGGER_ADAPT_ROUTES:
-        builder.row(
-            InlineKeyboardButton(
-                text=route.button_text,
-                callback_data=build_adapt_target_callback(route.key, post_id),
-            )
-        )
     builder.row(
         InlineKeyboardButton(
-            text="⬅️ Вернуться назад",
-            callback_data=f"{msg.CB_BLOG_BACK_PREFIX}{post_id}",
+            text=msg.BTN_BLOGGER_ADAPT_VIDEO,
+            callback_data=build_adapt_target_callback(PLATFORM_VIDEO, pid),
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text=msg.BTN_BLOGGER_ADAPT_TG_MAX,
+            callback_data=build_adapt_target_callback(PLATFORM_TG_MAX, pid),
+        ),
+        InlineKeyboardButton(
+            text=msg.BTN_BLOGGER_ADAPT_VK,
+            callback_data=build_adapt_target_callback(PLATFORM_VK, pid),
+        ),
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text=msg.BTN_BLOGGER_ADAPT_META,
+            callback_data=build_adapt_target_callback(PLATFORM_META, pid),
+        ),
+        InlineKeyboardButton(
+            text=msg.BTN_BLOGGER_ADAPT_VC,
+            callback_data=build_adapt_target_callback(PLATFORM_VC, pid),
+        ),
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text=msg.BTN_BLOGGER_ADAPT_BACK,
+            callback_data=f"{msg.CB_BLOG_BACK_PREFIX}{pid}",
         )
     )
     return builder.as_markup()
+
+
+# Алиас имени из продуктового ТЗ
+get_blogger_adaptation_keyboard = get_blogger_adapt_keyboard
 
 
 def build_adapt_target_callback(platform: str, post_id: str) -> str:
@@ -143,22 +212,23 @@ def parse_adapt_target(data: str) -> tuple[str, str | None] | None:
     rest = data[len(prefix) :].strip().lower()
     if ":" in rest:
         platform, post_id = rest.split(":", 1)
-        platform = platform.strip()
+        platform = normalize_adapt_platform(platform.strip())
         post_id = post_id.strip()
         if platform in _ADAPT_TARGETS and post_id:
             return platform, post_id
-    if rest in _ADAPT_TARGETS:
-        return rest, None
+    platform = normalize_adapt_platform(rest)
+    if platform in _ADAPT_TARGETS:
+        return platform, None
     return None
 
 
 def adapt_platform_label(platform: str) -> str:
-    route = _ROUTE_BY_KEY.get((platform or "").strip().lower())
+    route = _ROUTE_BY_KEY.get(normalize_adapt_platform(platform))
     return route.label if route else platform.upper()
 
 
 def is_valid_adapt_platform(platform: str) -> bool:
-    return (platform or "").strip().lower() in _ADAPT_TARGETS
+    return normalize_adapt_platform(platform) in _ADAPT_TARGETS
 
 
 def _strip_adapt_preamble(text: str) -> str:
@@ -204,12 +274,12 @@ async def adapt_blogger_post_body(
     if not body:
         return None
 
-    route = _ROUTE_BY_KEY.get(platform.strip().lower())
+    route = _ROUTE_BY_KEY.get(normalize_adapt_platform(platform))
     if route is None:
         return None
 
     messages = [
-        {"role": "system", "content": route.system_prompt},
+        {"role": "system", "content": get_adaptation_prompt(route.key)},
         {"role": "user", "content": body},
     ]
     try:

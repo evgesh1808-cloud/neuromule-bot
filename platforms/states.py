@@ -7,6 +7,7 @@ cfo-v12 (Highload + No-Token UX): загрузка Excel для аудита WB/
 
 from platforms.telegram_states import (
     AdminStates,
+    BloggerFlowStates,
     FeedbackStates,
     MusicFlow,
     OneCAuditingStates,
@@ -18,6 +19,7 @@ from platforms.telegram_states import (
 
 __all__ = (
     "AdminStates",
+    "BloggerFlowStates",
     "FeedbackStates",
     "MusicFlow",
     "OneCAuditingStates",

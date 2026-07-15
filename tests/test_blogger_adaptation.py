@@ -19,11 +19,36 @@ from services.billing.pricing import FREE_CHAT_MODEL
 
 
 def test_parse_adapt_target_valid() -> None:
-    assert parse_adapt_target(msg.CB_ADAPT_TARGET_VIDEO) == ("video", None)
-    assert parse_adapt_target("adapt_target:vc:abc12345") == ("vc", "abc12345")
-    assert parse_adapt_target(msg.CB_ADAPT_TARGET_VK) == ("vk", None)
-    assert parse_adapt_target("adapt_target:vk:deadbeef") == ("vk", "deadbeef")
-    assert parse_adapt_target(msg.CB_ADAPT_TARGET_TG_MAX) == ("tg_max", None)
+    assert parse_adapt_target(msg.CB_ADAPT_TARGET_VIDEO) == (msg.PLATFORM_VIDEO, None)
+    assert parse_adapt_target(msg.CB_ADAPT_TARGET_VC) == (msg.PLATFORM_VC, None)
+    # legacy alias vc → vc_dzen
+    assert parse_adapt_target("adapt_target:vc:abc12345") == (msg.PLATFORM_VC, "abc12345")
+    assert parse_adapt_target(msg.CB_ADAPT_TARGET_VK) == (msg.PLATFORM_VK, None)
+    assert parse_adapt_target(f"adapt_target:{msg.PLATFORM_VK}:deadbeef") == (
+        msg.PLATFORM_VK,
+        "deadbeef",
+    )
+    # legacy alias vk → vk_community
+    assert parse_adapt_target("adapt_target:vk:deadbeef") == (msg.PLATFORM_VK, "deadbeef")
+    assert parse_adapt_target(msg.CB_ADAPT_TARGET_TG_MAX) == (msg.PLATFORM_TG_MAX, None)
+    assert parse_adapt_target(f"adapt_target:{msg.PLATFORM_TG_MAX}:cafebeef") == (
+        msg.PLATFORM_TG_MAX,
+        "cafebeef",
+    )
+    # legacy alias tg_max → tg_max_channels
+    assert parse_adapt_target("adapt_target:tg_max:cafebeef") == (
+        msg.PLATFORM_TG_MAX,
+        "cafebeef",
+    )
+    assert parse_adapt_target(msg.CB_ADAPT_TARGET_META) == (msg.PLATFORM_META, None)
+    assert parse_adapt_target(f"adapt_target:{msg.PLATFORM_META}:faceb00c") == (
+        msg.PLATFORM_META,
+        "faceb00c",
+    )
+    assert parse_adapt_target("adapt_target:instagram:faceb00c") == (
+        msg.PLATFORM_META,
+        "faceb00c",
+    )
     assert parse_adapt_target("adapt_target:unknown") is None
 
 
@@ -59,7 +84,7 @@ async def test_adapt_blogger_post_body_reads_dict_content() -> None:
         out = await adapt_blogger_post_body(
             type("S", (), {})(),
             source_body="Исходный текст поста",
-            platform="vk",
+            platform=msg.PLATFORM_VK,
         )
     assert out == "Готовый пост для VK"
 
@@ -75,7 +100,7 @@ async def test_cb_blogger_adapt_target_sends_result() -> None:
 
     callback = MagicMock()
     callback.from_user.id = 701
-    callback.data = f"adapt_target:vk:{post_id}"
+    callback.data = f"adapt_target:{msg.PLATFORM_VK}:{post_id}"
     callback.message.chat.id = 1
     callback.message.message_id = 20
     callback.message.answer = AsyncMock()

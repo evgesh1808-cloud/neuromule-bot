@@ -20,7 +20,15 @@ class UserFlow(StatesGroup):
     waiting_for_memory = State()
     waiting_family_member_id = State()
     waiting_for_review = State()
-    waiting_for_blogger_face_photo = State()
+    waiting_for_blogger_face_photo = State()  # legacy; см. BloggerFlowStates.waiting_for_face_photo
+    waiting_for_blogger_object_photo = State()  # legacy; см. BloggerFlowStates.waiting_for_product_photo
+
+
+class BloggerFlowStates(StatesGroup):
+    """FSM режима «Блогер»: загрузка референсов для AI-обложки."""
+
+    waiting_for_face_photo = State()
+    waiting_for_product_photo = State()
 
 
 class MusicFlow(StatesGroup):

@@ -1,12 +1,20 @@
-"""Генерация AI-обложки для конструктора блогера (кнопка «🎨 Создать AI-обложку»)."""
+"""AI-обложки блогера через OpenRouter Images API (Flux.2 Pro).
+
+Replicate / face-swap здесь не используются.
+"""
 
 from __future__ import annotations
 
+import asyncio
+import base64
 import logging
 import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any
+
+import httpx
+from aiogram.types import Message
 
 from config import Settings
 from services import blogger_post_cache
@@ -14,16 +22,35 @@ from services.blogger_image_prompt import sanitize_blogger_image_prompt_for_imag
 from services.blogger_post_cache import BloggerPostDraft
 from services.gemini_image_client import GeminiImageResult
 
-from aiogram.types import Message
-
 if TYPE_CHECKING:
     from aiogram.types import CallbackQuery
 
 logger = logging.getLogger(__name__)
 
-# Единственная модель обложек блогера — Flux Schnell (Replicate API, как в photo pipeline).
-FLUX_SCHNELL_MODEL_ID = "black-forest-labs/flux-schnell"
+# На /api/v1/images доступен flux.2-pro (input_references 0–8).
+# Slug'и flux-1.1-pro / flux-dev в Images API OpenRouter отсутствуют.
+OPENROUTER_COVER_MODEL_ID = "black-forest-labs/flux.2-pro"
+OPENROUTER_IMAGES_URL = "https://openrouter.ai/api/v1/images"
 BLOGGER_COVER_ASPECT_RATIO = "16:9"
+OPENROUTER_COVER_TIMEOUT_SEC = 180.0
+
+_FACE_PROMPT_SUFFIX = (
+    ", seamlessly integrating the face and appearance of the person from the "
+    "reference image into the scene as the main character, matching natural "
+    "lighting and skin texture"
+)
+_OBJECT_PROMPT_SUFFIX = (
+    ", seamlessly integrating the specific product/object from the reference "
+    "image into the scene, matching local shadows, reflections, and ambient light"
+)
+
+
+class CoverIntegrationType(str, Enum):
+    """Режим интеграции референса в обложку."""
+
+    NONE = "none"
+    FACE = "face"
+    OBJECT = "object"
 
 
 class BloggerCoverOutcome(str, Enum):
@@ -31,7 +58,7 @@ class BloggerCoverOutcome(str, Enum):
     INSUFFICIENT_BALANCE = "insufficient_balance"
     DAILY_LIMIT_EXCEEDED = "daily_limit_exceeded"
     FREE_IMAGE_MODEL_BLOCKED = "free_image_model_blocked"
-    REPLICATE_UNAVAILABLE = "replicate_unavailable"
+    OPENROUTER_UNAVAILABLE = "openrouter_unavailable"
     GENERATION_FAILED = "generation_failed"
     SUCCESS = "success"
 
@@ -50,7 +77,7 @@ def resolve_blogger_draft(
     chat_id: int | None = None,
     message_id: int | None = None,
 ) -> BloggerPostDraft | None:
-    """Черновик поста из in-memory кэша (``post_id`` → JSON-секции в ``parsed``)."""
+    """Черновик поста из in-memory кэша."""
     if post_id:
         draft = blogger_post_cache.get(post_id, user_id)
         if draft is not None:
@@ -70,88 +97,270 @@ def extract_image_prompt_from_draft(draft: BloggerPostDraft) -> str | None:
 
 
 def prepare_blogger_flux_prompt(raw_prompt: str, *, with_face: bool = False) -> str:
-    """Английский промпт для Flux из ``===ПРОМПТ ДЛЯ КАРТИНКИ===`` — только regex, без LLM."""
+    """Английский промпт для Flux — только regex/sanitize, без LLM."""
     cleaned = sanitize_blogger_image_prompt_for_imagen(raw_prompt)
-    if with_face and "person" not in cleaned.lower():
-        cleaned = cleaned.replace(
-            "A professional cinematic photo of ",
-            "A professional cinematic portrait photo of a person, ",
-            1,
-        )
+    cleaned = re.sub(r"\s*--ar\s*\d+:\d+\s*", " ", cleaned or "", flags=re.IGNORECASE).strip()
+    if with_face:
+        low = cleaned.lower()
+        if "person" not in low and "portrait" not in low and "face" not in low:
+            cleaned = (
+                "High-end editorial portrait of a person as the clear central subject, "
+                + cleaned
+            )
     return cleaned
 
 
-def _strip_flux_aspect_suffix(prompt: str) -> str:
-    """``aspect_ratio`` передаётся отдельным полем Replicate — убираем ``--ar`` из текста."""
-    return re.sub(r"\s*--ar\s*\d+:\d+\s*", " ", (prompt or ""), flags=re.IGNORECASE).strip()
+def parse_cover_generate(data: str) -> tuple[str, str] | None:
+    """Из ``cover_generate:<none|face|object>:<post_id>``."""
+    from content import messages as msg
+
+    prefix = msg.CB_COVER_GENERATE_PREFIX
+    raw = (data or "").strip()
+    if not raw.startswith(prefix):
+        return None
+    rest = raw[len(prefix) :]
+    if ":" not in rest:
+        return None
+    mode, post_id = rest.split(":", 1)
+    mode = mode.strip().lower()
+    post_id = post_id.strip()
+    if mode not in msg.COVER_GENERATE_MODES or not post_id:
+        return None
+    return mode, post_id
 
 
-async def _flux_prompt_for_replicate(settings: Settings, cleaned_prompt: str) -> str:
-    """Промпт Flux Schnell: без ``--ar`` в тексте + опциональный кинематографичный enhance."""
-    from services.billing.translator import enhance_video_prompt_for_replicate
+def openrouter_cover_configured(settings: Settings) -> bool:
+    """True, если задан ``OPENROUTER_API_KEY``."""
+    return bool((settings.openrouter_key or "").strip())
 
-    prompt = _strip_flux_aspect_suffix(cleaned_prompt)
-    if not prompt:
-        return cleaned_prompt
-    try:
-        return await enhance_video_prompt_for_replicate(settings, prompt)
-    except Exception:
-        logger.warning("blogger cover prompt enhance failed, using sanitized prompt", exc_info=True)
-        return prompt
+
+async def _get_telegram_file_url(
+    file_id: str,
+    *,
+    bot: Any,
+    settings: Settings,
+) -> str:
+    """``file_id`` → временный прямой URL для OpenRouter ``input_references``.
+
+    Формат Bot API (не ``telegram.org{token}/...`` — такой URL нерабочий)::
+
+        https://api.telegram.org/file/bot{TG_TOKEN}/{file_path}
+
+    Ссылка живёт ~1 час — для генерации Flux достаточно.
+    """
+    fid = (file_id or "").strip()
+    if not fid:
+        raise RuntimeError("Telegram file_id is empty")
+
+    token = (settings.tg_token or "").strip()
+    if not token:
+        token = str(getattr(bot, "token", "") or "").strip()
+    if not token:
+        raise RuntimeError("TG_TOKEN is not set")
+
+    file_info = await bot.get_file(fid)
+    file_path = getattr(file_info, "file_path", None) or ""
+    if not file_path:
+        raise RuntimeError("Telegram did not return file_path for photo")
+
+    return f"https://api.telegram.org/file/bot{token}/{file_path}"
+
+
+async def get_public_url_from_telegram(
+    bot: Any,
+    file_id: str,
+    bot_token: str,
+) -> str:
+    """Публичный алиас: ``file_id`` → ``api.telegram.org/file/bot...``."""
+
+    class _TokenSettings:
+        tg_token = bot_token
+
+    return await _get_telegram_file_url(file_id, bot=bot, settings=_TokenSettings())  # type: ignore[arg-type]
+
+
+def _cover_prompt_for_integration(
+    cleaned_prompt: str,
+    integration: CoverIntegrationType,
+) -> str:
+    prompt = (cleaned_prompt or "").strip()
+    if integration is CoverIntegrationType.FACE:
+        return f"{prompt}{_FACE_PROMPT_SUFFIX}" if prompt else _FACE_PROMPT_SUFFIX.lstrip(", ")
+    if integration is CoverIntegrationType.OBJECT:
+        return f"{prompt}{_OBJECT_PROMPT_SUFFIX}" if prompt else _OBJECT_PROMPT_SUFFIX.lstrip(", ")
+    return prompt
+
+
+def _parse_openrouter_image_payload(payload: dict[str, Any]) -> GeminiImageResult:
+    """``data[0].url`` или ``data[0].b64_json`` → ``GeminiImageResult``."""
+    data = payload.get("data")
+    if not isinstance(data, list) or not data:
+        raise RuntimeError("OpenRouter images: empty data[]")
+    item = data[0]
+    if not isinstance(item, dict):
+        raise RuntimeError("OpenRouter images: data[0] is not an object")
+
+    final_url = item.get("url")
+    if isinstance(final_url, str) and final_url.strip():
+        return GeminiImageResult(url=final_url.strip())
+
+    b64_raw = item.get("b64_json")
+    if isinstance(b64_raw, str) and b64_raw.strip():
+        raw = b64_raw.strip()
+        if raw.startswith("data:") and "," in raw:
+            raw = raw.split(",", 1)[1]
+        try:
+            image_bytes = base64.b64decode(raw, validate=False)
+        except Exception as exc:
+            raise RuntimeError("OpenRouter images: invalid b64_json") from exc
+        if not image_bytes:
+            raise RuntimeError("OpenRouter images: empty b64_json")
+        return GeminiImageResult(data=image_bytes)
+
+    raise RuntimeError("OpenRouter images: neither url nor b64_json in data[0]")
 
 
 async def generate_blogger_cover_image(
     settings: Settings,
     cleaned_prompt: str,
     *,
-    face_file_id: str | None = None,
+    integration: CoverIntegrationType = CoverIntegrationType.NONE,
+    photo_file_id: str | None = None,
+    source_file_url: str | None = None,
     bot: Any | None = None,
 ) -> GeminiImageResult:
-    """Flux Schnell через Replicate; при наличии фото лица — face-swap поверх сцены."""
-    from services.replicate_client import (
-        call_replicate_model,
-        replicate_configured,
-        telegram_photo_download_url,
-    )
+    """Генерация обложки через OpenRouter Images API (Flux.2 Pro, 16:9).
 
-    if not replicate_configured():
-        raise RuntimeError("REPLICATE_API_TOKEN is not configured")
+    Любая сетевая/парсинг-ошибка пробрасывается наверх — ``run_blogger_cover_turn``
+    обязан вызвать ``refund_charge`` и вернуть 3 кристалла.
+    """
+    from services.openrouter_http import get_openrouter_http_client
 
-    url = await call_replicate_model(
-        FLUX_SCHNELL_MODEL_ID,
-        {
-            "prompt": cleaned_prompt,
-            "aspect_ratio": BLOGGER_COVER_ASPECT_RATIO,
-            "output_format": "webp",
-            "output_quality": 90,
-        },
-    )
-    if not url:
-        raise RuntimeError("Flux Schnell: empty URL")
+    api_key = (settings.openrouter_key or "").strip()
+    if not api_key:
+        raise RuntimeError("OPENROUTER_API_KEY is not configured")
 
-    face_id = (face_file_id or "").strip()
-    if face_id and bot is not None:
-        try:
-            face_url = await telegram_photo_download_url(bot, face_id)
-            swapped_url = await call_replicate_model(
-                settings.replicate_blogger_face_swap_model,
-                {
-                    "input_image": url,
-                    "swap_image": face_url,
-                },
+    prompt = _cover_prompt_for_integration(cleaned_prompt, integration)
+    if not prompt:
+        raise RuntimeError("OpenRouter images: empty prompt")
+
+    body: dict[str, Any] = {
+        "model": OPENROUTER_COVER_MODEL_ID,
+        "aspect_ratio": BLOGGER_COVER_ASPECT_RATIO,
+        "prompt": prompt,
+    }
+
+    ref_url = (source_file_url or "").strip() or None
+    if (
+        not ref_url
+        and photo_file_id
+        and bot is not None
+        and integration is not CoverIntegrationType.NONE
+    ):
+        ref_url = await _get_telegram_file_url(
+            photo_file_id,
+            bot=bot,
+            settings=settings,
+        )
+
+    if ref_url and integration is not CoverIntegrationType.NONE:
+        body["input_references"] = [ref_url]
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        client = await get_openrouter_http_client(settings)
+        async with asyncio.timeout(OPENROUTER_COVER_TIMEOUT_SEC):
+            response = await client.post(
+                OPENROUTER_IMAGES_URL,
+                headers=headers,
+                json=body,
+                timeout=httpx.Timeout(OPENROUTER_COVER_TIMEOUT_SEC, connect=30.0),
             )
-            if swapped_url:
-                logger.info(
-                    "blogger cover face swap ok model=%s",
-                    settings.replicate_blogger_face_swap_model,
-                )
-                return GeminiImageResult(url=swapped_url)
-            logger.warning("blogger cover face swap returned empty url uid_face=%s", face_id[:8])
-        except Exception:
-            logger.exception("blogger cover face swap failed, using flux base image")
+        if response.status_code >= 400:
+            raise RuntimeError(
+                f"OpenRouter images HTTP {response.status_code}: "
+                f"{(response.text or '')[:200]}"
+            )
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise RuntimeError("OpenRouter images: response is not a JSON object")
+        result = _parse_openrouter_image_payload(payload)
+    except Exception:
+        logger.exception(
+            "blogger cover OpenRouter failed model=%s integration=%s",
+            OPENROUTER_COVER_MODEL_ID,
+            integration.value,
+        )
+        raise
 
-    logger.info("blogger cover generated via Flux Schnell model=%s", FLUX_SCHNELL_MODEL_ID)
-    return GeminiImageResult(url=url)
+    logger.info(
+        "blogger cover ok model=%s integration=%s has_ref=%s",
+        OPENROUTER_COVER_MODEL_ID,
+        integration.value,
+        bool(ref_url and integration is not CoverIntegrationType.NONE),
+    )
+    return result
+
+
+async def run_product_cover_generation(
+    settings: Settings,
+    message: Message,
+    *,
+    photo_file_id: str,
+    post_id: str | None,
+) -> BloggerCoverResult:
+    """Пайплайн «обложка с продуктом»: сохранить file_id → биллинг → OpenRouter."""
+    from services.billing.blogger_pipeline import can_afford_blogger_cover
+    from services.god_mode import billing_bypass
+    from services.repository import set_blogger_object_file_id
+
+    if message.from_user is None:
+        return BloggerCoverResult(outcome=BloggerCoverOutcome.GENERATION_FAILED)
+
+    user_id = message.from_user.id
+    file_id = (photo_file_id or "").strip()
+    if not file_id:
+        return BloggerCoverResult(outcome=BloggerCoverOutcome.GENERATION_FAILED)
+
+    await set_blogger_object_file_id(user_id, file_id)
+
+    pid = (post_id or "").strip()
+    draft: BloggerPostDraft | None = None
+    if pid:
+        draft = blogger_post_cache.get(pid, user_id)
+        if draft is None:
+            draft = await blogger_post_cache.resolve(pid, user_id)
+    if draft is None:
+        draft = await blogger_post_cache.resolve_last(user_id)
+
+    if draft is None:
+        from content import messages as msg
+        from aiogram.enums import ParseMode
+
+        await message.answer(msg.TXT_BLOGGER_POST_NOT_FOUND, parse_mode=ParseMode.HTML)
+        return BloggerCoverResult(outcome=BloggerCoverOutcome.PROMPT_NOT_FOUND)
+
+    if not billing_bypass(user_id) and not await can_afford_blogger_cover(user_id):
+        from content import messages as msg
+        from aiogram.enums import ParseMode
+
+        await message.answer(msg.TXT_BLOGGER_COVER_INSUFFICIENT, parse_mode=ParseMode.HTML)
+        return BloggerCoverResult(outcome=BloggerCoverOutcome.INSUFFICIENT_BALANCE)
+
+    result = await run_blogger_cover_turn(
+        settings,
+        user_id=user_id,
+        draft=draft,
+        use_object=True,
+        bot=message.bot,
+        photo_file_id=file_id,
+    )
+    await deliver_blogger_cover_turn_result(message, result, draft=draft)
+    return result
 
 
 async def run_blogger_cover_turn(
@@ -160,35 +369,46 @@ async def run_blogger_cover_turn(
     user_id: int,
     draft: BloggerPostDraft,
     use_face: bool = False,
+    use_object: bool = False,
     bot: Any | None = None,
+    photo_file_id: str | None = None,
+    source_file_url: str | None = None,
 ) -> BloggerCoverResult:
-    """Полный цикл: промпт → биллинг Flux → генерация."""
+    """Промпт → spend → OpenRouter → success; при ошибке ``refund_charge``."""
     from services.billing import refund_charge
     from services.billing.blogger_pipeline import (
         can_afford_blogger_cover,
         spend_blogger_cover,
     )
     from services.god_mode import billing_bypass
-    from services.replicate_client import replicate_configured
-    from services.repository import get_blogger_face_file_id
+    from services.repository import get_blogger_face_file_id, get_blogger_object_file_id
 
     raw_prompt = extract_image_prompt_from_draft(draft)
     if not raw_prompt:
         return BloggerCoverResult(outcome=BloggerCoverOutcome.PROMPT_NOT_FOUND)
 
-    if not replicate_configured():
-        logger.error("blogger cover: REPLICATE_API_TOKEN is not configured uid=%s", user_id)
-        return BloggerCoverResult(outcome=BloggerCoverOutcome.REPLICATE_UNAVAILABLE)
+    if not openrouter_cover_configured(settings):
+        logger.error("blogger cover: OPENROUTER_API_KEY missing uid=%s", user_id)
+        return BloggerCoverResult(outcome=BloggerCoverOutcome.OPENROUTER_UNAVAILABLE)
 
     if not billing_bypass(user_id) and not await can_afford_blogger_cover(user_id):
         return BloggerCoverResult(outcome=BloggerCoverOutcome.INSUFFICIENT_BALANCE)
 
-    face_file_id: str | None = None
+    integration = CoverIntegrationType.NONE
+    resolved_file_id = (photo_file_id or "").strip() or None
     if use_face:
-        face_file_id = await get_blogger_face_file_id(user_id)
+        integration = CoverIntegrationType.FACE
+        if not resolved_file_id:
+            resolved_file_id = (await get_blogger_face_file_id(user_id) or "").strip() or None
+    elif use_object:
+        integration = CoverIntegrationType.OBJECT
+        if not resolved_file_id:
+            resolved_file_id = (await get_blogger_object_file_id(user_id) or "").strip() or None
 
-    cleaned_prompt = prepare_blogger_flux_prompt(raw_prompt, with_face=bool(face_file_id))
-    flux_prompt = await _flux_prompt_for_replicate(settings, cleaned_prompt)
+    cleaned_prompt = prepare_blogger_flux_prompt(
+        raw_prompt,
+        with_face=integration is CoverIntegrationType.FACE,
+    )
 
     charge_id: str | None = None
     if not billing_bypass(user_id):
@@ -204,8 +424,10 @@ async def run_blogger_cover_turn(
     try:
         image = await generate_blogger_cover_image(
             settings,
-            flux_prompt,
-            face_file_id=face_file_id,
+            cleaned_prompt,
+            integration=integration,
+            photo_file_id=resolved_file_id,
+            source_file_url=source_file_url,
             bot=bot,
         )
         if not image.has_image():
@@ -218,7 +440,11 @@ async def run_blogger_cover_turn(
     except Exception:
         if charge_id:
             await refund_charge(charge_id)
-        logger.exception("blogger cover generation failed uid=%s post_id=%s", user_id, draft.post_id)
+        logger.exception(
+            "blogger cover generation failed uid=%s post_id=%s",
+            user_id,
+            draft.post_id,
+        )
         return BloggerCoverResult(
             outcome=BloggerCoverOutcome.GENERATION_FAILED,
             cleaned_prompt=cleaned_prompt,
@@ -233,7 +459,6 @@ async def deliver_blogger_cover_photo(
     caption_template: str,
 ) -> None:
     """Отправляет обложку новым сообщением, конструктор не трогает."""
-    import httpx
     from aiogram.enums import ParseMode
     from aiogram.exceptions import TelegramBadRequest
     from aiogram.types import BufferedInputFile
@@ -287,12 +512,11 @@ async def deliver_blogger_cover_turn_result(
     *,
     draft: BloggerPostDraft,
 ) -> None:
-    """Показывает итог генерации обложки (лимит / успех / ошибка)."""
+    """Показывает итог генерации обложки."""
     from content import messages as msg
+    from aiogram.enums import ParseMode
 
     if result.outcome is BloggerCoverOutcome.DAILY_LIMIT_EXCEEDED:
-        from aiogram.enums import ParseMode
-
         await message.answer(msg.TXT_PHOTO_DAILY_LIMIT, parse_mode=ParseMode.HTML)
         return
 
@@ -307,32 +531,21 @@ async def deliver_blogger_cover_turn_result(
         return
 
     if result.outcome is BloggerCoverOutcome.GENERATION_FAILED:
-        from aiogram.enums import ParseMode
-
         await message.answer(msg.TXT_BLOGGER_COVER_FAILED, parse_mode=ParseMode.HTML)
         return
 
-    if result.outcome is BloggerCoverOutcome.REPLICATE_UNAVAILABLE:
-        from aiogram.enums import ParseMode
-
-        await message.answer(msg.TXT_BLOGGER_COVER_REPLICATE_UNAVAILABLE, parse_mode=ParseMode.HTML)
+    if result.outcome is BloggerCoverOutcome.OPENROUTER_UNAVAILABLE:
+        await message.answer(msg.TXT_BLOGGER_COVER_OPENROUTER_UNAVAILABLE, parse_mode=ParseMode.HTML)
         return
 
     if result.outcome is BloggerCoverOutcome.PROMPT_NOT_FOUND:
-        from aiogram.enums import ParseMode
-
         await message.answer(msg.TXT_BLOGGER_IMAGE_PROMPT_NOT_FOUND, parse_mode=ParseMode.HTML)
         return
 
-    if result.outcome is BloggerCoverOutcome.INSUFFICIENT_BALANCE:
-        from aiogram.enums import ParseMode
-
-        await message.answer(msg.TXT_BLOGGER_COVER_INSUFFICIENT, parse_mode=ParseMode.HTML)
-        return
-
-    if result.outcome is BloggerCoverOutcome.FREE_IMAGE_MODEL_BLOCKED:
-        from aiogram.enums import ParseMode
-
+    if result.outcome in (
+        BloggerCoverOutcome.INSUFFICIENT_BALANCE,
+        BloggerCoverOutcome.FREE_IMAGE_MODEL_BLOCKED,
+    ):
         await message.answer(msg.TXT_BLOGGER_COVER_INSUFFICIENT, parse_mode=ParseMode.HTML)
 
 
@@ -342,9 +555,12 @@ async def handle_blogger_cover_callback(
     draft: BloggerPostDraft,
     *,
     use_face: bool = False,
+    use_object: bool = False,
 ) -> BloggerCoverResult:
     """UX-обёртка для callback-кнопки обложки."""
     from content import messages as msg
+    from services.billing.blogger_pipeline import can_afford_blogger_cover
+    from services.god_mode import billing_bypass
 
     if callback.message is None:
         return BloggerCoverResult(outcome=BloggerCoverOutcome.PROMPT_NOT_FOUND)
@@ -355,13 +571,10 @@ async def handle_blogger_cover_callback(
         return BloggerCoverResult(outcome=BloggerCoverOutcome.PROMPT_NOT_FOUND)
 
     user_id = callback.from_user.id if callback.from_user else draft.user_id
-    from services.billing.blogger_pipeline import can_afford_blogger_cover
-    from services.god_mode import billing_bypass
-    from services.replicate_client import replicate_configured
 
-    if not replicate_configured():
-        await callback.answer(msg.TXT_BLOGGER_COVER_REPLICATE_UNAVAILABLE, show_alert=True)
-        return BloggerCoverResult(outcome=BloggerCoverOutcome.REPLICATE_UNAVAILABLE)
+    if not openrouter_cover_configured(settings):
+        await callback.answer(msg.TXT_BLOGGER_COVER_OPENROUTER_UNAVAILABLE, show_alert=True)
+        return BloggerCoverResult(outcome=BloggerCoverOutcome.OPENROUTER_UNAVAILABLE)
 
     if not billing_bypass(user_id) and not await can_afford_blogger_cover(user_id):
         await callback.answer(msg.TXT_BLOGGER_COVER_INSUFFICIENT, show_alert=True)
@@ -374,6 +587,7 @@ async def handle_blogger_cover_callback(
         user_id=user_id,
         draft=draft,
         use_face=use_face,
+        use_object=use_object,
         bot=callback.message.bot,
     )
 

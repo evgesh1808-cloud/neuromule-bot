@@ -100,6 +100,7 @@ def _is_blogger_callback(event: TelegramObject) -> bool:
             msg.CB_BLOG_ART_PREFIX,
             msg.CB_BLOGGER_COVER_UPLOAD_FACE_PREFIX,
             msg.CB_BLOGGER_COVER_NO_FACE_PREFIX,
+            msg.CB_COVER_GENERATE_PREFIX,
             msg.CB_ADAPT_TARGET_PREFIX,
         )
     )

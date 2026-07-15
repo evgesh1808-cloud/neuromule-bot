@@ -187,13 +187,14 @@ def test_normalize_unparsed_text_goes_to_body_section() -> None:
 
 def test_sanitize_blogger_image_prompt_strips_abstract_phrases() -> None:
     raw = (
-        "A professional cinematic photo of businessman at desk, "
-        "representing financial growth, warm office light, 4k --ar 16:9"
+        "High-end editorial lifestyle photography of a businessman at a desk, "
+        "representing financial growth, warm office light, soft dramatic lighting --ar 16:9"
     )
     cleaned = sanitize_blogger_image_prompt_for_imagen(raw)
     assert "representing" not in cleaned.lower()
     assert "businessman" in cleaned.lower()
-    assert cleaned.startswith("A professional cinematic photo of")
+    assert "--ar" not in cleaned.lower()
+    assert "high-end editorial" in cleaned.lower()
 
     ru_raw = (
         "Профессиональное фото офиса с графиками, символизирующее рост прибыли, "
@@ -206,8 +207,8 @@ def test_sanitize_blogger_image_prompt_strips_abstract_phrases() -> None:
 
 def test_sanitize_blogger_image_prompt_strips_banned_abstract_terms() -> None:
     raw = (
-        "A professional cinematic photo of a chart symbolizing success and future hope, "
-        "4k --ar 16:9"
+        "Magazine cover style photo of a chart symbolizing success and future hope, "
+        "shot on 35mm lens --ar 16:9"
     )
     cleaned = sanitize_blogger_image_prompt_for_imagen(raw)
     low = cleaned.lower()
@@ -215,6 +216,7 @@ def test_sanitize_blogger_image_prompt_strips_banned_abstract_terms() -> None:
     assert "success" not in low
     assert "future" not in low
     assert "hope" not in low
+    assert "--ar" not in low
 
 
 def test_strip_optimizer_preamble() -> None:
@@ -229,10 +231,10 @@ def test_imagen4_optimizer_system_prompt_contains_core_rules() -> None:
     from services.blogger_image_prompt import IMAGEN4_OPTIMIZER_SYSTEM_PROMPT
 
     low = IMAGEN4_OPTIMIZER_SYSTEM_PROMPT.lower()
-    assert "symbolizing" in low
-    assert "representing" in low
-    assert "concept of" in low
-    assert "single line" in low or "one line" in low
+    assert "flux" in low
+    assert "editorial" in low
+    assert "--ar" in low
+    assert "negative prompt" in low
 
 
 def test_is_blogger_response_degraded_detects_header_echo() -> None:

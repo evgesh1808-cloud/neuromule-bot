@@ -138,8 +138,40 @@ def get_blogger_keyboard(
     return builder.as_markup()
 
 
+def get_blogger_cover_options_keyboard(post_id: str) -> InlineKeyboardMarkup:
+    """Подменю формата AI-обложки при нажатии «🎨 Создать AI-обложку»."""
+    pid = (post_id or "").strip()
+    prefix = msg.CB_COVER_GENERATE_PREFIX
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(
+            text=msg.BTN_BLOGGER_COVER_MODE_NONE,
+            callback_data=f"{prefix}{msg.COVER_MODE_NONE}:{pid}",
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text=msg.BTN_BLOGGER_COVER_MODE_FACE,
+            callback_data=f"{prefix}{msg.COVER_MODE_FACE}:{pid}",
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text=msg.BTN_BLOGGER_COVER_MODE_OBJECT,
+            callback_data=f"{prefix}{msg.COVER_MODE_OBJECT}:{pid}",
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text=msg.BTN_BLOGGER_COVER_BACK,
+            callback_data=f"{msg.CB_BLOG_BACK_PREFIX}{pid}",
+        )
+    )
+    return builder.as_markup()
+
+
 def get_blogger_cover_face_keyboard(post_id: str) -> InlineKeyboardMarkup:
-    """Выбор: загрузить фото лица или сгенерировать обложку без лица."""
+    """Legacy: загрузить фото лица или сгенерировать обложку без лица."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -163,6 +195,9 @@ def get_blogger_adapt_keyboard(post_id: str) -> InlineKeyboardMarkup:
     from services.blogger_adaptation import get_blogger_adapt_keyboard as _build
 
     return _build(post_id)
+
+
+get_blogger_adaptation_keyboard = get_blogger_adapt_keyboard
 
 
 def result_music_keyboard_pro(task_id: str | None = None) -> InlineKeyboardMarkup:

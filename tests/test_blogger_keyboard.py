@@ -69,14 +69,27 @@ def test_get_blogger_keyboard_without_hashtags() -> None:
 
 def test_get_blogger_adapt_keyboard() -> None:
     kb = get_blogger_adapt_keyboard("a1b2c3d4")
-    assert len(kb.inline_keyboard) == 5
-    video_btn, vc_btn, vk_btn, tg_btn = (row[0] for row in kb.inline_keyboard[:4])
-    assert video_btn.text == msg.BTN_BLOGGER_ADAPT_VIDEO
-    assert video_btn.callback_data == "adapt_target:video:a1b2c3d4"
-    assert vc_btn.callback_data == "adapt_target:vc:a1b2c3d4"
-    assert vk_btn.callback_data == "adapt_target:vk:a1b2c3d4"
-    assert tg_btn.callback_data == "adapt_target:tg_max:a1b2c3d4"
-    back_btn = kb.inline_keyboard[-1][0]
+    assert len(kb.inline_keyboard) == 4
+
+    video_row = kb.inline_keyboard[0]
+    assert len(video_row) == 1
+    assert video_row[0].text == msg.BTN_BLOGGER_ADAPT_VIDEO
+    assert video_row[0].callback_data == f"adapt_target:{msg.PLATFORM_VIDEO}:a1b2c3d4"
+
+    tg_btn, vk_btn = kb.inline_keyboard[1]
+    assert tg_btn.text == msg.BTN_BLOGGER_ADAPT_TG_MAX
+    assert tg_btn.callback_data == f"adapt_target:{msg.PLATFORM_TG_MAX}:a1b2c3d4"
+    assert vk_btn.text == msg.BTN_BLOGGER_ADAPT_VK
+    assert vk_btn.callback_data == f"adapt_target:{msg.PLATFORM_VK}:a1b2c3d4"
+
+    meta_btn, vc_btn = kb.inline_keyboard[2]
+    assert meta_btn.text == msg.BTN_BLOGGER_ADAPT_META
+    assert meta_btn.callback_data == f"adapt_target:{msg.PLATFORM_META}:a1b2c3d4"
+    assert vc_btn.text == msg.BTN_BLOGGER_ADAPT_VC
+    assert vc_btn.callback_data == f"adapt_target:{msg.PLATFORM_VC}:a1b2c3d4"
+
+    back_btn = kb.inline_keyboard[3][0]
+    assert back_btn.text == msg.BTN_BLOGGER_ADAPT_BACK
     assert back_btn.callback_data == f"{msg.CB_BLOG_BACK_PREFIX}a1b2c3d4"
 
 

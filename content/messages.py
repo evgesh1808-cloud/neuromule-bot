@@ -23,18 +23,45 @@ CB_BLOG_ART_PREFIX = "blog_art:"        # legacy: blog_art:<post_id>
 CB_BLOGGER_COVER_PREFIX = "blogger_cover:"  # blogger_cover:<post_id>
 CB_BLOGGER_COVER_UPLOAD_FACE_PREFIX = "blog_cover_face:"  # blog_cover_face:<post_id>
 CB_BLOGGER_COVER_NO_FACE_PREFIX = "blog_cover_noface:"  # blog_cover_noface:<post_id>
+CB_COVER_GENERATE_PREFIX = "cover_generate:"  # cover_generate:<none|face|object>:<post_id>
+COVER_MODE_NONE = "none"
+COVER_MODE_FACE = "face"
+COVER_MODE_OBJECT = "object"
+COVER_GENERATE_MODES = frozenset({COVER_MODE_NONE, COVER_MODE_FACE, COVER_MODE_OBJECT})
+
+BTN_BLOGGER_COVER_MODE_NONE = "🖼️ Просто обложка (по тексту)"
+BTN_BLOGGER_COVER_MODE_FACE = "👤 Обложка со мной в кадре"
+BTN_BLOGGER_COVER_MODE_OBJECT = "📦 Обложка с моим продуктом"
+BTN_BLOGGER_COVER_BACK = "⬅️ Назад к посту"
 CB_BLOG_RUN_ADAPT_PREFIX = "blog_run_adapt:"  # legacy: blog_run_adapt:<post_id>:<platform>
 
-CB_ADAPT_TARGET_PREFIX = "adapt_target:"  # adapt_target:<video|vc|vk|tg_max>
-CB_ADAPT_TARGET_VIDEO = "adapt_target:video"
-CB_ADAPT_TARGET_VC = "adapt_target:vc"
-CB_ADAPT_TARGET_VK = "adapt_target:vk"
-CB_ADAPT_TARGET_TG_MAX = "adapt_target:tg_max"
+# Ключи/лейблы площадок адаптации (legacy: vc→vc_dzen, vk→vk_community, tg_max→tg_max_channels)
+PLATFORM_VIDEO = "video"
+PLATFORM_LABEL_VIDEO = "🎬 Видео (Reels / TikTok / Shorts)"
+PLATFORM_VC = "vc_dzen"
+PLATFORM_LABEL_VC = "📰 VC.ru / Дзен"
+PLATFORM_VK = "vk_community"
+PLATFORM_LABEL_VK = "👥 ВКонтакте (VK)"
+PLATFORM_TG_MAX = "tg_max_channels"
+PLATFORM_LABEL_TG_MAX = "🚀 Telegram / МАКС"
+PLATFORM_META = "facebook_instagram"
+PLATFORM_LABEL_META = "💼 Facebook / Instagram"
 
-BTN_BLOGGER_ADAPT_VIDEO = "🎬 Видео (Reels/TikTok/Shorts/Likee) [3💎]"
-BTN_BLOGGER_ADAPT_VC = "💼 Статья (VC.ru / Дзен) [3💎]"
-BTN_BLOGGER_ADAPT_VK = "📱 Пост (ВКонтакте / VK) [3💎]"
-BTN_BLOGGER_ADAPT_TG_MAX = "🚀 Канал (Telegram / суперапп МАКС) [3💎]"
+CB_ADAPT_TARGET_PREFIX = (
+    "adapt_target:"  # adapt_target:<video|vc_dzen|vk_community|tg_max_channels|facebook_instagram>
+)
+CB_ADAPT_TARGET_VIDEO = f"adapt_target:{PLATFORM_VIDEO}"
+CB_ADAPT_TARGET_VC = f"adapt_target:{PLATFORM_VC}"
+CB_ADAPT_TARGET_VK = f"adapt_target:{PLATFORM_VK}"
+CB_ADAPT_TARGET_TG_MAX = f"adapt_target:{PLATFORM_TG_MAX}"
+CB_ADAPT_TARGET_META = f"adapt_target:{PLATFORM_META}"
+
+BTN_BLOGGER_ADAPT_VIDEO = PLATFORM_LABEL_VIDEO
+BTN_BLOGGER_ADAPT_VC = PLATFORM_LABEL_VC
+BTN_BLOGGER_ADAPT_VK = PLATFORM_LABEL_VK
+BTN_BLOGGER_ADAPT_TG_MAX = PLATFORM_LABEL_TG_MAX
+BTN_BLOGGER_ADAPT_META = PLATFORM_LABEL_META
+BTN_BLOGGER_ADAPT_BACK = "⬅️ Назад к посту"
 
 # Обратная совместимость
 BTN_BLOGGER_ADAPT_SHORT_VIDEO = BTN_BLOGGER_ADAPT_VIDEO
@@ -1326,6 +1353,7 @@ TXT_BLOGGER_UPSELL_SOON = (
 TXT_BLOGGER_GENERATE_FIRST = "Сначала сгенерируйте пост!"
 TXT_BLOGGER_HASHTAGS_ADDED = "Хэштеги добавлены к посту! ✨"
 TXT_BLOGGER_IMAGE_PROMPT_NOT_FOUND = "❌ Исходный промпт не найден"
+TXT_BLOGGER_COVER_OPTIONS = "Выберите формат AI-обложки 👇"
 TXT_BLOGGER_COVER_FACE_CHOICE = (
     "Вы можете отправить мне фото лица (анфас, хорошее освещение), чтобы я сгенерировал "
     "обложку с вами. Либо нажмите кнопку ниже, чтобы создать стандартную картинку по сюжету поста."
@@ -1334,17 +1362,33 @@ TXT_BLOGGER_COVER_UPLOAD_FACE_HINT = (
     "📸 Отправьте <b>одно фото лица</b> (анфас, хорошее освещение) — после загрузки "
     "сразу запущу генерацию обложки с вами."
 )
+TXT_BLOGGER_COVER_UPLOAD_OBJECT_HINT = (
+    "📦 Отлично! Пожалуйста, отправьте в чат одну качественную фотографию "
+    "вашего продукта или товара. Желательно, чтобы предмет был на однотонном "
+    "или контрастном фоне."
+)
 TXT_BLOGGER_COVER_FACE_SAVED = "✅ Фото лица сохранено. Генерирую обложку..."
-TXT_BLOGGER_COVER_GENERATING = "🎨 Генерирую обложку (Flux Schnell)..."
+TXT_BLOGGER_COVER_OBJECT_SAVED = (
+    "⏳ Фотография получена. Запускаю генерацию обложки с вашим продуктом "
+    "через OpenRouter..."
+)
+TXT_BLOGGER_COVER_PRODUCT_PHOTO_FALLBACK = (
+    "⚠️ Ошибка. Пожалуйста, отправьте именно ФОТОГРАФИЮ вашего продукта. "
+    "Если вы хотите отменить генерацию, нажмите /cancel или вернитесь назад к посту."
+)
+TXT_BLOGGER_COVER_PRODUCT_CANCELLED = "✅ Генерация обложки с продуктом отменена."
+TXT_BLOGGER_COVER_GENERATING = "🎨 Генерирую обложку через OpenRouter (Flux)..."
 TXT_BLOGGER_COVER_READY = (
     "🖼 <b>Обложка для вашего поста готова!</b>\n\n"
     "Промпт: <code>{prompt}</code>"
 )
 TXT_BLOGGER_COVER_FAILED = "❌ Не удалось сгенерировать обложку. Баланс возвращён."
-TXT_BLOGGER_COVER_REPLICATE_UNAVAILABLE = (
-    "❌ Сервис Flux Schnell (Replicate) временно недоступен на сервере. "
+TXT_BLOGGER_COVER_OPENROUTER_UNAVAILABLE = (
+    "❌ Сервис генерации обложек (OpenRouter) временно недоступен на сервере. "
     "Попробуйте позже или напишите в поддержку."
 )
+# Legacy alias — старые импорты/алерты.
+TXT_BLOGGER_COVER_REPLICATE_UNAVAILABLE = TXT_BLOGGER_COVER_OPENROUTER_UNAVAILABLE
 TXT_BLOGGER_ART_QUEUED = "💎 Списываем 1 кристалл. Нейросеть генерирует обложку..."
 TXT_BLOGGER_ART_PROMPT_SENT = (
     "🎨 <b>Ваш промпт отправлен в генератор обложек:</b>\n"
