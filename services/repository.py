@@ -66,6 +66,7 @@ async def _migrate_users(db: aiosqlite.Connection) -> None:
         ("advice_user_role", "ALTER TABLE users ADD COLUMN advice_user_role TEXT"),
         ("advice_pending_at", "ALTER TABLE users ADD COLUMN advice_pending_at REAL"),
         ("accepted_terms", "ALTER TABLE users ADD COLUMN accepted_terms INTEGER DEFAULT 0"),
+        ("blogger_face_file_id", "ALTER TABLE users ADD COLUMN blogger_face_file_id TEXT"),
     ]
     for name, ddl in alters:
         if name not in cols:
@@ -1177,6 +1178,37 @@ async def set_persistent_memory(user_id: int, text: str | None) -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE users SET persistent_memory = ? WHERE id = ?", (text, user_id))
         await db.commit()
+
+
+async def get_blogger_face_file_id(user_id: int) -> str | None:
+    """Telegram ``file_id`` загруженного фото лица для AI-обложки блогера."""
+    await ensure_user(user_id)
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT blogger_face_file_id FROM users WHERE id = ?",
+            (user_id,),
+        ) as cur:
+            row = await cur.fetchone()
+    if not row or not row[0]:
+        return None
+    file_id = str(row[0]).strip()
+    return file_id or None
+
+
+async def set_blogger_face_file_id(user_id: int, file_id: str) -> None:
+    """Сохраняет или обновляет фото лица пользователя для обложек блогера."""
+    await ensure_user(user_id)
+    clean = (file_id or "").strip()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE users SET blogger_face_file_id = ? WHERE id = ?",
+            (clean or None, user_id),
+        )
+        await db.commit()
+
+
+async def has_blogger_face_photo(user_id: int) -> bool:
+    return (await get_blogger_face_file_id(user_id)) is not None
 
 
 async def clear_user_dialog_and_memory(user_id: int) -> None:

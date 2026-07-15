@@ -57,6 +57,19 @@ def _paid_model_fallbacks() -> tuple[str, ...]:
     return _free_model_fallbacks()
 
 
+_BLOGGER_ROLE_IDS = frozenset({"blogger_content", "blogger"})
+
+
+def _model_route_for_role(role_id: str, tariff: TariffTier) -> tuple[str, tuple[str, ...]]:
+    """Блогер на платных тарифах — флагманская модель (структурированный пост)."""
+    rid = (role_id or "").strip().lower()
+    if rid in _BLOGGER_ROLE_IDS and tariff is not TariffTier.FREE:
+        return PAID_CHAT_MODEL, _paid_model_fallbacks()
+    if tariff in (TariffTier.FREE, TariffTier.MINI):
+        return FREE_CHAT_MODEL, _free_model_fallbacks()
+    return PAID_CHAT_MODEL, _paid_model_fallbacks()
+
+
 def inject_compliance_rules_into_last_user_message(
     messages: list[dict[str, Any]],
     *,
@@ -179,24 +192,25 @@ def plan_text_chat(user: UserBillingState, role_type: str) -> ChatRoutePlan:
     free_max = settings.openrouter_max_output_tokens
     premium_max = settings.openrouter_premium_max_output_tokens
     table_max = settings.openrouter_table_max_output_tokens
+    model_id, fallback_model_ids = _model_route_for_role(role_id, tariff)
 
     def _max_tokens_for_role() -> int:
         if role_id == "table_generator":
             return table_max
         if role_id in ("blogger_content", "blogger"):
-            return max(premium_max, table_max)
+            return premium_max
         return premium_max if expert or tariff is not TariffTier.FREE else free_max
 
     if not role_allowed_for_tariff(role_id, tariff):
         return ChatRoutePlan(
-            model_id=PAID_CHAT_MODEL,
+            model_id=model_id,
             price_type=CurrencyKind.NONE,
             energy_cost=energy_cost,
             crystal_cost=crystal_cost,
             is_expert_role=expert,
             max_tokens=_max_tokens_for_role(),
             use_premium_prompt=use_premium_system_prompt(tariff, is_expert_role=expert),
-            fallback_model_ids=_paid_model_fallbacks(),
+            fallback_model_ids=fallback_model_ids,
             blocked=True,
             block_reason="role_requires_smart_tariff",
         )
@@ -204,61 +218,61 @@ def plan_text_chat(user: UserBillingState, role_type: str) -> ChatRoutePlan:
     if tariff is TariffTier.FREE:
         if role_id in FREE_TARIFF_ALLOWED_ROLES:
             return ChatRoutePlan(
-                model_id=FREE_CHAT_MODEL,
+                model_id=model_id,
                 price_type=CurrencyKind.ENERGY,
                 energy_cost=energy_cost,
                 crystal_cost=crystal_cost,
                 is_expert_role=False,
                 max_tokens=free_max,
                 use_premium_prompt=False,
-                fallback_model_ids=_free_model_fallbacks(),
+                fallback_model_ids=fallback_model_ids,
             )
         if user.crystals >= crystal_cost:
             # FREE + 💎: тот же каскад, что MINI — FREE_TEXT_MODEL + FREE_MODELS (резерв при 429).
             return ChatRoutePlan(
-                model_id=FREE_CHAT_MODEL,
+                model_id=model_id,
                 price_type=CurrencyKind.CRYSTALS,
                 energy_cost=energy_cost,
                 crystal_cost=crystal_cost,
                 is_expert_role=True,
                 max_tokens=_max_tokens_for_role(),
                 use_premium_prompt=True,
-                fallback_model_ids=_free_model_fallbacks(),
+                fallback_model_ids=fallback_model_ids,
             )
         return ChatRoutePlan(
-            model_id=FREE_CHAT_MODEL,
+            model_id=model_id,
             price_type=CurrencyKind.NONE,
             energy_cost=energy_cost,
             crystal_cost=crystal_cost,
             is_expert_role=True,
             max_tokens=_max_tokens_for_role(),
             use_premium_prompt=True,
-            fallback_model_ids=_free_model_fallbacks(),
+            fallback_model_ids=fallback_model_ids,
             blocked=True,
             block_reason="expert_role_requires_paid_tariff",
         )
 
     if tariff is TariffTier.MINI:
         return ChatRoutePlan(
-            model_id=FREE_CHAT_MODEL,
+            model_id=model_id,
             price_type=CurrencyKind.ENERGY,
             energy_cost=energy_cost,
             crystal_cost=crystal_cost,
             is_expert_role=expert,
             max_tokens=_max_tokens_for_role(),
             use_premium_prompt=True,
-            fallback_model_ids=_free_model_fallbacks(),
+            fallback_model_ids=fallback_model_ids,
         )
 
     return ChatRoutePlan(
-        model_id=PAID_CHAT_MODEL,
+        model_id=model_id,
         price_type=CurrencyKind.ENERGY,
         energy_cost=energy_cost,
         crystal_cost=crystal_cost,
         is_expert_role=expert,
         max_tokens=_max_tokens_for_role(),
         use_premium_prompt=use_premium_system_prompt(tariff, is_expert_role=expert),
-        fallback_model_ids=_paid_model_fallbacks(),
+        fallback_model_ids=fallback_model_ids,
     )
 
 

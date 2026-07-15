@@ -1,9 +1,12 @@
 """Хвост compliance в последнем user-сообщении перед OpenRouter."""
 
 from services.billing.chat_pipeline import (
+    _model_route_for_role,
     inject_compliance_rules_into_last_user_message,
     prepare_openrouter_chat_messages,
 )
+from services.billing.pricing import FREE_CHAT_MODEL, PAID_CHAT_MODEL
+from services.billing.types import TariffTier
 from content.chat_prompt import BLOGGER_USER_COMPLIANCE_TAIL_MARKER, USER_COMPLIANCE_TAIL_MARKER
 
 
@@ -63,3 +66,11 @@ def test_prepare_openrouter_chat_messages() -> None:
     out = prepare_openrouter_chat_messages(payload, use_premium_prompt=True)
     assert out is payload
     assert "премиум-комплаенс" in payload[1]["content"]
+
+
+def test_model_route_for_role_blogger_on_paid_tariff() -> None:
+    model_id, _fallbacks = _model_route_for_role("blogger_content", TariffTier.MINI)
+    assert model_id == PAID_CHAT_MODEL
+
+    std_model, _ = _model_route_for_role("standard", TariffTier.MINI)
+    assert std_model == FREE_CHAT_MODEL

@@ -138,6 +138,26 @@ def get_blogger_keyboard(
     return builder.as_markup()
 
 
+def get_blogger_cover_face_keyboard(post_id: str) -> InlineKeyboardMarkup:
+    """Выбор: загрузить фото лица или сгенерировать обложку без лица."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📸 Загрузить фото",
+                    callback_data=f"{msg.CB_BLOGGER_COVER_UPLOAD_FACE_PREFIX}{post_id}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🖼️ Создать без фото",
+                    callback_data=f"{msg.CB_BLOGGER_COVER_NO_FACE_PREFIX}{post_id}",
+                )
+            ],
+        ]
+    )
+
+
 def get_blogger_adapt_keyboard(post_id: str) -> InlineKeyboardMarkup:
     """Подменю выбора площадки для реформата поста (3 💎)."""
     from services.blogger_adaptation import get_blogger_adapt_keyboard as _build

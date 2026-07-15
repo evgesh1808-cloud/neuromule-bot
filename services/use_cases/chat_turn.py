@@ -40,6 +40,10 @@ from services.telegram_safe_text import (
 
 logger = logging.getLogger(__name__)
 
+_BLOGGER_ROLE_IDS = frozenset({"blogger_content", "blogger"})
+_BLOGGER_STREAM_PLACEHOLDER = "✍️ <b>Генерирую пост…</b>"
+_BLOGGER_TEMPERATURE = 0.3
+
 # Лимит финансового отчёта WB/Ozon в Telegram (ручная загрузка xlsx).
 WB_FINANCE_TELEGRAM_MAX_CHARS = 2000
 
@@ -84,17 +88,17 @@ def format_assistant_for_role(text: str, text_role: str, *, for_stream: bool = F
     if role_id == "table_generator":
         converted = markdown_tables_to_telegram_html(strip_redacted_thinking(text))
         return repair_telegram_html(converted)
-    if role_id in ("blogger_content", "blogger"):
+    if role_id in _BLOGGER_ROLE_IDS:
         from services.blogger_post_parser import (
-            BloggerPostParsed,
+            format_blogger_display_html,
             normalize_blogger_raw_output,
             reassemble_blogger_sections,
         )
 
         sections = normalize_blogger_raw_output(strip_redacted_thinking(text))
-        display_plain = BloggerPostParsed(sections=sections).display_plain()
+        display_html = format_blogger_display_html(sections)
         fallback_text = reassemble_blogger_sections(sections)
-        result = clean_markdown_to_html(display_plain or fallback_text)
+        result = clean_markdown_to_html(display_html or fallback_text)
     else:
         result = clean_markdown_to_html(text)
     if for_stream:
@@ -306,11 +310,19 @@ async def run_chat_turn(
     safe_stream_callback: StreamCallback | None = None
     if stream_callback is not None:
         stream_fn = getattr(stream_callback, "on_stream", stream_callback)
+        is_blogger_role = (effective_role or "").strip().lower() in _BLOGGER_ROLE_IDS
 
         async def _safe_stream_callback(full_text: str, done: bool) -> None:
             try:
+                if is_blogger_role and not done:
+                    await stream_fn(_BLOGGER_STREAM_PLACEHOLDER, done)
+                    return
                 await stream_fn(
-                    format_assistant_for_role(full_text, effective_role, for_stream=True),
+                    format_assistant_for_role(
+                        full_text,
+                        effective_role,
+                        for_stream=not done,
+                    ),
                     done,
                 )
             except Exception:
@@ -319,6 +331,7 @@ async def run_chat_turn(
         safe_stream_callback = _safe_stream_callback
 
     try:
+        is_blogger_role = (effective_role or "").strip().lower() in _BLOGGER_ROLE_IDS
         completion = await ask_ai_messages(
             settings,
             payload,
@@ -330,6 +343,7 @@ async def run_chat_turn(
             models=model_chain,
             max_tokens=plan.max_tokens,
             text_role=effective_role,
+            temperature=_BLOGGER_TEMPERATURE if is_blogger_role else None,
         )
     except RuntimeError as exc:
         err = str(exc)
@@ -422,18 +436,31 @@ async def run_chat_turn(
             return ChatTurnResult(outcome=ChatTurnOutcome.TABLE_JSON_INVALID)
 
     blogger_post_raw: str | None = None
-    content_for_format = content
-    if (effective_role or "").strip().lower() in ("blogger_content", "blogger"):
+    if (effective_role or "").strip().lower() in _BLOGGER_ROLE_IDS:
         from services.blogger_post_parser import (
+            is_blogger_response_degraded,
             normalize_blogger_raw_output,
             reassemble_blogger_sections,
         )
 
         blogger_sections = normalize_blogger_raw_output(content)
+        if is_blogger_response_degraded(blogger_sections):
+            logger.warning(
+                "run_chat_turn: degraded blogger output user_id=%s raw=%s",
+                user_id,
+                content[:500],
+            )
+            await dialog_pop_last_for_user(user_id, platform=platform)
+            if charge_id:
+                await refund_charge(charge_id)
+            await rollback_last(settings, user_id)
+            return ChatTurnResult(
+                outcome=ChatTurnOutcome.AI_FAILED,
+                effective_text_role=effective_role,
+            )
         blogger_post_raw = reassemble_blogger_sections(blogger_sections)
-        content_for_format = blogger_post_raw
 
-    ans_trim = format_assistant_for_role(content_for_format, effective_role)
+    ans_trim = format_assistant_for_role(content, effective_role)
     if plan.max_tokens <= 1000:
         ans_trim = ans_trim[: min(settings.chat_max_message_chars, 4090)]
     else:

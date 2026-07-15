@@ -20,6 +20,7 @@ class UserFlow(StatesGroup):
     waiting_for_memory = State()
     waiting_family_member_id = State()
     waiting_for_review = State()
+    waiting_for_blogger_face_photo = State()
 
 
 class MusicFlow(StatesGroup):

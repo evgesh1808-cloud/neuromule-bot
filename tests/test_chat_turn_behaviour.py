@@ -87,6 +87,46 @@ async def test_run_chat_turn_empty_model_output_refunds(repo_module):
     assert row.energy == energy_before
 
 
+async def test_run_chat_turn_degraded_blogger_output_refunds(repo_module):
+    """Скелетный ответ блогера (только названия секций) — отказ и возврат ⚡."""
+    s = Settings().model_copy(
+        update={
+            "free_models": ["test-model"],
+            "openrouter_key": "dummy",
+            "cost_text_pro": 1,
+            "telegram_chat_streaming": False,
+        }
+    )
+    uid = 999006
+    await repo_module.set_user_tariff(uid, "MINI")
+    row_before = await repo_module.get_user_row(uid)
+    energy_before = row_before.energy
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = "===ХУКИ===\nХуки\n\n===ТЕЛО ПОСТА===\nтело поста"
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": body}}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 8},
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        r = await run_chat_turn(
+            s,
+            uid,
+            "тема для блогера",
+            http_client=client,
+            text_role="blogger_content",
+        )
+
+    assert r.outcome is ChatTurnOutcome.AI_FAILED
+    row = await repo_module.get_user_row(uid)
+    assert row.energy == energy_before
+
+
 async def test_run_chat_turn_jailbreak_prompt_mocked(repo_module):
     """Модель отвечает отказом — успех сценария, текст доходит до пользователя."""
     s = Settings().model_copy(

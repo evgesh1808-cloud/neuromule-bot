@@ -247,6 +247,9 @@ class Settings(BaseSettings):
     replicate_api_token: str = Field(default="", alias="REPLICATE_API_TOKEN")
     replicate_video_model: Annotated[str, _nonempty_str("luma/ray-flash")] = "luma/ray-flash"
     replicate_animate_model: Annotated[str, _nonempty_str("luma/ray-flash")] = "luma/ray-flash"
+    replicate_blogger_face_swap_model: Annotated[str, _nonempty_str("codeplugtech/face-swap")] = (
+        "codeplugtech/face-swap"
+    )
     replicate_poll_interval_sec: Annotated[float, _coerce_float(3.0)] = 3.0
     replicate_poll_timeout_sec: Annotated[float, _coerce_float(600.0)] = 600.0
     suno_api_token: str = Field(default="", alias="SUNO_API_TOKEN")
@@ -576,7 +579,7 @@ class Settings(BaseSettings):
     # Лимит ответа модели (выходные токены) — FREE / базовый чат; 500–800 — разумный дефолт.
     openrouter_max_output_tokens: Annotated[int, _coerce_int(640)] = 640
     # Лимит ответа для платных тарифов и экспертных ролей за 💎.
-    openrouter_premium_max_output_tokens: Annotated[int, _coerce_int(1500)] = 1500
+    openrouter_premium_max_output_tokens: Annotated[int, _coerce_int(900)] = 900
     # Роль table_generator: компактный JSON вместо Markdown-таблицы.
     openrouter_table_max_output_tokens: Annotated[int, _coerce_int(1500)] = 1500
 

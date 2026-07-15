@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -17,15 +18,26 @@ from content.chat_prompt import (
     SYSTEM_ADAPT_VK,
 )
 from services.ai_text import ask_ai_messages
-from services.billing.pricing import PAID_CHAT_MODEL
+from services.billing.pricing import FREE_CHAT_MODEL
 from services.blogger_post_parser import repair_blogger_telegram_html
 from services.telegram_safe_text import prepare_telegram_html_text
+from services.use_cases.chat_turn import strip_redacted_thinking
 
 logger = logging.getLogger(__name__)
 
-ADAPT_VC_MODEL = "deepseek/deepseek-chat"
-
 _ADAPT_TARGETS: frozenset[str] = frozenset({"video", "vc", "vk", "tg_max"})
+
+_ADAPT_PREAMBLE_RE = re.compile(
+    r"^(?:"
+    r"here(?:'s| is) (?:your )?(?:post|article|script|text)|"
+    r"output:|final (?:post|text|script):|"
+    r"вот (?:ваш )?(?:пост|статья|сценарий|текст)|"
+    r"готово[!,.]?|ответ:|адаптированн\w+ (?:пост|текст)"
+    r")\s*:?\s*",
+    re.IGNORECASE,
+)
+
+_FENCED_CODE_RE = re.compile(r"```[\w]*\n?([\s\S]*?)```", re.MULTILINE)
 
 
 @dataclass(frozen=True)
@@ -56,9 +68,9 @@ BLOGGER_ADAPT_ROUTES: tuple[BloggerAdaptRoute, ...] = (
         callback_data=msg.CB_ADAPT_TARGET_VIDEO,
         button_text=msg.BTN_BLOGGER_ADAPT_VIDEO,
         system_prompt=SYSTEM_ADAPT_VIDEO,
-        models=(PAID_CHAT_MODEL,),
-        temperature=0.7,
-        max_tokens=2200,
+        models=(FREE_CHAT_MODEL,),
+        temperature=0.4,
+        max_tokens=1600,
     ),
     BloggerAdaptRoute(
         key="vc",
@@ -66,9 +78,9 @@ BLOGGER_ADAPT_ROUTES: tuple[BloggerAdaptRoute, ...] = (
         callback_data=msg.CB_ADAPT_TARGET_VC,
         button_text=msg.BTN_BLOGGER_ADAPT_VC,
         system_prompt=SYSTEM_ADAPT_VC,
-        models=(ADAPT_VC_MODEL,),
+        models=(FREE_CHAT_MODEL,),
         temperature=0.3,
-        max_tokens=3500,
+        max_tokens=2800,
     ),
     BloggerAdaptRoute(
         key="vk",
@@ -76,9 +88,9 @@ BLOGGER_ADAPT_ROUTES: tuple[BloggerAdaptRoute, ...] = (
         callback_data=msg.CB_ADAPT_TARGET_VK,
         button_text=msg.BTN_BLOGGER_ADAPT_VK,
         system_prompt=SYSTEM_ADAPT_VK,
-        models=(PAID_CHAT_MODEL,),
-        temperature=0.5,
-        max_tokens=2000,
+        models=(FREE_CHAT_MODEL,),
+        temperature=0.4,
+        max_tokens=1600,
     ),
     BloggerAdaptRoute(
         key="tg_max",
@@ -86,9 +98,9 @@ BLOGGER_ADAPT_ROUTES: tuple[BloggerAdaptRoute, ...] = (
         callback_data=msg.CB_ADAPT_TARGET_TG_MAX,
         button_text=msg.BTN_BLOGGER_ADAPT_TG_MAX,
         system_prompt=SYSTEM_ADAPT_TG_MAX,
-        models=(PAID_CHAT_MODEL,),
-        temperature=0.4,
-        max_tokens=900,
+        models=(FREE_CHAT_MODEL,),
+        temperature=0.3,
+        max_tokens=800,
     ),
 )
 
@@ -138,9 +150,35 @@ def is_valid_adapt_platform(platform: str) -> bool:
     return (platform or "").strip().lower() in _ADAPT_TARGETS
 
 
+def _strip_adapt_preamble(text: str) -> str:
+    result = (text or "").strip()
+    while True:
+        cleaned = _ADAPT_PREAMBLE_RE.sub("", result, count=1).strip()
+        if cleaned == result:
+            break
+        result = cleaned
+    return result.strip().strip('"').strip("'").strip()
+
+
+def sanitize_adapt_model_output(text: str) -> str:
+    """Убирает thinking-блоки, code fence и вводные фразы модели."""
+    raw = strip_redacted_thinking(text or "").strip()
+    if not raw:
+        return ""
+
+    fenced = _FENCED_CODE_RE.search(raw)
+    if fenced and fenced.group(1).strip():
+        raw = fenced.group(1).strip()
+
+    raw = _strip_adapt_preamble(raw)
+    raw = re.sub(r"^#{1,6}\s+", "", raw, flags=re.MULTILINE)
+    return raw.strip()
+
+
 def prepare_adapted_telegram_html(text: str) -> str:
     """Markdown → HTML, дозакрытие ``<b>``, безопасная подготовка для Telegram."""
-    repaired = repair_blogger_telegram_html(text or "")
+    cleaned = sanitize_adapt_model_output(text)
+    repaired = repair_blogger_telegram_html(cleaned)
     return prepare_telegram_html_text(repaired)
 
 
@@ -175,7 +213,7 @@ async def adapt_blogger_post_body(
         logger.exception("blogger adapt ask_ai_messages failed platform=%s", platform)
         return None
 
-    content = (result.content or "").strip()
+    content = sanitize_adapt_model_output(result.content or "")
     return content or None
 
 

@@ -9,12 +9,13 @@ import pytest
 from services import blogger_post_cache
 from services.blogger_cover import (
     BloggerCoverOutcome,
-    _parse_openrouter_image_message,
+    FLUX_SCHNELL_MODEL_ID,
     extract_image_prompt_from_draft,
+    prepare_blogger_flux_prompt,
     resolve_blogger_draft,
     run_blogger_cover_turn,
 )
-from services.blogger_post_parser import MISSING_SECTION_PLACEHOLDER, parse_blogger_post
+from services.blogger_post_parser import MISSING_SECTION_PLACEHOLDER
 from services.gemini_image_client import GeminiImageResult
 
 _SAMPLE = """===ХУКИ===
@@ -70,24 +71,63 @@ def test_resolve_blogger_draft_by_last_session() -> None:
     assert draft.post_id == post_id
 
 
-def test_parse_openrouter_image_message_from_images_array() -> None:
-    message = {
-        "images": [
-            {"image_url": {"url": "https://cdn.example.com/cover.png"}},
-        ]
-    }
-    result = _parse_openrouter_image_message(message)
-    assert result.url == "https://cdn.example.com/cover.png"
+def test_prepare_blogger_flux_prompt_keeps_english_template() -> None:
+    raw = "A professional cinematic photo of office desk, 4k --ar 16:9"
+    out = prepare_blogger_flux_prompt(raw)
+    assert "office desk" in out.lower()
+    assert out.startswith("A professional cinematic photo of")
+    assert "--ar 16:9" in out
 
 
-def test_parse_openrouter_image_message_from_base64_data_url() -> None:
-    message = {
-        "images": [
-            {"image_url": {"url": "data:image/png;base64,QUJDRA=="}},
-        ]
-    }
-    result = _parse_openrouter_image_message(message)
-    assert result.data == b"ABCD"
+@pytest.mark.asyncio
+async def test_generate_blogger_cover_image_uses_flux_schnell() -> None:
+    from config import settings
+    from services.blogger_cover import generate_blogger_cover_image
+
+    with patch(
+        "services.replicate_client.call_replicate_model",
+        AsyncMock(return_value="https://cdn.example.com/cover.webp"),
+    ) as mock_replicate:
+        result = await generate_blogger_cover_image(settings, "A professional cinematic photo of desk")
+
+    assert result.url == "https://cdn.example.com/cover.webp"
+    mock_replicate.assert_awaited_once()
+    assert mock_replicate.await_args.args[0] == FLUX_SCHNELL_MODEL_ID
+    assert mock_replicate.await_args.args[1]["aspect_ratio"] == "16:9"
+
+
+@pytest.mark.asyncio
+async def test_generate_blogger_cover_image_with_face_runs_swap() -> None:
+    from config import settings
+    from services.blogger_cover import generate_blogger_cover_image
+
+    mock_bot = AsyncMock()
+    with (
+        patch(
+            "services.replicate_client.call_replicate_model",
+            AsyncMock(side_effect=["https://cdn.example.com/base.webp", "https://cdn.example.com/swapped.webp"]),
+        ) as mock_replicate,
+        patch(
+            "services.replicate_client.telegram_photo_download_url",
+            AsyncMock(return_value="https://api.telegram.org/file/bot/x/face.jpg"),
+        ),
+    ):
+        result = await generate_blogger_cover_image(
+            settings,
+            "A professional cinematic photo of desk",
+            face_file_id="face123",
+            bot=mock_bot,
+        )
+
+    assert result.url == "https://cdn.example.com/swapped.webp"
+    assert mock_replicate.await_count == 2
+    assert mock_replicate.await_args_list[1].args[1]["swap_image"] == "https://api.telegram.org/file/bot/x/face.jpg"
+
+
+def test_prepare_blogger_flux_prompt_with_face_adds_portrait_hint() -> None:
+    raw = "A professional cinematic photo of office desk, 4k --ar 16:9"
+    out = prepare_blogger_flux_prompt(raw, with_face=True)
+    assert "portrait photo of a person" in out.lower()
 
 
 @pytest.mark.asyncio
@@ -106,7 +146,6 @@ async def test_run_blogger_cover_turn_success() -> None:
     mock_image = GeminiImageResult(url="https://cdn.example.com/art.png")
 
     with (
-        patch("services.blogger_cover.clean_blogger_cover_prompt", AsyncMock(return_value="clean prompt")),
         patch("services.billing.blogger_pipeline.can_afford_blogger_cover", AsyncMock(return_value=True)),
         patch("services.billing.blogger_pipeline.spend_blogger_cover", mock_spend),
         patch(
@@ -119,7 +158,8 @@ async def test_run_blogger_cover_turn_success() -> None:
         result = await run_blogger_cover_turn(settings, user_id=100, draft=draft)
 
     assert result.outcome is BloggerCoverOutcome.SUCCESS
-    assert result.cleaned_prompt == "clean prompt"
+    assert result.cleaned_prompt is not None
+    assert "sunset" in result.cleaned_prompt.lower()
     assert result.image is not None
     assert result.image.url == "https://cdn.example.com/art.png"
 

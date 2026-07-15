@@ -17,6 +17,28 @@ _SECTION_ORDER: tuple[str, ...] = (
 
 _DISPLAY_SECTIONS: tuple[str, ...] = ("ХУКИ", "ТЕЛО ПОСТА", "ПРИЗЫВЫ К ДЕЙСТВИЮ")
 
+_BLOGGER_DISPLAY_LABELS: dict[str, str] = {
+    "ХУКИ": "💡 Варианты ярких заголовков:",
+    "ТЕЛО ПОСТА": "✍️ Текст поста:",
+    "ПРИЗЫВЫ К ДЕЙСТВИЮ": "📢 Варианты концовки (призыв к действию):",
+}
+
+_HEADER_ECHO_VALUES: frozenset[str] = frozenset(
+    {
+        "хуки",
+        "хук",
+        "тело поста",
+        "тело",
+        "призывы к действию",
+        "призыв к действию",
+        "cta",
+        "хэштеги",
+        "хештеги",
+        "промпт для картинки",
+        "промпт картинки",
+    }
+)
+
 _CANONICAL_SECTIONS: dict[str, str] = {
     "ХУКИ": "ХУКИ",
     "ТЕЛО ПОСТА": "ТЕЛО ПОСТА",
@@ -104,13 +126,66 @@ class BloggerPostParsed:
         return block
 
     def display_plain(self) -> str:
-        parts = [
-            block
-            for name in _DISPLAY_SECTIONS
-            if (block := (self.sections.get(name) or "").strip())
-            and block != MISSING_SECTION_PLACEHOLDER
-        ]
-        return "\n\n".join(parts)
+        return format_blogger_display_plain(self.sections)
+
+
+def _normalize_header_echo(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip().lower())
+
+
+def _is_header_echo(text: str) -> bool:
+    return _normalize_header_echo(text) in _HEADER_ECHO_VALUES
+
+
+def format_blogger_display_plain(sections: BloggerSections) -> str:
+    """Текст для пользователя: секции с подписями, без служебных блоков."""
+    blocks: list[str] = []
+    for name in _DISPLAY_SECTIONS:
+        block = (sections.get(name) or "").strip()
+        if not block or block == MISSING_SECTION_PLACEHOLDER:
+            continue
+        label = _BLOGGER_DISPLAY_LABELS.get(name, name)
+        blocks.append(f"{label}\n{block}")
+    return "\n\n".join(blocks)
+
+
+def format_blogger_display_html(sections: BloggerSections) -> str:
+    """Telegram HTML: жирные подписи секций + содержимое."""
+    blocks: list[str] = []
+    for name in _DISPLAY_SECTIONS:
+        block = (sections.get(name) or "").strip()
+        if not block or block == MISSING_SECTION_PLACEHOLDER:
+            continue
+        label = _BLOGGER_DISPLAY_LABELS.get(name, name)
+        blocks.append(f"<b>{label}</b>\n{block}")
+    return "\n\n".join(blocks)
+
+
+def is_blogger_response_degraded(sections: BloggerSections) -> bool:
+    """Пустой/скелетный ответ модели (только названия секций без контента)."""
+    hooks = (sections.get("ХУКИ") or "").strip()
+    body = (sections.get("ТЕЛО ПОСТА") or "").strip()
+    cta = (sections.get("ПРИЗЫВЫ К ДЕЙСТВИЮ") or "").strip()
+
+    if hooks == MISSING_SECTION_PLACEHOLDER and body == MISSING_SECTION_PLACEHOLDER:
+        return True
+
+    if _is_header_echo(hooks) and (
+        _is_header_echo(body) or body == MISSING_SECTION_PLACEHOLDER
+    ):
+        return True
+
+    display = format_blogger_display_plain(sections)
+    if len(display.strip()) < 80:
+        return True
+
+    if "[вариант" not in hooks.lower() and len(hooks) < 45 and len(body) < 80:
+        return True
+
+    if body != MISSING_SECTION_PLACEHOLDER and len(body) < 60 and cta == MISSING_SECTION_PLACEHOLDER:
+        return True
+
+    return False
 
 
 def repair_blogger_telegram_html(text: str) -> str:

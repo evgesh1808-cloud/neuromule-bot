@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 
 from services.billing.image_pipeline import build_image_spend_plan, normalize_image_model
@@ -38,12 +40,20 @@ def test_free_imagen_overlimit_charges_crystals() -> None:
     assert plan.crystal_cost == 2
 
 
-def test_free_flux_uses_pro_image_cost() -> None:
+def test_free_flux_uses_free_slot_under_daily_limit() -> None:
+    plan = build_image_spend_plan(TariffTier.FREE, "flux_schnell", daily_count=0, daily_date=None)
+    assert plan.use_free_daily_slot is True
+    assert plan.crystal_cost == 0
+
+
+def test_free_flux_overlimit_charges_pro_image_cost() -> None:
     from services.billing.pricing import FREE_PRO_IMAGE_COST
 
-    plan = build_image_spend_plan(TariffTier.FREE, "flux_schnell", daily_count=0, daily_date=None)
-    assert plan.crystal_cost == FREE_PRO_IMAGE_COST
+    today = date.today().isoformat()
+    plan = build_image_spend_plan(TariffTier.FREE, "flux_schnell", daily_count=3, daily_date=today)
+    assert plan.use_free_daily_slot is False
     assert plan.crystals_only is True
+    assert plan.crystal_cost == FREE_PRO_IMAGE_COST
 
 
 def test_paid_flux_energy_or_crystals() -> None:

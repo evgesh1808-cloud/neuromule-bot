@@ -185,7 +185,7 @@ def _hd_block(has_pro: bool, hd_type: str | None, hd_birth_data: str | None) -> 
 
 
 def _blogger_constructor_block(snapshot: BloggerResourcesSnapshot) -> str:
-    from services.billing.pricing_constants import BLOGGER_ADAPT_COST, BLOGGER_COVER_COST
+    from services.billing.pricing_constants import BLOGGER_ADAPT_COST
 
     return (
         "📱 <b>Конструктор «Блогер»</b>\n"
@@ -193,7 +193,7 @@ def _blogger_constructor_block(snapshot: BloggerResourcesSnapshot) -> str:
         f"• <b>Энергия:</b> <code>{snapshot.energy}</code> / {snapshot.energy_max} ⚡\n"
         f"• <b>Алмазы:</b> <code>{snapshot.diamonds}</code> 💎\n"
         f"• <b>Адаптация поста:</b> {BLOGGER_ADAPT_COST} 💎 за площадку\n"
-        f"• <b>AI-обложка:</b> {BLOGGER_COVER_COST} 💎 за генерацию"
+        "• <b>AI-обложка:</b> Flux Schnell — как в меню «🎨 Фото» (FREE: до 3/день)"
     )
 
 

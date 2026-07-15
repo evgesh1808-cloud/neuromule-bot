@@ -129,7 +129,8 @@ async def optimize_image_prompt_for_imagen(settings: Settings, raw: str) -> str:
 
 
 async def prepare_blogger_cover_prompt(settings: Settings, raw: str) -> str:
-    """Финальный промпт для Imagen 4: regex-очистка + LLM-оптимизатор."""
-    from services.blogger_cover import clean_blogger_cover_prompt
+    """Финальный английский промпт Flux Schnell для обложки блогера (без LLM)."""
+    from services.blogger_cover import prepare_blogger_flux_prompt
 
-    return await clean_blogger_cover_prompt(settings, raw)
+    _ = settings
+    return prepare_blogger_flux_prompt(raw)

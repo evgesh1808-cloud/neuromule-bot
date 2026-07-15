@@ -48,6 +48,5 @@ COST_CUSTOM_VIDEO = _v.custom_video
 COST_HD_FULL = catalog.hd_full_report_cost
 COST_HD_MATCH = catalog.hd_match_cost
 
-# --- Блогер: мультиформатная адаптация и AI-обложка ---
+# --- Блогер: мультиформатная адаптация (обложка — через Flux Schnell / image_pipeline) ---
 BLOGGER_ADAPT_COST = 3
-BLOGGER_COVER_COST = 4

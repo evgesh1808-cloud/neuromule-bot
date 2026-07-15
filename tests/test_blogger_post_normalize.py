@@ -6,6 +6,8 @@ from services.blogger_image_prompt import sanitize_blogger_image_prompt_for_imag
 from services.blogger_post_parser import (
     MISSING_SECTION_PLACEHOLDER,
     BloggerPostParsed,
+    format_blogger_display_html,
+    is_blogger_response_degraded,
     normalize_blogger_raw_output,
     parse_blogger_post,
     reassemble_blogger_sections,
@@ -231,3 +233,21 @@ def test_imagen4_optimizer_system_prompt_contains_core_rules() -> None:
     assert "representing" in low
     assert "concept of" in low
     assert "single line" in low or "one line" in low
+
+
+def test_is_blogger_response_degraded_detects_header_echo() -> None:
+    sections = normalize_blogger_raw_output("===ХУКИ===\nХуки\n\n===ТЕЛО ПОСТА===\nтело поста")
+    assert is_blogger_response_degraded(sections) is True
+
+
+def test_is_blogger_response_degraded_accepts_full_post() -> None:
+    sections = normalize_blogger_raw_output(_FLAT_DOG_POST)
+    assert is_blogger_response_degraded(sections) is False
+
+
+def test_format_blogger_display_html_includes_section_labels() -> None:
+    sections = normalize_blogger_raw_output(_FLAT_DOG_POST)
+    html = format_blogger_display_html(sections)
+    assert "<b>💡 Варианты ярких заголовков:</b>" in html
+    assert "<b>✍️ Текст поста:</b>" in html
+    assert "Адреналин" in html

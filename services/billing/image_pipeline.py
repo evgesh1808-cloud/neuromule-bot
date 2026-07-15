@@ -59,14 +59,22 @@ def build_image_spend_plan(
                 crystals_only=True,
                 use_free_daily_slot=False,
             )
-        # flux_schnell на FREE — только buy_crystals
-        return ImageSpendPlan(
-            model_key=model_key,
-            energy_cost=0,
-            crystal_cost=FREE_PRO_IMAGE_COST,
-            crystals_only=True,
-            use_free_daily_slot=False,
-        )
+        if model_key == "flux_schnell":
+            if count < FREE_IMAGEN_DAILY_LIMIT:
+                return ImageSpendPlan(
+                    model_key=model_key,
+                    energy_cost=0,
+                    crystal_cost=0,
+                    crystals_only=False,
+                    use_free_daily_slot=True,
+                )
+            return ImageSpendPlan(
+                model_key=model_key,
+                energy_cost=0,
+                crystal_cost=FREE_PRO_IMAGE_COST,
+                crystals_only=True,
+                use_free_daily_slot=False,
+            )
 
     matrix = PAID_IMAGE_MATRIX.get(model_key)
     if not matrix:
@@ -122,6 +130,19 @@ async def spend_image_resource(user_id: int, model_name: str) -> SpendResult:
                 SpendFeature.IMAGE.value,
                 energy_need=0,
                 crystal_need=FREE_IMAGEN_OVERLIMIT_COST,
+                crystals_only=True,
+                reserve_photo_slot=False,
+                photo_daily_limit=FREE_IMAGEN_DAILY_LIMIT,
+            )
+            if charge:
+                return SpendResult(ok=True, charge=charge)
+            return SpendResult(ok=False, error="insufficient_balance")
+        if user.current_tariff is TariffTier.FREE and model_key == "flux_schnell":
+            charge = await store.atomic_spend(
+                user_id,
+                SpendFeature.IMAGE.value,
+                energy_need=0,
+                crystal_need=FREE_PRO_IMAGE_COST,
                 crystals_only=True,
                 reserve_photo_slot=False,
                 photo_daily_limit=FREE_IMAGEN_DAILY_LIMIT,

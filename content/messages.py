@@ -21,6 +21,8 @@ CB_BLOG_HASH_PREFIX = "blog_hash:"      # blog_hash:<post_id>
 CB_BLOG_ADAPT_PREFIX = "blog_adapt:"    # blog_adapt:<post_id>
 CB_BLOG_ART_PREFIX = "blog_art:"        # legacy: blog_art:<post_id>
 CB_BLOGGER_COVER_PREFIX = "blogger_cover:"  # blogger_cover:<post_id>
+CB_BLOGGER_COVER_UPLOAD_FACE_PREFIX = "blog_cover_face:"  # blog_cover_face:<post_id>
+CB_BLOGGER_COVER_NO_FACE_PREFIX = "blog_cover_noface:"  # blog_cover_noface:<post_id>
 CB_BLOG_RUN_ADAPT_PREFIX = "blog_run_adapt:"  # legacy: blog_run_adapt:<post_id>:<platform>
 
 CB_ADAPT_TARGET_PREFIX = "adapt_target:"  # adapt_target:<video|vc|vk|tg_max>
@@ -1324,7 +1326,16 @@ TXT_BLOGGER_UPSELL_SOON = (
 TXT_BLOGGER_GENERATE_FIRST = "Сначала сгенерируйте пост!"
 TXT_BLOGGER_HASHTAGS_ADDED = "Хэштеги добавлены к посту! ✨"
 TXT_BLOGGER_IMAGE_PROMPT_NOT_FOUND = "❌ Исходный промпт не найден"
-TXT_BLOGGER_COVER_GENERATING = "🎨 Генерирую обложку для вашего поста..."
+TXT_BLOGGER_COVER_FACE_CHOICE = (
+    "Вы можете отправить мне фото лица (анфас, хорошее освещение), чтобы я сгенерировал "
+    "обложку с вами. Либо нажмите кнопку ниже, чтобы создать стандартную картинку по сюжету поста."
+)
+TXT_BLOGGER_COVER_UPLOAD_FACE_HINT = (
+    "📸 Отправьте <b>одно фото лица</b> (анфас, хорошее освещение) — после загрузки "
+    "сразу запущу генерацию обложки с вами."
+)
+TXT_BLOGGER_COVER_FACE_SAVED = "✅ Фото лица сохранено. Генерирую обложку..."
+TXT_BLOGGER_COVER_GENERATING = "🎨 Генерирую обложку (Flux Schnell)..."
 TXT_BLOGGER_COVER_READY = (
     "🖼 <b>Обложка для вашего поста готова!</b>\n\n"
     "Промпт: <code>{prompt}</code>"
@@ -1340,7 +1351,8 @@ TXT_BLOGGER_ADAPT_INSUFFICIENT = (
     "❌ Недостаточно алмазов для адаптации. Требуется 3💎"
 )
 TXT_BLOGGER_COVER_INSUFFICIENT = (
-    "❌ Недостаточно алмазов для создания AI-обложки. Требуется 4💎"
+    "❌ Недостаточно ⚡ или 💎 для обложки Flux Schnell. "
+    "На FREE — до 3 бесплатных фото в день, далее 3 💎."
 )
 TXT_BLOGGER_ADAPT_QUEUED = "💎 Списано 3 кристалла. Gemini адаптирует текст..."
 TXT_BLOGGER_ADAPT_BODY_MISSING = "❌ Сначала сгенерируйте пост!"
