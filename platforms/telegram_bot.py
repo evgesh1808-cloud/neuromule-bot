@@ -196,6 +196,10 @@ async def run_telegram() -> None:
     # Контролируемый CPython GC: gen0→sleep(0)→gen1→sleep(0)→gen2 раз в 10 мин.
     # gc.collect идёт через run_in_executor → event loop не блокируется.
     _asyncio.create_task(controlled_gc_loop())
+    # Очередь AI-обложек блогера (OpenRouter Images) — один воркер, rate-limit 2с.
+    from services.blogger_cover import start_cover_queue_worker
+
+    await start_cover_queue_worker()
     # Observability sidecar (PR-K). Поднимается ТОЛЬКО если METRICS_HTTP_PORT>0
     # в .env. Bind строго на 127.0.0.1 — наружу выставляется через reverse-proxy.
     _metrics_port = int(getattr(settings, "metrics_http_port", 0) or 0)

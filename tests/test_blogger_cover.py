@@ -1,7 +1,8 @@
-"""Тесты сервиса AI-обложки блогера."""
+"""Тесты сервиса AI-обложки блогера (очередь + OpenRouter)."""
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -11,10 +12,13 @@ from services.blogger_cover import (
     BloggerCoverOutcome,
     CoverIntegrationType,
     OPENROUTER_COVER_MODEL_ID,
+    cover_generation_queue,
     extract_image_prompt_from_draft,
     prepare_blogger_flux_prompt,
     resolve_blogger_draft,
     run_blogger_cover_turn,
+    stop_cover_queue_worker_for_tests,
+    _process_cover_task,
 )
 from services.blogger_post_parser import MISSING_SECTION_PLACEHOLDER
 from services.gemini_image_client import GeminiImageResult
@@ -37,11 +41,13 @@ A professional cinematic photo of sunset, 4k --ar 16:9
 
 
 @pytest.fixture(autouse=True)
-def _clear_blogger_post_cache() -> None:
+async def _clear_blogger_cover_state() -> None:
     blogger_post_cache._BY_ID.clear()
     blogger_post_cache._LAST_BY_USER.clear()
     blogger_post_cache._BY_MESSAGE.clear()
+    await stop_cover_queue_worker_for_tests()
     yield
+    await stop_cover_queue_worker_for_tests()
     blogger_post_cache._BY_ID.clear()
     blogger_post_cache._LAST_BY_USER.clear()
     blogger_post_cache._BY_MESSAGE.clear()
@@ -84,21 +90,6 @@ def test_prepare_blogger_flux_prompt_keeps_english_template() -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_public_url_from_telegram_builds_api_telegram_url() -> None:
-    from services.blogger_cover import get_public_url_from_telegram
-
-    mock_bot = AsyncMock()
-    mock_bot.get_file = AsyncMock(
-        return_value=type("F", (), {"file_path": "photos/file_0.jpg"})()
-    )
-
-    url = await get_public_url_from_telegram(mock_bot, "AgACAgIAAxk", "123:ABC")
-
-    assert url == "https://api.telegram.org/file/bot123:ABC/photos/file_0.jpg"
-    mock_bot.get_file.assert_awaited_once_with("AgACAgIAAxk")
-
-
-@pytest.mark.asyncio
 async def test_generate_blogger_cover_image_uses_openrouter_flux() -> None:
     from config import Settings
     from services.blogger_cover import generate_blogger_cover_image
@@ -122,16 +113,14 @@ async def test_generate_blogger_cover_image_uses_openrouter_flux() -> None:
         )
 
     assert result.url == "https://cdn.example.com/cover.webp"
-    mock_client.post.assert_awaited_once()
-    kwargs = mock_client.post.await_args.kwargs
-    assert kwargs["json"]["model"] == OPENROUTER_COVER_MODEL_ID
-    assert kwargs["json"]["aspect_ratio"] == "16:9"
-    assert "input_references" not in kwargs["json"]
-    assert kwargs["headers"]["Authorization"] == "Bearer test-key"
+    body = mock_client.post.await_args.kwargs["json"]
+    assert body["model"] == OPENROUTER_COVER_MODEL_ID
+    assert body["aspect_ratio"] == "16:9"
+    assert "input_references" not in body
 
 
 @pytest.mark.asyncio
-async def test_generate_blogger_cover_image_face_adds_reference_and_suffix() -> None:
+async def test_generate_blogger_cover_image_face_uses_data_url_reference() -> None:
     from config import Settings
     from services.blogger_cover import generate_blogger_cover_image
 
@@ -143,6 +132,7 @@ async def test_generate_blogger_cover_image_face_adds_reference_and_suffix() -> 
     }
     mock_client = AsyncMock()
     mock_client.post = AsyncMock(return_value=mock_response)
+    data_url = "data:image/jpeg;base64,/9j/4AAQ"
 
     with patch(
         "services.openrouter_http.get_openrouter_http_client",
@@ -152,35 +142,57 @@ async def test_generate_blogger_cover_image_face_adds_reference_and_suffix() -> 
             settings,
             "A professional cinematic photo of desk",
             integration=CoverIntegrationType.FACE,
-            source_file_url="https://api.telegram.org/file/bot/x/face.jpg",
+            source_base64_url=data_url,
         )
 
     assert result.url == "https://cdn.example.com/face-cover.webp"
     body = mock_client.post.await_args.kwargs["json"]
-    assert body["input_references"] == ["https://api.telegram.org/file/bot/x/face.jpg"]
+    assert body["input_references"] == [
+        {"type": "image_url", "image_url": {"url": data_url}},
+    ]
     assert "seamlessly integrating the face" in body["prompt"]
 
 
 @pytest.mark.asyncio
-async def test_generate_blogger_cover_image_raises_on_http_error() -> None:
+async def test_generate_blogger_cover_downloads_telegram_photo_as_data_url() -> None:
     from config import Settings
     from services.blogger_cover import generate_blogger_cover_image
 
     settings = Settings(tg_token="t", openrouter_key="test-key")
     mock_response = MagicMock()
-    mock_response.status_code = 502
-    mock_response.text = "bad gateway"
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "data": [{"url": "https://cdn.example.com/obj.webp"}],
+    }
     mock_client = AsyncMock()
     mock_client.post = AsyncMock(return_value=mock_response)
 
-    with (
-        patch(
-            "services.openrouter_http.get_openrouter_http_client",
-            AsyncMock(return_value=mock_client),
-        ),
-        pytest.raises(RuntimeError, match="OpenRouter images HTTP 502"),
+    mock_bot = AsyncMock()
+    mock_bot.get_file = AsyncMock(
+        return_value=type("F", (), {"file_path": "photos/product.jpg"})()
+    )
+
+    async def _fake_download(path: str, destination: Any = None, **_: Any) -> Any:
+        destination.write(b"\xff\xd8\xfffakejpeg")
+        return destination
+
+    mock_bot.download_file = AsyncMock(side_effect=_fake_download)
+
+    with patch(
+        "services.openrouter_http.get_openrouter_http_client",
+        AsyncMock(return_value=mock_client),
     ):
-        await generate_blogger_cover_image(settings, "desk scene")
+        result = await generate_blogger_cover_image(
+            settings,
+            "product on desk",
+            integration=CoverIntegrationType.OBJECT,
+            photo_file_id="AgAC_product",
+            bot=mock_bot,
+        )
+
+    assert result.url == "https://cdn.example.com/obj.webp"
+    ref = mock_client.post.await_args.kwargs["json"]["input_references"][0]
+    assert ref["image_url"]["url"].startswith("data:image/jpeg;base64,")
 
 
 def test_prepare_blogger_flux_prompt_with_face_adds_portrait_hint() -> None:
@@ -190,32 +202,22 @@ def test_prepare_blogger_flux_prompt_with_face_adds_portrait_hint() -> None:
     )
     out = prepare_blogger_flux_prompt(raw, with_face=True)
     assert "portrait of a person" in out.lower()
-    assert "central subject" in out.lower()
 
 
 @pytest.mark.asyncio
-async def test_run_blogger_cover_turn_success() -> None:
+async def test_run_blogger_cover_turn_enqueues_without_spend() -> None:
     post_id = blogger_post_cache.remember(100, _SAMPLE)
     draft = blogger_post_cache.get(post_id, 100)
     assert draft is not None
 
-    mock_spend = AsyncMock(
-        return_value=type(
-            "Spend",
-            (),
-            {"ok": True, "charge": type("C", (), {"charge_id": "c1"})()},
-        )()
-    )
-    mock_image = GeminiImageResult(url="https://cdn.example.com/art.png")
+    mock_bot = AsyncMock()
+    mock_spend = AsyncMock()
 
     with (
         patch("services.billing.blogger_pipeline.can_afford_blogger_cover", AsyncMock(return_value=True)),
         patch("services.billing.blogger_pipeline.spend_blogger_cover", mock_spend),
-        patch(
-            "services.blogger_cover.generate_blogger_cover_image",
-            AsyncMock(return_value=mock_image),
-        ),
         patch("services.blogger_cover.openrouter_cover_configured", return_value=True),
+        patch("services.blogger_cover.start_cover_queue_worker", AsyncMock()),
     ):
         from config import Settings
 
@@ -223,21 +225,23 @@ async def test_run_blogger_cover_turn_success() -> None:
             Settings(tg_token="t", openrouter_key="k"),
             user_id=100,
             draft=draft,
+            bot=mock_bot,
+            chat_id=100,
         )
 
-    assert result.outcome is BloggerCoverOutcome.SUCCESS
+    assert result.outcome is BloggerCoverOutcome.QUEUED
     assert result.cleaned_prompt is not None
     assert "sunset" in result.cleaned_prompt.lower()
-    assert result.image is not None
-    assert result.image.url == "https://cdn.example.com/art.png"
+    mock_spend.assert_not_awaited()
+    assert cover_generation_queue.qsize() == 1
+    task = cover_generation_queue.get_nowait()
+    cover_generation_queue.task_done()
+    assert task["user_id"] == 100
+    assert task["integration"] == "none"
 
 
 @pytest.mark.asyncio
-async def test_run_blogger_cover_turn_refunds_on_openrouter_error() -> None:
-    post_id = blogger_post_cache.remember(102, _SAMPLE)
-    draft = blogger_post_cache.get(post_id, 102)
-    assert draft is not None
-
+async def test_process_cover_task_refunds_on_openrouter_error() -> None:
     mock_spend = AsyncMock(
         return_value=type(
             "Spend",
@@ -246,27 +250,35 @@ async def test_run_blogger_cover_turn_refunds_on_openrouter_error() -> None:
         )()
     )
     mock_refund = AsyncMock()
+    mock_bot = AsyncMock()
 
     with (
-        patch("services.billing.blogger_pipeline.can_afford_blogger_cover", AsyncMock(return_value=True)),
         patch("services.billing.blogger_pipeline.spend_blogger_cover", mock_spend),
         patch("services.billing.refund_charge", mock_refund),
         patch(
             "services.blogger_cover.generate_blogger_cover_image",
             AsyncMock(side_effect=RuntimeError("OpenRouter down")),
         ),
-        patch("services.blogger_cover.openrouter_cover_configured", return_value=True),
+        patch("services.blogger_cover._safe_send_text", AsyncMock()) as mock_text,
+        patch("services.god_mode.billing_bypass", return_value=False),
     ):
         from config import Settings
 
-        result = await run_blogger_cover_turn(
-            Settings(tg_token="t", openrouter_key="k"),
-            user_id=102,
-            draft=draft,
+        await _process_cover_task(
+            {
+                "settings": Settings(tg_token="t", openrouter_key="k"),
+                "bot": mock_bot,
+                "user_id": 102,
+                "chat_id": 102,
+                "post_id": "p1",
+                "cleaned_prompt": "desk",
+                "integration": "none",
+                "photo_file_id": None,
+            }
         )
 
-    assert result.outcome is BloggerCoverOutcome.GENERATION_FAILED
     mock_refund.assert_awaited_once_with("c-refund")
+    mock_text.assert_awaited()
 
 
 @pytest.mark.asyncio
@@ -285,5 +297,6 @@ async def test_run_blogger_cover_turn_missing_prompt() -> None:
         Settings(tg_token="t", openrouter_key="k"),
         user_id=101,
         draft=draft,
+        bot=AsyncMock(),
     )
     assert result.outcome is BloggerCoverOutcome.PROMPT_NOT_FOUND

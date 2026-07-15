@@ -626,6 +626,7 @@ async def blogger_face_photo_upload(message: Message, state: FSMContext) -> None
         draft=draft,
         use_face=True,
         bot=message.bot,
+        chat_id=message.chat.id,
     )
     await deliver_blogger_cover_turn_result(message, result, draft=draft)
 
