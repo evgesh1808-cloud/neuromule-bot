@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from aiogram.enums import ParseMode
 
 from content import messages as msg
 from content.inline_keyboards import (
@@ -172,6 +173,71 @@ async def test_cb_blogger_cover_generate_face_asks_upload_when_missing() -> None
 
 
 @pytest.mark.asyncio
+async def test_cb_blogger_cover_generate_face_shows_reuse_keyboard_when_saved() -> None:
+    from platforms.blogger_flow import cb_blogger_cover_generate
+
+    post_id = blogger_post_cache.remember(513, _SAMPLE)
+    callback = MagicMock()
+    callback.from_user.id = 513
+    callback.data = f"{msg.CB_COVER_GENERATE_PREFIX}face:{post_id}"
+    callback.message.chat.id = 13
+    callback.message.message_id = 22
+    callback.message.edit_reply_markup = AsyncMock()
+    callback.message.answer = AsyncMock()
+    callback.answer = AsyncMock()
+    state = MagicMock()
+    state.set_state = AsyncMock()
+
+    with (
+        patch("platforms.blogger_flow.has_blogger_face_photo", AsyncMock(return_value=True)),
+        patch(
+            "platforms.blogger_flow.handle_blogger_cover_callback",
+            AsyncMock(),
+        ) as mock_handle,
+    ):
+        await cb_blogger_cover_generate(callback, state)
+
+    mock_handle.assert_not_awaited()
+    state.set_state.assert_not_awaited()
+    callback.message.edit_reply_markup.assert_awaited_once()
+    markup = callback.message.edit_reply_markup.await_args.kwargs["reply_markup"]
+    flat = [btn for row in markup.inline_keyboard for btn in row]
+    assert any(btn.callback_data == f"{msg.CB_BLOGGER_FACE_USE_PREFIX}{post_id}" for btn in flat)
+    assert any(btn.callback_data == f"{msg.CB_BLOGGER_FACE_NEW_PREFIX}{post_id}" for btn in flat)
+
+
+@pytest.mark.asyncio
+async def test_cb_blogger_face_upload_new_clears_file_id_and_sets_fsm() -> None:
+    from platforms.blogger_flow import cb_blogger_face_upload_new
+    from platforms.telegram_states import BloggerFlowStates
+
+    post_id = blogger_post_cache.remember(514, _SAMPLE)
+    callback = MagicMock()
+    callback.from_user.id = 514
+    callback.data = f"{msg.CB_BLOGGER_FACE_NEW_PREFIX}{post_id}"
+    callback.message.chat.id = 14
+    callback.message.message_id = 23
+    callback.message.answer = AsyncMock()
+    callback.answer = AsyncMock()
+    state = MagicMock()
+    state.set_state = AsyncMock()
+    state.update_data = AsyncMock()
+
+    with patch(
+        "platforms.blogger_flow.set_blogger_face_file_id",
+        AsyncMock(),
+    ) as mock_clear:
+        await cb_blogger_face_upload_new(callback, state)
+
+    mock_clear.assert_awaited_once_with(514, "")
+    state.set_state.assert_awaited_once_with(BloggerFlowStates.waiting_for_face_photo)
+    callback.message.answer.assert_awaited_once_with(
+        msg.TXT_BLOGGER_COVER_UPLOAD_FACE_HINT,
+        parse_mode=ParseMode.HTML,
+    )
+
+
+@pytest.mark.asyncio
 async def test_process_object_cover_click_sets_fsm_and_asks_photo() -> None:
     from platforms.blogger_flow import process_object_cover_click
     from platforms.telegram_states import BloggerFlowStates
@@ -203,8 +269,10 @@ async def test_capture_product_photo_runs_generation() -> None:
     post_id = blogger_post_cache.remember(505, _SAMPLE)
     message = MagicMock()
     message.from_user.id = 505
+    message.chat.id = 505
     message.photo = [MagicMock(file_id="small"), MagicMock(file_id="AgACAgIAlarge")]
     message.answer = AsyncMock()
+    message.bot.send_chat_action = AsyncMock()
     state = MagicMock()
     state.get_data = AsyncMock(return_value={"current_post_id": post_id})
     state.clear = AsyncMock()
@@ -216,7 +284,8 @@ async def test_capture_product_photo_runs_generation() -> None:
         await capture_product_photo(message, state)
 
     state.clear.assert_awaited_once()
-    message.answer.assert_awaited_once_with(msg.TXT_BLOGGER_COVER_OBJECT_SAVED)
+    message.bot.send_chat_action.assert_awaited_once()
+    message.answer.assert_not_awaited()
     mock_gen.assert_awaited_once()
     assert mock_gen.await_args.kwargs["photo_file_id"] == "AgACAgIAlarge"
     assert mock_gen.await_args.kwargs["post_id"] == post_id

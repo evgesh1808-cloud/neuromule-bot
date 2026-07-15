@@ -211,6 +211,7 @@ async def test_run_blogger_cover_turn_enqueues_without_spend() -> None:
     assert draft is not None
 
     mock_bot = AsyncMock()
+    mock_bot.send_message = AsyncMock(return_value=MagicMock(message_id=4242))
     mock_spend = AsyncMock()
 
     with (
@@ -233,11 +234,13 @@ async def test_run_blogger_cover_turn_enqueues_without_spend() -> None:
     assert result.cleaned_prompt is not None
     assert "sunset" in result.cleaned_prompt.lower()
     mock_spend.assert_not_awaited()
+    mock_bot.send_message.assert_awaited_once()
     assert cover_generation_queue.qsize() == 1
     task = cover_generation_queue.get_nowait()
     cover_generation_queue.task_done()
     assert task["user_id"] == 100
     assert task["integration"] == "none"
+    assert task["status_message_id"] == 4242
 
 
 @pytest.mark.asyncio
@@ -274,11 +277,52 @@ async def test_process_cover_task_refunds_on_openrouter_error() -> None:
                 "cleaned_prompt": "desk",
                 "integration": "none",
                 "photo_file_id": None,
+                "status_message_id": 77,
             }
         )
 
     mock_refund.assert_awaited_once_with("c-refund")
     mock_text.assert_awaited()
+    mock_bot.delete_message.assert_awaited_once_with(chat_id=102, message_id=77)
+
+
+@pytest.mark.asyncio
+async def test_process_cover_task_deletes_status_on_success() -> None:
+    mock_spend = AsyncMock(
+        return_value=type(
+            "Spend",
+            (),
+            {"ok": True, "charge": type("C", (), {"charge_id": "c-ok"})()},
+        )()
+    )
+    mock_bot = AsyncMock()
+
+    with (
+        patch("services.billing.blogger_pipeline.spend_blogger_cover", mock_spend),
+        patch(
+            "services.blogger_cover.generate_blogger_cover_image",
+            AsyncMock(return_value=GeminiImageResult(data=b"webp")),
+        ),
+        patch("services.blogger_cover._safe_send_cover_photo", AsyncMock()),
+        patch("services.god_mode.billing_bypass", return_value=False),
+    ):
+        from config import Settings
+
+        await _process_cover_task(
+            {
+                "settings": Settings(tg_token="t", openrouter_key="k"),
+                "bot": mock_bot,
+                "user_id": 103,
+                "chat_id": 103,
+                "post_id": "p2",
+                "cleaned_prompt": "desk",
+                "integration": "none",
+                "photo_file_id": None,
+                "status_message_id": 88,
+            }
+        )
+
+    mock_bot.delete_message.assert_awaited_once_with(chat_id=103, message_id=88)
 
 
 @pytest.mark.asyncio

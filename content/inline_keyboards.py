@@ -179,6 +179,33 @@ def get_blogger_cover_options_keyboard(post_id: str) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+def get_blogger_cover_face_reuse_keyboard(post_id: str) -> InlineKeyboardMarkup:
+    """Выбор: сохранённое фото лица или загрузка нового."""
+    pid = (post_id or "").strip()
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=msg.BTN_BLOGGER_FACE_USE_SAVED,
+                    callback_data=f"{msg.CB_BLOGGER_FACE_USE_PREFIX}{pid}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=msg.BTN_BLOGGER_FACE_UPLOAD_NEW,
+                    callback_data=f"{msg.CB_BLOGGER_FACE_NEW_PREFIX}{pid}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=msg.BTN_BLOGGER_COVER_BACK,
+                    callback_data=f"{msg.CB_BLOG_BACK_PREFIX}{pid}",
+                )
+            ],
+        ]
+    )
+
+
 def get_blogger_cover_face_keyboard(post_id: str) -> InlineKeyboardMarkup:
     """Legacy: загрузить фото лица или сгенерировать обложку без лица."""
     return InlineKeyboardMarkup(

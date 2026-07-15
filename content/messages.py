@@ -24,6 +24,10 @@ CB_BLOG_ART_PREFIX = "blog_art:"        # legacy: blog_art:<post_id>
 CB_BLOGGER_COVER_PREFIX = "blogger_cover:"  # blogger_cover:<post_id>
 CB_BLOGGER_COVER_UPLOAD_FACE_PREFIX = "blog_cover_face:"  # blog_cover_face:<post_id>
 CB_BLOGGER_COVER_NO_FACE_PREFIX = "blog_cover_noface:"  # blog_cover_noface:<post_id>
+CB_BLOGGER_FACE_USE_PREFIX = "blog_face_use:"  # blog_face_use:<post_id> — сохранённое фото
+CB_BLOGGER_FACE_NEW_PREFIX = "blog_face_new:"  # blog_face_new:<post_id> — загрузить новое
+BTN_BLOGGER_FACE_USE_SAVED = "✅ Использовать сохранённое фото"
+BTN_BLOGGER_FACE_UPLOAD_NEW = "📸 Загрузить новое фото"
 CB_COVER_GENERATE_PREFIX = "cover_generate:"  # cover_generate:<none|face|object>:<post_id>
 COVER_MODE_NONE = "none"
 COVER_MODE_FACE = "face"
@@ -1370,8 +1374,8 @@ TXT_BLOGGER_CITY_EMPTY = (
 TXT_BLOGGER_IMAGE_PROMPT_NOT_FOUND = "❌ Исходный промпт не найден"
 TXT_BLOGGER_COVER_OPTIONS = "Выберите формат AI-обложки 👇"
 TXT_BLOGGER_COVER_FACE_CHOICE = (
-    "Вы можете отправить мне фото лица (анфас, хорошее освещение), чтобы я сгенерировал "
-    "обложку с вами. Либо нажмите кнопку ниже, чтобы создать стандартную картинку по сюжету поста."
+    "👤 У вас уже есть сохранённое фото лица.\n"
+    "Использовать его для обложки или загрузить новое?"
 )
 TXT_BLOGGER_COVER_UPLOAD_FACE_HINT = (
     "📸 Отправьте <b>одно фото лица</b> (анфас, хорошее освещение) — после загрузки "
@@ -1383,10 +1387,6 @@ TXT_BLOGGER_COVER_UPLOAD_OBJECT_HINT = (
     "или контрастном фоне."
 )
 TXT_BLOGGER_COVER_FACE_SAVED = "✅ Фото лица сохранено."
-TXT_BLOGGER_COVER_OBJECT_SAVED = (
-    "⏳ Фотография получена. Запускаю генерацию обложки с вашим продуктом "
-    "через OpenRouter..."
-)
 TXT_BLOGGER_COVER_PRODUCT_PHOTO_FALLBACK = (
     "⚠️ Ошибка. Пожалуйста, отправьте именно ФОТОГРАФИЮ вашего продукта. "
     "Если вы хотите отменить генерацию, нажмите /cancel или вернитесь назад к посту."
@@ -1394,14 +1394,13 @@ TXT_BLOGGER_COVER_PRODUCT_PHOTO_FALLBACK = (
 TXT_BLOGGER_COVER_PRODUCT_CANCELLED = "✅ Генерация обложки с продуктом отменена."
 TXT_BLOGGER_COVER_GENERATING = "🎨 Генерирую обложку через OpenRouter (Flux)..."
 TXT_BLOGGER_COVER_QUEUED = (
-    "⏳ Ваш запрос принят. Подготавливаем уникальную AI-обложку, "
-    "это займет примерно 1–3 минуты. Бот пришлет готовый результат сразу "
-    "по мере генерации, пожалуйста, подождите..."
+    "⏳ <b>Запрос принят.</b> Подготавливаем уникальную AI-обложку (1–3 минуты). "
+    "Пожалуйста, подождите, бот пришлёт результат сразу по готовности."
 )
 TXT_BLOGGER_COVER_READY = (
     "🎨 <b>Ваша AI-обложка готова!</b>\n\n"
     "📋 <i>Нажмите на текст ниже, чтобы скопировать английский промпт "
-    "для повторной генерации:</i>\n"
+    "для повторной генерации:</i>\n\n"
     "<code>{prompt}</code>"
 )
 TXT_BLOGGER_COVER_FAILED = (

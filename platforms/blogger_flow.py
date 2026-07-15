@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 
 from aiogram import F, Router
-from aiogram.enums import ParseMode
+from aiogram.enums import ChatAction, ParseMode
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -15,6 +15,7 @@ from config import settings
 from content import messages as msg
 from content.inline_keyboards import (
     get_blogger_adapt_keyboard,
+    get_blogger_cover_face_reuse_keyboard,
     get_blogger_cover_options_keyboard,
     get_blogger_keyboard,
 )
@@ -523,9 +524,19 @@ async def cb_blogger_cover_generate(callback: CallbackQuery, state: FSMContext) 
         return
 
     if mode == msg.COVER_MODE_FACE:
+        # Даже при сохранённом фото — не стартуем генерацию сразу: даём выбор.
         if await has_blogger_face_photo(user_id):
-            await _start_blogger_cover_generation(callback, draft, use_face=True)
+            markup = get_blogger_cover_face_reuse_keyboard(draft.post_id)
+            try:
+                await callback.message.edit_reply_markup(reply_markup=markup)
+            except TelegramBadRequest:
+                await callback.message.answer(
+                    msg.TXT_BLOGGER_COVER_FACE_CHOICE,
+                    reply_markup=markup,
+                )
+            await callback.answer()
             return
+
         await state.set_state(BloggerFlowStates.waiting_for_face_photo)
         await state.update_data(
             current_post_id=draft.post_id,
@@ -539,21 +550,24 @@ async def cb_blogger_cover_generate(callback: CallbackQuery, state: FSMContext) 
         return
 
 
-@router.callback_query(F.data.startswith(msg.CB_BLOGGER_COVER_UPLOAD_FACE_PREFIX))
-async def cb_blogger_cover_upload_face(callback: CallbackQuery, state: FSMContext) -> None:
-    """Legacy «📸 Загрузить фото» — ожидание снимка лица."""
+async def _enter_face_photo_upload(
+    callback: CallbackQuery,
+    state: FSMContext,
+    *,
+    post_id: str,
+    clear_saved: bool,
+) -> None:
+    """FSM ожидания фото лица; при ``clear_saved`` сбрасывает старый file_id."""
     if callback.from_user is None or callback.message is None:
-        await callback.answer()
-        return
-
-    post_id = _post_id_from_callback(callback.data or "", msg.CB_BLOGGER_COVER_UPLOAD_FACE_PREFIX)
-    if not post_id:
         await callback.answer()
         return
 
     draft = await _resolve_cover_draft(callback, post_id)
     if draft is None:
         return
+
+    if clear_saved:
+        await set_blogger_face_file_id(callback.from_user.id, "")
 
     await state.set_state(BloggerFlowStates.waiting_for_face_photo)
     await state.update_data(
@@ -565,6 +579,49 @@ async def cb_blogger_cover_upload_face(callback: CallbackQuery, state: FSMContex
         msg.TXT_BLOGGER_COVER_UPLOAD_FACE_HINT,
         parse_mode=ParseMode.HTML,
     )
+
+
+@router.callback_query(F.data.startswith(msg.CB_BLOGGER_FACE_USE_PREFIX))
+async def cb_blogger_face_use_saved(callback: CallbackQuery) -> None:
+    """«Использовать сохранённое фото» → генерация с FACE."""
+    if callback.from_user is None or callback.message is None:
+        await callback.answer()
+        return
+
+    post_id = _post_id_from_callback(callback.data or "", msg.CB_BLOGGER_FACE_USE_PREFIX)
+    if not post_id:
+        await callback.answer()
+        return
+
+    draft = await _resolve_cover_draft(callback, post_id)
+    if draft is None:
+        return
+
+    if not await has_blogger_face_photo(callback.from_user.id):
+        await callback.answer(msg.TXT_BLOGGER_COVER_UPLOAD_FACE_HINT, show_alert=True)
+        return
+
+    await _start_blogger_cover_generation(callback, draft, use_face=True)
+
+
+@router.callback_query(F.data.startswith(msg.CB_BLOGGER_FACE_NEW_PREFIX))
+async def cb_blogger_face_upload_new(callback: CallbackQuery, state: FSMContext) -> None:
+    """«Загрузить новое фото» → сброс file_id + FSM ожидания."""
+    post_id = _post_id_from_callback(callback.data or "", msg.CB_BLOGGER_FACE_NEW_PREFIX)
+    if not post_id:
+        await callback.answer()
+        return
+    await _enter_face_photo_upload(callback, state, post_id=post_id, clear_saved=True)
+
+
+@router.callback_query(F.data.startswith(msg.CB_BLOGGER_COVER_UPLOAD_FACE_PREFIX))
+async def cb_blogger_cover_upload_face(callback: CallbackQuery, state: FSMContext) -> None:
+    """Legacy «📸 Загрузить фото» — ожидание снимка лица."""
+    post_id = _post_id_from_callback(callback.data or "", msg.CB_BLOGGER_COVER_UPLOAD_FACE_PREFIX)
+    if not post_id:
+        await callback.answer()
+        return
+    await _enter_face_photo_upload(callback, state, post_id=post_id, clear_saved=False)
 
 
 @router.callback_query(F.data.startswith(msg.CB_BLOGGER_COVER_NO_FACE_PREFIX))
@@ -657,7 +714,12 @@ async def capture_product_photo(message: Message, state: FSMContext) -> None:
     photo_file_id = message.photo[-1].file_id
     await state.clear()
 
-    await message.answer(msg.TXT_BLOGGER_COVER_OBJECT_SAVED)
+    # Мгновенный typing до постановки в очередь — без секундной дырки в шапке.
+    await message.bot.send_chat_action(
+        chat_id=message.chat.id,
+        action=ChatAction.TYPING,
+    )
+
     await run_product_cover_generation(
         settings,
         message,

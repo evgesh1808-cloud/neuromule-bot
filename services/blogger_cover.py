@@ -37,6 +37,7 @@ BLOGGER_COVER_ASPECT_RATIO = "16:9"
 OPENROUTER_COVER_TIMEOUT_SEC = 180.0
 MAX_COVER_REFERENCE_BYTES = 8 * 1024 * 1024
 COVER_WORKER_RATE_LIMIT_SEC = 2.0
+COVER_TYPING_INTERVAL_SEC = 4.0
 
 # Общая очередь: пул воркеров безопасно разбирает её через await Queue.get().
 cover_generation_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
@@ -310,6 +311,69 @@ async def _safe_send_text(bot: Any, chat_id: int, text: str, *, context: str) ->
     )
 
 
+async def _safe_delete_status_message(
+    bot: Any,
+    chat_id: int,
+    status_message_id: int | None,
+) -> None:
+    """Удаляет статус «⏳ Запрос принят…»; молчит, если юзер уже снёс сообщение."""
+    if status_message_id is None:
+        return
+    from aiogram.exceptions import (
+        TelegramBadRequest,
+        TelegramForbiddenError,
+        TelegramNetworkError,
+        TelegramRetryAfter,
+    )
+
+    try:
+        await bot.delete_message(chat_id=chat_id, message_id=int(status_message_id))
+    except (
+        TelegramBadRequest,
+        TelegramForbiddenError,
+        TelegramNetworkError,
+        TelegramRetryAfter,
+    ):
+        # message to delete not found / blocked / transient — штатно
+        pass
+    except Exception:
+        logger.error(
+            "blogger cover: unexpected delete_message chat_id=%s message_id=%s",
+            chat_id,
+            status_message_id,
+            exc_info=True,
+        )
+
+
+async def _keep_typing_loop(bot: Any, chat_id: int) -> None:
+    """Пока Flux крутится — каждые 4 с шлём ChatAction.TYPING (Telegram гасит ~5 с)."""
+    from aiogram.enums import ChatAction
+    from aiogram.exceptions import (
+        TelegramBadRequest,
+        TelegramForbiddenError,
+        TelegramNetworkError,
+        TelegramRetryAfter,
+    )
+
+    while True:
+        try:
+            await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+        except (
+            TelegramBadRequest,
+            TelegramForbiddenError,
+            TelegramNetworkError,
+            TelegramRetryAfter,
+        ):
+            pass
+        except Exception:
+            logger.error(
+                "blogger cover: unexpected send_chat_action chat_id=%s",
+                chat_id,
+                exc_info=True,
+            )
+        await asyncio.sleep(COVER_TYPING_INTERVAL_SEC)
+
+
 async def _safe_send_cover_photo(
     bot: Any,
     chat_id: int,
@@ -318,6 +382,7 @@ async def _safe_send_cover_photo(
     image: GeminiImageResult,
 ) -> None:
     """Доставка готовой обложки из фонового воркера."""
+    from aiogram.enums import ParseMode
     from aiogram.exceptions import (
         TelegramBadRequest,
         TelegramForbiddenError,
@@ -329,6 +394,7 @@ async def _safe_send_cover_photo(
     from content import messages as msg
     from services.streaming_download import stream_download_to_bytes
 
+    # Экранируем только промпт внутри <code>; теги caption остаются валидным HTML.
     safe_prompt = cleaned_prompt.replace("<", "&lt;").replace(">", "&gt;")
     caption = msg.TXT_BLOGGER_COVER_READY.format(prompt=safe_prompt)
 
@@ -337,7 +403,7 @@ async def _safe_send_cover_photo(
             chat_id,
             photo=BufferedInputFile(data, filename="blogger_cover.webp"),
             caption=caption,
-            parse_mode="HTML",
+            parse_mode=ParseMode.HTML,
         )
 
     try:
@@ -350,7 +416,7 @@ async def _safe_send_cover_photo(
                     chat_id,
                     photo=image.url,
                     caption=caption,
-                    parse_mode="HTML",
+                    parse_mode=ParseMode.HTML,
                 )
                 return
             except TelegramBadRequest:
@@ -390,7 +456,7 @@ async def _safe_send_cover_photo(
 
 
 async def _process_cover_task(task: dict[str, Any]) -> None:
-    """Биллинг → base64-референс → OpenRouter → photo / refund."""
+    """Биллинг → base64-референс → OpenRouter → photo / refund (+ typing + cleanup)."""
     from content import messages as msg
     from services.billing import refund_charge
     from services.billing.blogger_pipeline import spend_blogger_cover
@@ -404,7 +470,17 @@ async def _process_cover_task(task: dict[str, Any]) -> None:
     cleaned_prompt: str = str(task["cleaned_prompt"])
     integration = CoverIntegrationType(str(task["integration"]))
     photo_file_id = (task.get("photo_file_id") or "").strip() or None
+    raw_status_id = task.get("status_message_id")
+    status_message_id: int | None
+    try:
+        status_message_id = int(raw_status_id) if raw_status_id is not None else None
+    except (TypeError, ValueError):
+        status_message_id = None
 
+    typing_task = asyncio.create_task(
+        _keep_typing_loop(bot, chat_id),
+        name=f"cover_typing_{chat_id}",
+    )
     charge_id: str | None = None
     try:
         if not billing_bypass(user_id):
@@ -465,6 +541,13 @@ async def _process_cover_task(task: dict[str, Any]) -> None:
             msg.TXT_BLOGGER_COVER_FAILED,
             context="blogger_cover_failed",
         )
+    finally:
+        typing_task.cancel()
+        try:
+            await typing_task
+        except asyncio.CancelledError:
+            pass
+        await _safe_delete_status_message(bot, chat_id, status_message_id)
 
 
 async def cover_queue_worker() -> None:
@@ -473,6 +556,7 @@ async def cover_queue_worker() -> None:
     logger.info("blogger cover queue worker started name=%s", task_name)
     while True:
         task = await cover_generation_queue.get()
+        # _process_cover_task: _keep_typing_loop + delete status_message_id в finally
         try:
             await _process_cover_task(task)
         except Exception:
@@ -571,7 +655,16 @@ async def run_blogger_cover_turn(
         with_face=integration is CoverIntegrationType.FACE,
     )
 
+    from aiogram.enums import ParseMode
+
+    from content import messages as msg
+
     await start_cover_queue_worker()
+    status_msg = await bot.send_message(
+        resolved_chat_id,
+        msg.TXT_BLOGGER_COVER_QUEUED,
+        parse_mode=ParseMode.HTML,
+    )
     await cover_generation_queue.put(
         {
             "settings": settings,
@@ -582,6 +675,7 @@ async def run_blogger_cover_turn(
             "cleaned_prompt": cleaned_prompt,
             "integration": integration.value,
             "photo_file_id": resolved_file_id,
+            "status_message_id": status_msg.message_id,
         }
     )
     return BloggerCoverResult(
@@ -655,7 +749,8 @@ async def deliver_blogger_cover_turn_result(
     from content import messages as msg
 
     if result.outcome is BloggerCoverOutcome.QUEUED:
-        await message.answer(msg.TXT_BLOGGER_COVER_QUEUED, parse_mode=ParseMode.HTML)
+        # Статус «⏳ Ваш запрос принят…» уже отправлен в run_blogger_cover_turn
+        # и будет удалён воркером по status_message_id.
         logger.info(
             "blogger cover queued uid=%s post_id=%s",
             draft.user_id,
