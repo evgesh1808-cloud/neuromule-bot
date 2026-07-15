@@ -75,6 +75,20 @@ def test_blogger_role_prompt_requires_three_cta_variants() -> None:
     assert "Коммерческий" in tail
 
 
+def test_blogger_role_prompt_injects_user_city_into_hashtags() -> None:
+    from content.chat_prompt import format_blogger_role_prompt, get_role_prompt
+
+    role = format_blogger_role_prompt("Люберцы")
+    assert "Люберцы" in role
+    assert "#Люберцыстрижка" in role or "#Люберцы" in role
+    assert "#Тренды_и_Видео" in role
+    assert "15–20" in role or "15-20" in role
+    assert "село" not in role.lower()
+
+    via_get = get_role_prompt("blogger_content", user_city="Жулебино")
+    assert "Жулебино" in via_get
+
+
 def test_prepare_openrouter_chat_messages() -> None:
     payload = [
         {"role": "system", "content": "x"},

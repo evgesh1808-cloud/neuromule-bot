@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import re
+
 from config import Settings
 
 # Жёсткое правило плотной верстки (все роли чата, кроме table_generator JSON).
@@ -274,10 +276,13 @@ _ROLE_BLOGGER_CONTENT = """Роль: Профессиональный Блоге
 [Вариант В (Коммерческий)]: {Универсальный рекламный призыв. Используй понятные переменные в квадратных скобках, например [название сервиса / профиль мастера] и [ссылка в шапке профиля / Директ]. Избегай абстрактных фраз вроде «наши Системы» — только конкретные плейсхолдеры}
 
 ===ХЭШТЕГИ===
-Сгенерируй хэштеги строго в три блока для удобства продвижения. Используй следующие маркеры:
-#Тематические: (3-4 тега, бьющих в SEO и тему поста, например: #уходзаволосами #стрижкакончиков)
-#Локальные: (2-3 тега с заглушкой города в квадратных скобках для бьюти-сферы и бизнеса, например: #[город]стрижка #[город]парикмахер)
-#Навигация: (пустые шаблоны для личных рубрик автора, например: #[ваше_имя]_блог #[ваша_рубрика])
+Сгенерируй расширенный пакет хэштегов (суммарно 15–20 штук) строго в четыре блока для продвижения.
+Локация автора для локальных тегов: {user_city}.
+Используй следующие маркеры:
+#Тематические: (5–7 тегов, бьющих в SEO и тему поста, например: #уходзаволосами #стрижкакончиков)
+#Локальные: (4–5 тегов СТРОГО с городом «{user_city}», без заглушек [город]. Пример: #{user_city_tag}стрижка #{user_city_tag}парикмахер #{user_city_tag}бьюти)
+#Тренды_и_Видео: (3–4 трендовых тега под Reels / TikTok / Shorts / охваты, например: #рилс #viral #fyp)
+#Навигация: (2–3 шаблона личных рубрик автора, например: #[ваше_имя]_блог #[ваша_рубрика])
 
 ===ПРОМПТ ДЛЯ КАРТИНКИ===
 Generate a highly descriptive, professional prompt written in English for the Flux image generation model.
@@ -296,6 +301,29 @@ Output ONLY the clean, ready-to-use English prompt text inside this block. Do no
 - Разрешено использовать эмодзи ИСКЛЮЧИТЕЛЬНО в начале абзацев как визуальный якорь (не более 1 на абзац) или как маркеры списков (🔹, ⚡, ◼️, 1️⃣, 2️⃣).
 - Никакой ИИ-воды. Полностью исключи фразы-паразиты: 'В современном быстроменяющемся мире...', 'Важно отметить, что...', 'Давайте разберемся...', 'В заключение стоит сказать...'. Переходи к сути с первого слова."""
 
+def _blogger_city_tag(user_city: str) -> str:
+    """Город → компактный фрагмент для хэштега (без пробелов)."""
+    tag = re.sub(r"\s+", "", (user_city or "").strip())
+    return tag or "город"
+
+
+def format_blogger_role_prompt(user_city: str | None = None) -> str:
+    """Системная роль блогера с подставленной локацией для ``===ХЭШТЕГИ===``."""
+    from services.repository import DEFAULT_USER_CITY, normalize_user_city
+
+    city = normalize_user_city(user_city) if user_city is not None else DEFAULT_USER_CITY
+    # Не str.format: в шаблоне роли много литеральных ``{...}``-плейсхолдеров.
+    return (
+        _ROLE_BLOGGER_CONTENT.replace("{user_city_tag}", _blogger_city_tag(city)).replace(
+            "{user_city}",
+            city,
+        )
+    )
+
+
+# Дефолтный текст роли (локация = DEFAULT_USER_CITY) для статичных импортов/тестов.
+_ROLE_BLOGGER_CONTENT_DEFAULT = format_blogger_role_prompt()
+
 _ROLE_RULES = {
     "standard": _ROLE_STANDARD,
     "summary": _ROLE_SUMMARY,
@@ -308,7 +336,7 @@ _ROLE_RULES = {
         "• Жёсткий лимит: 1500 символов с пробелами. Сократи если выходишь за лимит.\n"
         "• Никаких «Привет, ИИ слушает» и метакомментариев — сразу в эфир."
     ),
-    "blogger_content": _ROLE_BLOGGER_CONTENT,
+    "blogger_content": _ROLE_BLOGGER_CONTENT_DEFAULT,
     "psychologist_coach": (
         "Роль: ИИ-Коуч и психолог. Эмпатия, поддержка, мягкие формулировки, без критики. "
         "Помогай структурировать мысли и найти следующий шаг."
@@ -325,7 +353,7 @@ _ROLE_RULES = {
     "academic": "Роль: Академик. Понятный обучающий тон, простые примеры, без сложного сленга.",
     "psychologist": "Роль: Психолог. Эмпатия, поддержка, мягкие формулировки, без критики.",
     "speaker": "Роль: Спикер TED. Харизма, вдохновение, яркие метафоры, сильный призыв в конце.",
-    "blogger": _ROLE_BLOGGER_CONTENT,
+    "blogger": _ROLE_BLOGGER_CONTENT_DEFAULT,
     "analyst": "Роль: Аналитик. Максимальная лаконичность, факты, цифры, списки или таблицы.",
     "storyteller": "Роль: Сказочник. Богатый словарный запас, художественные описания, атмосфера.",
 }
@@ -382,17 +410,24 @@ _NEUROMULE_PREMIUM = """[SYSTEM_ROLE]
 4. ЗАВЕРШЕНИЕ: Один точечный экспертный совет или уточняющий <b>💬 Вопрос: …?</b> — только по теме запроса, без рекламы."""
 
 
-def _role_addon_for_premium(role_type: str) -> str:
+def _role_addon_for_premium(role_type: str, *, user_city: str | None = None) -> str:
     """Дополнение к премиальному SYSTEM_ROLE для выбранной роли."""
     if role_type == "standard":
         return f"\n{_ROLE_STANDARD}"
+    if role_type in ("blogger_content", "blogger"):
+        return f"\n{format_blogger_role_prompt(user_city)}"
     extra = _ROLE_RULES.get(role_type)
     if not extra:
         return ""
     return f"\n{extra}"
 
 
-def get_role_prompt(role_type: str, *, premium: bool = False) -> str:
+def get_role_prompt(
+    role_type: str,
+    *,
+    premium: bool = False,
+    user_city: str | None = None,
+) -> str:
     """Индивидуальный system-блок роли (персона NeuroMule + инструкция роли)."""
     from services.use_cases.neurotext_turn import normalize_text_role_id
 
@@ -400,8 +435,13 @@ def get_role_prompt(role_type: str, *, premium: bool = False) -> str:
     if role_type in _ROLES_WITHOUT_COMMON_FORMATTING:
         return _ROLE_RULES[role_type]
     if premium:
-        return _NEUROMULE_PREMIUM.format(role_addon=_role_addon_for_premium(role_type))
-    role_instruction = _ROLE_RULES.get(role_type, _DEFAULT_ROLE_INSTRUCTION)
+        return _NEUROMULE_PREMIUM.format(
+            role_addon=_role_addon_for_premium(role_type, user_city=user_city)
+        )
+    if role_type in ("blogger_content", "blogger"):
+        role_instruction = format_blogger_role_prompt(user_city)
+    else:
+        role_instruction = _ROLE_RULES.get(role_type, _DEFAULT_ROLE_INSTRUCTION)
     return _NEUROMULE_BASE.format(role_instruction=role_instruction)
 
 
@@ -502,15 +542,17 @@ def build_system_prompt(
     text_role: str = "standard",
     *,
     premium: bool = False,
+    user_city: str | None = None,
 ) -> str:
     """
     Собирает финальный system-prompt для OpenRouter.
 
     ``premium=True`` — премиальный «Нейротекст» (флагманская модель, PAID_CHAT_MODEL).
     Иначе — базовый промпт + ``ANSWER_GENERATION_RULES``.
+    ``user_city`` — локация для локальных хэштегов режима «Блогер».
     """
     _ = settings
-    system_role = get_role_prompt(text_role, premium=premium)
+    system_role = get_role_prompt(text_role, premium=premium, user_city=user_city)
     memory = format_user_memory(persistent_memory)
 
     parts: list[str] = [system_role]

@@ -67,6 +67,15 @@ def test_get_blogger_keyboard_without_hashtags() -> None:
     assert kb.inline_keyboard[0][0].text.startswith("🔄")
 
 
+def test_get_blogger_keyboard_with_set_city() -> None:
+    kb = get_blogger_keyboard("a1b2c3d4", include_hashtags=False, include_set_city=True)
+    assert len(kb.inline_keyboard) == 3
+    city_btn = kb.inline_keyboard[0][0]
+    assert city_btn.text == msg.BTN_BLOGGER_SET_CITY
+    assert city_btn.callback_data == f"{msg.CB_BLOGGER_SET_CITY_PREFIX}a1b2c3d4"
+    assert "село" not in msg.TXT_BLOGGER_SET_CITY_PROMPT.lower()
+
+
 def test_get_blogger_adapt_keyboard() -> None:
     kb = get_blogger_adapt_keyboard("a1b2c3d4")
     assert len(kb.inline_keyboard) == 4

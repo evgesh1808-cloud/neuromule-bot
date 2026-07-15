@@ -37,8 +37,11 @@ from services.billing.blogger_pipeline import can_afford_blogger_adapt, can_affo
 from services.blogger_post_parser import extract_blogger_post_body
 from services.god_mode import billing_bypass
 from services.repository import (
+    get_user_city,
     has_blogger_face_photo,
+    is_default_user_city,
     set_blogger_face_file_id,
+    set_user_city,
 )
 from services.telegram_safe_text import prepare_telegram_html_text
 
@@ -293,7 +296,13 @@ async def cb_blogger_hashtags(callback: CallbackQuery) -> None:
 
     hashtags_html = prepare_telegram_html_text(hashtags_block)
     updated_text = f"{current_text.rstrip()}\n\n{hashtags_html}"
-    reply_markup = get_blogger_keyboard(draft.post_id, include_hashtags=False)
+
+    user_city = await get_user_city(draft.user_id)
+    reply_markup = get_blogger_keyboard(
+        draft.post_id,
+        include_hashtags=False,
+        include_set_city=is_default_user_city(user_city),
+    )
 
     try:
         await callback.message.edit_text(
@@ -319,6 +328,47 @@ async def cb_blogger_hashtags(callback: CallbackQuery) -> None:
         display_text=updated_text,
     )
     await callback.answer(msg.TXT_BLOGGER_HASHTAGS_ADDED)
+
+
+@router.callback_query(F.data.startswith(msg.CB_BLOGGER_SET_CITY_PREFIX))
+async def cb_blogger_set_city(callback: CallbackQuery, state: FSMContext) -> None:
+    """«🌆 Изменить город для тегов» → FSM ожидания названия локации."""
+    draft = await _guard_blogger_post(callback, msg.CB_BLOGGER_SET_CITY_PREFIX)
+    if draft is None or callback.message is None:
+        return
+
+    await state.set_state(BloggerFlowStates.waiting_for_city_name)
+    await state.update_data(current_post_id=draft.post_id)
+    await callback.message.answer(
+        msg.TXT_BLOGGER_SET_CITY_PROMPT,
+        parse_mode=ParseMode.HTML,
+    )
+    await callback.answer()
+
+
+@router.message(BloggerFlowStates.waiting_for_city_name, F.text)
+async def blogger_city_name_capture(message: Message, state: FSMContext) -> None:
+    """Сохраняет локацию пользователя и сбрасывает FSM."""
+    if message.from_user is None:
+        return
+
+    raw = (message.text or "").strip()
+    if not raw:
+        await message.answer(msg.TXT_BLOGGER_CITY_EMPTY, parse_mode=ParseMode.HTML)
+        return
+
+    city = await set_user_city(message.from_user.id, raw)
+    await state.clear()
+    safe_city = city.replace("<", "&lt;").replace(">", "&gt;")
+    await message.answer(
+        msg.TXT_BLOGGER_CITY_UPDATED.format(city=safe_city),
+        parse_mode=ParseMode.HTML,
+    )
+
+
+@router.message(BloggerFlowStates.waiting_for_city_name)
+async def blogger_city_name_need_text(message: Message) -> None:
+    await message.answer(msg.TXT_BLOGGER_CITY_EMPTY, parse_mode=ParseMode.HTML)
 
 
 @router.callback_query(F.data.startswith(msg.CB_BLOG_ADAPT_PREFIX))

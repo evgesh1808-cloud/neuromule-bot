@@ -110,10 +110,12 @@ def get_blogger_keyboard(
     post_id: str,
     *,
     include_hashtags: bool = True,
+    include_set_city: bool = False,
 ) -> InlineKeyboardMarkup:
     """Клавиатура конструктора режима «Блогер» под последним постом.
 
     ``post_id`` связывает кнопки с черновиком в in-memory кэше (``blogger_post_cache``).
+    ``include_set_city`` — кнопка смены локации (только при дефолтном городе).
     """
     builder = InlineKeyboardBuilder()
     if include_hashtags:
@@ -121,6 +123,13 @@ def get_blogger_keyboard(
             InlineKeyboardButton(
                 text="#️⃣ Подобрать хэштеги",
                 callback_data=f"{msg.CB_BLOG_HASH_PREFIX}{post_id}",
+            )
+        )
+    if include_set_city:
+        builder.row(
+            InlineKeyboardButton(
+                text=msg.BTN_BLOGGER_SET_CITY,
+                callback_data=f"{msg.CB_BLOGGER_SET_CITY_PREFIX}{post_id}",
             )
         )
     builder.row(

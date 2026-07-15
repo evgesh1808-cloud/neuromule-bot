@@ -25,10 +25,11 @@ class UserFlow(StatesGroup):
 
 
 class BloggerFlowStates(StatesGroup):
-    """FSM режима «Блогер»: загрузка референсов для AI-обложки."""
+    """FSM режима «Блогер»: референсы обложки и локация для хэштегов."""
 
     waiting_for_face_photo = State()
     waiting_for_product_photo = State()
+    waiting_for_city_name = State()
 
 
 class MusicFlow(StatesGroup):

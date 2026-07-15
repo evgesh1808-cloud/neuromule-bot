@@ -73,7 +73,16 @@ async def build_openrouter_messages(
         Список словарей ``{"role": "...", "content": "..."}``.
     """
     mem = await repo.get_persistent_memory(user_id)
-    system = build_system_prompt(settings, mem, text_role, premium=premium)
+    user_city: str | None = None
+    if text_role in ("blogger_content", "blogger"):
+        user_city = await repo.get_user_city(user_id)
+    system = build_system_prompt(
+        settings,
+        mem,
+        text_role,
+        premium=premium,
+        user_city=user_city,
+    )
     rows = await repo.dialog_fetch_last(user_id, settings.chat_history_limit, platform=platform)
     out: list[dict[str, str]] = [{"role": "system", "content": system}]
     for role, content in rows:

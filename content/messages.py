@@ -18,6 +18,7 @@ CB_MUSIC_EXTEND = "music_extend"
 CB_MUSIC_VOICE_CLONE = "music_voice_clone"
 CB_MUSIC_PUBLISH = "music_publish"
 CB_BLOG_HASH_PREFIX = "blog_hash:"      # blog_hash:<post_id>
+CB_BLOGGER_SET_CITY_PREFIX = "blogger_set_city:"  # blogger_set_city:<post_id>
 CB_BLOG_ADAPT_PREFIX = "blog_adapt:"    # blog_adapt:<post_id>
 CB_BLOG_ART_PREFIX = "blog_art:"        # legacy: blog_art:<post_id>
 CB_BLOGGER_COVER_PREFIX = "blogger_cover:"  # blogger_cover:<post_id>
@@ -1352,6 +1353,20 @@ TXT_BLOGGER_UPSELL_SOON = (
 )
 TXT_BLOGGER_GENERATE_FIRST = "Сначала сгенерируйте пост!"
 TXT_BLOGGER_HASHTAGS_ADDED = "Хэштеги добавлены к посту! ✨"
+BTN_BLOGGER_SET_CITY = "🌆 Изменить город для тегов"
+TXT_BLOGGER_SET_CITY_PROMPT = (
+    "🌆 Введите название вашего города, района или <b>населенного пункта</b>.\n"
+    "Например: <b>Люберцы</b>, <b>Жулебино</b> или <b>Красная Поляна</b>.\n\n"
+    "Бот запомнит эту <b>локацию</b> и будет автоматически подставлять её в хэштеги!"
+)
+TXT_BLOGGER_CITY_UPDATED = (
+    "✨ Город успешно изменен на <b>{city}</b>! "
+    "Теперь при генерации новых постов хэштеги будут адаптированы под эту локацию."
+)
+TXT_BLOGGER_CITY_EMPTY = (
+    "⚠️ Укажите название города или населенного пункта текстом. "
+    "Например: <b>Люберцы</b>."
+)
 TXT_BLOGGER_IMAGE_PROMPT_NOT_FOUND = "❌ Исходный промпт не найден"
 TXT_BLOGGER_COVER_OPTIONS = "Выберите формат AI-обложки 👇"
 TXT_BLOGGER_COVER_FACE_CHOICE = (

@@ -68,6 +68,8 @@ async def _migrate_users(db: aiosqlite.Connection) -> None:
         ("accepted_terms", "ALTER TABLE users ADD COLUMN accepted_terms INTEGER DEFAULT 0"),
         ("blogger_face_file_id", "ALTER TABLE users ADD COLUMN blogger_face_file_id TEXT"),
         ("blogger_object_file_id", "ALTER TABLE users ADD COLUMN blogger_object_file_id TEXT"),
+        # Локация для локальных хэштегов режима «Блогер» (sentinel = ещё не менял).
+        ("city", "ALTER TABLE users ADD COLUMN city TEXT DEFAULT 'Чебоксары'"),
     ]
     for name, ddl in alters:
         if name not in cols:
@@ -372,7 +374,8 @@ async def init_db(promo_seeds: str = "") -> None:
                 tariff TEXT DEFAULT 'Free',
                 referred_by INTEGER,
                 photo_daily_date TEXT,
-                photo_daily_count INTEGER DEFAULT 0
+                photo_daily_count INTEGER DEFAULT 0,
+                city TEXT DEFAULT 'Чебоксары'
             )
             """
         )
@@ -1263,6 +1266,41 @@ async def set_blogger_object_file_id(user_id: int, file_id: str) -> None:
 
 async def has_blogger_object_photo(user_id: int) -> bool:
     return (await get_blogger_object_file_id(user_id)) is not None
+
+
+DEFAULT_USER_CITY = "Чебоксары"
+
+
+def normalize_user_city(raw: str | None) -> str:
+    """Нормализованное название локации; пустое → дефолт."""
+    city = (raw or "").strip()
+    return city or DEFAULT_USER_CITY
+
+
+def is_default_user_city(raw: str | None) -> bool:
+    """True, если пользователь ещё не задал свою локацию (sentinel-дефолт)."""
+    return normalize_user_city(raw).casefold() == DEFAULT_USER_CITY.casefold()
+
+
+async def get_user_city(user_id: int) -> str:
+    """Город/локация пользователя для локальных хэштегов блогера."""
+    await ensure_user(user_id)
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT city FROM users WHERE id = ?", (user_id,)) as cur:
+            row = await cur.fetchone()
+    if not row:
+        return DEFAULT_USER_CITY
+    return normalize_user_city(row[0] if row[0] is not None else None)
+
+
+async def set_user_city(user_id: int, city: str) -> str:
+    """Сохраняет локацию пользователя; возвращает нормализованное значение."""
+    await ensure_user(user_id)
+    clean = normalize_user_city(city)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE users SET city = ? WHERE id = ?", (clean, user_id))
+        await db.commit()
+    return clean
 
 
 async def save_blogger_post_draft(
