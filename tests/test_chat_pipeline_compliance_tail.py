@@ -58,6 +58,23 @@ def test_prepare_openrouter_uses_blogger_tail_for_blogger_content() -> None:
     assert USER_COMPLIANCE_TAIL_MARKER not in payload[1]["content"]
 
 
+def test_blogger_role_prompt_requires_three_cta_variants() -> None:
+    from content.chat_prompt import build_blogger_compliance_tail, get_role_prompt
+
+    role = get_role_prompt("blogger_content")
+    tail = build_blogger_compliance_tail()
+    for fragment in (
+        "Вариант А (Вовлечение)",
+        "Вариант Б (Личный бренд / Жиза)",
+        "Вариант В (Коммерческий)",
+        "[название сервиса / профиль мастера]",
+        "[ссылка в шапке профиля / Директ]",
+    ):
+        assert fragment in role
+    assert "Жиза" in tail
+    assert "Коммерческий" in tail
+
+
 def test_prepare_openrouter_chat_messages() -> None:
     payload = [
         {"role": "system", "content": "x"},
