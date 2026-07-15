@@ -11,7 +11,6 @@ from config import Settings
 from services import blogger_post_cache
 from services.blogger_image_prompt import sanitize_blogger_image_prompt_for_imagen
 from services.blogger_post_cache import BloggerPostDraft
-from services.blogger_post_parser import MISSING_SECTION_PLACEHOLDER
 from services.gemini_image_client import GeminiImageResult
 
 from aiogram.types import Message
@@ -63,10 +62,9 @@ def resolve_blogger_draft(
 
 def extract_image_prompt_from_draft(draft: BloggerPostDraft) -> str | None:
     """Секция ``===ПРОМПТ ДЛЯ КАРТИНКИ===`` из кэша черновика."""
-    raw = (draft.image_prompt or "").strip()
-    if not raw or raw == MISSING_SECTION_PLACEHOLDER:
-        return None
-    return raw
+    from services.blogger_post_parser import extract_blogger_image_prompt
+
+    return extract_blogger_image_prompt(draft.raw_text, draft.parsed)
 
 
 def prepare_blogger_flux_prompt(raw_prompt: str, *, with_face: bool = False) -> str:
@@ -259,6 +257,24 @@ async def deliver_blogger_cover_turn_result(
         from aiogram.enums import ParseMode
 
         await message.answer(msg.TXT_BLOGGER_COVER_FAILED, parse_mode=ParseMode.HTML)
+        return
+
+    if result.outcome is BloggerCoverOutcome.PROMPT_NOT_FOUND:
+        from aiogram.enums import ParseMode
+
+        await message.answer(msg.TXT_BLOGGER_IMAGE_PROMPT_NOT_FOUND, parse_mode=ParseMode.HTML)
+        return
+
+    if result.outcome is BloggerCoverOutcome.INSUFFICIENT_BALANCE:
+        from aiogram.enums import ParseMode
+
+        await message.answer(msg.TXT_BLOGGER_COVER_INSUFFICIENT, parse_mode=ParseMode.HTML)
+        return
+
+    if result.outcome is BloggerCoverOutcome.FREE_IMAGE_MODEL_BLOCKED:
+        from aiogram.enums import ParseMode
+
+        await message.answer(msg.TXT_BLOGGER_COVER_INSUFFICIENT, parse_mode=ParseMode.HTML)
 
 
 async def handle_blogger_cover_callback(

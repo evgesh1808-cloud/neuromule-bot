@@ -307,16 +307,41 @@ def _parse_sections_by_loose_headers(text: str) -> dict[str, str]:
     return sections
 
 
+def _strip_label_tail_html(chunk: str) -> str:
+    """Убирает хвост ``</b>`` после метки в display-HTML черновике."""
+    result = (chunk or "").strip(" :\n\r\t-")
+    result = re.sub(r"^</b>\s*", "", result, flags=re.IGNORECASE)
+    return result.strip()
+
+
 def _parse_sections_by_find_labels(text: str) -> dict[str, str]:
     """Резерв: ``.find()`` по ключевым меткам в порядке следования секций."""
+    display_hooks = _BLOGGER_DISPLAY_LABELS["ХУКИ"]
+    display_body = _BLOGGER_DISPLAY_LABELS["ТЕЛО ПОСТА"]
+    display_cta = _BLOGGER_DISPLAY_LABELS["ПРИЗЫВЫ К ДЕЙСТВИЮ"]
     label_variants: dict[str, tuple[str, ...]] = {
-        "ХУКИ": ("===ХУКИ===", "ХУКИ", "Хуки"),
-        "ТЕЛО ПОСТА": ("===ТЕЛО ПОСТА===", "ТЕЛО ПОСТА", "ТЕЛО", "Тело поста"),
+        "ХУКИ": (
+            "===ХУКИ===",
+            "ХУКИ",
+            "Хуки",
+            display_hooks,
+            "Варианты ярких заголовков:",
+        ),
+        "ТЕЛО ПОСТА": (
+            "===ТЕЛО ПОСТА===",
+            "ТЕЛО ПОСТА",
+            "ТЕЛО",
+            "Тело поста",
+            display_body,
+            "Текст поста:",
+        ),
         "ПРИЗЫВЫ К ДЕЙСТВИЮ": (
             "===ПРИЗЫВЫ К ДЕЙСТВИЮ===",
             "ПРИЗЫВЫ К ДЕЙСТВИЮ",
             "ПРИЗЫВ К ДЕЙСТВИЮ",
             "CTA",
+            display_cta,
+            "Варианты концовки",
         ),
         "ХЭШТЕГИ": ("===ХЭШТЕГИ===", "ХЭШТЕГИ", "ХЕШТЕГИ"),
         "ПРОМПТ ДЛЯ КАРТИНКИ": (
@@ -342,7 +367,7 @@ def _parse_sections_by_find_labels(text: str) -> dict[str, str]:
     sections: dict[str, str] = {}
     for idx, (_pos, name, header_end) in enumerate(positions):
         content_end = positions[idx + 1][0] if idx + 1 < len(positions) else len(text)
-        chunk = text[header_end:content_end].strip(" :\n\r\t-")
+        chunk = _strip_label_tail_html(text[header_end:content_end])
         if chunk:
             sections[name] = chunk
     return sections
@@ -425,6 +450,64 @@ def _repair_sections(sections: dict[str, str]) -> dict[str, str]:
     if image_prompt:
         repaired["ПРОМПТ ДЛЯ КАРТИНКИ"] = sanitize_blogger_image_prompt_for_imagen(image_prompt)
     return repaired
+
+
+def extract_blogger_post_body(
+    raw_text: str,
+    parsed: BloggerPostParsed | None = None,
+) -> str | None:
+    """Тело поста для адаптации: ``===ТЕЛО ПОСТА===``, display-HTML или normalize."""
+    draft = parsed if parsed is not None else parse_blogger_post(raw_text)
+    body = draft.body
+    if body:
+        return body
+
+    text = (raw_text or "").strip()
+    if not text:
+        return None
+
+    sections = normalize_blogger_raw_output(text)
+    chunk = (sections.get("ТЕЛО ПОСТА") or "").strip()
+    if chunk and chunk != MISSING_SECTION_PLACEHOLDER:
+        return chunk
+    return None
+
+
+def extract_blogger_image_prompt(
+    raw_text: str,
+    parsed: BloggerPostParsed | None = None,
+) -> str | None:
+    """Промпт обложки из ``===ПРОМПТ ДЛЯ КАРТИНКИ===`` или normalize fallback."""
+    draft = parsed if parsed is not None else parse_blogger_post(raw_text)
+    block = (draft.image_prompt or "").strip()
+    if block and block != MISSING_SECTION_PLACEHOLDER:
+        return block
+
+    text = (raw_text or "").strip()
+    if not text:
+        return None
+
+    sections = normalize_blogger_raw_output(text)
+    chunk = (sections.get("ПРОМПТ ДЛЯ КАРТИНКИ") or "").strip()
+    if chunk and chunk != MISSING_SECTION_PLACEHOLDER and MISSING_SECTION_PLACEHOLDER not in chunk:
+        return chunk
+    return None
+
+
+def canonicalize_blogger_cache_raw(raw_text: str) -> str:
+    """Нормализует черновик в канонический ``===``-формат для кэша и SQLite."""
+    text = (raw_text or "").strip()
+    if not text:
+        return text
+    if "===ТЕЛО ПОСТА===" in text.upper():
+        return text
+
+    sections = normalize_blogger_raw_output(text)
+    reassembled = reassemble_blogger_sections(sections)
+    body = (sections.get("ТЕЛО ПОСТА") or "").strip()
+    if body and body != MISSING_SECTION_PLACEHOLDER and reassembled:
+        return reassembled
+    return text
 
 
 def reassemble_blogger_sections(sections: dict[str, str]) -> str:

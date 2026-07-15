@@ -86,8 +86,29 @@ def _is_document_message(event: TelegramObject) -> bool:
     return isinstance(event, Message) and bool(getattr(event, "document", None))
 
 
+def _is_blogger_callback(event: TelegramObject) -> bool:
+    if not isinstance(event, CallbackQuery):
+        return False
+    data = (event.data or "").strip()
+    return data.startswith(
+        (
+            msg.CB_BLOG_ADAPT_PREFIX,
+            msg.CB_BLOG_BACK_PREFIX,
+            msg.CB_BLOG_HASH_PREFIX,
+            msg.CB_BLOG_RUN_ADAPT_PREFIX,
+            msg.CB_BLOGGER_COVER_PREFIX,
+            msg.CB_BLOG_ART_PREFIX,
+            msg.CB_BLOGGER_COVER_UPLOAD_FACE_PREFIX,
+            msg.CB_BLOGGER_COVER_NO_FACE_PREFIX,
+            msg.CB_ADAPT_TARGET_PREFIX,
+        )
+    )
+
+
 def _is_whitelisted_callback(event: TelegramObject) -> bool:
     if _is_table_chart_callback(event):
+        return True
+    if _is_blogger_callback(event):
         return True
     if not isinstance(event, CallbackQuery):
         return False

@@ -31,6 +31,7 @@ from services.blogger_cover import (
     run_blogger_cover_turn,
 )
 from services.billing.blogger_pipeline import can_afford_blogger_adapt, can_afford_blogger_cover
+from services.blogger_post_parser import extract_blogger_post_body
 from services.god_mode import billing_bypass
 from services.repository import has_blogger_face_photo, set_blogger_face_file_id
 from services.telegram_safe_text import prepare_telegram_html_text
@@ -73,97 +74,59 @@ def _parse_run_adapt(data: str) -> tuple[str, str] | None:
     return post_id, platform
 
 
-async def _guard_blogger_post(callback: CallbackQuery, prefix: str) -> blogger_post_cache.BloggerPostDraft | None:
+async def _resolve_blogger_draft(
+    callback: CallbackQuery,
+    *,
+    post_id: str | None = None,
+) -> blogger_post_cache.BloggerPostDraft | None:
+    """Черновик для inline-кнопок: post_id → сообщение → последний пост пользователя."""
     if callback.from_user is None or callback.message is None:
-        await callback.answer()
-        return None
-    post_id = _post_id_from_callback(callback.data or "", prefix)
-    if not post_id:
         await callback.answer()
         return None
 
     user_id = callback.from_user.id
-    draft = blogger_post_cache.get(post_id, user_id)
+    draft: blogger_post_cache.BloggerPostDraft | None = None
+    if post_id:
+        draft = await blogger_post_cache.resolve(post_id, user_id)
     if draft is None:
-        draft = blogger_post_cache.get_by_message(
+        draft = await blogger_post_cache.resolve_by_message(
             callback.message.chat.id,
             callback.message.message_id,
             user_id,
         )
     if draft is None:
+        draft = await blogger_post_cache.resolve_last(user_id)
+    if draft is None:
         await callback.answer(msg.TXT_BLOGGER_POST_NOT_FOUND, show_alert=True)
         return None
 
-    bound = blogger_post_cache.bind_telegram_message(
+    await blogger_post_cache.bind_telegram_message(
         draft.post_id,
         user_id,
         chat_id=callback.message.chat.id,
         message_id=callback.message.message_id,
     )
-    return bound or draft
+    return draft
 
 
-def _resolve_draft_for_adapt(
+async def _guard_blogger_post(callback: CallbackQuery, prefix: str) -> blogger_post_cache.BloggerPostDraft | None:
+    post_id = _post_id_from_callback(callback.data or "", prefix)
+    if not post_id:
+        await callback.answer(msg.TXT_BLOGGER_POST_NOT_FOUND, show_alert=True)
+        return None
+    return await _resolve_blogger_draft(callback, post_id=post_id)
+
+
+async def _resolve_draft_for_adapt_guarded(
     callback: CallbackQuery,
-    user_id: int,
+    *,
+    post_id: str | None = None,
 ) -> blogger_post_cache.BloggerPostDraft | None:
-    """Черновик для адаптации: привязка сообщения → последний пост пользователя."""
-    if callback.message is None:
-        return None
-    draft = blogger_post_cache.get_by_message(
-        callback.message.chat.id,
-        callback.message.message_id,
-        user_id,
-    )
-    if draft is None:
-        draft = blogger_post_cache.get_last(user_id)
-    return draft
-
-
-async def _resolve_draft_for_adapt_guarded(callback: CallbackQuery) -> blogger_post_cache.BloggerPostDraft | None:
-    if callback.from_user is None or callback.message is None:
-        await callback.answer()
-        return None
-
-    user_id = callback.from_user.id
-    draft = _resolve_draft_for_adapt(callback, user_id)
-    if draft is None:
-        await callback.answer(msg.TXT_BLOGGER_POST_NOT_FOUND, show_alert=True)
-        return None
-
-    blogger_post_cache.bind_telegram_message(
-        draft.post_id,
-        user_id,
-        chat_id=callback.message.chat.id,
-        message_id=callback.message.message_id,
-    )
-    return draft
+    return await _resolve_blogger_draft(callback, post_id=post_id)
 
 
 async def _resolve_cover_draft(callback: CallbackQuery, post_id: str) -> blogger_post_cache.BloggerPostDraft | None:
-    if callback.from_user is None or callback.message is None:
-        await callback.answer()
-        return None
-
-    user_id = callback.from_user.id
-    draft = blogger_post_cache.get(post_id, user_id)
-    if draft is None:
-        draft = blogger_post_cache.get_by_message(
-            callback.message.chat.id,
-            callback.message.message_id,
-            user_id,
-        )
-    if draft is None:
-        await callback.answer(msg.TXT_BLOGGER_POST_NOT_FOUND, show_alert=True)
-        return None
-
-    blogger_post_cache.bind_telegram_message(
-        draft.post_id,
-        user_id,
-        chat_id=callback.message.chat.id,
-        message_id=callback.message.message_id,
-    )
-    return draft
+    return await _resolve_blogger_draft(callback, post_id=post_id)
 
 
 async def _start_blogger_cover_generation(
@@ -182,54 +145,67 @@ async def cb_blogger_adapt_target(callback: CallbackQuery) -> None:
         await callback.answer()
         return
 
-    platform = parse_adapt_target(callback.data or "")
-    if platform is None:
+    parsed = parse_adapt_target(callback.data or "")
+    if parsed is None:
         await callback.answer()
         return
+    platform, post_id = parsed
 
-    draft = await _resolve_draft_for_adapt_guarded(callback)
-    if draft is None:
-        return
+    try:
+        draft = await _resolve_draft_for_adapt_guarded(callback, post_id=post_id)
+        if draft is None:
+            return
 
-    source_body = draft.parsed.body
-    if not source_body:
-        await callback.answer(msg.TXT_BLOGGER_ADAPT_BODY_MISSING, show_alert=True)
-        return
+        source_body = extract_blogger_post_body(draft.raw_text, draft.parsed)
+        if not source_body:
+            await callback.answer(msg.TXT_BLOGGER_ADAPT_BODY_MISSING, show_alert=True)
+            return
 
-    user_id = callback.from_user.id
-    if not billing_bypass(user_id) and not await can_afford_blogger_adapt(user_id):
-        await callback.answer(msg.TXT_BLOGGER_ADAPT_INSUFFICIENT, show_alert=True)
-        return
+        user_id = callback.from_user.id
+        if not billing_bypass(user_id) and not await can_afford_blogger_adapt(user_id):
+            await callback.answer(msg.TXT_BLOGGER_ADAPT_INSUFFICIENT, show_alert=True)
+            return
 
-    await callback.answer(msg.TXT_BLOGGER_ADAPT_QUEUED)
+        await callback.answer(msg.TXT_BLOGGER_ADAPT_QUEUED)
 
-    adapt_result = await adapt_blogger_post_with_billing(
-        settings,
-        source_body=source_body,
-        platform=platform,
-        user_id=user_id,
-    )
-    if adapt_result.error == "insufficient_crystals":
-        await callback.message.answer(msg.TXT_BLOGGER_ADAPT_INSUFFICIENT, parse_mode=ParseMode.HTML)
-        return
-    if not adapt_result.ok or not adapt_result.content:
+        adapt_result = await adapt_blogger_post_with_billing(
+            settings,
+            source_body=source_body,
+            platform=platform,
+            user_id=user_id,
+        )
+        if adapt_result.error == "insufficient_crystals":
+            await callback.message.answer(msg.TXT_BLOGGER_ADAPT_INSUFFICIENT, parse_mode=ParseMode.HTML)
+            return
+        if not adapt_result.ok or not adapt_result.content:
+            await callback.message.answer(msg.TXT_BLOGGER_ADAPT_FAILED, parse_mode=ParseMode.HTML)
+            return
+
+        adapted = adapt_result.content
+
+        body_html = prepare_adapted_telegram_html(adapted)
+        platform_label = adapt_platform_label(platform)
+        await callback.message.answer(
+            msg.TXT_BLOGGER_ADAPT_RESULT.format(platform=platform_label, body=body_html),
+            parse_mode=ParseMode.HTML,
+        )
+        logger.info(
+            "blogger adapt done uid=%s post_id=%s platform=%s",
+            draft.user_id,
+            draft.post_id,
+            platform,
+        )
+    except Exception:
+        logger.exception(
+            "blogger adapt handler failed uid=%s data=%s",
+            callback.from_user.id,
+            callback.data,
+        )
+        try:
+            await callback.answer(msg.TXT_BLOGGER_ADAPT_FAILED, show_alert=True)
+        except Exception:
+            logger.debug("blogger adapt: callback.answer failed", exc_info=True)
         await callback.message.answer(msg.TXT_BLOGGER_ADAPT_FAILED, parse_mode=ParseMode.HTML)
-        return
-
-    adapted = adapt_result.content
-
-    body_html = prepare_adapted_telegram_html(adapted)
-    platform_label = adapt_platform_label(platform)
-    await callback.message.answer(
-        msg.TXT_BLOGGER_ADAPT_RESULT.format(platform=platform_label, body=body_html),
-        parse_mode=ParseMode.HTML,
-    )
-    logger.info(
-        "blogger adapt done uid=%s post_id=%s platform=%s",
-        draft.user_id,
-        draft.post_id,
-        platform,
-    )
 
 
 @router.callback_query(F.data.startswith(msg.CB_BLOG_RUN_ADAPT_PREFIX))
@@ -250,21 +226,13 @@ async def cb_blogger_run_adapt_legacy(callback: CallbackQuery) -> None:
         await callback.answer()
         return
 
-    draft = blogger_post_cache.get(post_id, callback.from_user.id)
+    draft = await blogger_post_cache.resolve(post_id, callback.from_user.id)
     if draft is None:
-        draft = _resolve_draft_for_adapt(callback, callback.from_user.id)
+        draft = await _resolve_draft_for_adapt_guarded(callback, post_id=post_id)
     if draft is None:
-        await callback.answer(msg.TXT_BLOGGER_POST_NOT_FOUND, show_alert=True)
         return
 
-    blogger_post_cache.bind_telegram_message(
-        draft.post_id,
-        callback.from_user.id,
-        chat_id=callback.message.chat.id,
-        message_id=callback.message.message_id,
-    )
-
-    callback.data = f"{msg.CB_ADAPT_TARGET_PREFIX}{platform}"
+    callback.data = f"{msg.CB_ADAPT_TARGET_PREFIX}{platform}:{draft.post_id}"
     await cb_blogger_adapt_target(callback)
 
 
@@ -319,7 +287,7 @@ async def cb_blogger_hashtags(callback: CallbackQuery) -> None:
         await callback.answer(msg.TXT_BLOGGER_POST_NOT_FOUND, show_alert=True)
         return
 
-    blogger_post_cache.mark_hashtags_applied(
+    await blogger_post_cache.mark_hashtags_applied(
         draft.post_id,
         draft.user_id,
         chat_id=callback.message.chat.id,
@@ -332,26 +300,34 @@ async def cb_blogger_hashtags(callback: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith(msg.CB_BLOG_ADAPT_PREFIX))
 async def cb_blogger_adapt_menu(callback: CallbackQuery) -> None:
     """Карусель выбора площадки для реформата поста."""
-    draft = await _guard_blogger_post(callback, msg.CB_BLOG_ADAPT_PREFIX)
-    if draft is None or callback.message is None:
-        return
-
-    if not draft.parsed.body:
-        await callback.answer(msg.TXT_BLOGGER_ADAPT_BODY_MISSING, show_alert=True)
-        return
-
     try:
+        draft = await _guard_blogger_post(callback, msg.CB_BLOG_ADAPT_PREFIX)
+        if draft is None or callback.message is None:
+            return
+
+        if not extract_blogger_post_body(draft.raw_text, draft.parsed):
+            await callback.answer(msg.TXT_BLOGGER_ADAPT_BODY_MISSING, show_alert=True)
+            return
+
         await callback.message.edit_reply_markup(
             reply_markup=get_blogger_adapt_keyboard(draft.post_id),
         )
+        await callback.answer("Выберите площадку 👇")
     except TelegramBadRequest:
         logger.warning(
-            "blogger adapt menu edit_reply_markup failed uid=%s post_id=%s",
-            draft.user_id,
-            draft.post_id,
+            "blogger adapt menu edit_reply_markup failed uid=%s data=%s",
+            callback.from_user.id if callback.from_user else None,
+            callback.data,
             exc_info=True,
         )
-    await callback.answer()
+        await callback.answer(msg.TXT_BLOGGER_POST_NOT_FOUND, show_alert=True)
+    except Exception:
+        logger.exception(
+            "blogger adapt menu failed uid=%s data=%s",
+            callback.from_user.id if callback.from_user else None,
+            callback.data,
+        )
+        await callback.answer(msg.TXT_BLOGGER_ADAPT_FAILED, show_alert=True)
 
 
 @router.callback_query(F.data.startswith(msg.CB_BLOG_BACK_PREFIX))
@@ -382,29 +358,40 @@ async def cb_blogger_back_to_constructor(callback: CallbackQuery) -> None:
 )
 async def cb_blogger_cover_art(callback: CallbackQuery) -> None:
     """Кнопка «🎨 AI-обложка» — проверка фото лица → выбор или генерация Flux Schnell."""
-    if callback.from_user is None or callback.message is None:
+    try:
+        if callback.from_user is None or callback.message is None:
+            await callback.answer()
+            return
+
+        post_id = _post_id_from_cover_callback(callback.data or "")
+        if not post_id:
+            await callback.answer(msg.TXT_BLOGGER_POST_NOT_FOUND, show_alert=True)
+            return
+
+        draft = await _resolve_cover_draft(callback, post_id)
+        if draft is None:
+            return
+
+        user_id = callback.from_user.id
+        if await has_blogger_face_photo(user_id):
+            await _start_blogger_cover_generation(callback, draft, use_face=True)
+            return
+
         await callback.answer()
-        return
-
-    post_id = _post_id_from_cover_callback(callback.data or "")
-    if not post_id:
-        await callback.answer()
-        return
-
-    draft = await _resolve_cover_draft(callback, post_id)
-    if draft is None:
-        return
-
-    user_id = callback.from_user.id
-    if await has_blogger_face_photo(user_id):
-        await _start_blogger_cover_generation(callback, draft, use_face=True)
-        return
-
-    await callback.answer()
-    await callback.message.answer(
-        msg.TXT_BLOGGER_COVER_FACE_CHOICE,
-        reply_markup=get_blogger_cover_face_keyboard(draft.post_id),
-    )
+        await callback.message.answer(
+            msg.TXT_BLOGGER_COVER_FACE_CHOICE,
+            reply_markup=get_blogger_cover_face_keyboard(draft.post_id),
+        )
+    except Exception:
+        logger.exception(
+            "blogger cover art failed uid=%s data=%s",
+            callback.from_user.id if callback.from_user else None,
+            callback.data,
+        )
+        try:
+            await callback.answer(msg.TXT_BLOGGER_COVER_FAILED, show_alert=True)
+        except Exception:
+            logger.debug("blogger cover art: callback.answer failed", exc_info=True)
 
 
 @router.callback_query(F.data.startswith(msg.CB_BLOGGER_COVER_UPLOAD_FACE_PREFIX))
@@ -469,7 +456,10 @@ async def blogger_face_photo_upload(message: Message, state: FSMContext) -> None
         await message.answer("✅ Фото лица сохранено. Нажмите «🎨 Создать AI-обложку» у поста.")
         return
 
-    draft = blogger_post_cache.get(post_id, user_id)
+    draft = await blogger_post_cache.resolve(post_id, user_id)
+    if draft is None:
+        draft = await blogger_post_cache.resolve_last(user_id)
+
     if draft is None:
         await message.answer(msg.TXT_BLOGGER_POST_NOT_FOUND, parse_mode=ParseMode.HTML)
         return

@@ -118,7 +118,7 @@ def get_blogger_adapt_keyboard(post_id: str) -> InlineKeyboardMarkup:
         builder.row(
             InlineKeyboardButton(
                 text=route.button_text,
-                callback_data=route.callback_data,
+                callback_data=build_adapt_target_callback(route.key, post_id),
             )
         )
     builder.row(
@@ -130,15 +130,26 @@ def get_blogger_adapt_keyboard(post_id: str) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def parse_adapt_target(data: str) -> str | None:
-    """Из ``adapt_target:video`` возвращает ключ площадки или ``None``."""
+def build_adapt_target_callback(platform: str, post_id: str) -> str:
+    """``adapt_target:<platform>:<post_id>`` — post_id в callback для надёжного резолва."""
+    return f"{msg.CB_ADAPT_TARGET_PREFIX}{platform.strip().lower()}:{post_id.strip()}"
+
+
+def parse_adapt_target(data: str) -> tuple[str, str | None] | None:
+    """Из ``adapt_target:video:<post_id>`` или legacy ``adapt_target:video``."""
     prefix = msg.CB_ADAPT_TARGET_PREFIX
     if not (data or "").startswith(prefix):
         return None
-    target = data[len(prefix) :].strip().lower()
-    if target not in _ADAPT_TARGETS:
-        return None
-    return target
+    rest = data[len(prefix) :].strip().lower()
+    if ":" in rest:
+        platform, post_id = rest.split(":", 1)
+        platform = platform.strip()
+        post_id = post_id.strip()
+        if platform in _ADAPT_TARGETS and post_id:
+            return platform, post_id
+    if rest in _ADAPT_TARGETS:
+        return rest, None
+    return None
 
 
 def adapt_platform_label(platform: str) -> str:

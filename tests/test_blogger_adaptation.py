@@ -18,10 +18,11 @@ from services.billing.pricing import FREE_CHAT_MODEL
 
 
 def test_parse_adapt_target_valid() -> None:
-    assert parse_adapt_target(msg.CB_ADAPT_TARGET_VIDEO) == "video"
-    assert parse_adapt_target(msg.CB_ADAPT_TARGET_VC) == "vc"
-    assert parse_adapt_target(msg.CB_ADAPT_TARGET_VK) == "vk"
-    assert parse_adapt_target(msg.CB_ADAPT_TARGET_TG_MAX) == "tg_max"
+    assert parse_adapt_target(msg.CB_ADAPT_TARGET_VIDEO) == ("video", None)
+    assert parse_adapt_target("adapt_target:vc:abc12345") == ("vc", "abc12345")
+    assert parse_adapt_target(msg.CB_ADAPT_TARGET_VK) == ("vk", None)
+    assert parse_adapt_target("adapt_target:vk:deadbeef") == ("vk", "deadbeef")
+    assert parse_adapt_target(msg.CB_ADAPT_TARGET_TG_MAX) == ("tg_max", None)
     assert parse_adapt_target("adapt_target:unknown") is None
 
 
@@ -52,11 +53,11 @@ async def test_cb_blogger_adapt_target_sends_result() -> None:
     sample = """===ТЕЛО ПОСТА===
 Тестовое тело поста для адаптации."""
     post_id = blogger_post_cache.remember(701, sample)
-    blogger_post_cache.bind_telegram_message(post_id, 701, chat_id=1, message_id=20)
+    await blogger_post_cache.bind_telegram_message(post_id, 701, chat_id=1, message_id=20)
 
     callback = MagicMock()
     callback.from_user.id = 701
-    callback.data = msg.CB_ADAPT_TARGET_VK
+    callback.data = f"adapt_target:vk:{post_id}"
     callback.message.chat.id = 1
     callback.message.message_id = 20
     callback.message.answer = AsyncMock()
@@ -81,4 +82,43 @@ async def test_cb_blogger_adapt_target_sends_result() -> None:
     callback.message.answer.assert_awaited_once()
     sent_text = callback.message.answer.await_args.args[0]
     assert "VK пост" in sent_text
+
+
+@pytest.mark.asyncio
+async def test_cb_blogger_adapt_target_display_html_cache() -> None:
+    """Черновик из display-HTML (fallback кэша) тоже адаптируется."""
+    from platforms.blogger_flow import cb_blogger_adapt_target
+    from services.blogger_post_parser import format_blogger_display_html, normalize_blogger_raw_output
+
+    raw = """===ТЕЛО ПОСТА===
+Текст поста из display-кэша для VK."""
+    display = format_blogger_display_html(normalize_blogger_raw_output(raw))
+    post_id = blogger_post_cache.remember(702, display)
+    await blogger_post_cache.bind_telegram_message(post_id, 702, chat_id=2, message_id=30)
+
+    callback = MagicMock()
+    callback.from_user.id = 702
+    callback.data = f"adapt_target:video:{post_id}"
+    callback.message.chat.id = 2
+    callback.message.message_id = 30
+    callback.message.answer = AsyncMock()
+    callback.answer = AsyncMock()
+
+    adapt_result = type(
+        "AdaptResult",
+        (),
+        {"ok": True, "content": "Reels сценарий готов", "error": ""},
+    )()
+
+    with (
+        patch("platforms.blogger_flow.billing_bypass", return_value=True),
+        patch(
+            "platforms.blogger_flow.adapt_blogger_post_with_billing",
+            AsyncMock(return_value=adapt_result),
+        ),
+    ):
+        await cb_blogger_adapt_target(callback)
+
+    callback.answer.assert_awaited_once_with(msg.TXT_BLOGGER_ADAPT_QUEUED)
+    callback.message.answer.assert_awaited_once()
 

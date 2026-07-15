@@ -110,6 +110,27 @@ async def _migrate_rate_limit_hits(db: aiosqlite.Connection) -> None:
     )
 
 
+async def _migrate_blogger_post_drafts(db: aiosqlite.Connection) -> None:
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS blogger_post_drafts (
+            post_id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            raw_text TEXT NOT NULL,
+            hashtags_applied INTEGER NOT NULL DEFAULT 0,
+            chat_id INTEGER,
+            message_id INTEGER,
+            display_text TEXT,
+            updated_at REAL NOT NULL
+        )
+        """
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_blogger_post_drafts_user_updated "
+        "ON blogger_post_drafts (user_id, updated_at DESC)"
+    )
+
+
 async def _migrate_identity_map(db: aiosqlite.Connection) -> None:
     """
     Identity Map: сквозной ``account_id`` отдельно от нативных ID платформ.
@@ -361,6 +382,7 @@ async def init_db(promo_seeds: str = "") -> None:
         await _migrate_wb_api(db)
         await _migrate_identity_map(db)
         await _migrate_rate_limit_hits(db)
+        await _migrate_blogger_post_drafts(db)
         await db.execute(
             """
             CREATE TABLE IF NOT EXISTS referrals (
@@ -1209,6 +1231,100 @@ async def set_blogger_face_file_id(user_id: int, file_id: str) -> None:
 
 async def has_blogger_face_photo(user_id: int) -> bool:
     return (await get_blogger_face_file_id(user_id)) is not None
+
+
+async def save_blogger_post_draft(
+    *,
+    post_id: str,
+    user_id: int,
+    raw_text: str,
+    hashtags_applied: bool = False,
+    chat_id: int | None = None,
+    message_id: int | None = None,
+    display_text: str | None = None,
+) -> None:
+    """Персистентный черновик поста блогера для inline-кнопок конструктора."""
+    await ensure_user(user_id)
+    now = time.time()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO blogger_post_drafts (
+                post_id, user_id, raw_text, hashtags_applied,
+                chat_id, message_id, display_text, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(post_id) DO UPDATE SET
+                raw_text = excluded.raw_text,
+                hashtags_applied = excluded.hashtags_applied,
+                chat_id = excluded.chat_id,
+                message_id = excluded.message_id,
+                display_text = excluded.display_text,
+                updated_at = excluded.updated_at
+            """,
+            (
+                post_id,
+                user_id,
+                raw_text,
+                1 if hashtags_applied else 0,
+                chat_id,
+                message_id,
+                display_text,
+                now,
+            ),
+        )
+        await db.commit()
+
+
+async def load_blogger_post_draft(post_id: str, user_id: int) -> dict[str, object] | None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """
+            SELECT post_id, user_id, raw_text, hashtags_applied,
+                   chat_id, message_id, display_text
+            FROM blogger_post_drafts
+            WHERE post_id = ? AND user_id = ?
+            """,
+            (post_id, user_id),
+        ) as cur:
+            row = await cur.fetchone()
+    if not row:
+        return None
+    return {
+        "post_id": str(row[0]),
+        "user_id": int(row[1]),
+        "raw_text": str(row[2] or ""),
+        "hashtags_applied": bool(row[3]),
+        "chat_id": int(row[4]) if row[4] is not None else None,
+        "message_id": int(row[5]) if row[5] is not None else None,
+        "display_text": row[6],
+    }
+
+
+async def load_last_blogger_post_draft(user_id: int) -> dict[str, object] | None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """
+            SELECT post_id, user_id, raw_text, hashtags_applied,
+                   chat_id, message_id, display_text
+            FROM blogger_post_drafts
+            WHERE user_id = ?
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            (user_id,),
+        ) as cur:
+            row = await cur.fetchone()
+    if not row:
+        return None
+    return {
+        "post_id": str(row[0]),
+        "user_id": int(row[1]),
+        "raw_text": str(row[2] or ""),
+        "hashtags_applied": bool(row[3]),
+        "chat_id": int(row[4]) if row[4] is not None else None,
+        "message_id": int(row[5]) if row[5] is not None else None,
+        "display_text": row[6],
+    }
 
 
 async def clear_user_dialog_and_memory(user_id: int) -> None:

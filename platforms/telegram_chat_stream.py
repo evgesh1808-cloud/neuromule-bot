@@ -34,6 +34,7 @@ class StreamReplyHandle:
     """
 
     _apply_text: Any = field(repr=False)
+    _sent_msg_ref: Any = field(repr=False, default=lambda: None)
 
     async def on_stream(self, full_text: str, done: bool) -> None:
         capped = prepare_telegram_html_text(full_text or "")
@@ -44,9 +45,17 @@ class StreamReplyHandle:
         full_text: str,
         *,
         reply_markup: "InlineKeyboardMarkup | None" = None,
-    ) -> None:
+        on_finalized: Any = None,
+    ) -> "Message | None":
         capped = prepare_telegram_html_text(full_text or "")
         await self._apply_text(capped, force=True, reply_markup=reply_markup)
+        sent = self._sent_message()
+        if on_finalized is not None and sent is not None:
+            await on_finalized(sent)
+        return sent
+
+    def _sent_message(self) -> "Message | None":
+        return getattr(self, "_sent_msg_ref", lambda: None)()
 
 
 def create_throttled_stream_reply(message: "Message", bot: "Bot", settings: Settings) -> StreamReplyHandle:
@@ -138,4 +147,4 @@ def create_throttled_stream_reply(message: "Message", bot: "Bot", settings: Sett
         except TelegramBadRequest:
             logger.debug("stream reply edit_reply_markup failed", exc_info=True)
 
-    return StreamReplyHandle(_apply_text=_apply_text)
+    return StreamReplyHandle(_apply_text=_apply_text, _sent_msg_ref=lambda: state["sent_msg"])

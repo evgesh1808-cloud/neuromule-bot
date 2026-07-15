@@ -64,14 +64,23 @@ logger = logging.getLogger(__name__)
 _BLOGGER_ROLE_IDS = frozenset({"blogger_content", "blogger"})
 
 
-def _blogger_reply_markup(user_id: int, assistant_message: str, *, blogger_post_raw: str | None = None):
-    """Кэширует черновик поста и возвращает клавиатуру конструктора блогера."""
+async def _blogger_reply_markup(user_id: int, assistant_message: str, *, blogger_post_raw: str | None = None):
+    """Кэширует черновик поста и возвращает (клавиатуру, post_id)."""
     from content.inline_keyboards import get_blogger_keyboard
     from services import blogger_post_cache
+    from services.blogger_post_parser import canonicalize_blogger_cache_raw
 
-    raw_for_cache = blogger_post_raw or assistant_message
-    post_id = blogger_post_cache.remember(user_id, raw_for_cache)
-    return get_blogger_keyboard(post_id)
+    if (blogger_post_raw or "").strip():
+        raw_for_cache = canonicalize_blogger_cache_raw(blogger_post_raw)
+    else:
+        logger.warning(
+            "blogger_post_raw missing uid=%s — fallback to display text (обложка может не сработать)",
+            user_id,
+        )
+        raw_for_cache = canonicalize_blogger_cache_raw(assistant_message)
+
+    post_id = await blogger_post_cache.remember_async(user_id, raw_for_cache)
+    return get_blogger_keyboard(post_id), post_id
 
 
 _ZERO_WIDTH_CHARS = ("\u200b", "\u200c", "\u200d", "\ufeff", "\xa0")
@@ -267,13 +276,31 @@ async def _reply_chat_turn_result(
             )
         if stream_handle is not None and result.assistant_message:
             blogger_kb = None
+            blogger_post_id: str | None = None
             if (result.effective_text_role or "") in _BLOGGER_ROLE_IDS:
-                blogger_kb = _blogger_reply_markup(
+                blogger_kb, blogger_post_id = await _blogger_reply_markup(
                     message.from_user.id,
                     result.assistant_message,
                     blogger_post_raw=result.blogger_post_raw,
                 )
-            await stream_handle.finalize(result.assistant_message, reply_markup=blogger_kb)
+
+            async def _bind_blogger_post(sent_message: Message) -> None:
+                if not blogger_post_id:
+                    return
+                from services import blogger_post_cache
+
+                await blogger_post_cache.bind_telegram_message(
+                    blogger_post_id,
+                    message.from_user.id,
+                    chat_id=sent_message.chat.id,
+                    message_id=sent_message.message_id,
+                )
+
+            await stream_handle.finalize(
+                result.assistant_message,
+                reply_markup=blogger_kb,
+                on_finalized=_bind_blogger_post if blogger_post_id else None,
+            )
         elif stream_handle is None:
             if result.table_raw_json:
                 try:
@@ -313,7 +340,7 @@ async def _reply_chat_turn_result(
                 else:
                     blogger_kb = None
                     if (result.effective_text_role or "") in _BLOGGER_ROLE_IDS:
-                        blogger_kb = _blogger_reply_markup(
+                        blogger_kb, _blogger_post_id = await _blogger_reply_markup(
                             message.from_user.id,
                             result.assistant_message,
                             blogger_post_raw=result.blogger_post_raw,

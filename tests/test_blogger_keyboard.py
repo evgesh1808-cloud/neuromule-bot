@@ -72,38 +72,40 @@ def test_get_blogger_adapt_keyboard() -> None:
     assert len(kb.inline_keyboard) == 5
     video_btn, vc_btn, vk_btn, tg_btn = (row[0] for row in kb.inline_keyboard[:4])
     assert video_btn.text == msg.BTN_BLOGGER_ADAPT_VIDEO
-    assert video_btn.callback_data == msg.CB_ADAPT_TARGET_VIDEO
-    assert vc_btn.callback_data == msg.CB_ADAPT_TARGET_VC
-    assert vk_btn.callback_data == msg.CB_ADAPT_TARGET_VK
-    assert tg_btn.callback_data == msg.CB_ADAPT_TARGET_TG_MAX
+    assert video_btn.callback_data == "adapt_target:video:a1b2c3d4"
+    assert vc_btn.callback_data == "adapt_target:vc:a1b2c3d4"
+    assert vk_btn.callback_data == "adapt_target:vk:a1b2c3d4"
+    assert tg_btn.callback_data == "adapt_target:tg_max:a1b2c3d4"
     back_btn = kb.inline_keyboard[-1][0]
     assert back_btn.callback_data == f"{msg.CB_BLOG_BACK_PREFIX}a1b2c3d4"
 
 
-def test_blogger_post_cache_remember_and_get() -> None:
+@pytest.mark.asyncio
+async def test_blogger_post_cache_remember_and_get() -> None:
     post_id = blogger_post_cache.remember(9001, _SAMPLE)
     draft = blogger_post_cache.get(post_id, 9001)
     assert draft is not None
     assert draft.hashtags is not None
     assert draft.image_prompt is not None
     assert blogger_post_cache.get(post_id, 9002) is None
-    updated = blogger_post_cache.mark_hashtags_applied(post_id, 9001)
+    updated = await blogger_post_cache.mark_hashtags_applied(post_id, 9001)
     assert updated is not None
     assert updated.hashtags_applied is True
 
 
-def test_blogger_post_cache_survives_hashtags_edit_message() -> None:
+@pytest.mark.asyncio
+async def test_blogger_post_cache_survives_hashtags_edit_message() -> None:
     post_id = blogger_post_cache.remember(9001, _SAMPLE)
     chat_id, message_id = 42, 1001
     display = "Пост в чате\n\n#AI #Tech"
 
-    blogger_post_cache.bind_telegram_message(
+    await blogger_post_cache.bind_telegram_message(
         post_id,
         9001,
         chat_id=chat_id,
         message_id=message_id,
     )
-    blogger_post_cache.mark_hashtags_applied(
+    await blogger_post_cache.mark_hashtags_applied(
         post_id,
         9001,
         chat_id=chat_id,
@@ -118,3 +120,22 @@ def test_blogger_post_cache_survives_hashtags_edit_message() -> None:
     assert by_message.display_text == display
     assert by_message.image_prompt is not None
     assert by_message.parsed.body is not None
+
+
+@pytest.mark.asyncio
+async def test_blogger_post_cache_persists_to_sqlite(repo_module) -> None:
+    import services.blogger_post_cache as cache
+
+    cache._BY_ID.clear()
+    cache._LAST_BY_USER.clear()
+    cache._BY_MESSAGE.clear()
+
+    post_id = await cache.remember_async(9100, _SAMPLE)
+    cache._BY_ID.clear()
+    cache._LAST_BY_USER.clear()
+    cache._BY_MESSAGE.clear()
+
+    restored = await cache.resolve(post_id, 9100)
+    assert restored is not None
+    assert restored.parsed.body is not None
+    assert "инсайтом" in restored.parsed.body
