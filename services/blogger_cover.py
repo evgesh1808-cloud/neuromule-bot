@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any
@@ -30,6 +31,7 @@ class BloggerCoverOutcome(str, Enum):
     INSUFFICIENT_BALANCE = "insufficient_balance"
     DAILY_LIMIT_EXCEEDED = "daily_limit_exceeded"
     FREE_IMAGE_MODEL_BLOCKED = "free_image_model_blocked"
+    REPLICATE_UNAVAILABLE = "replicate_unavailable"
     GENERATION_FAILED = "generation_failed"
     SUCCESS = "success"
 
@@ -77,6 +79,25 @@ def prepare_blogger_flux_prompt(raw_prompt: str, *, with_face: bool = False) -> 
             1,
         )
     return cleaned
+
+
+def _strip_flux_aspect_suffix(prompt: str) -> str:
+    """``aspect_ratio`` передаётся отдельным полем Replicate — убираем ``--ar`` из текста."""
+    return re.sub(r"\s*--ar\s*\d+:\d+\s*", " ", (prompt or ""), flags=re.IGNORECASE).strip()
+
+
+async def _flux_prompt_for_replicate(settings: Settings, cleaned_prompt: str) -> str:
+    """Промпт Flux Schnell: без ``--ar`` в тексте + опциональный кинематографичный enhance."""
+    from services.billing.translator import enhance_video_prompt_for_replicate
+
+    prompt = _strip_flux_aspect_suffix(cleaned_prompt)
+    if not prompt:
+        return cleaned_prompt
+    try:
+        return await enhance_video_prompt_for_replicate(settings, prompt)
+    except Exception:
+        logger.warning("blogger cover prompt enhance failed, using sanitized prompt", exc_info=True)
+        return prompt
 
 
 async def generate_blogger_cover_image(
@@ -148,11 +169,16 @@ async def run_blogger_cover_turn(
         spend_blogger_cover,
     )
     from services.god_mode import billing_bypass
+    from services.replicate_client import replicate_configured
     from services.repository import get_blogger_face_file_id
 
     raw_prompt = extract_image_prompt_from_draft(draft)
     if not raw_prompt:
         return BloggerCoverResult(outcome=BloggerCoverOutcome.PROMPT_NOT_FOUND)
+
+    if not replicate_configured():
+        logger.error("blogger cover: REPLICATE_API_TOKEN is not configured uid=%s", user_id)
+        return BloggerCoverResult(outcome=BloggerCoverOutcome.REPLICATE_UNAVAILABLE)
 
     if not billing_bypass(user_id) and not await can_afford_blogger_cover(user_id):
         return BloggerCoverResult(outcome=BloggerCoverOutcome.INSUFFICIENT_BALANCE)
@@ -162,6 +188,7 @@ async def run_blogger_cover_turn(
         face_file_id = await get_blogger_face_file_id(user_id)
 
     cleaned_prompt = prepare_blogger_flux_prompt(raw_prompt, with_face=bool(face_file_id))
+    flux_prompt = await _flux_prompt_for_replicate(settings, cleaned_prompt)
 
     charge_id: str | None = None
     if not billing_bypass(user_id):
@@ -177,7 +204,7 @@ async def run_blogger_cover_turn(
     try:
         image = await generate_blogger_cover_image(
             settings,
-            cleaned_prompt,
+            flux_prompt,
             face_file_id=face_file_id,
             bot=bot,
         )
@@ -206,25 +233,51 @@ async def deliver_blogger_cover_photo(
     caption_template: str,
 ) -> None:
     """Отправляет обложку новым сообщением, конструктор не трогает."""
+    import httpx
     from aiogram.enums import ParseMode
+    from aiogram.exceptions import TelegramBadRequest
     from aiogram.types import BufferedInputFile
+
+    from services.streaming_download import stream_download_to_bytes
 
     safe_prompt = cleaned_prompt.replace("<", "&lt;").replace(">", "&gt;")
     caption = caption_template.format(prompt=safe_prompt)
-    if image.url:
+
+    async def _send_bytes(data: bytes) -> None:
         await message.answer_photo(
-            photo=image.url,
+            photo=BufferedInputFile(data, filename="blogger_cover.webp"),
             caption=caption,
             parse_mode=ParseMode.HTML,
         )
-        return
+
     if image.data:
-        await message.answer_photo(
-            photo=BufferedInputFile(image.data, filename="blogger_cover.webp"),
-            caption=caption,
-            parse_mode=ParseMode.HTML,
-        )
+        await _send_bytes(image.data)
         return
+
+    if image.url:
+        try:
+            await message.answer_photo(
+                photo=image.url,
+                caption=caption,
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        except TelegramBadRequest:
+            logger.warning(
+                "blogger cover: telegram rejected photo url, downloading bytes",
+                exc_info=True,
+            )
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=15.0)) as client:
+            data = await stream_download_to_bytes(
+                client,
+                image.url,
+                source="blogger_cover",
+                max_bytes=8 * 1024 * 1024,
+            )
+        if data:
+            await _send_bytes(data)
+            return
+
     raise RuntimeError("deliver_blogger_cover_photo: no image data")
 
 
@@ -257,6 +310,12 @@ async def deliver_blogger_cover_turn_result(
         from aiogram.enums import ParseMode
 
         await message.answer(msg.TXT_BLOGGER_COVER_FAILED, parse_mode=ParseMode.HTML)
+        return
+
+    if result.outcome is BloggerCoverOutcome.REPLICATE_UNAVAILABLE:
+        from aiogram.enums import ParseMode
+
+        await message.answer(msg.TXT_BLOGGER_COVER_REPLICATE_UNAVAILABLE, parse_mode=ParseMode.HTML)
         return
 
     if result.outcome is BloggerCoverOutcome.PROMPT_NOT_FOUND:
@@ -298,6 +357,11 @@ async def handle_blogger_cover_callback(
     user_id = callback.from_user.id if callback.from_user else draft.user_id
     from services.billing.blogger_pipeline import can_afford_blogger_cover
     from services.god_mode import billing_bypass
+    from services.replicate_client import replicate_configured
+
+    if not replicate_configured():
+        await callback.answer(msg.TXT_BLOGGER_COVER_REPLICATE_UNAVAILABLE, show_alert=True)
+        return BloggerCoverResult(outcome=BloggerCoverOutcome.REPLICATE_UNAVAILABLE)
 
     if not billing_bypass(user_id) and not await can_afford_blogger_cover(user_id):
         await callback.answer(msg.TXT_BLOGGER_COVER_INSUFFICIENT, show_alert=True)

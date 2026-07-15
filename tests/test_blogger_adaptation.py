@@ -10,6 +10,7 @@ from content import messages as msg
 from services import blogger_post_cache
 from services.blogger_adaptation import (
     BLOGGER_ADAPT_ROUTES,
+    adapt_blogger_post_body,
     parse_adapt_target,
     prepare_adapted_telegram_html,
     sanitize_adapt_model_output,
@@ -44,6 +45,23 @@ def test_prepare_adapted_telegram_html_repairs_markdown_and_closes_b() -> None:
     html = prepare_adapted_telegram_html(raw)
     assert "<b>жирный</b>" in html
     assert html.count("<b>") == html.lower().count("</b>")
+
+
+@pytest.mark.asyncio
+async def test_adapt_blogger_post_body_reads_dict_content() -> None:
+    from services.blogger_adaptation import adapt_blogger_post_body
+
+    mock_result = {"content": "Готовый пост для VK", "prompt_tokens": 0, "completion_tokens": 0}
+    with patch(
+        "services.blogger_adaptation.ask_ai_messages",
+        AsyncMock(return_value=mock_result),
+    ):
+        out = await adapt_blogger_post_body(
+            type("S", (), {})(),
+            source_body="Исходный текст поста",
+            platform="vk",
+        )
+    assert out == "Готовый пост для VK"
 
 
 @pytest.mark.asyncio

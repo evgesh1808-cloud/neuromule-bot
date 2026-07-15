@@ -224,7 +224,7 @@ async def adapt_blogger_post_body(
         logger.exception("blogger adapt ask_ai_messages failed platform=%s", platform)
         return None
 
-    content = sanitize_adapt_model_output(result.content or "")
+    content = sanitize_adapt_model_output(result.get("content", ""))
     return content or None
 
 

@@ -1341,6 +1341,10 @@ TXT_BLOGGER_COVER_READY = (
     "Промпт: <code>{prompt}</code>"
 )
 TXT_BLOGGER_COVER_FAILED = "❌ Не удалось сгенерировать обложку. Баланс возвращён."
+TXT_BLOGGER_COVER_REPLICATE_UNAVAILABLE = (
+    "❌ Сервис Flux Schnell (Replicate) временно недоступен на сервере. "
+    "Попробуйте позже или напишите в поддержку."
+)
 TXT_BLOGGER_ART_QUEUED = "💎 Списываем 1 кристалл. Нейросеть генерирует обложку..."
 TXT_BLOGGER_ART_PROMPT_SENT = (
     "🎨 <b>Ваш промпт отправлен в генератор обложек:</b>\n"
