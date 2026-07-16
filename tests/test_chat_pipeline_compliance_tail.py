@@ -145,20 +145,34 @@ def test_paid_standard_uses_full_premium_neuromule_voice() -> None:
     assert "PROFESSIONAL LENGTH AND BUDGET CONTROL" in prompt
     assert "MAX 1500 TOKENS" in prompt
     assert "1000-1400" in prompt or "1000–1400" in prompt
+    assert "ЕСТЕСТВЕННОСТЬ РЕЧИ" in prompt
+    assert "Пример реплики" in prompt
+    assert "blockquote expandable" in prompt
+    assert "взвешивание нейронов" in prompt.lower() or "взвешивание нейронов" in prompt
+    assert "вместо алгоритм/план" not in prompt
+    assert "Нейроны» (вместо логика" not in prompt
     assert "СТИЛЬ ОТВЕТА" not in prompt
-    assert "Без блока ===КНОПКИ===" in prompt
+    assert "===КНОПКИ===" in prompt
 
     free_role = build_custom_role_prompt("standard", TariffTier.FREE)
     mini_role = build_custom_role_prompt("standard", TariffTier.MINI)
     ultra_role = build_custom_role_prompt("standard", TariffTier.ULTRA)
     assert "===КНОПКИ===" in free_role
+    assert "Пример реплики" in free_role
+    assert "ЕСТЕСТВЕННОСТЬ РЕЧИ" in free_role
     assert "ПРЕМИУМ NEUROMULE" in mini_role
+    assert "Пример реплики" in mini_role
+    assert "blockquote expandable" in mini_role
+    assert "ЕСТЕСТВЕННОСТЬ РЕЧИ" in mini_role
     assert "ПРЕМИУМ NEUROMULE" in ultra_role
+    assert "Пример реплики" in ultra_role
     assert "СТИЛЬ ОТВЕТА" in free_role
 
     mini_sys = get_role_prompt("standard", premium=True, tariff=TariffTier.MINI)
     assert "Маршрут" in mini_sys
     assert "ПРЕМИУМ NEUROMULE" in mini_sys
+    assert "Пример реплики" in mini_sys
+    assert "ЕСТЕСТВЕННОСТЬ РЕЧИ" in mini_sys
     assert "СТИЛЬ ОТВЕТА" not in mini_sys
 
 
