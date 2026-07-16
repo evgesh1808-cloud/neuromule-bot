@@ -44,14 +44,19 @@ cover_generation_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 _worker_tasks: list[asyncio.Task[None]] = []
 DEFAULT_COVER_WORKERS = 5
 
+# FACE: макро-хвост под фотореализм кожи (Flux + face reference).
 _FACE_PROMPT_SUFFIX = (
-    ", seamlessly integrating the face and appearance of the person from the "
-    "reference image into the scene as the main character, matching natural "
-    "lighting and skin texture"
+    ", close-up portrait, high-end editorial fashion photography, masterpiece, "
+    "hyper-realistic detailed skin texture, visible skin pores, natural skin grain, "
+    "subtle realistic skin details, professional volumetric studio lighting, "
+    "rich contrast, shot on 85mm lens, f/1.4 aperture, cinematic depth of field, "
+    "sharp focus on eyes and face, highly commercial lifestyle aesthetic, "
+    "absolutely no plastic skin or artificial smoothing filters"
 )
-_OBJECT_PROMPT_SUFFIX = (
-    ", seamlessly integrating the specific product/object from the reference "
-    "image into the scene, matching local shadows, reflections, and ambient light"
+# OBJECT / NONE: общий коммерческий фотореализм.
+_COMMERCIAL_PROMPT_SUFFIX = (
+    ", ultra-detailed, 8k resolution, photorealistic, high-end studio lighting, "
+    "sharp focus, masterpiece, highly commercial aesthetic"
 )
 
 
@@ -153,12 +158,16 @@ def _cover_prompt_for_integration(
     cleaned_prompt: str,
     integration: CoverIntegrationType,
 ) -> str:
+    """Склеивает cleaned_prompt + хвостик качества перед JSON-payload в OpenRouter."""
     prompt = (cleaned_prompt or "").strip()
     if integration is CoverIntegrationType.FACE:
-        return f"{prompt}{_FACE_PROMPT_SUFFIX}" if prompt else _FACE_PROMPT_SUFFIX.lstrip(", ")
-    if integration is CoverIntegrationType.OBJECT:
-        return f"{prompt}{_OBJECT_PROMPT_SUFFIX}" if prompt else _OBJECT_PROMPT_SUFFIX.lstrip(", ")
-    return prompt
+        suffix = _FACE_PROMPT_SUFFIX
+    else:
+        # OBJECT и NONE — один коммерческий хвостик
+        suffix = _COMMERCIAL_PROMPT_SUFFIX
+    if not prompt:
+        return suffix.lstrip(", ")
+    return f"{prompt}{suffix}"
 
 
 def _openrouter_input_reference(data_url: str) -> dict[str, Any]:

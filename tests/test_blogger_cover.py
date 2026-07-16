@@ -117,6 +117,24 @@ async def test_generate_blogger_cover_image_uses_openrouter_flux() -> None:
     assert body["model"] == OPENROUTER_COVER_MODEL_ID
     assert body["aspect_ratio"] == "16:9"
     assert "input_references" not in body
+    assert "ultra-detailed, 8k resolution, photorealistic" in body["prompt"]
+    assert "plastic skin" not in body["prompt"]
+
+
+def test_cover_prompt_suffixes_by_integration() -> None:
+    from services.blogger_cover import _cover_prompt_for_integration
+
+    base = "A cinematic lifestyle scene"
+    face = _cover_prompt_for_integration(base, CoverIntegrationType.FACE)
+    obj = _cover_prompt_for_integration(base, CoverIntegrationType.OBJECT)
+    none = _cover_prompt_for_integration(base, CoverIntegrationType.NONE)
+
+    assert face.startswith(base)
+    assert "visible skin pores" in face
+    assert "ultra-detailed" not in face
+    assert obj.endswith("highly commercial aesthetic")
+    assert none.endswith("highly commercial aesthetic")
+    assert "skin pores" not in obj
 
 
 @pytest.mark.asyncio
@@ -150,7 +168,8 @@ async def test_generate_blogger_cover_image_face_uses_data_url_reference() -> No
     assert body["input_references"] == [
         {"type": "image_url", "image_url": {"url": data_url}},
     ]
-    assert "seamlessly integrating the face" in body["prompt"]
+    assert "hyper-realistic detailed skin texture" in body["prompt"]
+    assert "absolutely no plastic skin" in body["prompt"]
 
 
 @pytest.mark.asyncio
