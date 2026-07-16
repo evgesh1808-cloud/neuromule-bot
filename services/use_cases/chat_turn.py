@@ -301,7 +301,7 @@ async def run_chat_turn(
     if is_table_role:
         stream_callback = None
 
-    # Основная модель из биллинга + резервный каскад (FREE/MINI → free_models, SMART/ULTRA → smart_models).
+    # Основная модель из биллинга + резервный каскад (FREE → :free, MINI+ → Gemini/smart_models).
     model_chain: list[str] = []
     for mid in (plan.model_id, *plan.fallback_model_ids):
         mid = str(mid).strip()

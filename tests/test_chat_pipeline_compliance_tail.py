@@ -103,5 +103,10 @@ def test_model_route_for_role_blogger_on_paid_tariff() -> None:
     model_id, _fallbacks = _model_route_for_role("blogger_content", TariffTier.MINI)
     assert model_id == PAID_CHAT_MODEL
 
-    std_model, _ = _model_route_for_role("standard", TariffTier.MINI)
-    assert std_model == FREE_CHAT_MODEL
+    std_model, std_fb = _model_route_for_role("standard", TariffTier.MINI)
+    assert std_model == PAID_CHAT_MODEL
+
+    free_model, free_fb = _model_route_for_role("standard", TariffTier.FREE)
+    assert free_model == FREE_CHAT_MODEL
+    assert "mistralai/mistral-7b-instruct:free" in free_fb
+    assert "openchat/openchat-7b:free" in free_fb

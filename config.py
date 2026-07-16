@@ -13,15 +13,15 @@ logger = logging.getLogger(__name__)
 
 _ENV_FILE = Path(__file__).resolve().with_name(".env")
 
-# OpenRouter: суффикс ``:free`` у ряда моделей снят (404 No endpoints). Основная + резерв.
+# OpenRouter: FREE-тариф на ``:free``-моделях; платные — Gemini 2.5 Flash.
 _DEFAULT_GEMINI_FLASH = "google/gemini-2.5-flash"
 _DEFAULT_GEMINI_FLASH_LITE = "google/gemini-2.5-flash-lite"
+_DEFAULT_FREE_CHAT_MODEL = "meta-llama/llama-3-8b-instruct:free"
 # Имя поля сохранено для обратной совместимости импортов/тестов.
-_DEFAULT_GEMINI_FLASH_FREE = _DEFAULT_GEMINI_FLASH
+_DEFAULT_GEMINI_FLASH_FREE = _DEFAULT_FREE_CHAT_MODEL
 _DEFAULT_FREE_MODELS: list[str] = [
-    _DEFAULT_GEMINI_FLASH,
-    _DEFAULT_GEMINI_FLASH_LITE,
-    "meta-llama/llama-3-8b-instruct",
+    "mistralai/mistral-7b-instruct:free",
+    "openchat/openchat-7b:free",
 ]
 
 _DEFAULT_SMART_MODELS: list[str] = [
@@ -141,11 +141,8 @@ def _nonempty_str(default: str) -> BeforeValidator:
 
 
 def _strip_deprecated_free_suffix(model_id: str) -> str:
-    """OpenRouter снял ``:free``-эндпоинты (404) — нормализуем к платному slug."""
-    mid = (model_id or "").strip()
-    if mid.endswith(":free"):
-        return mid[:-5].rstrip()
-    return mid
+    """Нормализация model id (``:free`` сохраняем — нужен для FREE-тарифа)."""
+    return (model_id or "").strip()
 
 
 def _dedupe_model_ids(model_ids: list[str]) -> list[str]:
@@ -160,7 +157,7 @@ def _dedupe_model_ids(model_ids: list[str]) -> list[str]:
 
 
 def _openrouter_model_id(default: str) -> BeforeValidator:
-    """Парсит model ID из env и снимает устаревший суффикс ``:free``."""
+    """Парсит model ID из env (включая суффикс ``:free``)."""
 
     def _parse(v: Any) -> str:
         if v is None:
@@ -169,14 +166,7 @@ def _openrouter_model_id(default: str) -> BeforeValidator:
             raw = str(v).strip()
         else:
             raw = v.strip() or default
-        normalized = _strip_deprecated_free_suffix(raw)
-        if normalized != raw:
-            logger.warning(
-                "OpenRouter model ID normalized (deprecated :free suffix): %r -> %r",
-                raw,
-                normalized,
-            )
-        return normalized
+        return _strip_deprecated_free_suffix(raw)
 
     return BeforeValidator(_parse)
 
@@ -503,8 +493,8 @@ class Settings(BaseSettings):
     )
     free_text_model: Annotated[
         str,
-        _openrouter_model_id(_DEFAULT_GEMINI_FLASH),
-    ] = _DEFAULT_GEMINI_FLASH
+        _openrouter_model_id(_DEFAULT_FREE_CHAT_MODEL),
+    ] = _DEFAULT_FREE_CHAT_MODEL
     paid_text_model: Annotated[
         str,
         _openrouter_model_id(_DEFAULT_GEMINI_FLASH),

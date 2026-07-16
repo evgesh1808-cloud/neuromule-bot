@@ -48,24 +48,28 @@ def _unique_model_ids(*candidates: str) -> tuple[str, ...]:
 
 
 def _free_model_fallbacks() -> tuple[str, ...]:
-    return _unique_model_ids(*settings.free_models)
+    """Строгий каскад бесплатных моделей OpenRouter (тариф FREE)."""
+    return (
+        "mistralai/mistral-7b-instruct:free",
+        "openchat/openchat-7b:free",
+    )
 
 
 def _paid_model_fallbacks() -> tuple[str, ...]:
     if settings.smart_models:
         return _unique_model_ids(*settings.smart_models)
-    return _free_model_fallbacks()
+    return (PAID_CHAT_MODEL,)
 
 
 _BLOGGER_ROLE_IDS = frozenset({"blogger_content", "blogger"})
 
 
 def _model_route_for_role(role_id: str, tariff: TariffTier) -> tuple[str, tuple[str, ...]]:
-    """Блогер на платных тарифах — флагманская модель (структурированный пост)."""
+    """FREE → бесплатный каскад; MINI/SMART/ULTRA → Gemini 2.5 Flash."""
     rid = (role_id or "").strip().lower()
     if rid in _BLOGGER_ROLE_IDS and tariff is not TariffTier.FREE:
         return PAID_CHAT_MODEL, _paid_model_fallbacks()
-    if tariff in (TariffTier.FREE, TariffTier.MINI):
+    if tariff is TariffTier.FREE:
         return FREE_CHAT_MODEL, _free_model_fallbacks()
     return PAID_CHAT_MODEL, _paid_model_fallbacks()
 
