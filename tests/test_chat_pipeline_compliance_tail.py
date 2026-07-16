@@ -99,6 +99,32 @@ def test_prepare_openrouter_chat_messages() -> None:
     assert "премиум-комплаенс" in payload[1]["content"]
 
 
+def test_prepare_openrouter_uses_chatcom_tail_for_standard() -> None:
+    payload = [
+        {"role": "system", "content": "x"},
+        {"role": "user", "content": "сын любит мяч, что делать"},
+    ]
+    prepare_openrouter_chat_messages(
+        payload,
+        use_premium_prompt=True,
+        text_role="standard",
+    )
+    body = payload[1]["content"]
+    assert "комплаенс Chatcom" in body
+    assert "===КНОПКИ===" in body
+    assert "подробные ответы" not in body
+    assert "премиум-комплаенс" not in body
+
+
+def test_standard_premium_prompt_overrides_long_route_branding() -> None:
+    from content.chat_prompt import get_role_prompt
+
+    prompt = get_role_prompt("standard", premium=True)
+    assert "OVERRIDE — РЕЖИМ СТАНДАРТ" in prompt
+    assert "CRITICAL BUDGET AND STYLE RULE" in prompt
+    assert "===КНОПКИ===" in prompt
+
+
 def test_model_route_for_role_blogger_on_paid_tariff() -> None:
     model_id, _fallbacks = _model_route_for_role("blogger_content", TariffTier.MINI)
     assert model_id == PAID_CHAT_MODEL

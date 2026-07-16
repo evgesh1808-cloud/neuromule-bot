@@ -78,15 +78,19 @@ def inject_compliance_rules_into_last_user_message(
     messages: list[dict[str, Any]],
     *,
     use_premium_prompt: bool,
+    text_role: str | None = None,
 ) -> None:
     """
     Дублирует критичные правила роли в конец последнего ``user`` перед вызовом OpenRouter.
 
-    Помогает free-моделям (Gemini) не «забывать» запрет робо-маркеров, правило одной точки
+    Помогает free-моделям не «забывать» запрет робо-маркеров, правило одной точки
     и плоскую верстку шагов (без вложенной нумерации) в длинных диалогах, когда system-prompt
-    далеко от текущего вопроса.
+    далеко от текущего вопроса. Для роли ``standard`` — хвост Chatcom (кратность, ===КНОПКИ===).
     """
-    suffix = build_user_compliance_tail(premium=use_premium_prompt)
+    suffix = build_user_compliance_tail(
+        premium=use_premium_prompt,
+        text_role=text_role,
+    )
     for i in range(len(messages) - 1, -1, -1):
         msg = messages[i]
         if msg.get("role") != "user":
@@ -148,6 +152,7 @@ def prepare_openrouter_chat_messages(
         inject_compliance_rules_into_last_user_message(
             messages,
             use_premium_prompt=use_premium_prompt,
+            text_role=role_id or None,
         )
     return messages
 
