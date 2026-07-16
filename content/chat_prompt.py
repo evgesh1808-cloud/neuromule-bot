@@ -413,26 +413,19 @@ _NEUROMULE_PREMIUM = """[SYSTEM_ROLE]
 [NEUROTEXT_PREMIUM_RULES]
 1. ПЕРЕВЁРНУТАЯ ПИРАМИДА: Сразу прямой, ёмкий ответ в первом абзаце. Без «Конечно, я помогу...».
 2. ГЛУБИНА: Глубокие альтернативы по смыслу или аудитории. Без ИИ-штампов.
-3. ДЛИНА: Ограничений на объём ответа нет — развёрнутый экспертный текст приветствуется, если запрос того требует.
-4. ЗАВЕРШЕНИЕ: Один точечный экспертный совет или уточняющий <b>💬 Вопрос: …?</b> — только по теме запроса, без рекламы."""
+3. ДЛИНА: Экспертная глубина обязательна, но ответ обязан полностью уместиться в лимит 900–1500 токенов — без обрыва на полуслове.
+4. ЗАВЕРШЕНИЕ: Один точечный экспертный совет или уточняющий <b>💬 Вопрос: …?</b> — только по теме запроса, без рекламы.
 
-
-_STANDARD_PREMIUM_OVERRIDE = (
-    "\n[OVERRIDE — РЕЖИМ СТАНДАРТ, ВЫСШИЙ ПРИОРИТЕТ]\n"
-    "Игнорируй для этого ответа правила премиума про «развёрнутый экспертный текст без лимита» "
-    "и нативные слова «Маршрут» / «Системы» / «Нейроны». "
-    "Соблюдай правила верстки режима «Стандарт» ниже. "
-    "На тарифе FREE лаконичность и блок кнопок уже в инструкции роли; "
-    "на MINI/SMART/ULTRA пиши развёрнуто и подробно по запросу.\n"
-)
+⚠️ CRITICAL LENGTH CONTROL: Your response must be completely finished and fit strictly within 900-1500 tokens. If the solution or analysis is too massive, compress the text dynamically, use more concise phrasing, and remove redundant descriptions so that the output is never cut off mid-sentence."""
 
 
 def build_custom_role_prompt(role_id: str, tariff: TariffTier | str | None = None) -> str:
     """
     Инструкция роли с учётом тарифа.
 
-    Для ``standard`` на FREE к базовому промпту добавляется ``_CHATCOM_LACO_TAIL``
-    (лаконичность + блок ===КНОПКИ===). На MINI/SMART/ULTRA — только ``_ROLE_STANDARD``.
+    ``standard`` + FREE → Chatcom (``_ROLE_STANDARD`` + ``_CHATCOM_LACO_TAIL``).
+    ``standard`` + MINI/SMART/ULTRA → пустая строка: в premium-пути остаётся полный
+    ``_NEUROMULE_PREMIUM`` (Маршрут, эмодзи-списки, развёрнутый экспертный ответ).
     """
     from services.billing.types import TariffTier
     from services.use_cases.neurotext_turn import normalize_text_role_id
@@ -448,7 +441,7 @@ def build_custom_role_prompt(role_id: str, tariff: TariffTier | str | None = Non
     )
     if tier is TariffTier.FREE:
         return _ROLE_STANDARD + _CHATCOM_LACO_TAIL
-    return _ROLE_STANDARD
+    return ""
 
 
 def _role_addon_for_premium(
@@ -458,8 +451,10 @@ def _role_addon_for_premium(
     tariff: TariffTier | str | None = None,
 ) -> str:
     """Дополнение к премиальному SYSTEM_ROLE для выбранной роли."""
+    _ = tariff
     if role_type == "standard":
-        return f"{_STANDARD_PREMIUM_OVERRIDE}{build_custom_role_prompt('standard', tariff)}"
+        # Платный Стандарт = чистый премиум NeuroMule без Chatcom-override.
+        return ""
     if role_type in ("blogger_content", "blogger"):
         return f"\n{format_blogger_role_prompt(user_city)}"
     extra = _ROLE_RULES.get(role_type)

@@ -133,28 +133,29 @@ def test_prepare_openrouter_skips_chatcom_tail_for_smart_standard() -> None:
     assert "===КНОПКИ===" not in body
 
 
-def test_standard_premium_prompt_overrides_long_route_branding() -> None:
+def test_paid_standard_uses_full_premium_neuromule_voice() -> None:
     from content.chat_prompt import build_custom_role_prompt, get_role_prompt
     from services.billing.types import TariffTier
 
     prompt = get_role_prompt("standard", premium=True, tariff=TariffTier.SMART)
-    assert "OVERRIDE — РЕЖИМ СТАНДАРТ" in prompt
-    assert "[РЕЖИМ: ⚪ СТАНДАРТ]" in prompt
+    assert "Маршрут" in prompt
+    assert "CRITICAL LENGTH CONTROL" in prompt
+    assert "900-1500 tokens" in prompt
     assert "СТИЛЬ ОТВЕТА" not in prompt
+    assert "===КНОПКИ===" not in prompt
+    assert "[РЕЖИМ: ⚪ СТАНДАРТ]" not in prompt
 
     free_role = build_custom_role_prompt("standard", TariffTier.FREE)
     mini_role = build_custom_role_prompt("standard", TariffTier.MINI)
     ultra_role = build_custom_role_prompt("standard", TariffTier.ULTRA)
     assert "===КНОПКИ===" in free_role
-    assert "===КНОПКИ===" not in mini_role
-    assert "===КНОПКИ===" not in ultra_role
+    assert mini_role == ""
+    assert ultra_role == ""
     assert "СТИЛЬ ОТВЕТА" in free_role
-    assert "СТИЛЬ ОТВЕТА" not in mini_role
-    assert "СТИЛЬ ОТВЕТА" not in ultra_role
 
     mini_sys = get_role_prompt("standard", premium=True, tariff=TariffTier.MINI)
+    assert "Маршрут" in mini_sys
     assert "СТИЛЬ ОТВЕТА" not in mini_sys
-    assert "===КНОПКИ===" not in mini_sys
 
 
 def test_model_route_for_role_blogger_on_paid_tariff() -> None:
