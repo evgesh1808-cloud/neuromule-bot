@@ -46,6 +46,35 @@ def test_split_suggested_replies_without_marker() -> None:
     assert labels == []
 
 
+def test_looks_truncated_mid_sentence_football_mini_case() -> None:
+    """Реальный обрыв на Мини+Стандарт: «…игры с мячом как»."""
+    from services.standard_suggested_replies import (
+        is_standard_output_truncated,
+        looks_truncated_mid_sentence,
+    )
+
+    truncated = (
+        "Отлично, что сыну понравилась игра! Это прекрасный старт для развития "
+        "интереса к футболу. Ваш текущий Маршрут должен усилить это позитивное "
+        "впечатление и плавно интегрировать игру с мячом в повседневную активность.\n\n"
+        "1.  Закрепление позитивных ассоциаций через игру\n"
+        '😊 "Мой мяч — мой друг": Поддерживайте игры с мячом как'
+    )
+    assert looks_truncated_mid_sentence(truncated) is True
+    assert is_standard_output_truncated(truncated) is True
+    assert looks_truncated_mid_sentence("Короткий ответ.") is False
+    assert looks_truncated_mid_sentence("Итог: <b>готово</b>.") is False
+    assert looks_truncated_mid_sentence("Фраза в <code>блоке</code>.") is False
+    assert is_standard_output_truncated(
+        f"Короткий ответ.\n\n{BUTTONS_MARKER}\nУточни сроки\nКакой бюджет\n"
+    ) is False
+    # Упёрлись в max_tokens — даже при «законченном» тексте считаем усечением.
+    assert is_standard_output_truncated(
+        "Готово.",
+        completion_tokens=898,
+        max_tokens=900,
+    ) is True
+
 def test_remember_and_resolve_suggested_reply() -> None:
     cid = remember_suggested_replies(42, ["Первый вопрос", "Второй вопрос"])
     assert cid
