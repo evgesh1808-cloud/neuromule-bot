@@ -22,7 +22,6 @@ _DEFAULT_FREE_CHAT_MODEL = "openrouter/free"
 _DEFAULT_GEMINI_FLASH_FREE = _DEFAULT_FREE_CHAT_MODEL
 _DEFAULT_FREE_MODELS: list[str] = [
     "meta-llama/llama-3.2-3b-instruct:free",
-    "meta-llama/llama-3.3-70b-instruct:free",
     "google/gemma-4-31b-it:free",
 ]
 
@@ -558,6 +557,8 @@ class Settings(BaseSettings):
     dialog_prune_keep: Annotated[int, _coerce_int(50)] = 50
     chat_rate_limit_per_minute: Annotated[int, _coerce_int(30)] = 30
     openrouter_timeout_sec: Annotated[float, _coerce_float(45.0)] = 45.0
+    # Таймаут одного запроса FREE-каскада (короче — меньше «висит typing»).
+    openrouter_free_timeout_sec: Annotated[float, _coerce_float(25.0)] = 25.0
     # WB CFO: OpenRouter только для HTML-обёртки (по умолчанию локальный отчёт — без задержек).
     wb_finance_openrouter_html: Annotated[bool, _coerce_bool(False)] = Field(
         default=False,

@@ -171,6 +171,6 @@ def test_model_route_for_role_blogger_on_paid_tariff() -> None:
         assert free_model == FREE_CHAT_MODEL
     else:
         assert free_model == "openrouter/free"
-    assert "openrouter/free" in (free_model, *free_fb)
+    assert "openrouter/free" in (free_model, *free_fb) or free_model.endswith(":free")
     assert "meta-llama/llama-3.2-3b-instruct:free" in free_fb
-    assert "meta-llama/llama-3.3-70b-instruct:free" in free_fb
+    assert "meta-llama/llama-3.3-70b-instruct:free" not in free_fb

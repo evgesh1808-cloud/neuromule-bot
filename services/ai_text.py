@@ -194,12 +194,12 @@ def get_chat_headers(settings: Settings) -> dict[str, str]:
 
 
 def _sanitize_openrouter_model_id(model_id: str) -> str:
-    """OpenRouter снял ``:free``-slug (404) — очищаем перед каждым запросом."""
-    return str(model_id or "").strip().replace(":free", "")
+    """Нормализует model id; суффикс ``:free`` и ``openrouter/free`` сохраняем."""
+    return str(model_id or "").strip()
 
 
 def _build_openrouter_model_chain(model_ids: list[str]) -> list[str]:
-    """Собирает каскад моделей без ``:free`` и без дубликатов после нормализации."""
+    """Собирает каскад моделей без дубликатов после нормализации."""
     out: list[str] = []
     seen: set[str] = set()
     for mid in model_ids:
@@ -522,6 +522,12 @@ async def ask_ai_messages(
                     )
                     if result is not None and result.get("content"):
                         return result
+                    # Stream пустой/упал — сразу следующая модель (не ждём ещё timeout non-stream).
+                    logger.warning(
+                        "OpenRouter model=%s stream empty/failed — next model",
+                        model,
+                    )
+                    continue
                 result = await _post_chat_completion(
                     client,
                     settings,

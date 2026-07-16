@@ -47,13 +47,22 @@ def _unique_model_ids(*candidates: str) -> tuple[str, ...]:
     return tuple(out)
 
 
-def _free_model_fallbacks() -> tuple[str, ...]:
-    """Резерв FREE: ``FREE_MODELS`` из .env + актуальные :free ID OpenRouter."""
-    return _unique_model_ids(
-        *settings.free_models,
-        "openrouter/free",
-        "meta-llama/llama-3.2-3b-instruct:free",
+_SLOW_FREE_MODEL_IDS = frozenset(
+    {
         "meta-llama/llama-3.3-70b-instruct:free",
+        "nousresearch/hermes-3-llama-3.1-405b:free",
+    }
+)
+
+
+def _free_model_fallbacks() -> tuple[str, ...]:
+    """Короткий резерв FREE: быстрые :free (без тяжёлых 70B/405B)."""
+    from_env = [
+        mid for mid in settings.free_models if mid not in _SLOW_FREE_MODEL_IDS
+    ]
+    return _unique_model_ids(
+        *from_env,
+        "meta-llama/llama-3.2-3b-instruct:free",
         "google/gemma-4-31b-it:free",
     )
 

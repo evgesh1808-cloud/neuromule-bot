@@ -343,10 +343,15 @@ async def run_chat_turn(
 
     try:
         is_blogger_role = (effective_role or "").strip().lower() in _BLOGGER_ROLE_IDS
+        or_timeout = (
+            settings.openrouter_free_timeout_sec
+            if plan.tariff is TariffTier.FREE
+            else settings.openrouter_timeout_sec
+        )
         completion = await ask_ai_messages(
             settings,
             payload,
-            timeout=settings.openrouter_timeout_sec,
+            timeout=or_timeout,
             max_context_tokens=settings.chat_max_context_tokens_est,
             char_per_token=settings.chat_char_per_token_est,
             http_client=http_client,

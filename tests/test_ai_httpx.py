@@ -103,7 +103,7 @@ async def test_ask_ai_messages_token_limit_raises():
         raise AssertionError("expected RuntimeError")
 
 
-async def test_ask_ai_messages_strips_free_suffix_before_request():
+async def test_ask_ai_messages_keeps_free_suffix_before_request():
     s = Settings().model_copy(update={"free_models": ["m1"], "openrouter_key": "k"})
     seen_models: list[str] = []
 
@@ -121,13 +121,13 @@ async def test_ask_ai_messages_strips_free_suffix_before_request():
             s,
             [{"role": "user", "content": "x"}],
             models=[
-                "google/gemini-2.5-flash:free",
-                "google/gemini-2.5-flash",
+                "meta-llama/llama-3.2-3b-instruct:free",
+                "openrouter/free",
             ],
             http_client=client,
         )
     assert out["content"] == "ok"
-    assert seen_models == ["google/gemini-2.5-flash"]
+    assert seen_models == ["meta-llama/llama-3.2-3b-instruct:free"]
 
 
 async def test_ask_ai_text_maps_unavailable_to_user_string():
