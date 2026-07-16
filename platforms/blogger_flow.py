@@ -28,6 +28,7 @@ from services.blogger_adaptation import (
     prepare_adapted_telegram_html,
 )
 from services.blogger_cover import (
+    _safe_delete_status_message,
     deliver_blogger_cover_turn_result,
     handle_blogger_cover_callback,
     parse_cover_generate,
@@ -537,15 +538,8 @@ async def cb_blogger_cover_generate(callback: CallbackQuery, state: FSMContext) 
             await callback.answer()
             return
 
-        await state.set_state(BloggerFlowStates.waiting_for_face_photo)
-        await state.update_data(
-            current_post_id=draft.post_id,
-            blogger_cover_post_id=draft.post_id,
-        )
-        await callback.answer()
-        await callback.message.answer(
-            msg.TXT_BLOGGER_COVER_UPLOAD_FACE_HINT,
-            parse_mode=ParseMode.HTML,
+        await _enter_face_photo_upload(
+            callback, state, post_id=draft.post_id, clear_saved=False
         )
         return
 
@@ -570,14 +564,15 @@ async def _enter_face_photo_upload(
         await set_blogger_face_file_id(callback.from_user.id, "")
 
     await state.set_state(BloggerFlowStates.waiting_for_face_photo)
+    await callback.answer()
+    instruction_msg = await callback.message.answer(
+        msg.TXT_BLOGGER_COVER_UPLOAD_FACE_HINT,
+        parse_mode=ParseMode.HTML,
+    )
     await state.update_data(
         current_post_id=draft.post_id,
         blogger_cover_post_id=draft.post_id,
-    )
-    await callback.answer()
-    await callback.message.answer(
-        msg.TXT_BLOGGER_COVER_UPLOAD_FACE_HINT,
-        parse_mode=ParseMode.HTML,
+        instruction_msg_id=instruction_msg.message_id,
     )
 
 
@@ -647,7 +642,7 @@ async def cb_blogger_cover_no_face(callback: CallbackQuery) -> None:
 @router.message(UserFlow.waiting_for_blogger_face_photo, F.photo)  # legacy
 async def blogger_face_photo_upload(message: Message, state: FSMContext) -> None:
     """Сохраняет фото лица в БД и сразу запускает генерацию обложки."""
-    if message.from_user is None:
+    if message.from_user is None or not message.photo:
         return
 
     user_id = message.from_user.id
@@ -655,12 +650,16 @@ async def blogger_face_photo_upload(message: Message, state: FSMContext) -> None
     post_id = str(
         data.get("current_post_id") or data.get("blogger_cover_post_id") or ""
     ).strip()
+    instruction_msg_id = data.get("instruction_msg_id")
     await state.clear()
 
     file_id = message.photo[-1].file_id
     await set_blogger_face_file_id(user_id, file_id)
 
     if not post_id:
+        await _safe_delete_status_message(
+            message.bot, message.chat.id, instruction_msg_id
+        )
         await message.answer("✅ Фото лица сохранено. Нажмите «🎨 Создать AI-обложку» у поста.")
         return
 
@@ -669,14 +668,24 @@ async def blogger_face_photo_upload(message: Message, state: FSMContext) -> None
         draft = await blogger_post_cache.resolve_last(user_id)
 
     if draft is None:
+        await _safe_delete_status_message(
+            message.bot, message.chat.id, instruction_msg_id
+        )
         await message.answer(msg.TXT_BLOGGER_POST_NOT_FOUND, parse_mode=ParseMode.HTML)
         return
 
     if not billing_bypass(user_id) and not await can_afford_blogger_cover(user_id):
+        await _safe_delete_status_message(
+            message.bot, message.chat.id, instruction_msg_id
+        )
         await message.answer(msg.TXT_BLOGGER_COVER_INSUFFICIENT, parse_mode=ParseMode.HTML)
         return
 
-    await message.answer(msg.TXT_BLOGGER_COVER_FACE_SAVED)
+    success_msg = await message.answer(msg.TXT_BLOGGER_COVER_FACE_SAVED)
+    await message.bot.send_chat_action(
+        chat_id=message.chat.id,
+        action=ChatAction.TYPING,
+    )
     result = await run_blogger_cover_turn(
         settings,
         user_id=user_id,
@@ -684,6 +693,8 @@ async def blogger_face_photo_upload(message: Message, state: FSMContext) -> None
         use_face=True,
         bot=message.bot,
         chat_id=message.chat.id,
+        instruction_msg_id=int(instruction_msg_id) if instruction_msg_id is not None else None,
+        success_msg_id=success_msg.message_id,
     )
     await deliver_blogger_cover_turn_result(message, result, draft=draft)
 

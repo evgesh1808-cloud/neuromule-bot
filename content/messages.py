@@ -1399,9 +1399,8 @@ TXT_BLOGGER_COVER_QUEUED = (
 )
 TXT_BLOGGER_COVER_READY = (
     "🎨 <b>Ваша AI-обложка готова!</b>\n\n"
-    "📋 <i>Нажмите на текст ниже, чтобы скопировать английский промпт "
-    "для повторной генерации:</i>\n\n"
-    "<code>{prompt}</code>"
+    '<aside><a href="https://t.me/{bot_username}"><b>NeuroMule</b></a>\n'
+    "<code>{prompt}</code></aside>"
 )
 TXT_BLOGGER_COVER_FAILED = (
     "⚠️ Не удалось сгенерировать обложку. На стороне сервера произошел "

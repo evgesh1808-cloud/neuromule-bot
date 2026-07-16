@@ -345,7 +345,11 @@ async def _safe_delete_status_message(
         )
 
 
-async def _keep_typing_loop(bot: Any, chat_id: int) -> None:
+async def _keep_typing_loop(
+    bot: Any,
+    chat_id: int,
+    stop_typing: asyncio.Event,
+) -> None:
     """Пока Flux крутится — каждые 4 с шлём ChatAction.TYPING (Telegram гасит ~5 с)."""
     from aiogram.enums import ChatAction
     from aiogram.exceptions import (
@@ -355,7 +359,7 @@ async def _keep_typing_loop(bot: Any, chat_id: int) -> None:
         TelegramRetryAfter,
     )
 
-    while True:
+    while not stop_typing.is_set():
         try:
             await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
         except (
@@ -371,7 +375,10 @@ async def _keep_typing_loop(bot: Any, chat_id: int) -> None:
                 chat_id,
                 exc_info=True,
             )
-        await asyncio.sleep(COVER_TYPING_INTERVAL_SEC)
+        try:
+            await asyncio.wait_for(stop_typing.wait(), timeout=COVER_TYPING_INTERVAL_SEC)
+        except asyncio.TimeoutError:
+            continue
 
 
 async def _safe_send_cover_photo(
@@ -391,12 +398,17 @@ async def _safe_send_cover_photo(
     )
     from aiogram.types import BufferedInputFile
 
-    from content import messages as msg
+    from config import settings
     from services.streaming_download import stream_download_to_bytes
 
     # Экранируем только промпт внутри <code>; теги caption остаются валидным HTML.
-    safe_prompt = cleaned_prompt.replace("<", "&lt;").replace(">", "&gt;")
-    caption = msg.TXT_BLOGGER_COVER_READY.format(prompt=safe_prompt)
+    bot_username = (settings.telegram_bot_username or "NeuroMule_bot").lstrip("@")
+    safe_prompt = (cleaned_prompt or "").replace("<", "&lt;").replace(">", "&gt;")
+    caption = (
+        "🎨 <b>Ваша AI-обложка готова!</b>\n\n"
+        f'<aside><a href="https://t.me/{bot_username}"><b>NeuroMule</b></a>\n'
+        f"<code>{safe_prompt}</code></aside>"
+    )
 
     async def _send_bytes(data: bytes) -> None:
         await bot.send_photo(
@@ -470,15 +482,24 @@ async def _process_cover_task(task: dict[str, Any]) -> None:
     cleaned_prompt: str = str(task["cleaned_prompt"])
     integration = CoverIntegrationType(str(task["integration"]))
     photo_file_id = (task.get("photo_file_id") or "").strip() or None
-    raw_status_id = task.get("status_message_id")
-    status_message_id: int | None
-    try:
-        status_message_id = int(raw_status_id) if raw_status_id is not None else None
-    except (TypeError, ValueError):
-        status_message_id = None
+    def _as_msg_id(raw: Any) -> int | None:
+        if raw is None:
+            return None
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
 
+    status_message_id = _as_msg_id(task.get("status_message_id"))
+    # Канон: success_msg_id; success_message_id — совместимость со старыми задачами.
+    success_msg_id = _as_msg_id(task.get("success_msg_id")) or _as_msg_id(
+        task.get("success_message_id")
+    )
+    instruction_msg_id = _as_msg_id(task.get("instruction_msg_id"))
+
+    stop_typing = asyncio.Event()
     typing_task = asyncio.create_task(
-        _keep_typing_loop(bot, chat_id),
+        _keep_typing_loop(bot, chat_id, stop_typing),
         name=f"cover_typing_{chat_id}",
     )
     charge_id: str | None = None
@@ -542,12 +563,16 @@ async def _process_cover_task(task: dict[str, Any]) -> None:
             context="blogger_cover_failed",
         )
     finally:
-        typing_task.cancel()
+        # Останавливаем анимацию «бот печатает…»
+        stop_typing.set()
         try:
             await typing_task
         except asyncio.CancelledError:
             pass
-        await _safe_delete_status_message(bot, chat_id, status_message_id)
+
+        # Зачистка временных сообщений (инструкция / ✅ сохранено / ⏳ принято)
+        for msg_id in (status_message_id, instruction_msg_id, success_msg_id):
+            await _safe_delete_status_message(bot, chat_id, msg_id)
 
 
 async def cover_queue_worker() -> None:
@@ -616,6 +641,8 @@ async def run_blogger_cover_turn(
     bot: Any | None = None,
     chat_id: int | None = None,
     photo_file_id: str | None = None,
+    success_msg_id: int | None = None,
+    instruction_msg_id: int | None = None,
 ) -> BloggerCoverResult:
     """Валидация + постановка в очередь (без ожидания OpenRouter)."""
     from services.billing.blogger_pipeline import can_afford_blogger_cover
@@ -676,6 +703,8 @@ async def run_blogger_cover_turn(
             "integration": integration.value,
             "photo_file_id": resolved_file_id,
             "status_message_id": status_msg.message_id,
+            "instruction_msg_id": instruction_msg_id,
+            "success_msg_id": success_msg_id,
         }
     )
     return BloggerCoverResult(

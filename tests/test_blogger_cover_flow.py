@@ -158,7 +158,7 @@ async def test_cb_blogger_cover_generate_face_asks_upload_when_missing() -> None
     callback.data = f"{msg.CB_COVER_GENERATE_PREFIX}face:{post_id}"
     callback.message.chat.id = 3
     callback.message.message_id = 12
-    callback.message.answer = AsyncMock()
+    callback.message.answer = AsyncMock(return_value=MagicMock(message_id=901))
     callback.answer = AsyncMock()
     state = MagicMock()
     state.set_state = AsyncMock()
@@ -170,6 +170,7 @@ async def test_cb_blogger_cover_generate_face_asks_upload_when_missing() -> None
     state.set_state.assert_awaited_once()
     callback.message.answer.assert_awaited_once()
     assert callback.message.answer.await_args.args[0] == msg.TXT_BLOGGER_COVER_UPLOAD_FACE_HINT
+    assert state.update_data.await_args.kwargs["instruction_msg_id"] == 901
 
 
 @pytest.mark.asyncio
@@ -217,7 +218,7 @@ async def test_cb_blogger_face_upload_new_clears_file_id_and_sets_fsm() -> None:
     callback.data = f"{msg.CB_BLOGGER_FACE_NEW_PREFIX}{post_id}"
     callback.message.chat.id = 14
     callback.message.message_id = 23
-    callback.message.answer = AsyncMock()
+    callback.message.answer = AsyncMock(return_value=MagicMock(message_id=902))
     callback.answer = AsyncMock()
     state = MagicMock()
     state.set_state = AsyncMock()
@@ -235,6 +236,47 @@ async def test_cb_blogger_face_upload_new_clears_file_id_and_sets_fsm() -> None:
         msg.TXT_BLOGGER_COVER_UPLOAD_FACE_HINT,
         parse_mode=ParseMode.HTML,
     )
+    assert state.update_data.await_args.kwargs["instruction_msg_id"] == 902
+
+
+@pytest.mark.asyncio
+async def test_blogger_face_photo_upload_saves_success_id_and_clears_instruction() -> None:
+    from platforms.blogger_flow import blogger_face_photo_upload
+
+    post_id = blogger_post_cache.remember(515, _SAMPLE)
+    message = MagicMock()
+    message.from_user.id = 515
+    message.chat.id = 515
+    message.photo = [MagicMock(file_id="face-file")]
+    message.answer = AsyncMock(return_value=MagicMock(message_id=777))
+    message.bot.send_chat_action = AsyncMock()
+    message.bot.delete_message = AsyncMock()
+    state = MagicMock()
+    state.get_data = AsyncMock(
+        return_value={
+            "current_post_id": post_id,
+            "instruction_msg_id": 666,
+        }
+    )
+    state.clear = AsyncMock()
+
+    with (
+        patch("platforms.blogger_flow.set_blogger_face_file_id", AsyncMock()) as mock_set,
+        patch("platforms.blogger_flow.can_afford_blogger_cover", AsyncMock(return_value=True)),
+        patch("platforms.blogger_flow.billing_bypass", return_value=True),
+        patch(
+            "platforms.blogger_flow.run_blogger_cover_turn",
+            AsyncMock(return_value=MagicMock()),
+        ) as mock_turn,
+        patch("platforms.blogger_flow.deliver_blogger_cover_turn_result", AsyncMock()),
+    ):
+        await blogger_face_photo_upload(message, state)
+
+    mock_set.assert_awaited_once_with(515, "face-file")
+    message.bot.delete_message.assert_not_awaited()
+    message.answer.assert_awaited_once_with(msg.TXT_BLOGGER_COVER_FACE_SAVED)
+    assert mock_turn.await_args.kwargs["instruction_msg_id"] == 666
+    assert mock_turn.await_args.kwargs["success_msg_id"] == 777
 
 
 @pytest.mark.asyncio

@@ -278,12 +278,16 @@ async def test_process_cover_task_refunds_on_openrouter_error() -> None:
                 "integration": "none",
                 "photo_file_id": None,
                 "status_message_id": 77,
+                "instruction_msg_id": 66,
+                "success_msg_id": 55,
             }
         )
 
     mock_refund.assert_awaited_once_with("c-refund")
     mock_text.assert_awaited()
-    mock_bot.delete_message.assert_awaited_once_with(chat_id=102, message_id=77)
+    mock_bot.delete_message.assert_any_await(chat_id=102, message_id=77)
+    mock_bot.delete_message.assert_any_await(chat_id=102, message_id=66)
+    mock_bot.delete_message.assert_any_await(chat_id=102, message_id=55)
 
 
 @pytest.mark.asyncio
@@ -319,10 +323,12 @@ async def test_process_cover_task_deletes_status_on_success() -> None:
                 "integration": "none",
                 "photo_file_id": None,
                 "status_message_id": 88,
+                "success_msg_id": 89,
             }
         )
 
-    mock_bot.delete_message.assert_awaited_once_with(chat_id=103, message_id=88)
+    mock_bot.delete_message.assert_any_await(chat_id=103, message_id=88)
+    mock_bot.delete_message.assert_any_await(chat_id=103, message_id=89)
 
 
 @pytest.mark.asyncio
