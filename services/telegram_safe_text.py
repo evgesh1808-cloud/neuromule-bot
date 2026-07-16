@@ -229,20 +229,21 @@ def markdown_tables_to_telegram_html(text: str) -> str:
     return "\n\n".join(p for p in parts if p).strip()
 
 
-def prepare_telegram_html_text(text: str, *, max_len: int = 4090) -> str:
-    """HTML для Telegram: markdown→HTML, списки, починка тегов, обрезка длины."""
+def prepare_telegram_html_text(text: str, *, max_len: int | None = 4090) -> str:
+    """HTML для Telegram: markdown→HTML, списки, починка тегов, обрезка длины.
+
+    ``max_len=None`` — без обрезки (для последующей нарезки на несколько сообщений).
+    """
     raw = text or ""
     if "<pre>" in raw and "</pre>" in raw:
         cleaned = raw.replace("\r\n", "\n").replace("\r", "\n")
         cleaned = repair_telegram_html(cleaned)
-        if len(cleaned) > max_len:
-            cleaned = cleaned[: max_len - 1] + "…"
-        return cleaned
-    cleaned = markdown_to_html(raw)
-    cleaned = normalize_telegram_list_markup(cleaned)
-    cleaned = repair_telegram_html(cleaned)
-    cleaned = cleaned.replace("\r\n", "\n").replace("\r", "\n")
-    if len(cleaned) > max_len:
+    else:
+        cleaned = markdown_to_html(raw)
+        cleaned = normalize_telegram_list_markup(cleaned)
+        cleaned = repair_telegram_html(cleaned)
+        cleaned = cleaned.replace("\r\n", "\n").replace("\r", "\n")
+    if max_len is not None and len(cleaned) > max_len:
         cleaned = cleaned[: max_len - 1] + "…"
     return cleaned
 

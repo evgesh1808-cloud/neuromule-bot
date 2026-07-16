@@ -142,8 +142,8 @@ def test_paid_standard_uses_full_premium_neuromule_voice() -> None:
     prompt = get_role_prompt("standard", premium=True, tariff=TariffTier.SMART)
     assert "Маршрут" in prompt
     assert "СТАНДАРТ — ПРЕМИУМ NEUROMULE" in prompt
-    assert "CRITICAL LENGTH CONTROL" in prompt
-    assert "900-1500 tokens" in prompt
+    assert "CRITICAL COMPLETION" in prompt
+    assert "1200–2800" in prompt or "1200-2800" in prompt
     assert "СТИЛЬ ОТВЕТА" not in prompt
     assert "Без блока ===КНОПКИ===" in prompt
 
