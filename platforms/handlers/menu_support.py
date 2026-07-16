@@ -41,6 +41,7 @@ from platforms.handlers.hd import _send_daily_advice
 from content.video_menu import video_root_menu
 from platforms.telegram_keyboards import (
     cabinet_keyboard,
+    cabinet_keyboard_for_user,
     channel_gate_markup,
     create_menu,
     get_admin_inline_keyboard,
@@ -255,7 +256,7 @@ async def _send_profile_screen(target: Message, user_id: int) -> None:
     is_duo = await _is_duo_owner_user(user_id)
     await target.answer(
         view.text,
-        reply_markup=cabinet_keyboard(is_duo_owner=is_duo),
+        reply_markup=await cabinet_keyboard_for_user(user_id, is_duo_owner=is_duo),
         parse_mode=ParseMode.HTML,
     )
 
@@ -272,10 +273,11 @@ async def refresh_profile_balance(callback: CallbackQuery) -> None:
         return
     view = await build_cabinet_view(settings, callback.from_user.id)
     is_duo = await _is_duo_owner_user(callback.from_user.id)
+    kb = await cabinet_keyboard_for_user(callback.from_user.id, is_duo_owner=is_duo)
     try:
         await callback.message.edit_text(
             view.text,
-            reply_markup=cabinet_keyboard(is_duo_owner=is_duo),
+            reply_markup=kb,
             parse_mode=ParseMode.HTML,
         )
     except TelegramBadRequest as exc:
@@ -284,10 +286,39 @@ async def refresh_profile_balance(callback: CallbackQuery) -> None:
             return
         await callback.message.answer(
             view.text,
-            reply_markup=cabinet_keyboard(is_duo_owner=is_duo),
+            reply_markup=kb,
             parse_mode=ParseMode.HTML,
         )
     await callback.answer(msg.TXT_PROFILE_REFRESH_OK)
+
+
+@router.callback_query(F.data == msg.CB_TOGGLE_SUGGESTED_REPLIES)
+async def toggle_suggested_replies(callback: CallbackQuery) -> None:
+    """Переключатель Suggested Replies в профиле (только платные тарифы)."""
+    from services.billing.types import TariffTier
+    from services.repository import (
+        get_show_suggested_replies,
+        get_user_row,
+        set_show_suggested_replies,
+    )
+
+    uid = callback.from_user.id
+    row = await get_user_row(uid)
+    if TariffTier.from_db(row.tariff) is TariffTier.FREE:
+        await callback.answer(msg.TXT_SUGGESTED_REPLIES_FREE_ALWAYS, show_alert=True)
+        return
+
+    new_val = not await get_show_suggested_replies(uid)
+    await set_show_suggested_replies(uid, new_val)
+    is_duo = await _is_duo_owner_user(uid)
+    kb = cabinet_keyboard(is_duo_owner=is_duo, show_suggested_replies=new_val)
+    if callback.message:
+        try:
+            await callback.message.edit_reply_markup(reply_markup=kb)
+        except TelegramBadRequest as exc:
+            if "message is not modified" not in str(exc).lower():
+                logger.debug("toggle_suggested_replies: edit_reply_markup failed", exc_info=True)
+    await callback.answer()
 
 
 @router.callback_query(F.data.in_({msg.CB_ENTER_PROMOCODE, msg.CB_CABINET_PROMO}))

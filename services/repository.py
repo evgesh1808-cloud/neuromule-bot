@@ -70,6 +70,11 @@ async def _migrate_users(db: aiosqlite.Connection) -> None:
         ("blogger_object_file_id", "ALTER TABLE users ADD COLUMN blogger_object_file_id TEXT"),
         # Локация для локальных хэштегов режима «Блогер» (sentinel = ещё не менял).
         ("city", "ALTER TABLE users ADD COLUMN city TEXT DEFAULT 'Чебоксары'"),
+        # Suggested Replies: NULL = дефолт по тарифу (FREE→вкл, paid→выкл).
+        (
+            "show_suggested_replies",
+            "ALTER TABLE users ADD COLUMN show_suggested_replies INTEGER",
+        ),
     ]
     for name, ddl in alters:
         if name not in cols:
@@ -651,6 +656,61 @@ async def set_user_accepted_terms(user_id: int, *, accepted: bool = True) -> Non
             (1 if accepted else 0, user_id),
         )
         await db.commit()
+
+
+def default_show_suggested_replies(tariff: str | None) -> bool:
+    """FREE — подсказки включены; MINI/SMART/ULTRA — выключены, пока юзер не включит."""
+    from services.billing.types import TariffTier
+
+    return TariffTier.from_db(tariff) is TariffTier.FREE
+
+
+async def _ensure_show_suggested_replies_column(db: aiosqlite.Connection) -> None:
+    """Идемпотентно добавляет колонку, если миграция ещё не успела пробежать."""
+    async with db.execute("PRAGMA table_info(users)") as cur:
+        cols = {row[1] for row in await cur.fetchall()}
+    if "show_suggested_replies" not in cols:
+        await db.execute("ALTER TABLE users ADD COLUMN show_suggested_replies INTEGER")
+
+
+async def get_show_suggested_replies(user_id: int) -> bool:
+    """Эффективный флаг Suggested Replies с учётом тарифа и явного override в БД."""
+    await ensure_user(user_id)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await _ensure_show_suggested_replies_column(db)
+        async with db.execute(
+            "SELECT show_suggested_replies, tariff FROM users WHERE id = ?",
+            (user_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        await db.commit()
+    if not row:
+        return True
+    stored, tariff = row[0], row[1]
+    if stored is None:
+        return default_show_suggested_replies(tariff)
+    return bool(int(stored))
+
+
+async def set_show_suggested_replies(user_id: int, enabled: bool) -> bool:
+    """Сохраняет флаг для платных тарифов. На FREE всегда ``True`` (не переключаем)."""
+    from services.billing.types import TariffTier
+
+    await ensure_user(user_id)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await _ensure_show_suggested_replies_column(db)
+        async with db.execute("SELECT tariff FROM users WHERE id = ?", (user_id,)) as cur:
+            row = await cur.fetchone()
+        tariff = (row[0] if row else None)
+        if TariffTier.from_db(tariff) is TariffTier.FREE:
+            await db.commit()
+            return True
+        await db.execute(
+            "UPDATE users SET show_suggested_replies = ? WHERE id = ?",
+            (1 if enabled else 0, user_id),
+        )
+        await db.commit()
+    return bool(enabled)
 
 
 async def get_user_row(user_id: int) -> UserRow:

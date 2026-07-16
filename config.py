@@ -579,8 +579,8 @@ class Settings(BaseSettings):
     chat_max_context_tokens_est: Annotated[int, _coerce_int(24_000)] = 24_000
     # Лимит ответа модели (выходные токены) — FREE / базовый чат; 500–800 — разумный дефолт.
     openrouter_max_output_tokens: Annotated[int, _coerce_int(640)] = 640
-    # Потолок ответа для платных тарифов (развёрнутый Стандарт; API max_tokens).
-    openrouter_premium_max_output_tokens: Annotated[int, _coerce_int(2800)] = 2800
+    # Потолок ответа для платных тарифов (один Telegram-месседж; API max_tokens).
+    openrouter_premium_max_output_tokens: Annotated[int, _coerce_int(1500)] = 1500
     # Роль table_generator: компактный JSON вместо Markdown-таблицы.
     openrouter_table_max_output_tokens: Annotated[int, _coerce_int(1500)] = 1500
 

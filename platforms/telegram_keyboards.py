@@ -451,7 +451,18 @@ def _tariffs_topup_button() -> InlineKeyboardButton:
     )
 
 
-def cabinet_keyboard(is_duo_owner: bool = False, *, is_ultra_owner: bool | None = None) -> InlineKeyboardMarkup:
+def cabinet_keyboard(
+    is_duo_owner: bool = False,
+    *,
+    is_ultra_owner: bool | None = None,
+    show_suggested_replies: bool | None = None,
+) -> InlineKeyboardMarkup:
+    """Клавиатура «Мой профиль».
+
+    ``show_suggested_replies``:
+      - ``None`` — кнопка скрыта (тариф FREE: подсказки всегда вкл.);
+      - ``True``/``False`` — кнопка-переключатель с динамическим текстом.
+    """
     rows: list[list[InlineKeyboardButton]] = [
         [
             InlineKeyboardButton(
@@ -459,42 +470,55 @@ def cabinet_keyboard(is_duo_owner: bool = False, *, is_ultra_owner: bool | None 
                 callback_data=msg.CB_REFRESH_PROFILE,
             )
         ],
-        [
-            InlineKeyboardButton(
-                text="⚡ Пополнить энергию",
-                callback_data=msg.CB_BUY_ENERGY,
-            ),
-            InlineKeyboardButton(
-                text="💎 Купить алмазы",
-                callback_data=msg.CB_BUY_DIAMONDS,
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                text="🚀 Улучшить тариф",
-                callback_data=msg.CB_UPGRADE_TARIFF,
-            )
-        ],
-        [_tariffs_topup_button()],
-        [
-            InlineKeyboardButton(
-                text=msg.TXT_PROFILE_PROMO_BUTTON,
-                callback_data=msg.CB_ENTER_PROMOCODE,
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                text=msg.TXT_PROFILE_MEMORY_BUTTON,
-                callback_data=msg.CB_OPEN_MEMORY,
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                text=msg.TXT_REVIEW_BUTTON,
-                callback_data=msg.CB_LEAVE_REVIEW,
-            )
-        ],
     ]
+    if show_suggested_replies is not None:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=msg.suggested_replies_button_text(show_suggested_replies),
+                    callback_data=msg.CB_TOGGLE_SUGGESTED_REPLIES,
+                )
+            ]
+        )
+    rows.extend(
+        [
+            [
+                InlineKeyboardButton(
+                    text="⚡ Пополнить энергию",
+                    callback_data=msg.CB_BUY_ENERGY,
+                ),
+                InlineKeyboardButton(
+                    text="💎 Купить алмазы",
+                    callback_data=msg.CB_BUY_DIAMONDS,
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🚀 Улучшить тариф",
+                    callback_data=msg.CB_UPGRADE_TARIFF,
+                )
+            ],
+            [_tariffs_topup_button()],
+            [
+                InlineKeyboardButton(
+                    text=msg.TXT_PROFILE_PROMO_BUTTON,
+                    callback_data=msg.CB_ENTER_PROMOCODE,
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=msg.TXT_PROFILE_MEMORY_BUTTON,
+                    callback_data=msg.CB_OPEN_MEMORY,
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=msg.TXT_REVIEW_BUTTON,
+                    callback_data=msg.CB_LEAVE_REVIEW,
+                )
+            ],
+        ]
+    )
     show_duo = is_duo_owner if is_ultra_owner is None else is_ultra_owner
     if show_duo:
         rows.append(
@@ -506,6 +530,19 @@ def cabinet_keyboard(is_duo_owner: bool = False, *, is_ultra_owner: bool | None 
             ]
         )
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def cabinet_keyboard_for_user(user_id: int, *, is_duo_owner: bool = False) -> InlineKeyboardMarkup:
+    """Собирает клавиатуру профиля с учётом тарифа и флага Suggested Replies."""
+    from services.billing.types import TariffTier
+    from services.repository import get_show_suggested_replies, get_user_row
+
+    row = await get_user_row(user_id)
+    tariff = TariffTier.from_db(row.tariff)
+    hints: bool | None = None
+    if tariff is not TariffTier.FREE:
+        hints = await get_show_suggested_replies(user_id)
+    return cabinet_keyboard(is_duo_owner=is_duo_owner, show_suggested_replies=hints)
 def invite_limit_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[

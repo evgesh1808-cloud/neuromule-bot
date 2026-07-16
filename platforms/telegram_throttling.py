@@ -57,6 +57,7 @@ WHITELISTED_CALLBACK_DATA: Final[frozenset[str]] = frozenset(
         msg.CB_CHECK_SUBSCRIPTION,
         msg.CB_RECHECK_SUBSCRIPTION,
         msg.CB_REFRESH_PROFILE,
+        msg.CB_TOGGLE_SUGGESTED_REPLIES,
         msg.CB_GALLERY_CANCEL,
         msg.CB_GALLERY_CONFIRM,
         msg.CB_SHARE_TO_GALLERY,

@@ -428,10 +428,12 @@ async def upscale_need_photo(message: Message) -> None:
 
 @router.message(Command("profile"))
 async def profile(message: Message) -> None:
+    from platforms.telegram_keyboards import cabinet_keyboard_for_user
+
     view = await build_cabinet_view(settings, message.from_user.id)
     await message.answer(
         view.text,
-        reply_markup=cabinet_keyboard(),
+        reply_markup=await cabinet_keyboard_for_user(message.from_user.id),
         parse_mode=ParseMode.HTML,
     )
 

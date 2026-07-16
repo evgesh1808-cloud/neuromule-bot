@@ -64,16 +64,19 @@ logger = logging.getLogger(__name__)
 _BLOGGER_ROLE_IDS = frozenset({"blogger_content", "blogger"})
 
 
-def _standard_suggested_reply_markup(user_id: int, result: ChatTurnResult):
+async def _standard_suggested_reply_markup(user_id: int, result: ChatTurnResult):
     """Suggested Replies для роли standard (если модель вернула ===КНОПКИ===)."""
     labels = getattr(result, "suggested_replies", ()) or ()
     if (result.effective_text_role or "").strip().lower() != "standard" or not labels:
         return None
+    from services.repository import get_show_suggested_replies
     from services.standard_suggested_replies import (
         build_suggested_replies_keyboard,
         remember_suggested_replies,
     )
 
+    if not await get_show_suggested_replies(user_id):
+        return None
     context_id = remember_suggested_replies(user_id, labels)
     if not context_id:
         return None
@@ -305,7 +308,7 @@ async def _reply_chat_turn_result(
                     result.assistant_message,
                     blogger_post_raw=result.blogger_post_raw,
                 )
-            reply_kb = blogger_kb or _standard_suggested_reply_markup(owner_id, result)
+            reply_kb = blogger_kb or await _standard_suggested_reply_markup(owner_id, result)
 
             async def _bind_blogger_post(sent_message: Message) -> None:
                 if not blogger_post_id:
@@ -368,7 +371,7 @@ async def _reply_chat_turn_result(
                             result.assistant_message,
                             blogger_post_raw=result.blogger_post_raw,
                         )
-                    reply_kb = blogger_kb or _standard_suggested_reply_markup(
+                    reply_kb = blogger_kb or await _standard_suggested_reply_markup(
                         owner_id, result
                     )
                     await answer_chat_text(

@@ -102,6 +102,7 @@ def inject_compliance_rules_into_last_user_message(
     use_premium_prompt: bool,
     text_role: str | None = None,
     chatcom_laconic: bool = False,
+    request_suggested_replies: bool = False,
 ) -> None:
     """
     Дублирует критичные правила роли в конец последнего ``user`` перед вызовом OpenRouter.
@@ -114,6 +115,7 @@ def inject_compliance_rules_into_last_user_message(
         premium=use_premium_prompt,
         text_role=text_role,
         chatcom_laconic=chatcom_laconic,
+        request_suggested_replies=request_suggested_replies,
     )
     for i in range(len(messages) - 1, -1, -1):
         msg = messages[i]
@@ -168,6 +170,7 @@ def prepare_openrouter_chat_messages(
     use_premium_prompt: bool,
     text_role: str | None = None,
     chatcom_laconic: bool = False,
+    request_suggested_replies: bool = False,
 ) -> list[dict[str, str]]:
     """Финальная подготовка payload чата непосредственно перед OpenRouter."""
     role_id = (text_role or "").strip().lower()
@@ -179,6 +182,9 @@ def prepare_openrouter_chat_messages(
             use_premium_prompt=use_premium_prompt,
             text_role=role_id or None,
             chatcom_laconic=chatcom_laconic and role_id == "standard",
+            request_suggested_replies=(
+                request_suggested_replies and role_id == "standard" and not chatcom_laconic
+            ),
         )
     return messages
 

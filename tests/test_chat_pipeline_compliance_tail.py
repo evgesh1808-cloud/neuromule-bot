@@ -142,8 +142,9 @@ def test_paid_standard_uses_full_premium_neuromule_voice() -> None:
     prompt = get_role_prompt("standard", premium=True, tariff=TariffTier.SMART)
     assert "Маршрут" in prompt
     assert "СТАНДАРТ — ПРЕМИУМ NEUROMULE" in prompt
-    assert "CRITICAL COMPLETION" in prompt
-    assert "1200–2800" in prompt or "1200-2800" in prompt
+    assert "PROFESSIONAL LENGTH AND BUDGET CONTROL" in prompt
+    assert "MAX 1500 TOKENS" in prompt
+    assert "1000-1400" in prompt or "1000–1400" in prompt
     assert "СТИЛЬ ОТВЕТА" not in prompt
     assert "Без блока ===КНОПКИ===" in prompt
 
@@ -159,6 +160,44 @@ def test_paid_standard_uses_full_premium_neuromule_voice() -> None:
     assert "Маршрут" in mini_sys
     assert "ПРЕМИУМ NEUROMULE" in mini_sys
     assert "СТИЛЬ ОТВЕТА" not in mini_sys
+
+
+def test_standard_max_tokens_free_vs_paid() -> None:
+    from config import settings
+    from services.billing.chat_pipeline import plan_text_chat
+    from services.billing.types import UserBillingState
+
+    free_user = UserBillingState(
+        user_id=1,
+        current_tariff=TariffTier.FREE,
+        energy_free=30,
+        energy_paid=0,
+        crystals=0,
+        last_energy_reset=None,
+        invited_by_id=None,
+        first_purchase_done=False,
+        photo_daily_date=None,
+        photo_daily_count=0,
+    )
+    smart_user = UserBillingState(
+        user_id=2,
+        current_tariff=TariffTier.SMART,
+        energy_free=0,
+        energy_paid=1500,
+        crystals=35,
+        last_energy_reset=None,
+        invited_by_id=None,
+        first_purchase_done=True,
+        photo_daily_date=None,
+        photo_daily_count=0,
+    )
+    free_plan = plan_text_chat(free_user, "standard")
+    smart_plan = plan_text_chat(smart_user, "standard")
+    assert free_plan.max_tokens == settings.openrouter_max_output_tokens
+    assert smart_plan.max_tokens == settings.openrouter_premium_max_output_tokens
+    assert settings.openrouter_premium_max_output_tokens == 1500
+    assert free_plan.use_premium_prompt is False
+    assert smart_plan.use_premium_prompt is True
 
 
 def test_model_route_for_role_blogger_on_paid_tariff() -> None:

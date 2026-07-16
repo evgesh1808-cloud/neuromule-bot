@@ -250,6 +250,7 @@ CB_HD_REPORT_PDF = "hd_report:pdf"
 CB_CABINET_PROMO = "cabinet_promo"
 CB_STD_REPLY_PREFIX = "std_reply:"  # std_reply:<index>:<context_id> — Suggested Reply в standard
 CB_REFRESH_PROFILE = "refresh_profile"
+CB_TOGGLE_SUGGESTED_REPLIES = "toggle_suggested_replies"
 CB_OPEN_TARIFFS = "open_tariffs"
 CB_BUY_BUNDLE_MENU = "buy_bundle_menu"
 CB_BUY_CRYSTALS_ONLY_MENU = "buy_crystals_only_menu"
@@ -1114,6 +1115,16 @@ TXT_PROFILE_TARIFFS_BUTTON = "🚀 Пополнить баланс / Тариф�
 TXT_PROFILE_PROMO_BUTTON = "🎁 Ввести промокод"
 TXT_PROFILE_MEMORY_BUTTON = "🧠 Моя память"
 TXT_PROFILE_DUO_BUTTON = "👫 Управление DUO-доступом"
+TXT_SUGGESTED_REPLIES_ON = "🔘 Подсказки в чате: 🟢 Включены"
+TXT_SUGGESTED_REPLIES_OFF = "🔘 Подсказки в чате: 🔴 Выключены"
+TXT_SUGGESTED_REPLIES_FREE_ALWAYS = (
+    "На бесплатном тарифе подсказки включены всегда"
+)
+
+
+def suggested_replies_button_text(enabled: bool) -> str:
+    """Текст инлайн-кнопки управления Suggested Replies в профиле."""
+    return TXT_SUGGESTED_REPLIES_ON if enabled else TXT_SUGGESTED_REPLIES_OFF
 TXT_PROFILE_FAMILY_BUTTON = TXT_PROFILE_DUO_BUTTON  # deprecated alias
 
 # --- ИИ-Память ---

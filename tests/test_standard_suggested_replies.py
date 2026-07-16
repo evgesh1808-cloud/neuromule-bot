@@ -136,6 +136,10 @@ async def test_run_chat_turn_strips_buttons_into_suggested_replies() -> None:
         patch("services.use_cases.chat_turn.commit_assistant_turn_queued", AsyncMock()),
         patch("services.use_cases.chat_turn.conv.schedule_memory_refresh"),
         patch("services.use_cases.chat_turn.dialog_append", AsyncMock()),
+        patch(
+            "services.repository.get_show_suggested_replies",
+            AsyncMock(return_value=True),
+        ),
     ):
         from config import Settings
 

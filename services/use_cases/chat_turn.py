@@ -271,11 +271,19 @@ async def run_chat_turn(
     if user_image_data_url or (dialog_user_text is not None and history_text != raw_user_text):
         _apply_user_content_override(payload, user_content)
 
+    from services.repository import get_show_suggested_replies
+
+    suggest_replies = await get_show_suggested_replies(user_id)
     prepare_openrouter_chat_messages(
         payload,
         use_premium_prompt=plan.use_premium_prompt,
         text_role=effective_role,
         chatcom_laconic=plan.tariff is TariffTier.FREE,
+        request_suggested_replies=(
+            plan.tariff is not TariffTier.FREE
+            and (effective_role or "").strip().lower() == "standard"
+            and suggest_replies
+        ),
     )
 
     def _estimate_payload_tokens(msgs: list) -> int:
