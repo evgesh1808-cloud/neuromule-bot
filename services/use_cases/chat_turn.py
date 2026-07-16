@@ -303,7 +303,8 @@ async def run_chat_turn(
 
     # Основная модель из биллинга + резервный каскад (FREE → :free, MINI+ → Gemini/smart_models).
     model_chain: list[str] = []
-    for mid in (plan.model_id, *plan.fallback_model_ids):
+    fallback_ids = getattr(plan, "fallback_model_ids", ()) or ()
+    for mid in (plan.model_id, *fallback_ids):
         mid = str(mid).strip()
         if mid and mid not in model_chain:
             model_chain.append(mid)
@@ -447,7 +448,32 @@ async def run_chat_turn(
     suggested_replies: tuple[str, ...] = ()
     content_for_format = content
     if (effective_role or "").strip().lower() == "standard":
-        from services.standard_suggested_replies import split_suggested_replies
+        from services.standard_suggested_replies import (
+            is_standard_output_truncated,
+            split_suggested_replies,
+        )
+
+        if is_standard_output_truncated(
+            content,
+            completion_tokens=completion_tokens,
+            max_tokens=plan.max_tokens,
+        ):
+            logger.warning(
+                "run_chat_turn: truncated standard output user_id=%s "
+                "completion_tokens=%s max_tokens=%s raw=%s",
+                user_id,
+                completion_tokens,
+                plan.max_tokens,
+                content[:500],
+            )
+            await dialog_pop_last_for_user(user_id, platform=platform)
+            if charge_id:
+                await refund_charge(charge_id)
+            await rollback_last(settings, user_id)
+            return ChatTurnResult(
+                outcome=ChatTurnOutcome.AI_FAILED,
+                effective_text_role=effective_role,
+            )
 
         content_for_format, reply_labels = split_suggested_replies(content)
         suggested_replies = tuple(reply_labels)

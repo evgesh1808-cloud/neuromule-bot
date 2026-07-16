@@ -411,20 +411,25 @@ async def _reply_chat_turn_result(
         )
         return
     if result.outcome in (ChatTurnOutcome.AI_FAILED, ChatTurnOutcome.TABLE_JSON_INVALID):
-        if result.user_notice:
-            await _clear_table_status_on_failure(status_message)
-            await message.answer(result.user_notice, parse_mode=ParseMode.HTML)
-            return
-        if table_context or table_subrole or prefer_table_error:
-            await message.answer(
-                msg.TXT_TABLE_AI_FAILED_NO_ROWS,
-                parse_mode=ParseMode.HTML,
+        fail_text = (
+            result.user_notice
+            if result.user_notice
+            else (
+                msg.TXT_TABLE_AI_FAILED_NO_ROWS
+                if table_context or table_subrole or prefer_table_error
+                else _chat_ai_failure_text(result)
             )
-        else:
-            await message.answer(
-                _chat_ai_failure_text(result),
-                parse_mode=ParseMode.HTML,
-            )
+        )
+        await _clear_table_status_on_failure(status_message)
+        # Если стрим уже показал обрезанный черновик — заменяем его текстом ошибки,
+        # чтобы юзер не остался с mid-sentence ответом вроде «…игры с мячом как».
+        if stream_handle is not None and not (table_context or table_subrole or prefer_table_error):
+            try:
+                await stream_handle.finalize(fail_text)
+                return
+            except Exception:
+                logger.debug("stream_handle.finalize on AI_FAILED failed", exc_info=True)
+        await message.answer(fail_text, parse_mode=ParseMode.HTML)
         return
     await message.answer(
         _chat_ai_failure_text(result),

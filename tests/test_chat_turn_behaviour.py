@@ -127,6 +127,54 @@ async def test_run_chat_turn_degraded_blogger_output_refunds(repo_module):
     assert row.energy == energy_before
 
 
+async def test_run_chat_turn_truncated_standard_on_mini_refunds(repo_module):
+    """Mini + Стандарт: обрыв mid-sentence → AI_FAILED и возврат энергии."""
+    s = Settings().model_copy(
+        update={
+            "free_models": ["test-model"],
+            "openrouter_key": "dummy",
+            "cost_text_pro": 1,
+            "telegram_chat_streaming": False,
+        }
+    )
+    uid = 999007
+    await repo_module.set_user_tariff(uid, "MINI")
+    row_before = await repo_module.get_user_row(uid)
+    energy_before = row_before.energy
+
+    truncated = (
+        "Отлично, что сыну понравилась игра! Это прекрасный старт для развития "
+        "интереса к футболу. Ваш текущий Маршрут должен усилить это позитивное "
+        "впечатление и плавно интегрировать игру с мячом в повседневную активность.\n\n"
+        "1.  Закрепление позитивных ассоциаций через игру\n"
+        '😊 "Мой мяч — мой друг": Поддерживайте игры с мячом как'
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": truncated}}],
+                "usage": {"prompt_tokens": 40, "completion_tokens": 900},
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        r = await run_chat_turn(
+            s,
+            uid,
+            "сыну понравилась игра с мячом, какой маршрут?",
+            http_client=client,
+            text_role="standard",
+        )
+
+    assert r.outcome is ChatTurnOutcome.AI_FAILED
+    assert r.assistant_message is None
+    row = await repo_module.get_user_row(uid)
+    assert row.energy == energy_before
+
+
 async def test_run_chat_turn_jailbreak_prompt_mocked(repo_module):
     """Модель отвечает отказом — успех сценария, текст доходит до пользователя."""
     s = Settings().model_copy(
@@ -163,5 +211,11 @@ async def test_run_chat_turn_jailbreak_prompt_mocked(repo_module):
     assert r.assistant_message is not None
     assert "не могу" in r.assistant_message.lower() or "правил" in r.assistant_message.lower()
     snap = metrics.snapshot()["histograms"]
-    assert snap["openrouter.prompt_tokens{model=google/gemini-2.5-flash,role=standard}"]["sum"] == 42.0
-    assert snap["openrouter.completion_tokens{model=google/gemini-2.5-flash,role=standard}"]["sum"] == 17.0
+    prompt_keys = [k for k in snap if k.startswith("openrouter.prompt_tokens{") and "role=standard" in k]
+    completion_keys = [
+        k for k in snap if k.startswith("openrouter.completion_tokens{") and "role=standard" in k
+    ]
+    assert prompt_keys, snap.keys()
+    assert completion_keys, snap.keys()
+    assert snap[prompt_keys[0]]["sum"] == 42.0
+    assert snap[completion_keys[0]]["sum"] == 17.0

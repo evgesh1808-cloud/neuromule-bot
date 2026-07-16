@@ -17,6 +17,8 @@ BUTTONS_MARKER = "===КНОПКИ==="
 _MAX_LABELS = 3
 _MAX_LABEL_CHARS = 64
 _CONTEXT_ID_LEN = 8
+# Конец нормального предложения / блока (RU + латиница + кавычки Telegram).
+_SENTENCE_TERMINALS = frozenset(".!?…:;")
 
 # context_id -> (user_id, labels)
 _CACHE: dict[str, tuple[int, tuple[str, ...]]] = {}
@@ -55,6 +57,54 @@ def split_suggested_replies(text: str) -> tuple[str, list[str]]:
             break
     return body, labels
 
+
+def looks_truncated_mid_sentence(text: str) -> bool:
+    """True, если текст обрывается на полуслове / без терминальной пунктуации.
+
+    Типичный кейс Mini+Стандарт: ``max_tokens`` / дроп SSE →
+    «Поддерживайте игры с мячом как».
+    """
+    s = (text or "").rstrip()
+    if not s:
+        return False
+    # Снимаем хвостовые HTML-теги Telegram (<b>, </code>, …) и кавычки после точки.
+    while True:
+        m = re.search(r"</?[a-zA-Z][^<>]*>\s*$", s)
+        if m:
+            s = s[: m.start()].rstrip()
+            continue
+        if s and s[-1] in "\"'»”)】」』":
+            s = s[:-1].rstrip()
+            continue
+        break
+    if not s:
+        return False
+    last = s[-1]
+    if last in _SENTENCE_TERMINALS:
+        return False
+    # Обрыв на запятой / тире / открывающей скобке / букве-цифре.
+    if last in ",，、—–-([{«\"'":
+        return True
+    return bool(last.isalnum())
+
+def is_standard_output_truncated(
+    raw: str,
+    *,
+    completion_tokens: int = 0,
+    max_tokens: int = 0,
+) -> bool:
+    """Детект усечённого ответа роли ``standard`` (тело + опционально usage).
+
+    Сигналы (достаточно одного):
+    - ``completion_tokens`` упёрся в ``max_tokens`` (finish_reason=length);
+    - тело обрывается mid-sentence и блока ``===КНОПКИ===`` нет.
+    """
+    body, labels = split_suggested_replies(raw)
+    if max_tokens > 0 and completion_tokens >= max(1, max_tokens - 2):
+        return True
+    if labels:
+        return False
+    return looks_truncated_mid_sentence(body)
 
 def remember_suggested_replies(user_id: int, labels: Sequence[str]) -> str | None:
     """Кладёт подписи в кэш; возвращает ``context_id`` или ``None`` если пусто."""
