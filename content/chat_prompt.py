@@ -89,6 +89,17 @@ _PREMIUM_USER_COMPLIANCE_TAIL = (
     "активируй защиту бренда NeuroMule и ссылайся на коммерческую тайну.]"
 )
 
+# Платный Стандарт: явный анти-Chatcom — развёрнутый «классический» NeuroMule.
+_PAID_STANDARD_COMPLIANCE_TAIL = (
+    "\n\n[Системный премиум-комплаенс Стандарт: Отвечай РАЗВЁРНУТО, тепло и структурно. "
+    "В первом абзаце — живой отклик на ситуацию пользователя и слово «Маршрут». "
+    "Далее 3–5 блоков <b>1. Название</b> с подпунктами на эмодзи-маркерах (😊 🚀 ⚽️ 🗣️ и т.п.). "
+    "Давай практичные сценарии, упражнения и готовые реплики для пользователя. "
+    "Не сжимай ответ до 3–4 коротких тезисов Chatcom. Без блока ===КНОПКИ===. "
+    "Только Telegram HTML. Доведи ответ до логического конца, без обрыва на полуслове. "
+    "При вопросах о моделях/архитектуре — брендовый отказ NeuroMule о коммерческой тайне.]"
+)
+
 
 def build_user_compliance_tail(
     *,
@@ -100,6 +111,8 @@ def build_user_compliance_tail(
     role = (text_role or "").strip().lower()
     if role == "standard" and chatcom_laconic:
         return _CHATCOM_LACO_TAIL
+    if role == "standard" and premium:
+        return _PAID_STANDARD_COMPLIANCE_TAIL
     return _PREMIUM_USER_COMPLIANCE_TAIL if premium else _FREE_USER_COMPLIANCE_TAIL
 
 
@@ -411,12 +424,26 @@ _NEUROMULE_PREMIUM = """[SYSTEM_ROLE]
 6. ЧИСТЫЙ КОНЕЦ: Без упоминаний тарифов, Плюс-систем, подписок и рекламы NeuroMule.
 
 [NEUROTEXT_PREMIUM_RULES]
-1. ПЕРЕВЁРНУТАЯ ПИРАМИДА: Сразу прямой, ёмкий ответ в первом абзаце. Без «Конечно, я помогу...».
+1. ПЕРЕВЁРНУТАЯ ПИРАМИДА: Первый абзац — сразу по делу. Запрещены канцелярские «Конечно, я помогу...» / «С удовольствием разберём...».
+   Тёплый живой отклик на ситуацию пользователя («Отлично, что…», «Сильный запрос…») — разрешён и желателен.
 2. ГЛУБИНА: Глубокие альтернативы по смыслу или аудитории. Без ИИ-штампов.
-3. ДЛИНА: Экспертная глубина обязательна, но ответ обязан полностью уместиться в лимит 900–1500 токенов — без обрыва на полуслове.
+3. ДЛИНА: Развёрнутый экспертный текст приветствуется. Уложись в 900–1500 токенов и всегда заканчивай мысль полностью — без обрыва на полуслове.
 4. ЗАВЕРШЕНИЕ: Один точечный экспертный совет или уточняющий <b>💬 Вопрос: …?</b> — только по теме запроса, без рекламы.
 
-⚠️ CRITICAL LENGTH CONTROL: Your response must be completely finished and fit strictly within 900-1500 tokens. If the solution or analysis is too massive, compress the text dynamically, use more concise phrasing, and remove redundant descriptions so that the output is never cut off mid-sentence."""
+⚠️ CRITICAL LENGTH CONTROL: Finish the full answer within 900-1500 tokens. Prefer structured depth over fluff; never cut mid-sentence."""
+
+_PAID_STANDARD_ROLE_ADDON = (
+    "\n[РЕЖИМ: ⚪ СТАНДАРТ — ПРЕМИУМ NEUROMULE]\n"
+    "Это классический развёрнутый Стандарт (не Chatcom). Отвечай как элитный коуч:\n"
+    "1. Первый абзац — тёплый отклик на контекст пользователя + слово «Маршрут» "
+    "(что делать дальше / как усилить результат).\n"
+    "2. Затем 3–5 смысловых блоков: <b>1. Название блока</b>, внутри — подпункты "
+    "с тематическими эмодзи в начале строки (😊, 🚀, ⚽️, 🗣️, 👨‍👩‍👧, ⏳ и т.п.).\n"
+    "3. Обязательно: практические сценарии, упражнения «в игре», готовые фразы, "
+    "которые пользователь может сказать ребёнку/клиенту/команде.\n"
+    "4. Без блока ===КНОПКИ===, без ультра-коротких 3–4 тезисов Chatcom.\n"
+    "5. Плотная Telegram-вёрстка, все строки от левого края, только HTML-теги.\n"
+)
 
 
 def build_custom_role_prompt(role_id: str, tariff: TariffTier | str | None = None) -> str:
@@ -424,8 +451,7 @@ def build_custom_role_prompt(role_id: str, tariff: TariffTier | str | None = Non
     Инструкция роли с учётом тарифа.
 
     ``standard`` + FREE → Chatcom (``_ROLE_STANDARD`` + ``_CHATCOM_LACO_TAIL``).
-    ``standard`` + MINI/SMART/ULTRA → пустая строка: в premium-пути остаётся полный
-    ``_NEUROMULE_PREMIUM`` (Маршрут, эмодзи-списки, развёрнутый экспертный ответ).
+    ``standard`` + MINI/SMART/ULTRA → ``_PAID_STANDARD_ROLE_ADDON`` поверх премиума.
     """
     from services.billing.types import TariffTier
     from services.use_cases.neurotext_turn import normalize_text_role_id
@@ -441,7 +467,7 @@ def build_custom_role_prompt(role_id: str, tariff: TariffTier | str | None = Non
     )
     if tier is TariffTier.FREE:
         return _ROLE_STANDARD + _CHATCOM_LACO_TAIL
-    return ""
+    return _PAID_STANDARD_ROLE_ADDON
 
 
 def _role_addon_for_premium(
@@ -451,10 +477,8 @@ def _role_addon_for_premium(
     tariff: TariffTier | str | None = None,
 ) -> str:
     """Дополнение к премиальному SYSTEM_ROLE для выбранной роли."""
-    _ = tariff
     if role_type == "standard":
-        # Платный Стандарт = чистый премиум NeuroMule без Chatcom-override.
-        return ""
+        return build_custom_role_prompt("standard", tariff)
     if role_type in ("blogger_content", "blogger"):
         return f"\n{format_blogger_role_prompt(user_city)}"
     extra = _ROLE_RULES.get(role_type)

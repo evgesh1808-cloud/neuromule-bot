@@ -129,8 +129,10 @@ def test_prepare_openrouter_skips_chatcom_tail_for_smart_standard() -> None:
         chatcom_laconic=False,
     )
     body = payload[1]["content"]
-    assert "премиум-комплаенс" in body
-    assert "===КНОПКИ===" not in body
+    assert "премиум-комплаенс Стандарт" in body
+    assert "Маршрут" in body
+    assert "Без блока ===КНОПКИ===" in body or "без блока ===КНОПКИ===" in body.lower()
+    assert "СТИЛЬ ОТВЕТА" not in body
 
 
 def test_paid_standard_uses_full_premium_neuromule_voice() -> None:
@@ -139,22 +141,23 @@ def test_paid_standard_uses_full_premium_neuromule_voice() -> None:
 
     prompt = get_role_prompt("standard", premium=True, tariff=TariffTier.SMART)
     assert "Маршрут" in prompt
+    assert "СТАНДАРТ — ПРЕМИУМ NEUROMULE" in prompt
     assert "CRITICAL LENGTH CONTROL" in prompt
     assert "900-1500 tokens" in prompt
     assert "СТИЛЬ ОТВЕТА" not in prompt
-    assert "===КНОПКИ===" not in prompt
-    assert "[РЕЖИМ: ⚪ СТАНДАРТ]" not in prompt
+    assert "Без блока ===КНОПКИ===" in prompt
 
     free_role = build_custom_role_prompt("standard", TariffTier.FREE)
     mini_role = build_custom_role_prompt("standard", TariffTier.MINI)
     ultra_role = build_custom_role_prompt("standard", TariffTier.ULTRA)
     assert "===КНОПКИ===" in free_role
-    assert mini_role == ""
-    assert ultra_role == ""
+    assert "ПРЕМИУМ NEUROMULE" in mini_role
+    assert "ПРЕМИУМ NEUROMULE" in ultra_role
     assert "СТИЛЬ ОТВЕТА" in free_role
 
     mini_sys = get_role_prompt("standard", premium=True, tariff=TariffTier.MINI)
     assert "Маршрут" in mini_sys
+    assert "ПРЕМИУМ NEUROMULE" in mini_sys
     assert "СТИЛЬ ОТВЕТА" not in mini_sys
 
 
