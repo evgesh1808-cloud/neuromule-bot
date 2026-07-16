@@ -167,6 +167,57 @@ async def text_role_process(message: Message, state: FSMContext) -> None:
     await handle_neurotext_user_message(message, state)
 
 
+@router.callback_query(F.data.startswith(msg.CB_STD_REPLY_PREFIX))
+async def cb_standard_suggested_reply(callback: CallbackQuery, state: FSMContext) -> None:
+    """Suggested Reply в режиме standard → тот же пайплайн + списание 1⚡/1💎."""
+    from platforms.neurotext_flow import ensure_neurotext_waiting_state
+    from platforms.neurotext_input import handle_neurotext_user_message
+    from services.billing.chat_pipeline import can_afford_role_minimum
+    from services.billing.store import load_user_billing
+    from services.god_mode import billing_bypass
+    from services.standard_suggested_replies import (
+        build_standard_zero_balance_keyboard,
+        parse_std_reply_callback,
+        resolve_suggested_reply,
+    )
+
+    if callback.from_user is None or callback.message is None:
+        await callback.answer()
+        return
+
+    parsed = parse_std_reply_callback(callback.data or "")
+    if parsed is None:
+        await callback.answer()
+        return
+    index, context_id = parsed
+    user_id = callback.from_user.id
+    label = resolve_suggested_reply(context_id, index, user_id=user_id)
+    if not label:
+        await callback.answer("Кнопка устарела. Задайте вопрос текстом.", show_alert=True)
+        return
+
+    if not billing_bypass(user_id):
+        user = await load_user_billing(user_id)
+        if not can_afford_role_minimum(user, "standard"):
+            await callback.answer()
+            await callback.message.answer(
+                msg.TXT_STD_REPLY_ZERO_BALANCE,
+                reply_markup=build_standard_zero_balance_keyboard(),
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+    await callback.answer()
+    await state.update_data(text_role="standard")
+    await ensure_neurotext_waiting_state(state)
+    await handle_neurotext_user_message(
+        callback.message,
+        state,
+        forced_user_text=label,
+        forced_user_id=user_id,
+    )
+
+
 @router.message(UserFlow.waiting_for_text_prompt)
 async def text_role_unsupported(message: Message) -> None:
     await message.answer(

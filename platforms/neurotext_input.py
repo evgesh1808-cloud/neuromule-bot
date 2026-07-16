@@ -64,6 +64,22 @@ logger = logging.getLogger(__name__)
 _BLOGGER_ROLE_IDS = frozenset({"blogger_content", "blogger"})
 
 
+def _standard_suggested_reply_markup(user_id: int, result: ChatTurnResult):
+    """Suggested Replies для роли standard (если модель вернула ===КНОПКИ===)."""
+    labels = getattr(result, "suggested_replies", ()) or ()
+    if (result.effective_text_role or "").strip().lower() != "standard" or not labels:
+        return None
+    from services.standard_suggested_replies import (
+        build_suggested_replies_keyboard,
+        remember_suggested_replies,
+    )
+
+    context_id = remember_suggested_replies(user_id, labels)
+    if not context_id:
+        return None
+    return build_suggested_replies_keyboard(context_id, labels)
+
+
 async def _blogger_reply_markup(user_id: int, assistant_message: str, *, blogger_post_raw: str | None = None):
     """Кэширует черновик поста и возвращает (клавиатуру, post_id)."""
     from content.inline_keyboards import get_blogger_keyboard
@@ -266,7 +282,13 @@ async def _reply_chat_turn_result(
     status_message: Message | None = None,
     table_subrole: str | None = None,
     audit_platform: str | None = None,
+    reply_user_id: int | None = None,
 ) -> None:
+    owner_id = int(
+        reply_user_id
+        if reply_user_id is not None
+        else (message.from_user.id if message.from_user else 0)
+    )
     if result.outcome is ChatTurnOutcome.SUCCESS:
         if result.user_notice:
             await message.answer(
@@ -279,10 +301,11 @@ async def _reply_chat_turn_result(
             blogger_post_id: str | None = None
             if (result.effective_text_role or "") in _BLOGGER_ROLE_IDS:
                 blogger_kb, blogger_post_id = await _blogger_reply_markup(
-                    message.from_user.id,
+                    owner_id,
                     result.assistant_message,
                     blogger_post_raw=result.blogger_post_raw,
                 )
+            reply_kb = blogger_kb or _standard_suggested_reply_markup(owner_id, result)
 
             async def _bind_blogger_post(sent_message: Message) -> None:
                 if not blogger_post_id:
@@ -291,14 +314,14 @@ async def _reply_chat_turn_result(
 
                 await blogger_post_cache.bind_telegram_message(
                     blogger_post_id,
-                    message.from_user.id,
+                    owner_id,
                     chat_id=sent_message.chat.id,
                     message_id=sent_message.message_id,
                 )
 
             await stream_handle.finalize(
                 result.assistant_message,
-                reply_markup=blogger_kb,
+                reply_markup=reply_kb,
                 on_finalized=_bind_blogger_post if blogger_post_id else None,
             )
         elif stream_handle is None:
@@ -341,15 +364,18 @@ async def _reply_chat_turn_result(
                     blogger_kb = None
                     if (result.effective_text_role or "") in _BLOGGER_ROLE_IDS:
                         blogger_kb, _blogger_post_id = await _blogger_reply_markup(
-                            message.from_user.id,
+                            owner_id,
                             result.assistant_message,
                             blogger_post_raw=result.blogger_post_raw,
                         )
+                    reply_kb = blogger_kb or _standard_suggested_reply_markup(
+                        owner_id, result
+                    )
                     await answer_chat_text(
                         message,
                         result.assistant_message,
                         settings,
-                        reply_markup=blogger_kb,
+                        reply_markup=reply_kb,
                     )
         elif not result.user_notice and not result.table_raw_json:
             await message.answer(msg.TXT_CHAT_AI_UNAVAILABLE, parse_mode=ParseMode.HTML)
@@ -411,12 +437,18 @@ async def handle_neurotext_user_message(
     state: FSMContext,
     *,
     keep_waiting_state: bool = True,
+    forced_user_text: str | None = None,
+    forced_user_id: int | None = None,
 ) -> None:
-    """Единая точка: текст, фото или документ → ``run_chat_turn``."""
-    is_photo = bool(message.photo)
-    is_document = bool(message.document)
+    """Единая точка: текст, фото или документ → ``run_chat_turn``.
 
-    if not is_photo and not is_document:
+    ``forced_user_text`` / ``forced_user_id`` — Suggested Reply (callback ``std_reply:``):
+    текст кнопки и uid пользователя (у ``callback.message.from_user`` — бот).
+    """
+    is_photo = bool(message.photo) and forced_user_text is None
+    is_document = bool(message.document) and forced_user_text is None
+
+    if not is_photo and not is_document and forced_user_text is None:
         from platforms.build_info import reply_build_version, slash_command_base
 
         cmd = slash_command_base(message.text)
@@ -431,7 +463,8 @@ async def handle_neurotext_user_message(
     role_id_early = str(data_early.get("text_role") or "standard").strip().lower()
 
     if (
-        not is_photo
+        forced_user_text is None
+        and not is_photo
         and not is_document
         and not has_neurotext_message_input(message)
     ):
@@ -483,7 +516,12 @@ async def handle_neurotext_user_message(
     from platforms.marketplace_audit_flow import audit_tax_preset_from_data
 
     audit_tax_preset = audit_tax_preset_from_data(data).id
-    uid = message.from_user.id
+    if forced_user_id is not None:
+        uid = int(forced_user_id)
+    elif message.from_user is not None:
+        uid = message.from_user.id
+    else:
+        return
 
     user_image_data_url: str | None = None
     xlsx_fallback_prompt: str | None = None
@@ -784,9 +822,15 @@ async def handle_neurotext_user_message(
             except Exception:
                 pass
         else:
-            quoted_text, user_text = resolve_neurotext_quote_input(message)
-            raw_user_text = build_quoted_user_prompt(user_text, quoted_text)
-            dialog_text = user_text[: settings.chat_max_message_chars] if quoted_text else None
+            if forced_user_text is not None:
+                raw_user_text = forced_user_text.strip()
+                dialog_text = None
+            else:
+                quoted_text, user_text = resolve_neurotext_quote_input(message)
+                raw_user_text = build_quoted_user_prompt(user_text, quoted_text)
+                dialog_text = (
+                    user_text[: settings.chat_max_message_chars] if quoted_text else None
+                )
     except asyncio.TimeoutError:
         logger.warning("telegram document download timeout uid=%s", uid)
         timeout_text = (
@@ -930,4 +974,5 @@ async def handle_neurotext_user_message(
         prefer_table_error=is_xlsx_api_path,
         status_message=status_msg if is_table_flow else None,
         table_subrole=table_subrole if is_table_flow else None,
+        reply_user_id=uid,
     )

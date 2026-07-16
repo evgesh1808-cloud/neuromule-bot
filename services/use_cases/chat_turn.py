@@ -146,6 +146,7 @@ class ChatTurnResult:
     table_degraded: bool = False
     table_degradation_notice: str | None = None
     blogger_post_raw: str | None = None
+    suggested_replies: tuple[str, ...] = ()
 
 
 def _apply_user_content_override(
@@ -312,14 +313,21 @@ async def run_chat_turn(
         stream_fn = getattr(stream_callback, "on_stream", stream_callback)
         is_blogger_role = (effective_role or "").strip().lower() in _BLOGGER_ROLE_IDS
 
+        is_standard_role = (effective_role or "").strip().lower() == "standard"
+
         async def _safe_stream_callback(full_text: str, done: bool) -> None:
             try:
                 if is_blogger_role and not done:
                     await stream_fn(_BLOGGER_STREAM_PLACEHOLDER, done)
                     return
+                display_text = full_text
+                if is_standard_role:
+                    from services.standard_suggested_replies import split_suggested_replies
+
+                    display_text, _ = split_suggested_replies(full_text)
                 await stream_fn(
                     format_assistant_for_role(
-                        full_text,
+                        display_text,
                         effective_role,
                         for_stream=not done,
                     ),
@@ -436,6 +444,14 @@ async def run_chat_turn(
             return ChatTurnResult(outcome=ChatTurnOutcome.TABLE_JSON_INVALID)
 
     blogger_post_raw: str | None = None
+    suggested_replies: tuple[str, ...] = ()
+    content_for_format = content
+    if (effective_role or "").strip().lower() == "standard":
+        from services.standard_suggested_replies import split_suggested_replies
+
+        content_for_format, reply_labels = split_suggested_replies(content)
+        suggested_replies = tuple(reply_labels)
+
     if (effective_role or "").strip().lower() in _BLOGGER_ROLE_IDS:
         from services.blogger_post_parser import (
             is_blogger_response_degraded,
@@ -460,7 +476,7 @@ async def run_chat_turn(
             )
         blogger_post_raw = reassemble_blogger_sections(blogger_sections)
 
-    ans_trim = format_assistant_for_role(content, effective_role)
+    ans_trim = format_assistant_for_role(content_for_format, effective_role)
     if plan.max_tokens <= 1000:
         ans_trim = ans_trim[: min(settings.chat_max_message_chars, 4090)]
     else:
@@ -489,4 +505,5 @@ async def run_chat_turn(
         user_notice=billing_result.notice,
         effective_text_role=effective_role,
         blogger_post_raw=blogger_post_raw,
+        suggested_replies=suggested_replies,
     )

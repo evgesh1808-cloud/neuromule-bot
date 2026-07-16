@@ -248,6 +248,7 @@ CB_HD_REPORT_ENERGY = "hd_report:energy"
 CB_HD_REPORT_PLAN = "hd_report:plan"
 CB_HD_REPORT_PDF = "hd_report:pdf"
 CB_CABINET_PROMO = "cabinet_promo"
+CB_STD_REPLY_PREFIX = "std_reply:"  # std_reply:<index>:<context_id> — Suggested Reply в standard
 CB_REFRESH_PROFILE = "refresh_profile"
 CB_OPEN_TARIFFS = "open_tariffs"
 CB_BUY_BUNDLE_MENU = "buy_bundle_menu"
@@ -914,6 +915,13 @@ TXT_CHAT_ZERO_BALANCE_PREMIUM = (
     "Мул устал: на балансе <b>0 ⚡</b> и <b>0 💎</b>.\n\n"
     "Подкрепись лимитами завтра или оформи премиум в «🚀 Тарифы» — "
     "там больше энергии и экспертные роли ИИ-Ассистента."
+)
+TXT_STD_REPLY_ZERO_BALANCE = (
+    "⚠️ <b>У вас закончились суточные лимиты энергии на чат (0/30).</b>\n\n"
+    "Чтобы продолжить общение с ИИ и использовать умные кнопки, выберите один из вариантов:\n\n"
+    "🚀 <b>Повысить тариф до VIP</b>\n"
+    "💎 <b>Докупить кристаллы отдельно</b> (1 запрос = 1 💎)\n"
+    "👥 <b>Пригласить друзей</b> (+10 💎 за каждого приглашенного блогера)"
 )
 TXT_CREATE_IMAGE_AFTER_MODEL = (
     "Опиши изображение одним сообщением: стиль, ключевые объекты, фон, освещение и формат (квадрат / вертикаль)."
