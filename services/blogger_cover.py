@@ -401,13 +401,13 @@ async def _safe_send_cover_photo(
     from config import settings
     from services.streaming_download import stream_download_to_bytes
 
-    # Экранируем только промпт внутри <code>; теги caption остаются валидным HTML.
+    # Premium expandable quote (Telegram HTML). Промпт экранируем внутри <code>.
     bot_username = (settings.telegram_bot_username or "NeuroMule_bot").lstrip("@")
     safe_prompt = (cleaned_prompt or "").replace("<", "&lt;").replace(">", "&gt;")
     caption = (
         "🎨 <b>Ваша AI-обложка готова!</b>\n\n"
-        f'<aside><a href="https://t.me/{bot_username}"><b>NeuroMule</b></a>\n'
-        f"<code>{safe_prompt}</code></aside>"
+        f'<blockquote expandable><b><a href="https://t.me/{bot_username}">NeuroMule</a></b>\n'
+        f"<code>{safe_prompt}</code></blockquote>"
     )
 
     async def _send_bytes(data: bytes) -> None:
@@ -455,16 +455,20 @@ async def _safe_send_cover_photo(
             chat_id,
             getattr(exc, "retry_after", None),
         )
-    except TelegramBadRequest:
+    except TelegramBadRequest as exc:
+        # Невалидный HTML caption / peer — пробрасываем, чтобы воркер сделал refund.
         logger.warning("blogger cover worker: bad request chat_id=%s", chat_id, exc_info=True)
+        raise RuntimeError("telegram rejected cover photo") from exc
     except TelegramNetworkError:
         logger.warning("blogger cover worker: network chat_id=%s", chat_id, exc_info=True)
+        raise
     except Exception:
         logger.error(
             "blogger cover worker: unexpected send failure chat_id=%s",
             chat_id,
             exc_info=True,
         )
+        raise
 
 
 async def _process_cover_task(task: dict[str, Any]) -> None:
@@ -719,6 +723,8 @@ async def run_product_cover_generation(
     *,
     photo_file_id: str,
     post_id: str | None,
+    instruction_msg_id: int | None = None,
+    success_msg_id: int | None = None,
 ) -> BloggerCoverResult:
     """Пайплайн «обложка с продуктом»: сохранить file_id → очередь."""
     from aiogram.enums import ParseMode
@@ -747,10 +753,16 @@ async def run_product_cover_generation(
         draft = await blogger_post_cache.resolve_last(user_id)
 
     if draft is None:
+        await _safe_delete_status_message(
+            message.bot, message.chat.id, instruction_msg_id
+        )
         await message.answer(msg.TXT_BLOGGER_POST_NOT_FOUND, parse_mode=ParseMode.HTML)
         return BloggerCoverResult(outcome=BloggerCoverOutcome.PROMPT_NOT_FOUND)
 
     if not billing_bypass(user_id) and not await can_afford_blogger_cover(user_id):
+        await _safe_delete_status_message(
+            message.bot, message.chat.id, instruction_msg_id
+        )
         await message.answer(msg.TXT_BLOGGER_COVER_INSUFFICIENT, parse_mode=ParseMode.HTML)
         return BloggerCoverResult(outcome=BloggerCoverOutcome.INSUFFICIENT_BALANCE)
 
@@ -762,6 +774,8 @@ async def run_product_cover_generation(
         bot=message.bot,
         chat_id=message.chat.id,
         photo_file_id=file_id,
+        instruction_msg_id=instruction_msg_id,
+        success_msg_id=success_msg_id,
     )
     await deliver_blogger_cover_turn_result(message, result, draft=draft)
     return result

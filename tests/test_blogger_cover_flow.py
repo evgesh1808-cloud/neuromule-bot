@@ -290,7 +290,7 @@ async def test_process_object_cover_click_sets_fsm_and_asks_photo() -> None:
     callback.data = f"{msg.CB_COVER_GENERATE_PREFIX}object:{post_id}"
     callback.message.chat.id = 4
     callback.message.message_id = 13
-    callback.message.answer = AsyncMock()
+    callback.message.answer = AsyncMock(return_value=MagicMock(message_id=404))
     callback.answer = AsyncMock()
     state = MagicMock()
     state.set_state = AsyncMock()
@@ -298,9 +298,10 @@ async def test_process_object_cover_click_sets_fsm_and_asks_photo() -> None:
 
     await process_object_cover_click(callback, state)
 
-    state.update_data.assert_awaited_once_with(current_post_id=post_id)
     state.set_state.assert_awaited_once_with(BloggerFlowStates.waiting_for_product_photo)
     callback.message.answer.assert_awaited_once_with(msg.TXT_BLOGGER_COVER_UPLOAD_OBJECT_HINT)
+    assert state.update_data.await_args.kwargs["current_post_id"] == post_id
+    assert state.update_data.await_args.kwargs["instruction_msg_id"] == 404
     callback.answer.assert_awaited_once()
 
 
@@ -316,7 +317,9 @@ async def test_capture_product_photo_runs_generation() -> None:
     message.answer = AsyncMock()
     message.bot.send_chat_action = AsyncMock()
     state = MagicMock()
-    state.get_data = AsyncMock(return_value={"current_post_id": post_id})
+    state.get_data = AsyncMock(
+        return_value={"current_post_id": post_id, "instruction_msg_id": 404}
+    )
     state.clear = AsyncMock()
 
     with patch(
@@ -331,6 +334,7 @@ async def test_capture_product_photo_runs_generation() -> None:
     mock_gen.assert_awaited_once()
     assert mock_gen.await_args.kwargs["photo_file_id"] == "AgACAgIAlarge"
     assert mock_gen.await_args.kwargs["post_id"] == post_id
+    assert mock_gen.await_args.kwargs["instruction_msg_id"] == 404
 
 
 @pytest.mark.asyncio

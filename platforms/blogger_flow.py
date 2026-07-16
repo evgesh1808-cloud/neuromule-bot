@@ -490,9 +490,12 @@ async def process_object_cover_click(callback: CallbackQuery, state: FSMContext)
     if draft is None:
         return
 
-    await state.update_data(current_post_id=draft.post_id)
     await state.set_state(BloggerFlowStates.waiting_for_product_photo)
-    await callback.message.answer(msg.TXT_BLOGGER_COVER_UPLOAD_OBJECT_HINT)
+    instruction_msg = await callback.message.answer(msg.TXT_BLOGGER_COVER_UPLOAD_OBJECT_HINT)
+    await state.update_data(
+        current_post_id=draft.post_id,
+        instruction_msg_id=instruction_msg.message_id,
+    )
     await callback.answer()
 
 
@@ -709,6 +712,10 @@ async def blogger_face_photo_need_photo(message: Message) -> None:
 @router.message(UserFlow.waiting_for_blogger_object_photo, Command("cancel"))  # legacy
 async def cancel_product_cover_photo(message: Message, state: FSMContext) -> None:
     """Отмена ожидания фото продукта."""
+    data = await state.get_data()
+    await _safe_delete_status_message(
+        message.bot, message.chat.id, data.get("instruction_msg_id")
+    )
     await state.clear()
     await message.answer(msg.TXT_BLOGGER_COVER_PRODUCT_CANCELLED)
 
@@ -722,6 +729,7 @@ async def capture_product_photo(message: Message, state: FSMContext) -> None:
 
     user_data = await state.get_data()
     post_id = str(user_data.get("current_post_id") or "").strip() or None
+    instruction_msg_id = user_data.get("instruction_msg_id")
     photo_file_id = message.photo[-1].file_id
     await state.clear()
 
@@ -731,11 +739,17 @@ async def capture_product_photo(message: Message, state: FSMContext) -> None:
         action=ChatAction.TYPING,
     )
 
+    try:
+        instruction_id = int(instruction_msg_id) if instruction_msg_id is not None else None
+    except (TypeError, ValueError):
+        instruction_id = None
+
     await run_product_cover_generation(
         settings,
         message,
         photo_file_id=photo_file_id,
         post_id=post_id,
+        instruction_msg_id=instruction_id,
     )
 
 
