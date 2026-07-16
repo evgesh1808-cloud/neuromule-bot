@@ -103,6 +103,37 @@ async def test_ask_ai_messages_token_limit_raises():
         raise AssertionError("expected RuntimeError")
 
 
+async def test_ask_ai_messages_stream_fail_falls_back_to_non_stream():
+    s = Settings().model_copy(update={"free_models": ["m1"], "openrouter_key": "k"})
+    calls: list[bool] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = __import__("json").loads(request.content.decode())
+        calls.append(bool(body.get("stream")))
+        if body.get("stream"):
+            return httpx.Response(503, text="stream down")
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "recovered"}}]},
+        )
+
+    transport = httpx.MockTransport(handler)
+
+    async def stream_cb(text: str, done: bool) -> None:
+        return None
+
+    async with httpx.AsyncClient(transport=transport) as client:
+        out = await ask_ai_messages(
+            s,
+            [{"role": "user", "content": "x"}],
+            models=["google/gemini-2.5-flash"],
+            http_client=client,
+            stream_callback=stream_cb,
+        )
+    assert out["content"] == "recovered"
+    assert calls == [True, False]
+
+
 async def test_ask_ai_messages_keeps_free_suffix_before_request():
     s = Settings().model_copy(update={"free_models": ["m1"], "openrouter_key": "k"})
     seen_models: list[str] = []

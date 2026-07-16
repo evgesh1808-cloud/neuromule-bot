@@ -343,11 +343,13 @@ async def run_chat_turn(
 
     try:
         is_blogger_role = (effective_role or "").strip().lower() in _BLOGGER_ROLE_IDS
+        is_free_tariff = plan.tariff is TariffTier.FREE
         or_timeout = (
             settings.openrouter_free_timeout_sec
-            if plan.tariff is TariffTier.FREE
+            if is_free_tariff
             else settings.openrouter_timeout_sec
         )
+        # FREE: только non-stream — openrouter/free часто зависает в SSE без чанков.
         completion = await ask_ai_messages(
             settings,
             payload,
@@ -355,7 +357,7 @@ async def run_chat_turn(
             max_context_tokens=settings.chat_max_context_tokens_est,
             char_per_token=settings.chat_char_per_token_est,
             http_client=http_client,
-            stream_callback=safe_stream_callback,
+            stream_callback=None if is_free_tariff else safe_stream_callback,
             models=model_chain,
             max_tokens=plan.max_tokens,
             text_role=effective_role,

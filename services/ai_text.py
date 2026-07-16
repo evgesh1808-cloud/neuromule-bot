@@ -522,12 +522,12 @@ async def ask_ai_messages(
                     )
                     if result is not None and result.get("content"):
                         return result
-                    # Stream пустой/упал — сразу следующая модель (не ждём ещё timeout non-stream).
+                    # SSE пустой/упал — обязательный non-stream на той же модели
+                    # (иначе при поломке стрима весь каскад молчит).
                     logger.warning(
-                        "OpenRouter model=%s stream empty/failed — next model",
+                        "OpenRouter model=%s stream empty/failed — non-stream fallback",
                         model,
                     )
-                    continue
                 result = await _post_chat_completion(
                     client,
                     settings,
