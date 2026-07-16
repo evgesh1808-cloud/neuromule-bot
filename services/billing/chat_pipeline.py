@@ -68,9 +68,12 @@ def _free_model_fallbacks() -> tuple[str, ...]:
 
 
 def _paid_model_fallbacks() -> tuple[str, ...]:
-    if settings.smart_models:
-        return _unique_model_ids(*settings.smart_models)
-    return (PAID_CHAT_MODEL,)
+    """Резерв MINI/SMART/ULTRA: smart_models + lite, если основной Gemini недоступен."""
+    return _unique_model_ids(
+        *(settings.smart_models or ()),
+        PAID_CHAT_MODEL,
+        "google/gemini-2.5-flash-lite",
+    )
 
 
 _BLOGGER_ROLE_IDS = frozenset({"blogger_content", "blogger"})

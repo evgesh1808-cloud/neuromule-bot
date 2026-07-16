@@ -103,6 +103,23 @@ async def test_ask_ai_messages_token_limit_raises():
         raise AssertionError("expected RuntimeError")
 
 
+async def test_chat_payload_has_no_extra_body_sdk_field():
+    from services.ai_text import _chat_payload
+
+    s = Settings().model_copy(update={"openrouter_key": "k"})
+    body = _chat_payload(
+        s,
+        "google/gemini-2.5-flash",
+        [{"role": "user", "content": "x"}],
+        stream=False,
+        max_tokens=900,
+    )
+    assert "extra_body" not in body
+    assert "prompt_caching" not in body
+    assert body["model"] == "google/gemini-2.5-flash"
+    assert body["max_tokens"] == 900
+
+
 async def test_ask_ai_messages_stream_fail_falls_back_to_non_stream():
     s = Settings().model_copy(update={"free_models": ["m1"], "openrouter_key": "k"})
     calls: list[bool] = []

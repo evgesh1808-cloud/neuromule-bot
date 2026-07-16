@@ -301,8 +301,10 @@ async def run_chat_turn(
             logger.debug("send_typing failed", exc_info=True)
 
     is_table_role = (effective_role or "").strip().lower() == "table_generator"
-    if is_table_role:
-        stream_callback = None
+    # OpenRouter SSE (free router / Gemini) часто зависает без чанков → «бот молчит».
+    # Пока стрим нестабилен — всегда non-stream.
+    if stream_callback is not None:
+        logger.debug("run_chat_turn: stream_callback ignored (SSE temporarily disabled)")
 
     # Основная модель из биллинга + резервный каскад (FREE → :free, MINI+ → Gemini/smart_models).
     model_chain: list[str] = []
@@ -310,36 +312,6 @@ async def run_chat_turn(
         mid = str(mid).strip()
         if mid and mid not in model_chain:
             model_chain.append(mid)
-
-    safe_stream_callback: StreamCallback | None = None
-    if stream_callback is not None:
-        stream_fn = getattr(stream_callback, "on_stream", stream_callback)
-        is_blogger_role = (effective_role or "").strip().lower() in _BLOGGER_ROLE_IDS
-
-        is_standard_role = (effective_role or "").strip().lower() == "standard"
-
-        async def _safe_stream_callback(full_text: str, done: bool) -> None:
-            try:
-                if is_blogger_role and not done:
-                    await stream_fn(_BLOGGER_STREAM_PLACEHOLDER, done)
-                    return
-                display_text = full_text
-                if is_standard_role:
-                    from services.standard_suggested_replies import split_suggested_replies
-
-                    display_text, _ = split_suggested_replies(full_text)
-                await stream_fn(
-                    format_assistant_for_role(
-                        display_text,
-                        effective_role,
-                        for_stream=not done,
-                    ),
-                    done,
-                )
-            except Exception:
-                # Битый HTML в стриме не должен валить весь ход чата.
-                logger.debug("stream_callback failed (ignored)", exc_info=True)
-        safe_stream_callback = _safe_stream_callback
 
     try:
         is_blogger_role = (effective_role or "").strip().lower() in _BLOGGER_ROLE_IDS
@@ -349,7 +321,6 @@ async def run_chat_turn(
             if is_free_tariff
             else settings.openrouter_timeout_sec
         )
-        # FREE: только non-stream — openrouter/free часто зависает в SSE без чанков.
         completion = await ask_ai_messages(
             settings,
             payload,
@@ -357,7 +328,7 @@ async def run_chat_turn(
             max_context_tokens=settings.chat_max_context_tokens_est,
             char_per_token=settings.chat_char_per_token_est,
             http_client=http_client,
-            stream_callback=None if is_free_tariff else safe_stream_callback,
+            stream_callback=None,
             models=model_chain,
             max_tokens=plan.max_tokens,
             text_role=effective_role,

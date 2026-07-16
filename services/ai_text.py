@@ -237,7 +237,8 @@ def _chat_payload(
         body["response_format"] = response_format
     if temperature is not None:
         body["temperature"] = temperature
-    body["extra_body"] = {"prompt_caching": True}
+    # Не слать ``extra_body`` / ``prompt_caching`` в raw JSON OpenRouter —
+    # это поля SDK, API их не ждёт и часть провайдеров (Gemini) отвечает 400.
     return body
 
 

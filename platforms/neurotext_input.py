@@ -933,7 +933,10 @@ async def handle_neurotext_user_message(
                     column_structure_warning=column_structure_warning,
                 )
     else:
-        use_stream = (
+        # Live-SSE отключён: OpenRouter часто не отдаёт чанки → «бот не отвечает».
+        # Ответ уходит одним message.answer после non-stream completion.
+        use_stream = False
+        _ = (
             settings.telegram_chat_streaming
             and not is_photo
             and not user_image_data_url

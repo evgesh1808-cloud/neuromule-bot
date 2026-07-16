@@ -164,6 +164,9 @@ def test_model_route_for_role_blogger_on_paid_tariff() -> None:
 
     std_model, std_fb = _model_route_for_role("standard", TariffTier.MINI)
     assert std_model == PAID_CHAT_MODEL
+    smart_model, smart_fb = _model_route_for_role("standard", TariffTier.SMART)
+    assert smart_model == PAID_CHAT_MODEL
+    assert "google/gemini-2.5-flash-lite" in smart_fb
 
     free_model, free_fb = _model_route_for_role("standard", TariffTier.FREE)
     # Платный ID в FREE_TEXT_MODEL (.env) не должен уезжать в FREE-каскад.

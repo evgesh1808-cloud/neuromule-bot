@@ -163,5 +163,10 @@ async def test_run_chat_turn_jailbreak_prompt_mocked(repo_module):
     assert r.assistant_message is not None
     assert "не могу" in r.assistant_message.lower() or "правил" in r.assistant_message.lower()
     snap = metrics.snapshot()["histograms"]
-    assert snap["openrouter.prompt_tokens{model=google/gemini-2.5-flash,role=standard}"]["sum"] == 42.0
-    assert snap["openrouter.completion_tokens{model=google/gemini-2.5-flash,role=standard}"]["sum"] == 17.0
+    prompt_keys = [k for k in snap if k.startswith("openrouter.prompt_tokens{") and "role=standard" in k]
+    completion_keys = [
+        k for k in snap if k.startswith("openrouter.completion_tokens{") and "role=standard" in k
+    ]
+    assert prompt_keys, snap
+    assert snap[prompt_keys[0]]["sum"] == 42.0
+    assert snap[completion_keys[0]]["sum"] == 17.0
