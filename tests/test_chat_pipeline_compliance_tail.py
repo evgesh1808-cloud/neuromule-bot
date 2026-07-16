@@ -133,6 +133,11 @@ def test_model_route_for_role_blogger_on_paid_tariff() -> None:
     assert std_model == PAID_CHAT_MODEL
 
     free_model, free_fb = _model_route_for_role("standard", TariffTier.FREE)
-    assert free_model == FREE_CHAT_MODEL
-    assert "mistralai/mistral-7b-instruct:free" in free_fb
-    assert "openchat/openchat-7b:free" in free_fb
+    # Платный ID в FREE_TEXT_MODEL (.env) не должен уезжать в FREE-каскад.
+    if FREE_CHAT_MODEL == "openrouter/free" or FREE_CHAT_MODEL.endswith(":free"):
+        assert free_model == FREE_CHAT_MODEL
+    else:
+        assert free_model == "openrouter/free"
+    assert "openrouter/free" in (free_model, *free_fb)
+    assert "meta-llama/llama-3.2-3b-instruct:free" in free_fb
+    assert "meta-llama/llama-3.3-70b-instruct:free" in free_fb

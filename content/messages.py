@@ -1247,8 +1247,10 @@ TXT_CHAT_AI_UNAVAILABLE = (
     "😵 <b>Нейросеть временно недоступна</b>\n\n"
     "OpenRouter не принял запрос (модель занята или устарел ID в настройках). "
     "⚡ и 💎 за этот ответ <b>не списаны</b> — попробуйте через минуту.\n\n"
-    "Если ошибка повторяется — проверьте в <code>.env</code> "
-    "<code>FREE_TEXT_MODEL=google/gemini-2.5-flash</code>."
+    "Если ошибка повторяется на тарифе FREE — в <code>.env</code> должно быть:\n"
+    "<code>FREE_TEXT_MODEL=openrouter/free</code>\n"
+    "<code>FREE_MODELS=meta-llama/llama-3.2-3b-instruct:free,"
+    "meta-llama/llama-3.3-70b-instruct:free</code>"
 )
 TXT_BLOGGER_AI_FAILED = (
     "😵 <b>Конструктор «Блогер» временно недоступен</b>\n\n"

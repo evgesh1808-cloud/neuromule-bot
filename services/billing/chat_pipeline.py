@@ -48,10 +48,13 @@ def _unique_model_ids(*candidates: str) -> tuple[str, ...]:
 
 
 def _free_model_fallbacks() -> tuple[str, ...]:
-    """Строгий каскад бесплатных моделей OpenRouter (тариф FREE)."""
-    return (
-        "mistralai/mistral-7b-instruct:free",
-        "openchat/openchat-7b:free",
+    """Резерв FREE: ``FREE_MODELS`` из .env + актуальные :free ID OpenRouter."""
+    return _unique_model_ids(
+        *settings.free_models,
+        "openrouter/free",
+        "meta-llama/llama-3.2-3b-instruct:free",
+        "meta-llama/llama-3.3-70b-instruct:free",
+        "google/gemma-4-31b-it:free",
     )
 
 
@@ -64,13 +67,20 @@ def _paid_model_fallbacks() -> tuple[str, ...]:
 _BLOGGER_ROLE_IDS = frozenset({"blogger_content", "blogger"})
 
 
+def _is_openrouter_free_model(model_id: str) -> bool:
+    mid = (model_id or "").strip().lower()
+    return mid == "openrouter/free" or mid.endswith(":free")
+
+
 def _model_route_for_role(role_id: str, tariff: TariffTier) -> tuple[str, tuple[str, ...]]:
     """FREE → бесплатный каскад; MINI/SMART/ULTRA → Gemini 2.5 Flash."""
     rid = (role_id or "").strip().lower()
     if rid in _BLOGGER_ROLE_IDS and tariff is not TariffTier.FREE:
         return PAID_CHAT_MODEL, _paid_model_fallbacks()
     if tariff is TariffTier.FREE:
-        return FREE_CHAT_MODEL, _free_model_fallbacks()
+        # Если в .env остался платный Gemini в FREE_TEXT_MODEL — не роняем FREE-чат.
+        primary = FREE_CHAT_MODEL if _is_openrouter_free_model(FREE_CHAT_MODEL) else "openrouter/free"
+        return primary, _free_model_fallbacks()
     return PAID_CHAT_MODEL, _paid_model_fallbacks()
 
 

@@ -15,7 +15,7 @@ import aiosqlite
 from config import settings as _app_settings
 
 try:
-    import google.generativeai as genai
+    from google import genai
 except ImportError:  # pragma: no cover - surfaced at runtime in the handler.
     genai = None
 
@@ -422,14 +422,14 @@ _USER_COLUMNS = {
 }
 
 
-def _configure_genai() -> None:
-    """Настройка SDK Google Gemini (только канал B, без OpenRouter)."""
+def _configure_genai() -> "genai.Client":
+    """Клиент Google Gen AI SDK (только канал B, без OpenRouter)."""
     if genai is None:
-        raise RuntimeError("Установите пакет google-generativeai для HD-отчетов и совета дня.")
+        raise RuntimeError("Установите пакет google-genai для HD-отчетов и совета дня.")
     api_key = (_app_settings.gemini_api_key or os.getenv("GEMINI_API_KEY", "")).strip()
     if not api_key or api_key.startswith(("your_", "ваш_")):
         raise RuntimeError("Задайте GEMINI_API_KEY в .env.")
-    genai.configure(api_key=api_key)
+    return genai.Client(api_key=api_key)
 
 
 async def gemini_generate_plain_text(prompt: str) -> str:
@@ -437,13 +437,14 @@ async def gemini_generate_plain_text(prompt: str) -> str:
     Один запрос текста к Gemini с перебором моделей (совместимость, отчёты без JSON-режима).
     Не использует OpenRouter.
     """
-    _configure_genai()
-    assert genai is not None
+    client = _configure_genai()
     errors: list[str] = []
     for model_name in _GEMINI_MODEL_CHAIN:
         try:
-            model = genai.GenerativeModel(model_name)
-            response = await model.generate_content_async(prompt)
+            response = await client.aio.models.generate_content(
+                model=model_name,
+                contents=prompt,
+            )
             text = (getattr(response, "text", "") or "").strip()
             if text:
                 return text
@@ -604,15 +605,14 @@ async def generate_premium_report(hd_type: str, birth_data: str) -> dict[str, st
         "ВАЖНО: Каждый раздел должен давать ответ на вопрос 'И что мне теперь с этим делать?'. "
         "Разбор должен выглядеть как дорогая инвестиция в себя."
     )
-    _configure_genai()
-    assert genai is not None
+    client = _configure_genai()
     errors: list[str] = []
     for model_name in _GEMINI_MODEL_CHAIN:
-        model = genai.GenerativeModel(model_name)
         try:
-            response = await model.generate_content_async(
-                prompt,
-                generation_config={"response_mime_type": "application/json"},
+            response = await client.aio.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config={"response_mime_type": "application/json"},
             )
             parsed = _parse_json_object(getattr(response, "text", "") or "")
             return _normalize_premium_report(parsed)
@@ -624,7 +624,10 @@ async def generate_premium_report(hd_type: str, birth_data: str) -> dict[str, st
             )
             errors.append(f"{model_name}(json): {exc_json!r}")
             try:
-                response = await model.generate_content_async(prompt)
+                response = await client.aio.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                )
                 parsed = _parse_json_object(getattr(response, "text", "") or "")
                 return _normalize_premium_report(parsed)
             except Exception as exc_plain:  # noqa: BLE001
@@ -739,15 +742,16 @@ async def generate_daily_forecast(
     *,
     current_cta_text: str,
 ) -> str:
-    """Совет дня целиком (Gemini SDK, stream=False, каскад моделей)."""
+    """Совет дня целиком (google-genai SDK, non-stream, каскад моделей)."""
     prompt = build_daily_advice_prompt(user_profile, current_cta_text=current_cta_text)
-    _configure_genai()
-    assert genai is not None
+    client = _configure_genai()
     errors: list[str] = []
     for model_name in _GEMINI_MODEL_CHAIN:
         try:
-            model = genai.GenerativeModel(model_name)
-            response = await model.generate_content_async(prompt, stream=False)
+            response = await client.aio.models.generate_content(
+                model=model_name,
+                contents=prompt,
+            )
             text = (getattr(response, "text", "") or "").strip()
             if text:
                 return text
