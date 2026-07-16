@@ -122,6 +122,7 @@ class ChatRoutePlan:
     fallback_model_ids: tuple[str, ...] = ()
     blocked: bool = False
     block_reason: str = ""
+    tariff: TariffTier = TariffTier.FREE
 
 
 @dataclass(frozen=True)

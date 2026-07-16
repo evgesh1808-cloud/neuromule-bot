@@ -67,13 +67,13 @@ def test_keyboard_callback_format() -> None:
 
 
 def test_role_standard_prompt_has_buttons_rule() -> None:
-    from content.chat_prompt import _ROLE_STANDARD
+    from content.chat_prompt import _CHATCOM_LACO_TAIL, _ROLE_STANDARD
 
-    assert _ROLE_STANDARD.startswith("⚠️ CRITICAL BUDGET AND STYLE RULE")
-    assert "CHATCOM MINIMALISM" in _ROLE_STANDARD
-    assert "===КНОПКИ===" in _ROLE_STANDARD
+    assert _ROLE_STANDARD.startswith("[РЕЖИМ: ⚪ СТАНДАРТ]")
     assert "blockquote expandable" in _ROLE_STANDARD
     assert "Пример реплики" in _ROLE_STANDARD
+    assert "===КНОПКИ===" in _CHATCOM_LACO_TAIL
+    assert "СТИЛЬ ОТВЕТА" in _CHATCOM_LACO_TAIL
     # Старая структура капс-секций больше не является обязательным форматом ответа
     assert "выдели структуру СТРОГО по блокам" not in _ROLE_STANDARD
 

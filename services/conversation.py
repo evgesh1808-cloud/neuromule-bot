@@ -14,6 +14,7 @@ import logging
 
 from config import Settings
 from content.chat_prompt import build_memory_update_prompt, build_system_prompt
+from services.billing.types import TariffTier
 from services import repository as repo
 from services.dialog_platform import DEFAULT_DIALOG_PLATFORM
 from services.dialog_sanitize import sanitize_dialog_content_for_chat
@@ -57,6 +58,7 @@ async def build_openrouter_messages(
     *,
     premium: bool = False,
     platform: str = DEFAULT_DIALOG_PLATFORM,
+    tariff: TariffTier | str | None = None,
 ) -> list[dict[str, str]]:
     """
     Формирует список сообщений в формате OpenAI Chat для OpenRouter.
@@ -68,6 +70,7 @@ async def build_openrouter_messages(
     Вход:
         settings — конфиг.
         user_id — id пользователя Telegram (= primary key в users).
+        tariff — тариф пользователя (FREE → Chatcom-хвост в system для standard).
 
     Возвращает:
         Список словарей ``{"role": "...", "content": "..."}``.
@@ -82,6 +85,7 @@ async def build_openrouter_messages(
         text_role,
         premium=premium,
         user_city=user_city,
+        tariff=tariff,
     )
     rows = await repo.dialog_fetch_last(user_id, settings.chat_history_limit, platform=platform)
     out: list[dict[str, str]] = [{"role": "system", "content": system}]

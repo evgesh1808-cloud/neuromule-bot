@@ -26,6 +26,7 @@ from services.rate_limit_service import allow_request, rollback_last
 from services.billing import billing
 from services.billing.chat_pipeline import prepare_openrouter_chat_messages
 from services.billing.store import refund_charge
+from services.billing.types import TariffTier
 from services.context_pruning import prune_context_messages
 from services.repository import dialog_append, dialog_pop_last_for_user, insert_table_report
 from services.table_json import canonicalize_table_json
@@ -261,6 +262,7 @@ async def run_chat_turn(
         effective_role,
         premium=plan.use_premium_prompt,
         platform=platform,
+        tariff=plan.tariff,
     )
     user_content = build_openrouter_user_content(
         raw_user_text,
@@ -273,6 +275,7 @@ async def run_chat_turn(
         payload,
         use_premium_prompt=plan.use_premium_prompt,
         text_role=effective_role,
+        chatcom_laconic=plan.tariff is TariffTier.FREE,
     )
 
     def _estimate_payload_tokens(msgs: list) -> int:

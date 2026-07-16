@@ -89,17 +89,19 @@ def inject_compliance_rules_into_last_user_message(
     *,
     use_premium_prompt: bool,
     text_role: str | None = None,
+    chatcom_laconic: bool = False,
 ) -> None:
     """
     Дублирует критичные правила роли в конец последнего ``user`` перед вызовом OpenRouter.
 
     Помогает free-моделям не «забывать» запрет робо-маркеров, правило одной точки
     и плоскую верстку шагов (без вложенной нумерации) в длинных диалогах, когда system-prompt
-    далеко от текущего вопроса. Для роли ``standard`` — хвост Chatcom (кратность, ===КНОПКИ===).
+    далеко от текущего вопроса. Для ``standard`` на FREE — ``_CHATCOM_LACO_TAIL``.
     """
     suffix = build_user_compliance_tail(
         premium=use_premium_prompt,
         text_role=text_role,
+        chatcom_laconic=chatcom_laconic,
     )
     for i in range(len(messages) - 1, -1, -1):
         msg = messages[i]
@@ -153,6 +155,7 @@ def prepare_openrouter_chat_messages(
     *,
     use_premium_prompt: bool,
     text_role: str | None = None,
+    chatcom_laconic: bool = False,
 ) -> list[dict[str, str]]:
     """Финальная подготовка payload чата непосредственно перед OpenRouter."""
     role_id = (text_role or "").strip().lower()
@@ -163,6 +166,7 @@ def prepare_openrouter_chat_messages(
             messages,
             use_premium_prompt=use_premium_prompt,
             text_role=role_id or None,
+            chatcom_laconic=chatcom_laconic and role_id == "standard",
         )
     return messages
 
@@ -220,8 +224,11 @@ def plan_text_chat(user: UserBillingState, role_type: str) -> ChatRoutePlan:
             return premium_max
         return premium_max if expert or tariff is not TariffTier.FREE else free_max
 
+    def _plan(**kwargs: Any) -> ChatRoutePlan:
+        return ChatRoutePlan(tariff=tariff, **kwargs)
+
     if not role_allowed_for_tariff(role_id, tariff):
-        return ChatRoutePlan(
+        return _plan(
             model_id=model_id,
             price_type=CurrencyKind.NONE,
             energy_cost=energy_cost,
@@ -236,7 +243,7 @@ def plan_text_chat(user: UserBillingState, role_type: str) -> ChatRoutePlan:
 
     if tariff is TariffTier.FREE:
         if role_id in FREE_TARIFF_ALLOWED_ROLES:
-            return ChatRoutePlan(
+            return _plan(
                 model_id=model_id,
                 price_type=CurrencyKind.ENERGY,
                 energy_cost=energy_cost,
@@ -248,7 +255,7 @@ def plan_text_chat(user: UserBillingState, role_type: str) -> ChatRoutePlan:
             )
         if user.crystals >= crystal_cost:
             # FREE + 💎: тот же каскад, что MINI — FREE_TEXT_MODEL + FREE_MODELS (резерв при 429).
-            return ChatRoutePlan(
+            return _plan(
                 model_id=model_id,
                 price_type=CurrencyKind.CRYSTALS,
                 energy_cost=energy_cost,
@@ -258,7 +265,7 @@ def plan_text_chat(user: UserBillingState, role_type: str) -> ChatRoutePlan:
                 use_premium_prompt=True,
                 fallback_model_ids=fallback_model_ids,
             )
-        return ChatRoutePlan(
+        return _plan(
             model_id=model_id,
             price_type=CurrencyKind.NONE,
             energy_cost=energy_cost,
@@ -272,7 +279,7 @@ def plan_text_chat(user: UserBillingState, role_type: str) -> ChatRoutePlan:
         )
 
     if tariff is TariffTier.MINI:
-        return ChatRoutePlan(
+        return _plan(
             model_id=model_id,
             price_type=CurrencyKind.ENERGY,
             energy_cost=energy_cost,
@@ -283,7 +290,7 @@ def plan_text_chat(user: UserBillingState, role_type: str) -> ChatRoutePlan:
             fallback_model_ids=fallback_model_ids,
         )
 
-    return ChatRoutePlan(
+    return _plan(
         model_id=model_id,
         price_type=CurrencyKind.ENERGY,
         energy_cost=energy_cost,
