@@ -148,6 +148,9 @@ def test_paid_standard_uses_full_premium_neuromule_voice() -> None:
     assert "ЕСТЕСТВЕННОСТЬ РЕЧИ" in prompt
     assert "Пример реплики" in prompt
     assert "blockquote expandable" in prompt
+    assert "ФОКУС НА ТЕКУЩЕМ ЗАПРОСЕ" in prompt
+    assert "несвязанные прошлые темы" in prompt
+    assert "в ТЕКУЩЕМ сообщении" in prompt
     assert "взвешивание нейронов" in prompt.lower() or "взвешивание нейронов" in prompt
     assert "вместо алгоритм/план" not in prompt
     assert "Нейроны» (вместо логика" not in prompt
