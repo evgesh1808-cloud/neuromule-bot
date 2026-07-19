@@ -42,7 +42,8 @@ COVER_TYPING_INTERVAL_SEC = 4.0
 # Общая очередь: пул воркеров безопасно разбирает её через await Queue.get().
 cover_generation_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 _worker_tasks: list[asyncio.Task[None]] = []
-DEFAULT_COVER_WORKERS = 5
+# 5 воркеров на VDS ~1GB без swap стабильно ловят OOM вместе с api/wb.
+DEFAULT_COVER_WORKERS = 2
 
 # FACE: макро-хвост под фотореализм кожи (Flux + face reference).
 _FACE_PROMPT_SUFFIX = (

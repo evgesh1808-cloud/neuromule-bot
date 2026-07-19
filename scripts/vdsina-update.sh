@@ -83,6 +83,21 @@ fi
 
 find "${DEPLOY_DIR}" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
 
+# VDS ~1GB без swap: три main.py ловят OOM на старте neuromule-tg.
+if [ ! -f /swapfile ]; then
+  echo "==> Creating 2G /swapfile (OOM guard)"
+  if fallocate -l 2G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=2048 status=none; then
+    chmod 600 /swapfile
+    mkswap /swapfile >/dev/null
+    swapon /swapfile
+    grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+  else
+    echo "WARN: could not create /swapfile"
+  fi
+elif ! swapon --show 2>/dev/null | grep -q '/swapfile'; then
+  swapon /swapfile 2>/dev/null || true
+fi
+
 if [ ! -d "venv" ]; then
   python3 -m venv venv
 fi

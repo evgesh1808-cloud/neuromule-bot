@@ -358,10 +358,13 @@ class Settings(BaseSettings):
     )
 
     # Пул воркеров очереди AI-обложек блогера (общая asyncio.Queue).
-    blogger_cover_workers_count: Annotated[int, _coerce_int(5)] = Field(
-        default=5,
+    # Дефолт 2: на VDS ~1GB три процесса main.py иначе ловят OOM при старте.
+    blogger_cover_workers_count: Annotated[int, _coerce_int(2)] = Field(
+        default=2,
         validation_alias=AliasChoices(
-            "BLOGGER_COVER_WORKERS_COUNT", "blogger_cover_workers_count"
+            "BLOGGER_COVER_WORKERS_COUNT",
+            "BLOGGER_COVER_WORKERS",
+            "blogger_cover_workers_count",
         ),
     )
 

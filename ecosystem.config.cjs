@@ -11,8 +11,14 @@ module.exports = {
       cwd: __dirname,
       env: {
         NEUROMULE_PLATFORM: "telegram",
+        // Меньше фоновых cover-тасков — меньше пик RAM на 1GB VDS.
+        BLOGGER_COVER_WORKERS_COUNT: "2",
       },
-      max_memory_restart: "400M",
+      // Перезапуск до системного OOM (на ~1GB ноде без swap убивали tg при ~220–270MB).
+      max_memory_restart: "280M",
+      exp_backoff_restart_delay: 3000,
+      max_restarts: 20,
+      min_uptime: "10s",
     },
     {
       name: "neuromule-api",
@@ -23,7 +29,8 @@ module.exports = {
         NEUROMULE_PLATFORM: "api",
         API_PORT: "8000",
       },
-      max_memory_restart: "300M",
+      max_memory_restart: "200M",
+      exp_backoff_restart_delay: 3000,
     },
     {
       name: "neuromule-wb-worker",
@@ -33,7 +40,8 @@ module.exports = {
       env: {
         NEUROMULE_PLATFORM: "wb_worker",
       },
-      max_memory_restart: "300M",
+      max_memory_restart: "200M",
+      exp_backoff_restart_delay: 3000,
     },
   ],
 };
