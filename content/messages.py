@@ -1260,8 +1260,8 @@ TXT_CHAT_AI_UNAVAILABLE = (
     "⚡ и 💎 за этот ответ <b>не списаны</b> — попробуйте через минуту.\n\n"
     "Если ошибка повторяется на тарифе FREE — в <code>.env</code> должно быть:\n"
     "<code>FREE_TEXT_MODEL=openrouter/free</code>\n"
-    "<code>FREE_MODELS=meta-llama/llama-3.2-3b-instruct:free,"
-    "meta-llama/llama-3.3-70b-instruct:free</code>"
+    "<code>FREE_MODELS=google/gemma-4-31b-it:free,"
+    "google/gemma-4-26b-a4b-it:free,nvidia/nemotron-nano-9b-v2:free</code>"
 )
 TXT_BLOGGER_AI_FAILED = (
     "😵 <b>Конструктор «Блогер» временно недоступен</b>\n\n"

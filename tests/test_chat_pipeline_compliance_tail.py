@@ -130,11 +130,33 @@ def test_prepare_openrouter_skips_chatcom_tail_for_smart_standard() -> None:
     )
     body = payload[1]["content"]
     assert "премиум-комплаенс Стандарт" in body
-    assert "готовые тексты" in body.lower() or "Готовые тексты" in body or "готовые тексты" in body
+    assert "Готово! Разные стили на выбор" in body
+    assert "ИГНОРИРУЙ формат прошлых" in body or "ИГНОРИРУЙ" in body
     assert "<pre>" in body
-    assert "Без блока ===КНОПКИ===" in body or "без блока ===КНОПКИ===" in body.lower()
+    assert "Без блока ===КНОПКИ===" in body or "без блока ===КНОПКИ===" in body.lower() or "Без ===КНОПКИ===" in body
     assert "СТИЛЬ ОТВЕТА" not in body
     assert "Маршрут" not in body
+
+
+def test_prepare_openrouter_collapses_assistant_history_for_paid_standard() -> None:
+    payload = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "старый вопрос"},
+        {
+            "role": "assistant",
+            "content": "Вы можете создать теплое поздравление...\n\n1. Личное отношение",
+        },
+        {"role": "user", "content": "Напиши поздравление с 30 лет"},
+    ]
+    prepare_openrouter_chat_messages(
+        payload,
+        use_premium_prompt=True,
+        text_role="standard",
+        chatcom_laconic=False,
+    )
+    assert "Вы можете создать" not in payload[2]["content"]
+    assert "PREMIUM COPY PACK" in payload[2]["content"]
+    assert "Готово! Разные стили" in payload[3]["content"] or "премиум-комплаенс" in payload[3]["content"]
 
 
 def test_paid_standard_uses_copy_pack_voice() -> None:
@@ -230,5 +252,6 @@ def test_model_route_for_role_blogger_on_paid_tariff() -> None:
     else:
         assert free_model == "openrouter/free"
     assert "openrouter/free" in (free_model, *free_fb) or free_model.endswith(":free")
-    assert "meta-llama/llama-3.2-3b-instruct:free" in free_fb
+    assert "google/gemma-4-31b-it:free" in free_fb
+    assert "meta-llama/llama-3.2-3b-instruct:free" not in free_fb
     assert "meta-llama/llama-3.3-70b-instruct:free" not in free_fb

@@ -51,19 +51,28 @@ _SLOW_FREE_MODEL_IDS = frozenset(
     {
         "meta-llama/llama-3.3-70b-instruct:free",
         "nousresearch/hermes-3-llama-3.1-405b:free",
+        "nvidia/nemotron-3-ultra-550b-a55b:free",
+        "nvidia/nemotron-3-super-120b-a12b:free",
     }
+)
+
+# Жёсткий резерв, если FREE_MODELS в .env устарели (404 «unavailable for free»).
+_HARDCODED_FREE_FALLBACKS: tuple[str, ...] = (
+    "google/gemma-4-31b-it:free",
+    "google/gemma-4-26b-a4b-it:free",
+    "nvidia/nemotron-nano-9b-v2:free",
+    "openai/gpt-oss-20b:free",
 )
 
 
 def _free_model_fallbacks() -> tuple[str, ...]:
-    """Короткий резерв FREE: быстрые :free (без тяжёлых 70B/405B)."""
+    """Короткий резерв FREE: быстрые :free (без тяжёлых 70B/405B/550B)."""
     from_env = [
         mid for mid in settings.free_models if mid not in _SLOW_FREE_MODEL_IDS
     ]
     return _unique_model_ids(
         *from_env,
-        "meta-llama/llama-3.2-3b-instruct:free",
-        "google/gemma-4-31b-it:free",
+        *_HARDCODED_FREE_FALLBACKS,
     )
 
 
@@ -164,6 +173,21 @@ def inject_blogger_format_reminder(messages: list[dict[str, Any]]) -> None:
         return
 
 
+def collapse_prior_assistant_for_copy_pack(messages: list[dict[str, Any]]) -> None:
+    """Убирает bias старых коуч-ответов: прошлые assistant → короткий stub."""
+    stub = (
+        "[предыдущий ответ опущен — отвечай только в формате PREMIUM COPY PACK "
+        "с 4 блоками <pre>, без теории]"
+    )
+    for msg in messages:
+        if msg.get("role") != "assistant":
+            continue
+        content = msg.get("content")
+        if isinstance(content, str) and content.strip() == stub:
+            continue
+        msg["content"] = stub
+
+
 def prepare_openrouter_chat_messages(
     messages: list[dict[str, str]],
     *,
@@ -174,6 +198,8 @@ def prepare_openrouter_chat_messages(
 ) -> list[dict[str, str]]:
     """Финальная подготовка payload чата непосредственно перед OpenRouter."""
     role_id = (text_role or "").strip().lower()
+    if role_id == "standard" and use_premium_prompt and not chatcom_laconic:
+        collapse_prior_assistant_for_copy_pack(messages)
     if role_id in ("blogger_content", "blogger"):
         inject_blogger_format_reminder(messages)
     elif role_id != "table_generator":

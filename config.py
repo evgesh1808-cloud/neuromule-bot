@@ -20,9 +20,12 @@ _DEFAULT_GEMINI_FLASH_LITE = "google/gemini-2.5-flash-lite"
 _DEFAULT_FREE_CHAT_MODEL = "openrouter/free"
 # Имя поля сохранено для обратной совместимости импортов/тестов.
 _DEFAULT_GEMINI_FLASH_FREE = _DEFAULT_FREE_CHAT_MODEL
+# Актуальные :free на июль 2026 (llama-3.2-3b:free снят → 404).
 _DEFAULT_FREE_MODELS: list[str] = [
-    "meta-llama/llama-3.2-3b-instruct:free",
     "google/gemma-4-31b-it:free",
+    "google/gemma-4-26b-a4b-it:free",
+    "nvidia/nemotron-nano-9b-v2:free",
+    "openai/gpt-oss-20b:free",
 ]
 
 _DEFAULT_SMART_MODELS: list[str] = [
