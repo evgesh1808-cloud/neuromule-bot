@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
 # --- Текстовый чат (модели) ---
 # FREE — бесплатный каскад OpenRouter; MINI/SMART/ULTRA — Gemini 2.5 Flash.
-_DEFAULT_FREE_CHAT_MODEL = "openrouter/free"
+_DEFAULT_FREE_CHAT_MODEL = "google/gemma-4-26b-a4b-it:free"
 _DEFAULT_PAID_CHAT_MODEL = "google/gemini-2.5-flash"
 FREE_CHAT_MODEL = (settings.free_text_model or "").strip() or _DEFAULT_FREE_CHAT_MODEL
 PAID_CHAT_MODEL = (settings.paid_text_model or "").strip() or _DEFAULT_PAID_CHAT_MODEL

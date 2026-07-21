@@ -340,7 +340,11 @@ async def run_chat_turn(
             models=model_chain,
             max_tokens=plan.max_tokens,
             text_role=effective_role,
-            temperature=_BLOGGER_TEMPERATURE if is_blogger_role else None,
+            temperature=(
+                _BLOGGER_TEMPERATURE
+                if is_blogger_role
+                else (0.2 if (effective_role or "").strip().lower() == "standard" and plan.use_premium_prompt else None)
+            ),
         )
     except RuntimeError as exc:
         err = str(exc)

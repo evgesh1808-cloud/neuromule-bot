@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from services.billing.types import TariffTier
 from services.file_processor import DocumentTooBigError
 from services.neurotext_media import (
     NeurotextUnsupportedDocumentError,
@@ -101,10 +102,12 @@ async def test_run_chat_turn_table_role_with_document(repo_module) -> None:
         blocked=False,
         block_reason="",
         model_id="google/gemini-2.5-flash",
+        fallback_model_ids=(),
         max_tokens=640,
         use_premium_prompt=True,
         energy_cost=20,
         crystal_cost=10,
+        tariff=TariffTier.SMART,
     )
     billing_result = SimpleNamespace(
         plan=fake_plan,

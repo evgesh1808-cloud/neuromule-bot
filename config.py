@@ -13,19 +13,19 @@ logger = logging.getLogger(__name__)
 
 _ENV_FILE = Path(__file__).resolve().with_name(".env")
 
-# OpenRouter: FREE-тариф на ``:free`` / openrouter/free; платные — Gemini 2.5 Flash.
+# OpenRouter: FREE-тариф на ``:free``; платные — Gemini 2.5 Flash.
 _DEFAULT_GEMINI_FLASH = "google/gemini-2.5-flash"
 _DEFAULT_GEMINI_FLASH_LITE = "google/gemini-2.5-flash-lite"
-# Роутер сам выбирает доступную :free-модель (ID часто ротируются у провайдеров).
-_DEFAULT_FREE_CHAT_MODEL = "openrouter/free"
+# Не openrouter/free: роутер часто отдаёт content-safety / мёртвые ID → «бот молчит».
+_DEFAULT_FREE_CHAT_MODEL = "google/gemma-4-26b-a4b-it:free"
 # Имя поля сохранено для обратной совместимости импортов/тестов.
 _DEFAULT_GEMINI_FLASH_FREE = _DEFAULT_FREE_CHAT_MODEL
-# Актуальные :free на июль 2026 (llama-3.2-3b:free снят → 404).
+# Актуальные :free (июль 2026). gemma-4-31b часто 429; llama-3.2-3b снят.
 _DEFAULT_FREE_MODELS: list[str] = [
-    "google/gemma-4-31b-it:free",
     "google/gemma-4-26b-a4b-it:free",
-    "nvidia/nemotron-nano-9b-v2:free",
     "openai/gpt-oss-20b:free",
+    "nvidia/nemotron-nano-9b-v2:free",
+    "google/gemma-4-31b-it:free",
 ]
 
 _DEFAULT_SMART_MODELS: list[str] = [

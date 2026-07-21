@@ -5,7 +5,7 @@ from services.billing.chat_pipeline import (
     inject_compliance_rules_into_last_user_message,
     prepare_openrouter_chat_messages,
 )
-from services.billing.pricing import FREE_CHAT_MODEL, PAID_CHAT_MODEL
+from services.billing.pricing import PAID_CHAT_MODEL
 from services.billing.types import TariffTier
 from content.chat_prompt import BLOGGER_USER_COMPLIANCE_TAIL_MARKER, USER_COMPLIANCE_TAIL_MARKER
 
@@ -154,9 +154,46 @@ def test_prepare_openrouter_collapses_assistant_history_for_paid_standard() -> N
         text_role="standard",
         chatcom_laconic=False,
     )
-    assert "Вы можете создать" not in payload[2]["content"]
-    assert "PREMIUM COPY PACK" in payload[2]["content"]
-    assert "Готово! Разные стили" in payload[3]["content"] or "премиум-комплаенс" in payload[3]["content"]
+    assert len(payload) == 2
+    assert payload[0]["role"] == "system"
+    assert payload[1]["role"] == "user"
+    assert "Напиши поздравление" in payload[1]["content"]
+    assert "Вы можете создать" not in str(payload)
+    assert "премиум-комплаенс" in payload[1]["content"]
+
+
+def test_collapse_prior_assistant_keeps_only_system_and_last_user() -> None:
+    from services.billing.chat_pipeline import (
+        collapse_prior_assistant_for_copy_pack,
+        prepare_openrouter_chat_messages,
+    )
+
+    messages = [
+        {"role": "system", "content": "COPY PACK"},
+        {"role": "user", "content": "старый запрос про тхэквондо"},
+        {"role": "assistant", "content": "Давайте разберём как коуч..."},
+        {"role": "user", "content": "поздравление с днём рождения"},
+    ]
+    collapse_prior_assistant_for_copy_pack(messages)
+    assert len(messages) == 2
+    assert messages[0]["role"] == "system"
+    assert messages[1]["role"] == "user"
+    assert messages[1]["content"] == "поздравление с днём рождения"
+
+    payload = prepare_openrouter_chat_messages(
+        [
+            {"role": "system", "content": "COPY PACK"},
+            {"role": "user", "content": "тема A"},
+            {"role": "assistant", "content": "коуч-ответ"},
+            {"role": "user", "content": "тема B"},
+        ],
+        use_premium_prompt=True,
+        text_role="standard",
+        chatcom_laconic=False,
+    )
+    assert [m["role"] for m in payload] == ["system", "user"]
+    assert "тема B" in payload[1]["content"]
+    assert "коуч-ответ" not in str(payload)
 
 
 def test_paid_standard_uses_copy_pack_voice() -> None:
@@ -246,12 +283,10 @@ def test_model_route_for_role_blogger_on_paid_tariff() -> None:
     assert "google/gemini-2.5-flash-lite" in smart_fb
 
     free_model, free_fb = _model_route_for_role("standard", TariffTier.FREE)
-    # Платный ID в FREE_TEXT_MODEL (.env) не должен уезжать в FREE-каскад.
-    if FREE_CHAT_MODEL == "openrouter/free" or FREE_CHAT_MODEL.endswith(":free"):
-        assert free_model == FREE_CHAT_MODEL
-    else:
-        assert free_model == "openrouter/free"
-    assert "openrouter/free" in (free_model, *free_fb) or free_model.endswith(":free")
-    assert "google/gemma-4-31b-it:free" in free_fb
+    # openrouter/free принудительно заменяется: роутер отдаёт content-safety.
+    assert free_model.endswith(":free")
+    assert free_model != "openrouter/free"
+    assert "google/gemma-4-26b-a4b-it:free" in (free_model, *free_fb)
+    assert "openai/gpt-oss-20b:free" in free_fb or free_model == "openai/gpt-oss-20b:free"
     assert "meta-llama/llama-3.2-3b-instruct:free" not in free_fb
     assert "meta-llama/llama-3.3-70b-instruct:free" not in free_fb

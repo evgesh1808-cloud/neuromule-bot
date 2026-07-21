@@ -57,11 +57,12 @@ _SLOW_FREE_MODEL_IDS = frozenset(
 )
 
 # Жёсткий резерв, если FREE_MODELS в .env устарели (404 «unavailable for free»).
+# Без openrouter/free: роутер может выбрать content-safety → пустой/молчащий ответ.
 _HARDCODED_FREE_FALLBACKS: tuple[str, ...] = (
-    "google/gemma-4-31b-it:free",
     "google/gemma-4-26b-a4b-it:free",
-    "nvidia/nemotron-nano-9b-v2:free",
     "openai/gpt-oss-20b:free",
+    "nvidia/nemotron-nano-9b-v2:free",
+    "google/gemma-4-31b-it:free",
 )
 
 
@@ -99,8 +100,10 @@ def _model_route_for_role(role_id: str, tariff: TariffTier) -> tuple[str, tuple[
     if rid in _BLOGGER_ROLE_IDS and tariff is not TariffTier.FREE:
         return PAID_CHAT_MODEL, _paid_model_fallbacks()
     if tariff is TariffTier.FREE:
-        # Если в .env остался платный Gemini в FREE_TEXT_MODEL — не роняем FREE-чат.
-        primary = FREE_CHAT_MODEL if _is_openrouter_free_model(FREE_CHAT_MODEL) else "openrouter/free"
+        # openrouter/free часто роутит в content-safety → «молчание»; берём явные :free.
+        primary = FREE_CHAT_MODEL if _is_openrouter_free_model(FREE_CHAT_MODEL) else _HARDCODED_FREE_FALLBACKS[0]
+        if primary == "openrouter/free":
+            primary = _HARDCODED_FREE_FALLBACKS[0]
         return primary, _free_model_fallbacks()
     return PAID_CHAT_MODEL, _paid_model_fallbacks()
 
@@ -174,19 +177,18 @@ def inject_blogger_format_reminder(messages: list[dict[str, Any]]) -> None:
 
 
 def collapse_prior_assistant_for_copy_pack(messages: list[dict[str, Any]]) -> None:
-    """Убирает bias старых коуч-ответов: прошлые assistant → короткий stub."""
-    stub = (
-        "[предыдущий ответ опущен — отвечай только в формате PREMIUM COPY PACK "
-        "с 4 блоками <pre>, без теории]"
-    )
-    for msg in messages:
-        if msg.get("role") != "assistant":
-            continue
-        content = msg.get("content")
-        if isinstance(content, str) and content.strip() == stub:
-            continue
-        msg["content"] = stub
-
+    """Убирает bias старых коуч-ответов: для copy-pack оставляем system + последний user."""
+    if not messages:
+        return
+    system_msgs = [m for m in messages if m.get("role") == "system"]
+    last_user: dict[str, Any] | None = None
+    for msg in reversed(messages):
+        if msg.get("role") == "user":
+            last_user = msg
+            break
+    if last_user is None:
+        return
+    messages[:] = [*system_msgs, last_user]
 
 def prepare_openrouter_chat_messages(
     messages: list[dict[str, str]],
