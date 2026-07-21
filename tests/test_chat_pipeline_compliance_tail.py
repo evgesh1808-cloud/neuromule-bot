@@ -130,32 +130,31 @@ def test_prepare_openrouter_skips_chatcom_tail_for_smart_standard() -> None:
     )
     body = payload[1]["content"]
     assert "премиум-комплаенс Стандарт" in body
-    assert "Маршрут" in body
+    assert "готовые тексты" in body.lower() or "Готовые тексты" in body or "готовые тексты" in body
+    assert "<pre>" in body
     assert "Без блока ===КНОПКИ===" in body or "без блока ===КНОПКИ===" in body.lower()
     assert "СТИЛЬ ОТВЕТА" not in body
+    assert "Маршрут" not in body
 
 
-def test_paid_standard_uses_full_premium_neuromule_voice() -> None:
+def test_paid_standard_uses_copy_pack_voice() -> None:
     from content.chat_prompt import build_custom_role_prompt, get_role_prompt
     from services.billing.types import TariffTier
 
     prompt = get_role_prompt("standard", premium=True, tariff=TariffTier.SMART)
-    assert "Маршрут" in prompt
-    assert "СТАНДАРТ — ПРЕМИУМ NEUROMULE" in prompt
-    assert "PROFESSIONAL LENGTH AND BUDGET CONTROL" in prompt
-    assert "MAX 1500 TOKENS" in prompt
-    assert "1000-1400" in prompt or "1000–1400" in prompt
-    assert "ЕСТЕСТВЕННОСТЬ РЕЧИ" in prompt
-    assert "Пример реплики" in prompt
-    assert "blockquote expandable" in prompt
+    assert "PREMIUM COPY PACK" in prompt
+    assert "элитный коммерческий копирайтер" in prompt
+    assert "Готово! Разные стили на выбор" in prompt
+    assert "<pre>" in prompt
+    assert "Эмоциональный и душевный" in prompt
+    assert "Ультра-короткий экспресс" in prompt
+    assert "300–500" in prompt or "300-500" in prompt
+    assert "1400" in prompt
     assert "ФОКУС НА ТЕКУЩЕМ ЗАПРОСЕ" in prompt
-    assert "несвязанные прошлые темы" in prompt
-    assert "в ТЕКУЩЕМ сообщении" in prompt
-    assert "взвешивание нейронов" in prompt.lower() or "взвешивание нейронов" in prompt
-    assert "вместо алгоритм/план" not in prompt
-    assert "Нейроны» (вместо логика" not in prompt
+    assert "PROFESSIONAL LENGTH AND BUDGET CONTROL" not in prompt
+    assert "ПРЕМИУМ NEUROMULE" not in prompt
+    assert "Пример реплики" not in prompt
     assert "СТИЛЬ ОТВЕТА" not in prompt
-    assert "===КНОПКИ===" in prompt
 
     free_role = build_custom_role_prompt("standard", TariffTier.FREE)
     mini_role = build_custom_role_prompt("standard", TariffTier.MINI)
@@ -163,20 +162,17 @@ def test_paid_standard_uses_full_premium_neuromule_voice() -> None:
     assert "===КНОПКИ===" in free_role
     assert "Пример реплики" in free_role
     assert "ЕСТЕСТВЕННОСТЬ РЕЧИ" in free_role
-    assert "ПРЕМИУМ NEUROMULE" in mini_role
-    assert "Пример реплики" in mini_role
-    assert "blockquote expandable" in mini_role
-    assert "ЕСТЕСТВЕННОСТЬ РЕЧИ" in mini_role
-    assert "ПРЕМИУМ NEUROMULE" in ultra_role
-    assert "Пример реплики" in ultra_role
+    assert "PREMIUM COPY PACK" in mini_role
+    assert "<pre>" in mini_role
+    assert "PREMIUM COPY PACK" in ultra_role
     assert "СТИЛЬ ОТВЕТА" in free_role
 
     mini_sys = get_role_prompt("standard", premium=True, tariff=TariffTier.MINI)
-    assert "Маршрут" in mini_sys
-    assert "ПРЕМИУМ NEUROMULE" in mini_sys
-    assert "Пример реплики" in mini_sys
-    assert "ЕСТЕСТВЕННОСТЬ РЕЧИ" in mini_sys
+    assert "PREMIUM COPY PACK" in mini_sys
+    assert "<pre>" in mini_sys
+    assert "коуч" not in mini_sys.lower() or "копирайтер" in mini_sys
     assert "СТИЛЬ ОТВЕТА" not in mini_sys
+    assert "SYSTEM_ROLE" not in mini_sys
 
 
 def test_standard_max_tokens_free_vs_paid() -> None:
