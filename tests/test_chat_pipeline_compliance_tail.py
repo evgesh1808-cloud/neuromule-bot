@@ -195,6 +195,21 @@ def test_collapse_prior_assistant_keeps_only_system_and_last_user() -> None:
     assert "тема B" in payload[1]["content"]
     assert "коуч-ответ" not in str(payload)
 
+    free_payload = prepare_openrouter_chat_messages(
+        [
+            {"role": "system", "content": "FREE Chatcom"},
+            {"role": "user", "content": "старое"},
+            {"role": "assistant", "content": "КОУЧ_MARKER_HISTORY_ONLY"},
+            {"role": "user", "content": "новое"},
+        ],
+        use_premium_prompt=False,
+        text_role="standard",
+        chatcom_laconic=True,
+    )
+    assert [m["role"] for m in free_payload] == ["system", "user"]
+    assert "новое" in free_payload[1]["content"]
+    assert "КОУЧ_MARKER_HISTORY_ONLY" not in str(free_payload)
+
 
 def test_paid_standard_uses_copy_pack_voice() -> None:
     from content.chat_prompt import build_custom_role_prompt, get_role_prompt

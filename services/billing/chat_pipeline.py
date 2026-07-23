@@ -177,7 +177,7 @@ def inject_blogger_format_reminder(messages: list[dict[str, Any]]) -> None:
 
 
 def collapse_prior_assistant_for_copy_pack(messages: list[dict[str, Any]]) -> None:
-    """Убирает bias старых коуч-ответов: для copy-pack оставляем system + последний user."""
+    """Убирает bias старых коуч-ответов: для Standard оставляем system + последний user."""
     if not messages:
         return
     system_msgs = [m for m in messages if m.get("role") == "system"]
@@ -190,6 +190,7 @@ def collapse_prior_assistant_for_copy_pack(messages: list[dict[str, Any]]) -> No
         return
     messages[:] = [*system_msgs, last_user]
 
+
 def prepare_openrouter_chat_messages(
     messages: list[dict[str, str]],
     *,
@@ -200,7 +201,8 @@ def prepare_openrouter_chat_messages(
 ) -> list[dict[str, str]]:
     """Финальная подготовка payload чата непосредственно перед OpenRouter."""
     role_id = (text_role or "").strip().lower()
-    if role_id == "standard" and use_premium_prompt and not chatcom_laconic:
+    # FREE Chatcom и paid copy-pack одинаково ломаются от старых коуч-реплик в истории.
+    if role_id == "standard":
         collapse_prior_assistant_for_copy_pack(messages)
     if role_id in ("blogger_content", "blogger"):
         inject_blogger_format_reminder(messages)

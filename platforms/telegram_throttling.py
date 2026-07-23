@@ -117,6 +117,15 @@ def _is_whitelisted_callback(event: TelegramObject) -> bool:
     data = (event.data or "").strip()
     if data in WHITELISTED_CALLBACK_DATA:
         return True
+    # Выбор роли / лайфстайл-подменю — иначе Lifestyle→Блогер за 2с ловит throttle.
+    if data.startswith(msg.CB_SET_ROLE_PREFIX) or data.startswith(msg.CB_TEXT_ROLE_PREFIX):
+        return True
+    if data in (
+        msg.CB_SHOW_LIFESTYLE_SUBCATEGORIES,
+        msg.CB_BACK_TO_ROLES_MENU,
+        msg.CB_SHOW_TABLE_SUBCATEGORIES,
+    ):
+        return True
     if data.startswith(msg.CB_AUDIT_PLATFORM_PREFIX):
         return True
     # Префиксы админ-модерации / TOS-навигации тоже выводим из-под

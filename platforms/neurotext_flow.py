@@ -12,11 +12,14 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from content import messages as msg
 from content.messages import MULE_STATIC_EXAMPLES
 from platforms.telegram_keyboards import (
+    LIFESTYLE_SUBROLES,
     create_lifestyle_subroles_keyboard,
     create_marketplace_audit_platform_keyboard,
     create_roles_menu_keyboard,
     create_table_subroles_keyboard,
 )
+
+_LIFESTYLE_ROLE_IDS = frozenset(role_id for _label, role_id in LIFESTYLE_SUBROLES)
 from platforms.telegram_states import UserFlow
 from services.use_cases.neurotext_turn import (
     NeurotextRoleOutcome,
@@ -72,9 +75,15 @@ async def send_neurotext_role_menu(message: Message, state: FSMContext | None = 
     await message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
-async def open_neurotext_from_callback(callback: CallbackQuery, state: FSMContext | None = None) -> None:
+async def open_neurotext_from_callback(
+    callback: CallbackQuery,
+    state: FSMContext | None = None,
+    *,
+    answered: bool = False,
+) -> None:
     if not callback.message:
-        await callback.answer()
+        if not answered:
+            await callback.answer()
         return
     if state is not None:
         await ensure_neurotext_waiting_state(state)
@@ -87,7 +96,33 @@ async def open_neurotext_from_callback(callback: CallbackQuery, state: FSMContex
     except TelegramBadRequest as exc:
         if "message is not modified" not in str(exc).lower():
             await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
-    await callback.answer()
+    if not answered:
+        await callback.answer()
+
+
+async def open_lifestyle_role_from_callback(
+    callback: CallbackQuery,
+    state: FSMContext,
+    *,
+    answered: bool = False,
+) -> None:
+    """После выбора Блогера/Коуча/… оставляем подменю Лайфстайл с галочкой активной роли."""
+    if not callback.message:
+        if not answered:
+            await callback.answer()
+        return
+    await ensure_neurotext_waiting_state(state)
+    active = await _active_role_id(state)
+    text = await build_neurotext_intro(callback.from_user.id, active)
+    avail = await get_role_availability_map(callback.from_user.id)
+    kb = create_lifestyle_subroles_keyboard(availability=avail, active_role_id=active)
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    except TelegramBadRequest as exc:
+        if "message is not modified" not in str(exc).lower():
+            await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    if not answered:
+        await callback.answer()
 
 
 def _upgrade_card_keyboard(tariffs_keyboard) -> InlineKeyboardMarkup:
@@ -161,6 +196,9 @@ async def handle_neurotext_role_pick(
     if await _handle_role_pick_locked(callback, pick, tariffs_keyboard=tariffs_keyboard):
         return
 
+    # После lock-check — сразу гасим «часики», до медленного edit_text.
+    await callback.answer()
+
     if pick.role_id == "table_generator":
         await state.update_data(text_role=pick.role_id)
     else:
@@ -171,7 +209,9 @@ async def handle_neurotext_role_pick(
         )
 
     if pick.role_id == "table_generator":
-        await handle_show_table_subcategories(callback, state, tariffs_keyboard=tariffs_keyboard, answered=True)
+        await handle_show_table_subcategories(
+            callback, state, tariffs_keyboard=tariffs_keyboard, answered=True
+        )
         return
 
     await state.set_state(UserFlow.waiting_for_text_prompt)
@@ -183,7 +223,11 @@ async def handle_neurotext_role_pick(
             parse_mode=ParseMode.HTML,
         )
 
-    await open_neurotext_from_callback(callback, state)
+    if pick.role_id in _LIFESTYLE_ROLE_IDS:
+        await open_lifestyle_role_from_callback(callback, state, answered=True)
+        return
+
+    await open_neurotext_from_callback(callback, state, answered=True)
 
     if pick.role_id == "summary" and callback.message:
         from platforms.summarizer_flow import send_summary_mode_hint

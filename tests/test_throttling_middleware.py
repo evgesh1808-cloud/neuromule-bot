@@ -154,6 +154,23 @@ async def test_audit_platform_callback_is_never_throttled() -> None:
 
 
 @pytest.mark.asyncio
+async def test_set_role_and_lifestyle_callbacks_are_never_throttled() -> None:
+    from content import messages as msg
+
+    mw = ThrottlingMiddleware(cooldown=2.0)
+    for data in (
+        f"{msg.CB_SET_ROLE_PREFIX}blogger_content",
+        f"{msg.CB_TEXT_ROLE_PREFIX}standard",
+        msg.CB_SHOW_LIFESTYLE_SUBCATEGORIES,
+        msg.CB_BACK_TO_ROLES_MENU,
+    ):
+        cb1 = _StubCallback(uid=7, data=data)
+        cb2 = _StubCallback(uid=7, data=data)
+        assert await mw(_noop_handler, cb1, {}) == "executed"
+        assert await mw(_noop_handler, cb2, {}) == "executed"
+
+
+@pytest.mark.asyncio
 async def test_reset_throttle_clears_cooldown() -> None:
     mw = ThrottlingMiddleware(cooldown=2.0)
     cb = _StubCallback(uid=99)
