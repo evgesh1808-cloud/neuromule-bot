@@ -337,86 +337,101 @@ async def run_chat_turn(
             if is_free_tariff
             else settings.openrouter_timeout_sec
         )
-        completion = await ask_ai_messages(
-            settings,
-            payload,
-            timeout=or_timeout,
-            max_context_tokens=settings.chat_max_context_tokens_est,
-            char_per_token=settings.chat_char_per_token_est,
-            http_client=http_client,
-            stream_callback=None,
-            models=model_chain,
-            max_tokens=plan.max_tokens,
-            text_role=effective_role,
-            temperature=(
-                _BLOGGER_TEMPERATURE
-                if is_blogger_role
-                else (
-                    0.15
-                    if (effective_role or "").strip().lower() == "standard" and plan.use_premium_prompt
-                    else None
-                )
-            ),
-        )
-        # Gemini часто игнорирует COPY PACK → один принудительный retry.
         _role_l = (effective_role or "").strip().lower()
         _copy_pack_mode = (
             _role_l == "standard"
             and plan.use_premium_prompt
             and plan.tariff is not TariffTier.FREE
         )
+        temp = (
+            _BLOGGER_TEMPERATURE
+            if is_blogger_role
+            else (0.1 if _copy_pack_mode else None)
+        )
+
+        async def _call_or(messages: list, *, temperature: float | None) -> dict:
+            return await ask_ai_messages(
+                settings,
+                messages,
+                timeout=or_timeout,
+                max_context_tokens=settings.chat_max_context_tokens_est,
+                char_per_token=settings.chat_char_per_token_est,
+                http_client=http_client,
+                stream_callback=None,
+                models=model_chain,
+                max_tokens=plan.max_tokens,
+                text_role=effective_role,
+                temperature=temperature,
+            )
+
         if _copy_pack_mode:
             from services.copy_pack import (
+                COPY_PACK_ASSISTANT_PREFIX,
                 COPY_PACK_RETRY_USER,
                 is_premium_copy_pack_reply,
+                looks_like_coach_reply,
+                merge_copy_pack_prefix,
                 normalize_copy_pack_reply,
             )
 
-            first_raw = normalize_copy_pack_reply(strip_redacted_thinking(completion.get("content") or ""))
-            if first_raw and not is_premium_copy_pack_reply(first_raw):
-                logger.warning(
-                    "run_chat_turn: copy-pack format miss, retrying user_id=%s head=%s",
-                    user_id,
-                    first_raw[:160].replace("\n", " "),
+            def _pack_content(raw: str) -> str:
+                return normalize_copy_pack_reply(
+                    merge_copy_pack_prefix(
+                        COPY_PACK_ASSISTANT_PREFIX,
+                        strip_redacted_thinking(raw),
+                    )
                 )
-                metrics.incr("chat.copy_pack_retry")
-                last_user = next(
-                    (m for m in reversed(payload) if m.get("role") == "user"),
-                    None,
-                )
-                if last_user is not None:
+
+            last_user = next(
+                (m for m in reversed(payload) if m.get("role") == "user"),
+                None,
+            )
+            system_only = [m for m in payload if m.get("role") == "system"]
+            if last_user is None:
+                completion = await _call_or(payload, temperature=temp)
+            else:
+                prefill_payload = [
+                    *system_only,
+                    last_user,
+                    {"role": "assistant", "content": COPY_PACK_ASSISTANT_PREFIX},
+                ]
+                completion = await _call_or(prefill_payload, temperature=0.1)
+                packed = _pack_content(completion.get("content") or "")
+                completion = dict(completion)
+                completion["content"] = packed
+                if is_premium_copy_pack_reply(packed):
+                    metrics.incr("chat.copy_pack_prefill_ok")
+                else:
+                    metrics.incr("chat.copy_pack_prefill_weak")
+                    logger.warning(
+                        "run_chat_turn: copy-pack prefill weak user_id=%s head=%s",
+                        user_id,
+                        packed[:160].replace("\n", " "),
+                    )
+                    # Retry: без коуч-контекста, снова с prefill.
+                    metrics.incr("chat.copy_pack_retry")
+                    retry_user = {
+                        "role": "user",
+                        "content": f"{last_user.get('content') or ''}\n\n{COPY_PACK_RETRY_USER}",
+                    }
                     retry_payload = [
-                        m for m in payload if m.get("role") == "system"
-                    ] + [
-                        last_user,
-                        {"role": "assistant", "content": first_raw[:1200]},
-                        {"role": "user", "content": COPY_PACK_RETRY_USER},
+                        *system_only,
+                        retry_user,
+                        {"role": "assistant", "content": COPY_PACK_ASSISTANT_PREFIX},
                     ]
                     try:
-                        retry_completion = await ask_ai_messages(
-                            settings,
-                            retry_payload,
-                            timeout=or_timeout,
-                            max_context_tokens=settings.chat_max_context_tokens_est,
-                            char_per_token=settings.chat_char_per_token_est,
-                            http_client=http_client,
-                            stream_callback=None,
-                            models=model_chain,
-                            max_tokens=plan.max_tokens,
-                            text_role=effective_role,
-                            temperature=0.1,
-                        )
-                        retry_raw = normalize_copy_pack_reply(
-                            strip_redacted_thinking(retry_completion.get("content") or "")
-                        )
-                        if is_premium_copy_pack_reply(retry_raw):
+                        retry_completion = await _call_or(retry_payload, temperature=0.05)
+                        retry_raw = _pack_content(retry_completion.get("content") or "")
+                        retry_completion = dict(retry_completion)
+                        retry_completion["content"] = retry_raw
+                        if is_premium_copy_pack_reply(retry_raw) or (
+                            retry_raw.strip() and not looks_like_coach_reply(retry_raw)
+                        ):
                             completion = retry_completion
+                        if is_premium_copy_pack_reply(retry_raw):
                             metrics.incr("chat.copy_pack_retry_ok")
                         else:
                             metrics.incr("chat.copy_pack_retry_fail")
-                            # Лучше второй ответ, если он хотя бы длиннее/свежее.
-                            if retry_raw.strip():
-                                completion = retry_completion
                     except Exception:
                         logger.warning(
                             "run_chat_turn: copy-pack retry failed user_id=%s",
@@ -424,6 +439,8 @@ async def run_chat_turn(
                             exc_info=True,
                         )
                         metrics.incr("chat.copy_pack_retry_fail")
+        else:
+            completion = await _call_or(payload, temperature=temp)
     except RuntimeError as exc:
         err = str(exc)
         if err in ("context_too_long", "context_too_long_tokens"):

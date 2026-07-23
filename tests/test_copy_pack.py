@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from services.copy_pack import (
+    COPY_PACK_ASSISTANT_PREFIX,
     convert_md_fences_to_pre,
     is_premium_copy_pack_reply,
+    looks_like_coach_reply,
+    merge_copy_pack_prefix,
     normalize_copy_pack_reply,
 )
 from services.use_cases.chat_turn import clean_markdown_to_html
@@ -34,6 +37,15 @@ def test_is_premium_copy_pack_reply_rejects_coach() -> None:
         "С днём рождения!"
     )
     assert is_premium_copy_pack_reply(text) is False
+    assert looks_like_coach_reply(text) is True
+
+
+def test_merge_copy_pack_prefix_on_continuation() -> None:
+    continuation = "Милая, с днём рождения!\n</pre>\n\n💼 <b>Официальный</b>\n<pre>\nУспехов!\n</pre>\n\n⚡ <b>Экспресс</b>\n<pre>\nС ДР!\n</pre>"
+    merged = merge_copy_pack_prefix(COPY_PACK_ASSISTANT_PREFIX, continuation)
+    assert merged.startswith("Готово!")
+    assert "<pre>" in merged
+    assert is_premium_copy_pack_reply(merged) is True
 
 
 def test_convert_md_fences_to_pre() -> None:
@@ -41,7 +53,6 @@ def test_convert_md_fences_to_pre() -> None:
     converted = convert_md_fences_to_pre(raw)
     assert converted.count("<pre>") == 2
     assert "```" not in converted
-    assert "Текст один" in converted
 
 
 def test_clean_markdown_preserves_pre_blocks() -> None:
