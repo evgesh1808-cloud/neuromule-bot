@@ -76,7 +76,15 @@ def strip_redacted_thinking(text: str) -> str:
 
 def clean_markdown_to_html(text: str) -> str:
     """Обёртка для ответов чата: thinking → markdown → нормализация верстки → починка HTML."""
+    from services.copy_pack import convert_md_fences_to_pre, is_premium_copy_pack_reply
+
     text = strip_redacted_thinking(text)
+    text = convert_md_fences_to_pre(text)
+    # Copy-pack / любой ответ с <pre>: не гоняем через markdown-списки — ломают блоки.
+    if "<pre>" in text and "</pre>" in text:
+        return repair_telegram_html(collapse_excessive_line_breaks(text))
+    if is_premium_copy_pack_reply(text):
+        return repair_telegram_html(collapse_excessive_line_breaks(text))
     text = markdown_to_html(text)
     text = normalize_telegram_list_markup(text)
     text = collapse_excessive_line_breaks(text)
@@ -343,9 +351,79 @@ async def run_chat_turn(
             temperature=(
                 _BLOGGER_TEMPERATURE
                 if is_blogger_role
-                else (0.2 if (effective_role or "").strip().lower() == "standard" and plan.use_premium_prompt else None)
+                else (
+                    0.15
+                    if (effective_role or "").strip().lower() == "standard" and plan.use_premium_prompt
+                    else None
+                )
             ),
         )
+        # Gemini часто игнорирует COPY PACK → один принудительный retry.
+        _role_l = (effective_role or "").strip().lower()
+        _copy_pack_mode = (
+            _role_l == "standard"
+            and plan.use_premium_prompt
+            and plan.tariff is not TariffTier.FREE
+        )
+        if _copy_pack_mode:
+            from services.copy_pack import (
+                COPY_PACK_RETRY_USER,
+                is_premium_copy_pack_reply,
+                normalize_copy_pack_reply,
+            )
+
+            first_raw = normalize_copy_pack_reply(strip_redacted_thinking(completion.get("content") or ""))
+            if first_raw and not is_premium_copy_pack_reply(first_raw):
+                logger.warning(
+                    "run_chat_turn: copy-pack format miss, retrying user_id=%s head=%s",
+                    user_id,
+                    first_raw[:160].replace("\n", " "),
+                )
+                metrics.incr("chat.copy_pack_retry")
+                last_user = next(
+                    (m for m in reversed(payload) if m.get("role") == "user"),
+                    None,
+                )
+                if last_user is not None:
+                    retry_payload = [
+                        m for m in payload if m.get("role") == "system"
+                    ] + [
+                        last_user,
+                        {"role": "assistant", "content": first_raw[:1200]},
+                        {"role": "user", "content": COPY_PACK_RETRY_USER},
+                    ]
+                    try:
+                        retry_completion = await ask_ai_messages(
+                            settings,
+                            retry_payload,
+                            timeout=or_timeout,
+                            max_context_tokens=settings.chat_max_context_tokens_est,
+                            char_per_token=settings.chat_char_per_token_est,
+                            http_client=http_client,
+                            stream_callback=None,
+                            models=model_chain,
+                            max_tokens=plan.max_tokens,
+                            text_role=effective_role,
+                            temperature=0.1,
+                        )
+                        retry_raw = normalize_copy_pack_reply(
+                            strip_redacted_thinking(retry_completion.get("content") or "")
+                        )
+                        if is_premium_copy_pack_reply(retry_raw):
+                            completion = retry_completion
+                            metrics.incr("chat.copy_pack_retry_ok")
+                        else:
+                            metrics.incr("chat.copy_pack_retry_fail")
+                            # Лучше второй ответ, если он хотя бы длиннее/свежее.
+                            if retry_raw.strip():
+                                completion = retry_completion
+                    except Exception:
+                        logger.warning(
+                            "run_chat_turn: copy-pack retry failed user_id=%s",
+                            user_id,
+                            exc_info=True,
+                        )
+                        metrics.incr("chat.copy_pack_retry_fail")
     except RuntimeError as exc:
         err = str(exc)
         if err in ("context_too_long", "context_too_long_tokens"):
@@ -392,6 +470,11 @@ async def run_chat_turn(
     )
 
     raw_answer = strip_redacted_thinking(content)
+    if (effective_role or "").strip().lower() == "standard" and plan.use_premium_prompt:
+        from services.copy_pack import normalize_copy_pack_reply
+
+        raw_answer = normalize_copy_pack_reply(raw_answer)
+        content = raw_answer
     is_table_role = (effective_role or "").strip().lower() == "table_generator"
 
     if is_table_role:

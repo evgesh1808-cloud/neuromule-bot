@@ -205,6 +205,7 @@ def test_paid_standard_uses_copy_pack_voice() -> None:
     assert "элитный коммерческий копирайтер" in prompt
     assert "Готово! Разные стили на выбор" in prompt
     assert "<pre>" in prompt
+    assert "ЭТАЛОН" in prompt
     assert "Эмоциональный и душевный" in prompt
     assert "Ультра-короткий экспресс" in prompt
     assert "300–500" in prompt or "300-500" in prompt
