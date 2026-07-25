@@ -568,8 +568,8 @@ class Settings(BaseSettings):
     dialog_prune_keep: Annotated[int, _coerce_int(50)] = 50
     chat_rate_limit_per_minute: Annotated[int, _coerce_int(30)] = 30
     openrouter_timeout_sec: Annotated[float, _coerce_float(45.0)] = 45.0
-    # Таймаут одного запроса FREE-каскада (короче — быстрый failover на fallback).
-    openrouter_free_timeout_sec: Annotated[float, _coerce_float(8.0)] = 8.0
+    # Таймаут одного запроса FREE-каскада (12–18с: :free модели часто стартуют медленно).
+    openrouter_free_timeout_sec: Annotated[float, _coerce_float(18.0)] = 18.0
     # WB CFO: OpenRouter только для HTML-обёртки (по умолчанию локальный отчёт — без задержек).
     wb_finance_openrouter_html: Annotated[bool, _coerce_bool(False)] = Field(
         default=False,

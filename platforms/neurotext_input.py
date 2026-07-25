@@ -66,53 +66,82 @@ _BLOGGER_ROLE_IDS = frozenset({"blogger_content", "blogger"})
 
 async def _standard_suggested_reply_markup(user_id: int, result: ChatTurnResult):
     """Suggested Replies для роли standard (модель / FREE code-side fallback)."""
-    labels = list(getattr(result, "suggested_replies", ()) or ())
-    if (result.effective_text_role or "").strip().lower() != "standard":
-        return None
-    from services.billing.types import TariffTier
-    from services.repository import get_show_suggested_replies, get_user_row
-    from services.standard_suggested_replies import (
-        FREE_FALLBACK_SUGGESTED_REPLIES,
-        build_suggested_replies_keyboard,
-        remember_suggested_replies,
-    )
-
-    if not await get_show_suggested_replies(user_id):
-        logger.info(
-            "suggested_replies: skipped (pref off) uid=%s labels=%s",
-            user_id,
-            len(labels),
+    try:
+        labels = list(getattr(result, "suggested_replies", ()) or ())
+        if (result.effective_text_role or "").strip().lower() != "standard":
+            return None
+        from services.billing.types import TariffTier
+        from services.repository import get_show_suggested_replies, get_user_row
+        from services.standard_suggested_replies import (
+            FREE_FALLBACK_SUGGESTED_REPLIES,
+            build_suggested_replies_keyboard,
+            remember_suggested_replies,
         )
-        return None
 
-    row = await get_user_row(user_id)
-    is_free = bool(row and TariffTier.from_db(row.tariff) is TariffTier.FREE)
+        if not await get_show_suggested_replies(user_id):
+            logger.info(
+                "suggested_replies: skipped (pref off) uid=%s labels=%s",
+                user_id,
+                len(labels),
+            )
+            return None
 
-    # FREE safety net: нет лейблов ИЛИ клавиатура не собралась → универсальные 3 кнопки.
-    if not labels and is_free:
-        labels = list(FREE_FALLBACK_SUGGESTED_REPLIES)
-        logger.info("suggested_replies: platform FREE fallback uid=%s", user_id)
-    if not labels:
-        return None
+        row = await get_user_row(user_id)
+        is_free = bool(row and TariffTier.from_db(row.tariff) is TariffTier.FREE)
 
-    context_id = remember_suggested_replies(user_id, labels)
-    if not context_id:
-        return None
-    kb = build_suggested_replies_keyboard(context_id, labels)
-    if kb is None and is_free:
-        labels = list(FREE_FALLBACK_SUGGESTED_REPLIES)
+        # FREE safety net: нет лейблов ИЛИ клавиатура не собралась → универсальные 3 кнопки.
+        if not labels and is_free:
+            labels = list(FREE_FALLBACK_SUGGESTED_REPLIES)
+            logger.info("suggested_replies: platform FREE fallback uid=%s", user_id)
+        if not labels:
+            return None
+
         context_id = remember_suggested_replies(user_id, labels)
         if not context_id:
             return None
         kb = build_suggested_replies_keyboard(context_id, labels)
-        logger.info("suggested_replies: rebuilt FREE fallback keyboard uid=%s", user_id)
-    if kb is None:
-        logger.warning(
-            "suggested_replies: keyboard build failed uid=%s n=%s",
-            user_id,
-            len(labels),
+        if kb is None and is_free:
+            labels = list(FREE_FALLBACK_SUGGESTED_REPLIES)
+            context_id = remember_suggested_replies(user_id, labels)
+            if not context_id:
+                return None
+            kb = build_suggested_replies_keyboard(context_id, labels)
+            logger.info("suggested_replies: rebuilt FREE fallback keyboard uid=%s", user_id)
+        if kb is None:
+            logger.warning(
+                "suggested_replies: keyboard build failed uid=%s n=%s",
+                user_id,
+                len(labels),
+            )
+        return kb
+    except Exception:
+        # Ошибка БД/клавиатуры не должна глушить весь ответ пользователю.
+        logger.exception("suggested_replies: markup failed uid=%s", user_id)
+        return None
+
+
+async def _free_standard_fallback_keyboard(user_id: int):
+    """Клавиатура из 3 универсальных кнопок для FREE (в т.ч. при AI_FAILED)."""
+    try:
+        from services.billing.types import TariffTier
+        from services.repository import get_user_row
+        from services.standard_suggested_replies import (
+            FREE_FALLBACK_SUGGESTED_REPLIES,
+            build_suggested_replies_keyboard,
+            remember_suggested_replies,
         )
-    return kb
+
+        row = await get_user_row(user_id)
+        if not row or TariffTier.from_db(row.tariff) is not TariffTier.FREE:
+            return None
+        labels = list(FREE_FALLBACK_SUGGESTED_REPLIES)
+        context_id = remember_suggested_replies(user_id, labels)
+        if not context_id:
+            return None
+        return build_suggested_replies_keyboard(context_id, labels)
+    except Exception:
+        logger.exception("suggested_replies: FREE fail keyboard uid=%s", user_id)
+        return None
 
 
 async def _blogger_reply_markup(user_id: int, assistant_message: str, *, blogger_post_raw: str | None = None):
@@ -412,8 +441,21 @@ async def _reply_chat_turn_result(
                         settings,
                         reply_markup=reply_kb,
                     )
+            else:
+                # SUCCESS без текста — не молчим (раньше был silent return).
+                fail_kb = await _free_standard_fallback_keyboard(owner_id)
+                await message.answer(
+                    msg.TXT_CHAT_AI_UNAVAILABLE,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=fail_kb,
+                )
         elif not result.user_notice and not result.table_raw_json:
-            await message.answer(msg.TXT_CHAT_AI_UNAVAILABLE, parse_mode=ParseMode.HTML)
+            fail_kb = await _free_standard_fallback_keyboard(owner_id)
+            await message.answer(
+                msg.TXT_CHAT_AI_UNAVAILABLE,
+                parse_mode=ParseMode.HTML,
+                reply_markup=fail_kb,
+            )
         return
     await _clear_table_status_on_failure(status_message)
     if result.outcome is ChatTurnOutcome.EMPTY_INPUT:
@@ -446,9 +488,16 @@ async def _reply_chat_turn_result(
         )
         return
     if result.outcome in (ChatTurnOutcome.AI_FAILED, ChatTurnOutcome.TABLE_JSON_INVALID):
+        fail_kb = None
+        if not (table_context or table_subrole or prefer_table_error):
+            fail_kb = await _free_standard_fallback_keyboard(owner_id)
         if result.user_notice:
             await _clear_table_status_on_failure(status_message)
-            await message.answer(result.user_notice, parse_mode=ParseMode.HTML)
+            await message.answer(
+                result.user_notice,
+                parse_mode=ParseMode.HTML,
+                reply_markup=fail_kb,
+            )
             return
         if table_context or table_subrole or prefer_table_error:
             await message.answer(
@@ -459,11 +508,14 @@ async def _reply_chat_turn_result(
             await message.answer(
                 _chat_ai_failure_text(result),
                 parse_mode=ParseMode.HTML,
+                reply_markup=fail_kb,
             )
         return
+    fail_kb = await _free_standard_fallback_keyboard(owner_id)
     await message.answer(
         _chat_ai_failure_text(result),
         parse_mode=ParseMode.HTML,
+        reply_markup=fail_kb,
     )
 
 

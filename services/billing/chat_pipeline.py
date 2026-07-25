@@ -151,8 +151,11 @@ _HARDCODED_FREE_FALLBACKS: tuple[str, ...] = (
     "google/gemma-4-31b-it:free",
 )
 
-# Per-model timeout FREE-каскада: быстрее failover на следующую :free, без «тишины» 25с.
-FREE_CASCADE_PER_MODEL_TIMEOUT_SEC = 8.0
+# Per-model timeout FREE-каскада. 8с убивало gemma/gpt-oss (TTFB часто 10–15с) →
+# полный openrouter_unavailable. 18с: успевает первая модель, failover всё ещё быстрый.
+FREE_CASCADE_PER_MODEL_TIMEOUT_SEC = 18.0
+# Soft floor: env ниже 12с поднимаем (иначе снова «FREE молчит»).
+_FREE_CASCADE_TIMEOUT_FLOOR_SEC = 12.0
 
 
 def free_chat_model_timeout_sec() -> float:
@@ -160,8 +163,10 @@ def free_chat_model_timeout_sec() -> float:
     configured = float(getattr(settings, "openrouter_free_timeout_sec", 0) or 0)
     if configured <= 0:
         return FREE_CASCADE_PER_MODEL_TIMEOUT_SEC
-    # Не даём env раздуть ожидание выше железного потолка failover.
-    return min(configured, FREE_CASCADE_PER_MODEL_TIMEOUT_SEC)
+    return max(
+        _FREE_CASCADE_TIMEOUT_FLOOR_SEC,
+        min(configured, FREE_CASCADE_PER_MODEL_TIMEOUT_SEC),
+    )
 
 
 def _free_model_fallbacks() -> tuple[str, ...]:
@@ -359,7 +364,8 @@ def role_allowed_for_tariff(role_id: str, tariff: TariffTier) -> bool:
 
 
 # Unit-economics FREE: жёсткий потолок ответа (кнопки + 1 короткий текст).
-_FREE_CHAT_MAX_OUTPUT_TOKENS = 400
+# Запас под тело + ===КНОПКИ=== (при 400 модель часто отдавала только кнопки → AI_FAILED).
+_FREE_CHAT_MAX_OUTPUT_TOKENS = 640
 
 
 # Copy Pack (standard на MINI/SMART/ULTRA + PAID_CHAT_MODEL): выше дефолта,

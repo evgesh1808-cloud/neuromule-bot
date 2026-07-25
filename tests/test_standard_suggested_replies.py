@@ -75,14 +75,16 @@ def test_split_suggested_replies_free_fallback_keeps_model_labels() -> None:
     assert labels == ["Список книг?", "Для мальчиков?", "В виде сказки?"]
 
 
-def test_free_chat_model_timeout_capped() -> None:
+def test_free_chat_model_timeout_allows_slow_free_models() -> None:
     from services.billing.chat_pipeline import (
         FREE_CASCADE_PER_MODEL_TIMEOUT_SEC,
         free_chat_model_timeout_sec,
     )
 
-    assert FREE_CASCADE_PER_MODEL_TIMEOUT_SEC == 8.0
-    assert free_chat_model_timeout_sec() <= 8.0
+    assert FREE_CASCADE_PER_MODEL_TIMEOUT_SEC == 18.0
+    # Не душим :free модели 8-секундным потолком.
+    assert free_chat_model_timeout_sec() >= 12.0
+    assert free_chat_model_timeout_sec() <= 18.0
 
 
 def test_remember_and_resolve_suggested_reply() -> None:

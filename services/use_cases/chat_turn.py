@@ -603,6 +603,19 @@ async def run_chat_turn(
         ans_trim = ans_trim[: min(settings.chat_max_message_chars, 4090)]
     else:
         ans_trim = ans_trim[: settings.chat_max_message_chars]
+    # FREE: модель иногда отдаёт только ===КНОПКИ=== (тело пустое) → раньше AI_FAILED
+    # и кнопки не показывались. Синтезируем короткий ответ + сохраняем лейблы.
+    if (
+        not (ans_trim or "").strip()
+        and suggested_replies
+        and (effective_role or "").strip().lower() == "standard"
+        and plan.tariff is TariffTier.FREE
+    ):
+        ans_trim = "Готово — уточните ниже или напишите вопрос."
+        logger.info(
+            "run_chat_turn: FREE empty body with buttons — synthetic reply uid=%s",
+            user_id,
+        )
     if not (ans_trim or "").strip():
         logger.warning(
             "run_chat_turn: empty assistant output user_id=%s role=%s",
@@ -613,7 +626,10 @@ async def run_chat_turn(
         if charge_id:
             await refund_charge(charge_id)
         await rollback_last(settings, user_id)
-        return ChatTurnResult(outcome=ChatTurnOutcome.AI_FAILED)
+        return ChatTurnResult(
+            outcome=ChatTurnOutcome.AI_FAILED,
+            effective_text_role=effective_role,
+        )
     await commit_assistant_turn_queued(user_id, ans_trim, settings.dialog_prune_keep, platform=platform)
     conv.schedule_memory_refresh(settings, user_id, platform=platform)
     _record_chat_success_billing(

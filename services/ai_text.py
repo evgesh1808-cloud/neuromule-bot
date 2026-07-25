@@ -303,7 +303,10 @@ async def _post_chat_completion(
     except (KeyError, IndexError, TypeError):
         logger.warning("OpenRouter model=%s missing choices/message/content", model)
         return None
+    # Некоторые :free отдают content списком частей, не строкой.
     if not isinstance(content, str):
+        content = _stream_delta_text(content)
+    if not (content or "").strip():
         return None
     prompt_tokens, completion_tokens = _extract_usage_tokens(data)
     return _build_completion_result(
