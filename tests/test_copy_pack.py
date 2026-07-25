@@ -15,15 +15,25 @@ from services.use_cases.chat_turn import clean_markdown_to_html
 
 def test_is_premium_copy_pack_reply_accepts_valid() -> None:
     text = (
-        "Готово! Разные стили на выбор (нажмите на текст, чтобы скопировать):\n\n"
-        "🫀 <b>Эмоциональный</b>\n"
+        "Готово! Разные варианты на выбор (нажмите на текст, чтобы скопировать):\n\n"
+        "🎉 <b>Трогательное и душевное</b>\n"
         "<pre>\nА\n</pre>\n\n"
-        "💼 <b>Деловой</b>\n"
+        "🥂 <b>Короткое СМС-поздравление</b>\n"
         "<pre>\nБ\n</pre>\n\n"
-        "⚡ <b>Экспресс</b>\n"
+        "🚀 <b>Драйвовое и молодежное</b>\n"
         "<pre>\nВ\n</pre>\n\n"
-        "🎭 <b>С юмором</b>\n"
+        "💼 <b>Уважительное/Официальное</b>\n"
         "<pre>\nГ\n</pre>\n"
+    )
+    assert is_premium_copy_pack_reply(text) is True
+
+
+def test_is_premium_copy_pack_reply_accepts_legacy_opener() -> None:
+    text = (
+        "Готово! Разные стили на выбор (нажмите на текст, чтобы скопировать):\n\n"
+        "🎉 <b>Трогательное</b>\n<pre>\nА\n</pre>\n\n"
+        "🥂 <b>Короткое</b>\n<pre>\nБ\n</pre>\n\n"
+        "🚀 <b>Драйвовое</b>\n<pre>\nВ\n</pre>\n"
     )
     assert is_premium_copy_pack_reply(text) is True
 
@@ -42,13 +52,14 @@ def test_is_premium_copy_pack_reply_rejects_coach() -> None:
 
 def test_merge_copy_pack_prefix_on_continuation() -> None:
     continuation = (
-        "Милая, с днём рождения!\n</pre>\n\n"
-        "💼 <b>Деловой</b>\n<pre>\nУспехов!\n</pre>\n\n"
-        "⚡ <b>Экспресс</b>\n<pre>\nС ДР!\n</pre>"
+        "🎉 <b>Трогательное и душевное</b>\n<pre>\nМилая, с днём рождения!\n</pre>\n\n"
+        "🥂 <b>Короткое СМС</b>\n<pre>\nУспехов!\n</pre>\n\n"
+        "🚀 <b>Драйвовое</b>\n<pre>\nС ДР!\n</pre>"
     )
     merged = merge_copy_pack_prefix(COPY_PACK_ASSISTANT_PREFIX, continuation)
-    assert merged.startswith("Готово!")
+    assert merged.startswith("Готово! Разные варианты")
     assert "<pre>" in merged
+    assert "Эмоциональный" not in COPY_PACK_ASSISTANT_PREFIX
     assert is_premium_copy_pack_reply(merged) is True
 
 
@@ -61,7 +72,7 @@ def test_convert_md_fences_to_pre() -> None:
 
 def test_clean_markdown_preserves_pre_blocks() -> None:
     text = (
-        "Готово! Разные стили на выбор (нажмите на текст, чтобы скопировать):\n"
+        "Готово! Разные варианты на выбор (нажмите на текст, чтобы скопировать):\n"
         "<pre>\nНе трогай *это*\n</pre>\n"
         "<pre>\nВторой\n</pre>\n"
         "<pre>\nТретий\n</pre>"

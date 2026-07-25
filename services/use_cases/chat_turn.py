@@ -394,70 +394,74 @@ async def run_chat_turn(
             )
 
             def _pack_content(raw: str) -> str:
-                return normalize_copy_pack_reply(
-                    merge_copy_pack_prefix(
-                        COPY_PACK_ASSISTANT_PREFIX,
-                        strip_redacted_thinking(raw),
+                """Склеивает prefill только если модель уже пошла в COPY PACK."""
+                body = normalize_copy_pack_reply(strip_redacted_thinking(raw))
+                if is_premium_copy_pack_reply(body) or "<pre>" in body.lower():
+                    return normalize_copy_pack_reply(
+                        merge_copy_pack_prefix(COPY_PACK_ASSISTANT_PREFIX, body)
                     )
-                )
+                return body
 
             last_user = next(
                 (m for m in reversed(payload) if m.get("role") == "user"),
                 None,
             )
             system_only = [m for m in payload if m.get("role") == "system"]
-            if last_user is None:
-                completion = await _call_or(payload, temperature=temp)
-            else:
-                prefill_payload = [
+            # Сначала свободный вызов: ТИП Б (аналитика) не должен получать forced prefill.
+            completion = await _call_or(payload, temperature=temp)
+            packed = _pack_content(completion.get("content") or "")
+            completion = dict(completion)
+            completion["content"] = packed
+            if is_premium_copy_pack_reply(packed):
+                metrics.incr("chat.copy_pack_prefill_ok")
+            elif packed.strip() and (
+                looks_like_coach_reply(packed) or "<pre>" not in packed.lower()
+            ):
+                # ТИП Б: экспертный разбор без COPY PACK — принимаем как есть.
+                metrics.incr("chat.copy_pack_expert_ok")
+            elif last_user is not None:
+                # Похоже на провал генерации текста — retry с prefill COPY PACK.
+                metrics.incr("chat.copy_pack_prefill_weak")
+                logger.warning(
+                    "run_chat_turn: copy-pack free call weak user_id=%s head=%s",
+                    user_id,
+                    packed[:160].replace("\n", " "),
+                )
+                metrics.incr("chat.copy_pack_retry")
+                retry_user = {
+                    "role": "user",
+                    "content": f"{last_user.get('content') or ''}\n\n{COPY_PACK_RETRY_USER}",
+                }
+                retry_payload = [
                     *system_only,
-                    last_user,
+                    retry_user,
                     {"role": "assistant", "content": COPY_PACK_ASSISTANT_PREFIX},
                 ]
-                completion = await _call_or(prefill_payload, temperature=temp)
-                packed = _pack_content(completion.get("content") or "")
-                completion = dict(completion)
-                completion["content"] = packed
-                if is_premium_copy_pack_reply(packed):
-                    metrics.incr("chat.copy_pack_prefill_ok")
-                else:
-                    metrics.incr("chat.copy_pack_prefill_weak")
-                    logger.warning(
-                        "run_chat_turn: copy-pack prefill weak user_id=%s head=%s",
-                        user_id,
-                        packed[:160].replace("\n", " "),
-                    )
-                    # Retry: без коуч-контекста, снова с prefill.
-                    metrics.incr("chat.copy_pack_retry")
-                    retry_user = {
-                        "role": "user",
-                        "content": f"{last_user.get('content') or ''}\n\n{COPY_PACK_RETRY_USER}",
-                    }
-                    retry_payload = [
-                        *system_only,
-                        retry_user,
-                        {"role": "assistant", "content": COPY_PACK_ASSISTANT_PREFIX},
-                    ]
-                    try:
-                        retry_completion = await _call_or(retry_payload, temperature=temp)
-                        retry_raw = _pack_content(retry_completion.get("content") or "")
-                        retry_completion = dict(retry_completion)
-                        retry_completion["content"] = retry_raw
-                        if is_premium_copy_pack_reply(retry_raw) or (
-                            retry_raw.strip() and not looks_like_coach_reply(retry_raw)
-                        ):
-                            completion = retry_completion
-                        if is_premium_copy_pack_reply(retry_raw):
-                            metrics.incr("chat.copy_pack_retry_ok")
-                        else:
-                            metrics.incr("chat.copy_pack_retry_fail")
-                    except Exception:
-                        logger.warning(
-                            "run_chat_turn: copy-pack retry failed user_id=%s",
-                            user_id,
-                            exc_info=True,
+                try:
+                    retry_completion = await _call_or(retry_payload, temperature=temp)
+                    retry_raw = normalize_copy_pack_reply(
+                        merge_copy_pack_prefix(
+                            COPY_PACK_ASSISTANT_PREFIX,
+                            strip_redacted_thinking(retry_completion.get("content") or ""),
                         )
+                    )
+                    retry_completion = dict(retry_completion)
+                    retry_completion["content"] = retry_raw
+                    if is_premium_copy_pack_reply(retry_raw) or (
+                        retry_raw.strip() and not looks_like_coach_reply(retry_raw)
+                    ):
+                        completion = retry_completion
+                    if is_premium_copy_pack_reply(retry_raw):
+                        metrics.incr("chat.copy_pack_retry_ok")
+                    else:
                         metrics.incr("chat.copy_pack_retry_fail")
+                except Exception:
+                    logger.warning(
+                        "run_chat_turn: copy-pack retry failed user_id=%s",
+                        user_id,
+                        exc_info=True,
+                    )
+                    metrics.incr("chat.copy_pack_retry_fail")
         else:
             completion = await _call_or(payload, temperature=temp)
     except RuntimeError as exc:

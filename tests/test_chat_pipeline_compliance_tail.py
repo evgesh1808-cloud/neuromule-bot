@@ -148,15 +148,17 @@ def test_prepare_openrouter_skips_chatcom_tail_for_smart_standard() -> None:
     )
     body = payload[1]["content"]
     assert "Compliance: PREMIUM COPY PACK" in body
-    assert "Готово! Разные стили на выбор" in body
+    assert "QUERY-TYPE ROUTING" in body
+    assert "ТИП А" in body and "ТИП Б" in body
+    assert "Готово! Разные варианты на выбор" in body
     assert "<pre>" in body
-    assert "Эмоциональный" in body and "Деловой" in body
-    assert "Экспресс" in body and "С юмором" in body
-    assert "Строго 4 блока" in body
+    assert "простой уникальный заголовок с эмодзи" in body
+    assert "КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО COPY PACK" in body or "ЗАПРЕЩЕНО COPY PACK" in body
     assert "===КНОПКИ===" in body  # запрет упоминается в хвосте
-    assert "Без блоков ===КНОПКИ===" in body
     assert "КРЕАТИВНОСТЬ" in body
     assert "уникальный, неповторяющийся заход" in body
+    assert "<b>Эмоциональный</b>" not in body
+    assert "<b>Деловой</b>" not in body
 
 
 def test_prepare_openrouter_injects_compliance_without_hard_collapse() -> None:
@@ -180,7 +182,8 @@ def test_prepare_openrouter_injects_compliance_without_hard_collapse() -> None:
     assert payload[-1]["role"] == "user"
     assert "Напиши поздравление" in payload[-1]["content"]
     assert "Compliance: PREMIUM COPY PACK" in payload[-1]["content"]
-    assert "Эмоциональный" in payload[-1]["content"]
+    assert "QUERY-TYPE ROUTING" in payload[-1]["content"]
+    assert "ТИП А" in payload[-1]["content"]
     assert "<pre>" in payload[-1]["content"]
 
 
@@ -229,17 +232,27 @@ def test_paid_standard_uses_copy_pack_voice() -> None:
 
     prompt = get_role_prompt("standard", premium=True, tariff=TariffTier.SMART)
     assert "PREMIUM COPY PACK" in prompt
-    assert "элитный эксперт-копирайтер" in prompt
-    assert "Не коуч" in prompt or "не коуч" in prompt.lower()
+    assert "элитный эксперт" in prompt.lower()
+    assert "ДИНАМИЧЕСКИЙ ВЫБОР ФОРМАТА" in prompt
+    assert "QUERY-TYPE ROUTING" in prompt
+    assert "ТИП А" in prompt and "ТИП Б" in prompt
+    assert "КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать структуру COPY PACK" in prompt
+    assert "ПРАВИЛО ЗАГОЛОВКОВ" in prompt
+    assert "кастомный заголовок" in prompt.lower()
+    assert "Даже на аналитический вопрос" not in prompt
     assert "BREVITY ECONOMY" in prompt
     assert "TELEGRAM HTML" in prompt
-    assert "Готово! Разные стили на выбор" in prompt
+    assert "Готово! Разные варианты на выбор" in prompt
     assert "<pre>" in prompt
-    assert "ЭТАЛОН" in prompt
-    assert "<b>Эмоциональный</b>" in prompt
-    assert "<b>Деловой</b>" in prompt
-    assert "<b>Экспресс</b>" in prompt
-    assert "<b>С юмором</b>" in prompt
+    assert "СТРУКТУРА ОТВЕТА" in prompt
+    assert "Трогательное и душевное" in prompt
+    assert "Волшебная сказка" in prompt
+    # Фиксированные психотипы — только как запрет, не как структура блоков.
+    assert "'Эмоциональный'" in prompt or "«Эмоциональный»" in prompt or "Эмоциональный" in prompt
+    assert "<b>Эмоциональный</b>" not in prompt
+    assert "<b>Деловой</b>" not in prompt
+    assert "<b>Экспресс</b>" not in prompt
+    assert "<b>С юмором</b>" not in prompt
     assert "300–500" in prompt or "300-500" in prompt
     assert "1400" in prompt
     assert "ФОКУС НА ТЕКУЩЕМ ЗАПРОСЕ" in prompt
@@ -262,7 +275,8 @@ def test_paid_standard_uses_copy_pack_voice() -> None:
     mini_sys = get_role_prompt("standard", premium=True, tariff=TariffTier.MINI)
     assert "PREMIUM COPY PACK" in mini_sys
     assert "<pre>" in mini_sys
-    assert "копирайтер" in mini_sys.lower()
+    assert "элитный эксперт" in mini_sys.lower()
+    assert "query-type routing" in mini_sys.lower()
     assert "SYSTEM_ROLE" not in mini_sys
 
 
@@ -291,7 +305,8 @@ def test_charged_plan_preserves_tariff_for_prompt_branching() -> None:
     # Если tariff потерян → FREE-хвост «в кавычках»; при SMART — copy-pack.
     assert "PREMIUM COPY PACK" in paid_role
     assert "Compliance: FREE TIER" not in paid_role
-    assert "элитный эксперт-копирайтер" in paid_role
+    assert "элитный эксперт" in paid_role
+    assert "ДИНАМИЧЕСКИЙ ВЫБОР ФОРМАТА" in paid_role
 
     free_role = build_custom_role_prompt("standard", TariffTier.FREE)
     assert "Compliance: FREE TIER" in free_role

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 
 _COPY_PACK_OPENER_RE = re.compile(
-    r"готово!\s*разные\s*стили\s*на\s*выбор",
+    r"готово!\s*разные\s*(?:стили|варианты)\s*на\s*выбор",
     re.IGNORECASE,
 )
 _PRE_BLOCK_RE = re.compile(r"<pre\b[^>]*>.*?</pre>", re.IGNORECASE | re.DOTALL)
@@ -19,15 +19,11 @@ _COACH_MARKERS_RE = re.compile(
 )
 
 COPY_PACK_OPENER_LINE = (
-    "Готово! Разные стили на выбор (нажмите на текст, чтобы скопировать):"
+    "Готово! Разные варианты на выбор (нажмите на текст, чтобы скопировать):"
 )
 
-# Prefill для Gemini: модель продолжает уже начатый COPY PACK, а не уходит в коуч.
-COPY_PACK_ASSISTANT_PREFIX = (
-    f"{COPY_PACK_OPENER_LINE}\n\n"
-    "🫀 <b>Эмоциональный</b>\n"
-    "<pre>\n"
-)
+# Prefill: только opener — заголовки модель придумывает сама (без фиксированных психотипов).
+COPY_PACK_ASSISTANT_PREFIX = f"{COPY_PACK_OPENER_LINE}\n\n"
 
 COPY_PACK_RETRY_USER = (
     "[ПЕРЕГЕНЕРАЦИЯ — ПРЕДЫДУЩИЙ ОТВЕТ ОТКЛОНЁН]\n"
