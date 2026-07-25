@@ -177,7 +177,12 @@ def inject_blogger_format_reminder(messages: list[dict[str, Any]]) -> None:
 
 
 def collapse_prior_assistant_for_copy_pack(messages: list[dict[str, Any]]) -> None:
-    """Убирает bias старых коуч-ответов: для Standard оставляем system + последний user."""
+    """
+    Deprecated sync-fallback: system + последний user без саммари.
+
+    Основной путь — ``compact_standard_dialog_context`` (async) в ``chat_turn``.
+    Оставлен для тестов/обратной совместимости.
+    """
     if not messages:
         return
     system_msgs = [m for m in messages if m.get("role") == "system"]
@@ -199,11 +204,12 @@ def prepare_openrouter_chat_messages(
     chatcom_laconic: bool = False,
     request_suggested_replies: bool = False,
 ) -> list[dict[str, str]]:
-    """Финальная подготовка payload чата непосредственно перед OpenRouter."""
+    """Финальная подготовка payload чата непосредственно перед OpenRouter.
+
+    Для ``standard`` сжатие истории выполняется заранее в ``chat_turn``
+    через ``compact_standard_dialog_context`` (умное саммари в system).
+    """
     role_id = (text_role or "").strip().lower()
-    # FREE Chatcom и paid copy-pack одинаково ломаются от старых коуч-реплик в истории.
-    if role_id == "standard":
-        collapse_prior_assistant_for_copy_pack(messages)
     if role_id in ("blogger_content", "blogger"):
         inject_blogger_format_reminder(messages)
     elif role_id != "table_generator":
@@ -254,13 +260,18 @@ def role_allowed_for_tariff(role_id: str, tariff: TariffTier) -> bool:
     return True
 
 
+# Unit-economics FREE: жёсткий потолок ответа (кнопки + 1 короткий текст).
+_FREE_CHAT_MAX_OUTPUT_TOKENS = 400
+
+
 def plan_text_chat(user: UserBillingState, role_type: str) -> ChatRoutePlan:
     """Рассчитать модель, лимит ``max_tokens`` и стоимость без списания."""
     role_id = (role_type or "standard").strip().lower()
     energy_cost, crystal_cost = role_costs(role_id)
     expert = is_expert_role(role_id)
     tariff = user.current_tariff
-    free_max = settings.openrouter_max_output_tokens
+    # FREE: принудительно 350–400 (не settings.openrouter_max_output_tokens=640).
+    free_max = _FREE_CHAT_MAX_OUTPUT_TOKENS
     premium_max = settings.openrouter_premium_max_output_tokens
     table_max = settings.openrouter_table_max_output_tokens
     model_id, fallback_model_ids = _model_route_for_role(role_id, tariff)
@@ -270,6 +281,8 @@ def plan_text_chat(user: UserBillingState, role_type: str) -> ChatRoutePlan:
             return table_max
         if role_id in ("blogger_content", "blogger"):
             return premium_max
+        if tariff is TariffTier.FREE:
+            return free_max
         return premium_max if expert or tariff is not TariffTier.FREE else free_max
 
     def _plan(**kwargs: Any) -> ChatRoutePlan:

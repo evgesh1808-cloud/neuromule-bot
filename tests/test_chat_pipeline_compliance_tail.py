@@ -1,5 +1,7 @@
 """Хвост compliance в последнем user-сообщении перед OpenRouter."""
 
+import pytest
+
 from services.billing.chat_pipeline import (
     _model_route_for_role,
     inject_compliance_rules_into_last_user_message,
@@ -111,9 +113,9 @@ def test_prepare_openrouter_uses_chatcom_tail_for_standard() -> None:
         chatcom_laconic=True,
     )
     body = payload[1]["content"]
-    assert "стиль FREE" in body
+    assert "Compliance: FREE TIER" in body
     assert "===КНОПКИ===" in body
-    assert "СТИЛЬ ОТВЕТА" in body
+    assert "Minimize output tokens" in body
     assert "премиум-комплаенс" not in body
 
 
@@ -129,16 +131,18 @@ def test_prepare_openrouter_skips_chatcom_tail_for_smart_standard() -> None:
         chatcom_laconic=False,
     )
     body = payload[1]["content"]
-    assert "премиум-комплаенс Стандарт" in body
+    assert "Compliance: PREMIUM COPY PACK" in body
     assert "Готово! Разные стили на выбор" in body
-    assert "ИГНОРИРУЙ формат прошлых" in body or "ИГНОРИРУЙ" in body
     assert "<pre>" in body
-    assert "Без блока ===КНОПКИ===" in body or "без блока ===КНОПКИ===" in body.lower() or "Без ===КНОПКИ===" in body
-    assert "СТИЛЬ ОТВЕТА" not in body
-    assert "Маршрут" not in body
+    assert "Эмоциональный" in body and "Деловой" in body
+    assert "Экспресс" in body and "С юмором" in body
+    assert "Строго 4 блока" in body
+    assert "===КНОПКИ===" in body  # запрет упоминается в хвосте
+    assert "Без блоков ===КНОПКИ===" in body
 
 
-def test_prepare_openrouter_collapses_assistant_history_for_paid_standard() -> None:
+def test_prepare_openrouter_injects_compliance_without_hard_collapse() -> None:
+    """prepare больше не стирает историю — сжатие делает compact_standard_dialog_context."""
     payload = [
         {"role": "system", "content": "sys"},
         {"role": "user", "content": "старый вопрос"},
@@ -154,19 +158,16 @@ def test_prepare_openrouter_collapses_assistant_history_for_paid_standard() -> N
         text_role="standard",
         chatcom_laconic=False,
     )
-    assert len(payload) == 2
-    assert payload[0]["role"] == "system"
-    assert payload[1]["role"] == "user"
-    assert "Напиши поздравление" in payload[1]["content"]
-    assert "Вы можете создать" not in str(payload)
-    assert "премиум-комплаенс" in payload[1]["content"]
+    assert len(payload) == 4
+    assert payload[-1]["role"] == "user"
+    assert "Напиши поздравление" in payload[-1]["content"]
+    assert "Compliance: PREMIUM COPY PACK" in payload[-1]["content"]
+    assert "Эмоциональный" in payload[-1]["content"]
+    assert "<pre>" in payload[-1]["content"]
 
 
 def test_collapse_prior_assistant_keeps_only_system_and_last_user() -> None:
-    from services.billing.chat_pipeline import (
-        collapse_prior_assistant_for_copy_pack,
-        prepare_openrouter_chat_messages,
-    )
+    from services.billing.chat_pipeline import collapse_prior_assistant_for_copy_pack
 
     messages = [
         {"role": "system", "content": "COPY PACK"},
@@ -180,35 +181,28 @@ def test_collapse_prior_assistant_keeps_only_system_and_last_user() -> None:
     assert messages[1]["role"] == "user"
     assert messages[1]["content"] == "поздравление с днём рождения"
 
-    payload = prepare_openrouter_chat_messages(
-        [
-            {"role": "system", "content": "COPY PACK"},
-            {"role": "user", "content": "тема A"},
-            {"role": "assistant", "content": "коуч-ответ"},
-            {"role": "user", "content": "тема B"},
-        ],
-        use_premium_prompt=True,
-        text_role="standard",
-        chatcom_laconic=False,
-    )
-    assert [m["role"] for m in payload] == ["system", "user"]
-    assert "тема B" in payload[1]["content"]
-    assert "коуч-ответ" not in str(payload)
 
-    free_payload = prepare_openrouter_chat_messages(
-        [
-            {"role": "system", "content": "FREE Chatcom"},
-            {"role": "user", "content": "старое"},
-            {"role": "assistant", "content": "КОУЧ_MARKER_HISTORY_ONLY"},
-            {"role": "user", "content": "новое"},
-        ],
-        use_premium_prompt=False,
-        text_role="standard",
-        chatcom_laconic=True,
+@pytest.mark.asyncio
+async def test_compact_standard_dialog_injects_context_block() -> None:
+    from services.context_summarize import (
+        STANDARD_CONTEXT_MARKER,
+        compact_standard_dialog_context,
     )
-    assert [m["role"] for m in free_payload] == ["system", "user"]
-    assert "новое" in free_payload[1]["content"]
-    assert "КОУЧ_MARKER_HISTORY_ONLY" not in str(free_payload)
+
+    payload = [
+        {"role": "system", "content": "COPY PACK"},
+        {"role": "user", "content": "секция тхэквондо для сына 7 лет"},
+        {"role": "assistant", "content": "коуч-ответ про тхэквондо"},
+        {"role": "user", "content": "измени второй вариант как раньше"},
+    ]
+    await compact_standard_dialog_context(payload, ask_fn=None)
+    assert len(payload) == 2
+    assert payload[0]["role"] == "system"
+    assert STANDARD_CONTEXT_MARKER in payload[0]["content"]
+    assert "тхэквондо" in payload[0]["content"].lower() or "Контекст" in payload[0]["content"]
+    assert payload[1]["role"] == "user"
+    assert "измени второй вариант" in payload[1]["content"]
+    assert "коуч-ответ" not in str(payload)
 
 
 def test_paid_standard_uses_copy_pack_voice() -> None:
@@ -217,36 +211,40 @@ def test_paid_standard_uses_copy_pack_voice() -> None:
 
     prompt = get_role_prompt("standard", premium=True, tariff=TariffTier.SMART)
     assert "PREMIUM COPY PACK" in prompt
-    assert "элитный коммерческий копирайтер" in prompt
+    assert "элитный эксперт-копирайтер" in prompt
+    assert "Не коуч" in prompt or "не коуч" in prompt.lower()
+    assert "BREVITY ECONOMY" in prompt
+    assert "TELEGRAM HTML" in prompt
     assert "Готово! Разные стили на выбор" in prompt
     assert "<pre>" in prompt
     assert "ЭТАЛОН" in prompt
-    assert "Эмоциональный и душевный" in prompt
-    assert "Ультра-короткий экспресс" in prompt
+    assert "<b>Эмоциональный</b>" in prompt
+    assert "<b>Деловой</b>" in prompt
+    assert "<b>Экспресс</b>" in prompt
+    assert "<b>С юмором</b>" in prompt
     assert "300–500" in prompt or "300-500" in prompt
     assert "1400" in prompt
     assert "ФОКУС НА ТЕКУЩЕМ ЗАПРОСЕ" in prompt
     assert "PROFESSIONAL LENGTH AND BUDGET CONTROL" not in prompt
     assert "ПРЕМИУМ NEUROMULE" not in prompt
-    assert "Пример реплики" not in prompt
-    assert "СТИЛЬ ОТВЕТА" not in prompt
+    assert "SYSTEM_ROLE" not in prompt
+    assert "АВТОНОМНЫЙ ЭКСПЕРТ-АССИСТЕНТ" not in prompt
 
     free_role = build_custom_role_prompt("standard", TariffTier.FREE)
     mini_role = build_custom_role_prompt("standard", TariffTier.MINI)
     ultra_role = build_custom_role_prompt("standard", TariffTier.ULTRA)
     assert "===КНОПКИ===" in free_role
-    assert "Пример реплики" in free_role
-    assert "ЕСТЕСТВЕННОСТЬ РЕЧИ" in free_role
+    assert "АВТОНОМНЫЙ ЭКСПЕРТ-АССИСТЕНТ" in free_role
+    assert "QUERY-TYPE ROUTING" in free_role
+    assert "Compliance: FREE TIER" in free_role
     assert "PREMIUM COPY PACK" in mini_role
     assert "<pre>" in mini_role
     assert "PREMIUM COPY PACK" in ultra_role
-    assert "СТИЛЬ ОТВЕТА" in free_role
 
     mini_sys = get_role_prompt("standard", premium=True, tariff=TariffTier.MINI)
     assert "PREMIUM COPY PACK" in mini_sys
     assert "<pre>" in mini_sys
-    assert "коуч" not in mini_sys.lower() or "копирайтер" in mini_sys
-    assert "СТИЛЬ ОТВЕТА" not in mini_sys
+    assert "копирайтер" in mini_sys.lower()
     assert "SYSTEM_ROLE" not in mini_sys
 
 
@@ -281,7 +279,10 @@ def test_standard_max_tokens_free_vs_paid() -> None:
     )
     free_plan = plan_text_chat(free_user, "standard")
     smart_plan = plan_text_chat(smart_user, "standard")
-    assert free_plan.max_tokens == settings.openrouter_max_output_tokens
+    from services.billing.chat_pipeline import _FREE_CHAT_MAX_OUTPUT_TOKENS
+
+    assert free_plan.max_tokens == _FREE_CHAT_MAX_OUTPUT_TOKENS
+    assert 350 <= free_plan.max_tokens <= 400
     assert smart_plan.max_tokens == settings.openrouter_premium_max_output_tokens
     assert settings.openrouter_premium_max_output_tokens == 1500
     assert free_plan.use_premium_prompt is False

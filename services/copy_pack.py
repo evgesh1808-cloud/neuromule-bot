@@ -25,7 +25,7 @@ COPY_PACK_OPENER_LINE = (
 # Prefill для Gemini: модель продолжает уже начатый COPY PACK, а не уходит в коуч.
 COPY_PACK_ASSISTANT_PREFIX = (
     f"{COPY_PACK_OPENER_LINE}\n\n"
-    "🫀 <b>Эмоциональный и душевный</b>\n"
+    "🫀 <b>Эмоциональный</b>\n"
     "<pre>\n"
 )
 

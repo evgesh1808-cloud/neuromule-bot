@@ -67,6 +67,10 @@ async def build_openrouter_messages(
         1) system — базовая роль + защита от injection + блок persistent_memory;
         2) последние ``settings.chat_history_limit`` реплик user/assistant из БД (хронологически).
 
+    Для роли ``standard`` полная история затем сжимается в ``chat_turn`` через
+    ``compact_standard_dialog_context`` → ультра-короткий ``[Контекст: …]`` в system
+    + последний user (без сырых коуч-реплик, с сохранением отсылок).
+
     Вход:
         settings — конфиг.
         user_id — id пользователя Telegram (= primary key в users).

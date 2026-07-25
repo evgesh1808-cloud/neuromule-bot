@@ -69,15 +69,15 @@ def test_keyboard_callback_format() -> None:
 def test_role_standard_prompt_has_buttons_rule() -> None:
     from content.chat_prompt import _CHATCOM_LACO_TAIL, _NATURAL_SPEECH_RULE, _ROLE_STANDARD
 
-    assert _ROLE_STANDARD.startswith("[РЕЖИМ: ⚪ СТАНДАРТ]")
+    assert _ROLE_STANDARD.startswith("[РЕЖИМ: АВТОНОМНЫЙ ЭКСПЕРТ-АССИСТЕНТ]")
     assert "blockquote expandable" in _ROLE_STANDARD
-    assert "Пример реплики" in _ROLE_STANDARD
-    assert "ЕСТЕСТВЕННОСТЬ РЕЧИ" in _ROLE_STANDARD
-    assert "ЕСТЕСТВЕННОСТЬ РЕЧИ" in _NATURAL_SPEECH_RULE
+    assert "QUERY-TYPE ROUTING" in _ROLE_STANDARD
+    assert "BREVITY ECONOMY" in _ROLE_STANDARD
+    assert "ЕСТЕСТВЕННОСТЬ" in _NATURAL_SPEECH_RULE
     assert "===КНОПКИ===" in _CHATCOM_LACO_TAIL
-    assert "СТИЛЬ ОТВЕТА" in _CHATCOM_LACO_TAIL
-    assert "ЕСТЕСТВЕННОСТЬ РЕЧИ" in _CHATCOM_LACO_TAIL
-    # Старая структура капс-секций больше не является обязательным форматом ответа
+    assert "Compliance: FREE TIER" in _CHATCOM_LACO_TAIL
+    assert "Minimize output tokens" in _CHATCOM_LACO_TAIL
+    assert "ровно один сильный вариант" in _CHATCOM_LACO_TAIL
     assert "выдели структуру СТРОГО по блокам" not in _ROLE_STANDARD
 
 

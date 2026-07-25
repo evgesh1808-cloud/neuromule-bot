@@ -602,6 +602,30 @@ class Settings(BaseSettings):
     chat_use_tiktoken: bool = True
     tiktoken_encoding: Annotated[str, _nonempty_str("cl100k_base")] = "cl100k_base"
 
+    # --- Context summarize (non-Standard роли; Standard остаётся на collapse) ---
+    chat_summary_enabled: Annotated[bool, _coerce_bool(True)] = True
+    chat_summary_trigger_tokens: Annotated[int, _coerce_int(8_000)] = 8_000
+    chat_summary_keep_pairs: Annotated[int, _coerce_int(3)] = 3
+    chat_summary_max_chars: Annotated[int, _coerce_int(700)] = 700
+    chat_summary_model: Annotated[
+        str, _nonempty_str("google/gemini-2.5-flash-lite")
+    ] = "google/gemini-2.5-flash-lite"
+    chat_summary_timeout_sec: Annotated[float, _coerce_float(20.0)] = 20.0
+
+    # --- API spend guard (страховка OpenRouter-ключа поверх ⚡/💎) ---
+    # Важно: 0 = лимит ВЫКЛЮЧЕН. Иначе hard-stop на календарный день (UTC).
+    openrouter_daily_usd_cap: Annotated[float, _coerce_float(0.0)] = 0.0
+    # Оценка $ при отсутствии provider invoice (грубо, для soft-cap).
+    openrouter_usd_per_1k_prompt: Annotated[float, _coerce_float(0.00015)] = 0.00015
+    openrouter_usd_per_1k_completion: Annotated[float, _coerce_float(0.0006)] = 0.0006
+    # Лимит входных+выходных токенов на user/день (UTC). 0 = выключено для тарифа.
+    user_daily_tokens_cap_free: Annotated[int, _coerce_int(80_000)] = 80_000
+    user_daily_tokens_cap_mini: Annotated[int, _coerce_int(400_000)] = 400_000
+    user_daily_tokens_cap_smart: Annotated[int, _coerce_int(1_200_000)] = 1_200_000
+    user_daily_tokens_cap_ultra: Annotated[int, _coerce_int(2_500_000)] = 2_500_000
+    # FREE: жёстко enforce free_daily_chat_limit (0/false в env = выключено).
+    free_daily_chat_enforce: Annotated[bool, _coerce_bool(True)] = True
+
     # Очередь записи assistant+prune в SQLite (один фоновый воркер); в тестах воркер не стартует — прямой коммит.
     dialog_write_worker_enabled: bool = True
 

@@ -282,6 +282,24 @@ async def run_chat_turn(
     from services.repository import get_show_suggested_replies
 
     suggest_replies = await get_show_suggested_replies(user_id)
+    _role_for_prep = (effective_role or "").strip().lower()
+    # Standard: умное саммари истории → [Контекст: …] в system (вместо hard-collapse).
+    if _role_for_prep == "standard":
+        from services.context_summarize import compact_standard_dialog_context
+
+        async def _summary_ask(
+            msgs: list,
+            **kwargs: Any,
+        ) -> dict[str, Any]:
+            return await ask_ai_messages(
+                settings,
+                msgs,
+                http_client=http_client,
+                **kwargs,
+            )
+
+        await compact_standard_dialog_context(payload, ask_fn=_summary_ask)
+
     prepare_openrouter_chat_messages(
         payload,
         use_premium_prompt=plan.use_premium_prompt,
@@ -289,7 +307,7 @@ async def run_chat_turn(
         chatcom_laconic=plan.tariff is TariffTier.FREE,
         request_suggested_replies=(
             plan.tariff is not TariffTier.FREE
-            and (effective_role or "").strip().lower() == "standard"
+            and _role_for_prep == "standard"
             and suggest_replies
         ),
     )

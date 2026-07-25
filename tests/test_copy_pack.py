@@ -16,13 +16,13 @@ from services.use_cases.chat_turn import clean_markdown_to_html
 def test_is_premium_copy_pack_reply_accepts_valid() -> None:
     text = (
         "Готово! Разные стили на выбор (нажмите на текст, чтобы скопировать):\n\n"
-        "🫀 <b>Эмоциональный и душевный</b>\n"
+        "🫀 <b>Эмоциональный</b>\n"
         "<pre>\nА\n</pre>\n\n"
-        "💼 <b>Официальный и деловой</b>\n"
+        "💼 <b>Деловой</b>\n"
         "<pre>\nБ\n</pre>\n\n"
-        "⚡ <b>Ультра-короткий экспресс</b>\n"
+        "⚡ <b>Экспресс</b>\n"
         "<pre>\nВ\n</pre>\n\n"
-        "🎭 <b>Современный / С юмором</b>\n"
+        "🎭 <b>С юмором</b>\n"
         "<pre>\nГ\n</pre>\n"
     )
     assert is_premium_copy_pack_reply(text) is True
@@ -41,7 +41,11 @@ def test_is_premium_copy_pack_reply_rejects_coach() -> None:
 
 
 def test_merge_copy_pack_prefix_on_continuation() -> None:
-    continuation = "Милая, с днём рождения!\n</pre>\n\n💼 <b>Официальный</b>\n<pre>\nУспехов!\n</pre>\n\n⚡ <b>Экспресс</b>\n<pre>\nС ДР!\n</pre>"
+    continuation = (
+        "Милая, с днём рождения!\n</pre>\n\n"
+        "💼 <b>Деловой</b>\n<pre>\nУспехов!\n</pre>\n\n"
+        "⚡ <b>Экспресс</b>\n<pre>\nС ДР!\n</pre>"
+    )
     merged = merge_copy_pack_prefix(COPY_PACK_ASSISTANT_PREFIX, continuation)
     assert merged.startswith("Готово!")
     assert "<pre>" in merged
