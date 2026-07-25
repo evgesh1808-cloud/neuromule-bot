@@ -149,12 +149,12 @@ def test_prepare_openrouter_skips_chatcom_tail_for_smart_standard() -> None:
     body = payload[1]["content"]
     assert "Compliance: PREMIUM COPY PACK" in body
     assert "QUERY-TYPE ROUTING" in body
-    assert "СТРОГИЕ КРИТЕРИИ" in body
-    assert "Тип А" in body and "ТИП Б" in body
-    assert "Сын полюбил футбол" in body
+    assert "ТИП А" in body and "ТИП Б" in body
+    assert "разбор слов по составу" in body
+    assert "ОДИН прямой" in body
     assert "Готово! Разные варианты на выбор" in body
     assert "<pre>" in body
-    assert "простой уникальный заголовок с эмодзи" in body
+    assert "кастомными живыми заголовками" in body
     assert "КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО COPY PACK" in body or "ЗАПРЕЩЕНО COPY PACK" in body
     assert "===КНОПКИ===" in body  # запрет упоминается в хвосте
     assert "КРЕАТИВНОСТЬ" in body
@@ -184,8 +184,9 @@ def test_prepare_openrouter_injects_compliance_without_hard_collapse() -> None:
     assert "Напиши поздравление" in payload[-1]["content"]
     assert "Compliance: PREMIUM COPY PACK" in payload[-1]["content"]
     assert "QUERY-TYPE ROUTING" in payload[-1]["content"]
-    assert "Тип А" in payload[-1]["content"]
+    assert "ТИП А" in payload[-1]["content"]
     assert "ТИП Б" in payload[-1]["content"]
+    assert "разбор слов по составу" in payload[-1]["content"]
     assert "<pre>" in payload[-1]["content"]
 
 
@@ -237,12 +238,11 @@ def test_paid_standard_uses_copy_pack_voice() -> None:
     assert "элитный эксперт" in prompt.lower()
     assert "ДИНАМИЧЕСКИЙ ВЫБОР ФОРМАТА" in prompt
     assert "QUERY-TYPE ROUTING" in prompt
-    assert "СТРОГИЕ КРИТЕРИИ" in prompt
-    assert "Тип А" in prompt and "ТИП Б" in prompt
-    assert "НАПРЯМУЮ, ИМПЕРАТИВНО" in prompt
-    assert "Сын полюбил футбол" in prompt
-    assert "КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать структуру из 4 блоков" in prompt
-    assert "1-2 вовлекающих вопроса" in prompt or "1–2 вовлекающих вопроса" in prompt
+    assert "ТИП А" in prompt and "ТИП Б" in prompt
+    assert "ТЕКСТЫ ДЛЯ ПЕРЕСЫЛКИ И КОПИРОВАНИЯ" in prompt
+    assert "разбор слов по составу" in prompt
+    assert "ОДИН прямой" in prompt
+    assert "КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать структуру COPY PACK" in prompt
     assert "ПРАВИЛО ЗАГОЛОВКОВ" in prompt
     assert "кастомный заголовок" in prompt.lower()
     assert "Даже на аналитический вопрос" not in prompt
@@ -250,7 +250,7 @@ def test_paid_standard_uses_copy_pack_voice() -> None:
     assert "TELEGRAM HTML" in prompt
     assert "Готово! Разные варианты на выбор" in prompt
     assert "<pre>" in prompt
-    assert "СТРУКТУРА COPY PACK (только для Типа А" in prompt
+    assert "СТРУКТУРА COPY PACK (только для ТИПА А" in prompt
     assert "Трогательное и душевное" in prompt
     assert "Волшебная сказка" in prompt
     # Фиксированные психотипы — только как запрет, не как структура блоков.
