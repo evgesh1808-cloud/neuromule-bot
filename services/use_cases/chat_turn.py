@@ -350,8 +350,10 @@ async def run_chat_turn(
     try:
         is_blogger_role = (effective_role or "").strip().lower() in _BLOGGER_ROLE_IDS
         is_free_tariff = plan.tariff is TariffTier.FREE
+        from services.billing.chat_pipeline import free_chat_model_timeout_sec
+
         or_timeout = (
-            settings.openrouter_free_timeout_sec
+            free_chat_model_timeout_sec()
             if is_free_tariff
             else settings.openrouter_timeout_sec
         )
@@ -565,7 +567,11 @@ async def run_chat_turn(
     if (effective_role or "").strip().lower() == "standard":
         from services.standard_suggested_replies import split_suggested_replies
 
-        content_for_format, reply_labels = split_suggested_replies(content)
+        content_for_format, reply_labels = split_suggested_replies(
+            content,
+            # FREE: 100% кнопки даже если LLM забыла / обрезала ===КНОПКИ===.
+            fallback_if_missing=plan.tariff is TariffTier.FREE,
+        )
         suggested_replies = tuple(reply_labels)
 
     if (effective_role or "").strip().lower() in _BLOGGER_ROLE_IDS:

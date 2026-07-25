@@ -186,9 +186,12 @@ async def _http_client_scope(
 
 
 def get_chat_headers(settings: Settings) -> dict[str, str]:
-    """Заголовки авторизации для OpenRouter (Bearer + JSON)."""
+    """Заголовки авторизации для OpenRouter (Bearer + JSON, key pool round-robin)."""
+    from services.billing.chat_pipeline import resolve_openrouter_api_key
+
+    api_key = resolve_openrouter_api_key(settings)
     return {
-        "Authorization": f"Bearer {settings.openrouter_key}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
 
@@ -270,11 +273,15 @@ async def _post_chat_completion(
         timeout=timeout,
     )
     if response.status_code == 429:
-        # Rate-limit на :free модели — поднимаем явный лог, чтобы было
-        # видно в графиках/алертах. Внешний цикл по `model_chain` сам
-        # переключится на следующую (резервную) модель.
+        # Rate-limit: крутим ключ пула + внешний цикл уйдёт на следующую модель.
+        try:
+            from services.billing.chat_pipeline import get_openrouter_key_rotator
+
+            get_openrouter_key_rotator(settings).mark_rate_limited()
+        except Exception:
+            logger.debug("openrouter key rotate on 429 skipped", exc_info=True)
         logger.warning(
-            "OpenRouter model=%s rate_limited (429) — falling back to next model",
+            "OpenRouter model=%s rate_limited (429) — falling back to next model/key",
             model,
         )
         return None

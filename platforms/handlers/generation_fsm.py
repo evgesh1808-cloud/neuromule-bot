@@ -1,4 +1,4 @@
-"""Telegram handlers."""
+"""Telegram handlers (FSMContext → RedisStorage при REDIS_URL, см. ``build_fsm_storage``)."""
 from __future__ import annotations
 
 import asyncio

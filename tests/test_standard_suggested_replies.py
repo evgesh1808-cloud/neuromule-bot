@@ -9,6 +9,7 @@ import pytest
 from content import messages as msg
 from services.standard_suggested_replies import (
     BUTTONS_MARKER,
+    FREE_FALLBACK_SUGGESTED_REPLIES,
     build_chat_hint_callback,
     build_suggested_replies_keyboard,
     clear_suggested_replies_for_tests,
@@ -47,6 +48,41 @@ def test_split_suggested_replies_without_marker() -> None:
     body, labels = split_suggested_replies("Просто текст")
     assert body == "Просто текст"
     assert labels == []
+
+
+def test_split_suggested_replies_free_fallback_when_marker_missing() -> None:
+    body, labels = split_suggested_replies(
+        "Короткий ответ про футбол.",
+        fallback_if_missing=True,
+    )
+    assert body == "Короткий ответ про футбол."
+    assert labels == list(FREE_FALLBACK_SUGGESTED_REPLIES)
+    assert "🔍 Можно подробнее?" in labels
+    assert "🔄 Другой вариант" in labels
+    assert "💡 Как применить?" in labels
+
+
+def test_split_suggested_replies_free_fallback_keeps_model_labels() -> None:
+    raw = (
+        "Ответ.\n\n"
+        f"{BUTTONS_MARKER}\n"
+        "Список книг?\n"
+        "Для мальчиков?\n"
+        "В виде сказки?\n"
+    )
+    body, labels = split_suggested_replies(raw, fallback_if_missing=True)
+    assert "Ответ" in body
+    assert labels == ["Список книг?", "Для мальчиков?", "В виде сказки?"]
+
+
+def test_free_chat_model_timeout_capped() -> None:
+    from services.billing.chat_pipeline import (
+        FREE_CASCADE_PER_MODEL_TIMEOUT_SEC,
+        free_chat_model_timeout_sec,
+    )
+
+    assert FREE_CASCADE_PER_MODEL_TIMEOUT_SEC == 8.0
+    assert free_chat_model_timeout_sec() <= 8.0
 
 
 def test_remember_and_resolve_suggested_reply() -> None:

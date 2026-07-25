@@ -127,9 +127,34 @@ async def _wait_telegram_api(bot: Bot) -> None:
     ) from last_error
 
 
+def build_fsm_storage():
+    """Redis FSM для горизонтального масштаба; иначе MemoryStorage (dev/single-node)."""
+    from aiogram.fsm.storage.memory import MemoryStorage
+
+    url = (getattr(settings, "redis_url", None) or "").strip()
+    if not url:
+        logger.warning(
+            "FSM storage: MemoryStorage — задайте REDIS_URL для multi-worker / highload"
+        )
+        return MemoryStorage()
+    try:
+        from aiogram.fsm.storage.redis import RedisStorage
+
+        storage = RedisStorage.from_url(url)
+        logger.info("FSM storage: Redis (horizontal-scale ready)")
+        return storage
+    except Exception:
+        logger.exception(
+            "FSM Redis unavailable (%s) — fallback MemoryStorage",
+            url.split("@")[-1] if "@" in url else url,
+        )
+        return MemoryStorage()
+
+
 def build_dispatcher() -> tuple[Bot, Dispatcher]:
     bot = build_bot()
-    dp = Dispatcher()
+    # generation_fsm и все FSMContext-хэндлеры берут storage отсюда.
+    dp = Dispatcher(storage=build_fsm_storage())
     channel_sub = ChannelSubscription(bot)
     deps.bind(bot, channel_sub)
 
@@ -173,8 +198,12 @@ async def run_telegram() -> None:
     setup_logging(settings)
     if not settings.tg_token:
         raise RuntimeError("Задайте TG_TOKEN в .env")
-    if not settings.openrouter_key:
-        raise RuntimeError("Задайте OPENROUTER_API_KEY в .env")
+    from services.billing.chat_pipeline import _collect_openrouter_keys
+
+    if not _collect_openrouter_keys(settings):
+        raise RuntimeError(
+            "Задайте OPENROUTER_API_KEY или OPENROUTER_API_KEYS в .env"
+        )
 
     log_openrouter_proxy_configuration(settings)
     probe_openrouter_proxy(settings)

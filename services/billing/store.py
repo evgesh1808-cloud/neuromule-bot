@@ -466,130 +466,183 @@ async def atomic_spend(
     # остаётся индивидуальным для рефанда / логов / cooldowns верхнего уровня.
     wallet_id = await _resolve_wallet_id(user_id)
     async with aiosqlite.connect(_db_path()) as db:
-        await _apply_daily_reset_if_needed(db, wallet_id, today)
+        # Весь spend — одна атомарная транзакция (BEGIN IMMEDIATE = write-lock SQLite).
+        # Daily reset внутри lock, чтобы не было TOCTOU на границе суток.
         await db.execute("BEGIN IMMEDIATE")
-        await migrate_crystal_split_columns(db)
-        async with db.execute(
-            """
-            SELECT
-                COALESCE(energy_free, energy, 0),
-                COALESCE(energy_paid, 0),
-                COALESCE(sub_crystals, 0),
-                COALESCE(buy_crystals, 0),
-                crystals,
-                photo_daily_date,
-                photo_daily_count,
-                UPPER(COALESCE(tariff, 'FREE'))
-            FROM users WHERE id = ?
-            """,
-            (wallet_id,),
-        ) as cur:
-            row = await cur.fetchone()
-        if not row:
-            await db.execute("ROLLBACK")
-            return None
-        e_free, e_paid = int(row[0]), int(row[1])
-        sub_cr, buy_cr = int(row[2]), int(row[3])
-        crystals = sub_cr + buy_cr if (row[2] is not None or row[3] is not None) else int(row[4] or 0)
-        p_date, p_count, _tariff = row[5], int(row[6] or 0), row[7]
-        used_slot = False
-        spend_free = spend_paid = spend_crystals = 0
+        try:
+            await _apply_daily_reset_if_needed(db, wallet_id, today)
+            await migrate_crystal_split_columns(db)
+            async with db.execute(
+                """
+                SELECT
+                    COALESCE(energy_free, energy, 0),
+                    COALESCE(energy_paid, 0),
+                    COALESCE(sub_crystals, 0),
+                    COALESCE(buy_crystals, 0),
+                    crystals,
+                    photo_daily_date,
+                    photo_daily_count,
+                    UPPER(COALESCE(tariff, 'FREE'))
+                FROM users WHERE id = ?
+                """,
+                (wallet_id,),
+            ) as cur:
+                row = await cur.fetchone()
+            if not row:
+                await db.execute("ROLLBACK")
+                return None
+            e_free, e_paid = int(row[0]), int(row[1])
+            sub_cr, buy_cr = int(row[2]), int(row[3])
+            crystals = (
+                sub_cr + buy_cr
+                if (row[2] is not None or row[3] is not None)
+                else int(row[4] or 0)
+            )
+            p_date, p_count, _tariff = row[5], int(row[6] or 0), row[7]
+            used_slot = False
+            spend_free = spend_paid = spend_crystals = 0
 
-        if reserve_photo_slot:
-            if p_date != today:
-                p_count = 0
-            if p_count < photo_daily_limit:
-                used_slot = True
-                new_count = p_count + 1
-                await db.execute(
-                    "UPDATE users SET photo_daily_date = ?, photo_daily_count = ? WHERE id = ?",
-                    (today, new_count, wallet_id),
+            if reserve_photo_slot:
+                if p_date != today:
+                    p_count = 0
+                if p_count < photo_daily_limit:
+                    used_slot = True
+                    new_count = p_count + 1
+                    # CAS: ожидаемый текущий счётчик + лимит (без ухода в минус/овербукинг).
+                    cur = await db.execute(
+                        """
+                        UPDATE users
+                        SET photo_daily_date = ?, photo_daily_count = ?
+                        WHERE id = ?
+                          AND (
+                            CASE
+                              WHEN photo_daily_date IS NULL OR photo_daily_date != ?
+                              THEN 0
+                              ELSE COALESCE(photo_daily_count, 0)
+                            END
+                          ) = ?
+                          AND ? < ?
+                        """,
+                        (
+                            today,
+                            new_count,
+                            wallet_id,
+                            today,
+                            p_count,
+                            p_count,
+                            photo_daily_limit,
+                        ),
+                    )
+                    if cur.rowcount != 1:
+                        await db.execute("ROLLBACK")
+                        return None
+                elif crystal_need < 1:
+                    await db.execute("ROLLBACK")
+                    return None
+
+            if crystal_need > 0:
+                if crystals < crystal_need:
+                    await db.execute("ROLLBACK")
+                    return None
+                spend_crystals = crystal_need
+            elif energy_need > 0 and not crystals_only:
+                total_e = e_free + e_paid
+                if total_e < energy_need:
+                    await db.execute("ROLLBACK")
+                    return None
+                take = energy_need
+                from_free = min(e_free, take)
+                take -= from_free
+                from_paid = take
+                spend_free, spend_paid = from_free, from_paid
+            elif energy_need > 0 and crystals_only:
+                await db.execute("ROLLBACK")
+                return None
+
+            if spend_crystals:
+                if sub_cr + buy_cr < spend_crystals:
+                    await db.execute("ROLLBACK")
+                    return None
+                from_sub = min(sub_cr, spend_crystals)
+                from_buy = spend_crystals - from_sub
+                new_sub = sub_cr - from_sub
+                new_buy = buy_cr - from_buy
+                new_total = new_sub + new_buy
+                cur = await db.execute(
+                    """
+                    UPDATE users SET
+                        sub_crystals = ?,
+                        buy_crystals = ?,
+                        crystals = ?,
+                        balance = ?,
+                        balance_crystals = ?
+                    WHERE id = ?
+                      AND COALESCE(sub_crystals, 0) + COALESCE(buy_crystals, 0) >= ?
+                    """,
+                    (
+                        new_sub,
+                        new_buy,
+                        new_total,
+                        new_total,
+                        new_total,
+                        wallet_id,
+                        spend_crystals,
+                    ),
                 )
-            elif crystal_need < 1:
-                # Слоты Imagen 4 исчерпаны и нет оплаты кристаллами — отказ.
-                await db.execute("ROLLBACK")
-                return None
+                if cur.rowcount != 1:
+                    await db.execute("ROLLBACK")
+                    return None
+            if spend_free or spend_paid:
+                new_free = e_free - spend_free
+                new_paid = e_paid - spend_paid
+                new_total = new_free + new_paid
+                cur = await db.execute(
+                    f"""
+                    UPDATE users SET
+                        energy_free = ?,
+                        energy_paid = ?,
+                        {_set_energy_totals_sql()}
+                    WHERE id = ?
+                      AND COALESCE(energy_free, energy, 0) >= ?
+                      AND COALESCE(energy_paid, 0) >= ?
+                    """,
+                    (
+                        new_free,
+                        new_paid,
+                        new_total,
+                        new_total,
+                        wallet_id,
+                        spend_free,
+                        spend_paid,
+                    ),
+                )
+                if cur.rowcount != 1:
+                    await db.execute("ROLLBACK")
+                    return None
 
-        if crystal_need > 0:
-            if crystals < crystal_need:
-                await db.execute("ROLLBACK")
-                return None
-            spend_crystals = crystal_need
-        elif energy_need > 0 and not crystals_only:
-            total_e = e_free + e_paid
-            if total_e < energy_need:
-                await db.execute("ROLLBACK")
-                return None
-            take = energy_need
-            from_free = min(e_free, take)
-            take -= from_free
-            from_paid = take
-            spend_free, spend_paid = from_free, from_paid
-        elif energy_need > 0 and crystals_only:
-            await db.execute("ROLLBACK")
-            return None
-
-        if spend_crystals:
-            if sub_cr + buy_cr < spend_crystals:
-                await db.execute("ROLLBACK")
-                return None
-            from_sub = min(sub_cr, spend_crystals)
-            from_buy = spend_crystals - from_sub
-            new_sub = sub_cr - from_sub
-            new_buy = buy_cr - from_buy
-            new_total = new_sub + new_buy
+            # billing_charges.user_id = wallet_id (owner для members ULTRA-семьи).
             await db.execute(
                 """
-                UPDATE users SET
-                    sub_crystals = ?,
-                    buy_crystals = ?,
-                    crystals = ?,
-                    balance = ?,
-                    balance_crystals = ?
-                WHERE id = ?
+                INSERT INTO billing_charges
+                    (charge_id, user_id, feature, energy_free, energy_paid, crystals,
+                     photo_slot, status, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'charged', ?)
                 """,
-                (new_sub, new_buy, new_total, new_total, new_total, wallet_id),
+                (
+                    charge_id,
+                    wallet_id,
+                    feature,
+                    spend_free,
+                    spend_paid,
+                    spend_crystals,
+                    1 if used_slot else 0,
+                    today,
+                ),
             )
-        if spend_free or spend_paid:
-            new_free = e_free - spend_free
-            new_paid = e_paid - spend_paid
-            new_total = new_free + new_paid
-            cur = await db.execute(
-                f"""
-                UPDATE users SET
-                    energy_free = ?,
-                    energy_paid = ?,
-                    {_set_energy_totals_sql()}
-                WHERE id = ?
-                  AND COALESCE(energy_free, energy, 0) >= ?
-                  AND COALESCE(energy_paid, 0) >= ?
-                """,
-                (new_free, new_paid, new_total, new_total, wallet_id, spend_free, spend_paid),
-            )
-            if cur.rowcount != 1:
-                await db.execute("ROLLBACK")
-                return None
-
-        # billing_charges.user_id ставим = wallet_id, чтобы refund_charge
-        # вернул ресурсы на тот же кошелёк (owner для members ULTRA-семьи).
-        await db.execute(
-            """
-            INSERT INTO billing_charges
-                (charge_id, user_id, feature, energy_free, energy_paid, crystals, photo_slot, status, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'charged', ?)
-            """,
-            (
-                charge_id,
-                wallet_id,
-                feature,
-                spend_free,
-                spend_paid,
-                spend_crystals,
-                1 if used_slot else 0,
-                today,
-            ),
-        )
-        await db.commit()
+            await db.commit()
+        except Exception:
+            await db.execute("ROLLBACK")
+            raise
     return ChargeBreakdown(
         charge_id=charge_id,
         energy_free=spend_free,
@@ -654,9 +707,16 @@ async def refund_charge(charge_id: str) -> bool:
                 """,
                 (uid,),
             )
-        await db.execute(
-            "UPDATE billing_charges SET status = 'refunded' WHERE charge_id = ?",
+        cur = await db.execute(
+            """
+            UPDATE billing_charges
+            SET status = 'refunded'
+            WHERE charge_id = ? AND status = 'charged'
+            """,
             (charge_id,),
         )
+        if cur.rowcount != 1:
+            await db.execute("ROLLBACK")
+            return False
         await db.commit()
     return True

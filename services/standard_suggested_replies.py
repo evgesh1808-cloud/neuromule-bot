@@ -20,20 +20,39 @@ _CONTEXT_ID_LEN = 8
 # Telegram Bot API: callback_data 1–64 bytes (UTF-8).
 _TG_CALLBACK_DATA_MAX_BYTES = 64
 
+# FREE: если модель забыла / обрезала ===КНОПКИ=== — железные подсказки.
+FREE_FALLBACK_SUGGESTED_REPLIES: tuple[str, ...] = (
+    "🔍 Можно подробнее?",
+    "🔄 Другой вариант",
+    "💡 Как применить?",
+)
+
 # context_id -> (user_id, labels) — только fallback для длинных подписей / legacy
 _CACHE: dict[str, tuple[int, tuple[str, ...]]] = {}
 _BY_USER: dict[int, str] = {}
 
 
-def split_suggested_replies(text: str) -> tuple[str, list[str]]:
-    """Отделяет тело ответа от блока ``===КНОПКИ===`` (если есть)."""
+def split_suggested_replies(
+    text: str,
+    *,
+    fallback_if_missing: bool = False,
+) -> tuple[str, list[str]]:
+    """Отделяет тело ответа от блока ``===КНОПКИ===`` (если есть).
+
+    ``fallback_if_missing=True`` (FREE standard): при отсутствии маркера/лейблов
+    и непустом теле ответа подставляет ``FREE_FALLBACK_SUGGESTED_REPLIES``.
+    """
     raw = text or ""
     idx = raw.find(BUTTONS_MARKER)
     if idx < 0:
         # Модель иногда пишет маркер в другом регистре / с пробелами
         m = re.search(r"===?\s*КНОПКИ\s*===?", raw, flags=re.IGNORECASE)
         if not m:
-            return raw.strip(), []
+            body = raw.strip()
+            if fallback_if_missing and body:
+                logger.info("suggested_replies: FREE fallback — marker missing")
+                return body, list(FREE_FALLBACK_SUGGESTED_REPLIES)
+            return body, []
         idx = m.start()
         marker_end = m.end()
     else:
@@ -55,6 +74,9 @@ def split_suggested_replies(text: str) -> tuple[str, list[str]]:
         labels.append(label[:_MAX_LABEL_CHARS])
         if len(labels) >= _MAX_LABELS:
             break
+    if not labels and fallback_if_missing and body.strip():
+        logger.info("suggested_replies: FREE fallback — empty labels after marker")
+        return body, list(FREE_FALLBACK_SUGGESTED_REPLIES)
     return body, labels
 
 

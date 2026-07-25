@@ -236,6 +236,11 @@ class Settings(BaseSettings):
     ] = "https://t.me/NeuroMule_bot"
     shop_payment_title: Annotated[str, _nonempty_str("NeuroMule")] = "NeuroMule"
     openrouter_key: str = Field(default="", alias="OPENROUTER_API_KEY")
+    # Пул ключей через запятую (round-robin). Если пусто — используется OPENROUTER_API_KEY.
+    openrouter_keys: Annotated[list[str], _coerce_str_list([])] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("OPENROUTER_API_KEYS", "openrouter_keys"),
+    )
     openrouter_chat_url: str = "https://openrouter.ai/api/v1/chat/completions"
     gemini_api_key: str = Field(default="", alias="GEMINI_API_KEY")
     replicate_api_token: str = Field(default="", alias="REPLICATE_API_TOKEN")
@@ -563,8 +568,8 @@ class Settings(BaseSettings):
     dialog_prune_keep: Annotated[int, _coerce_int(50)] = 50
     chat_rate_limit_per_minute: Annotated[int, _coerce_int(30)] = 30
     openrouter_timeout_sec: Annotated[float, _coerce_float(45.0)] = 45.0
-    # Таймаут одного запроса FREE-каскада (короче — меньше «висит typing»).
-    openrouter_free_timeout_sec: Annotated[float, _coerce_float(25.0)] = 25.0
+    # Таймаут одного запроса FREE-каскада (короче — быстрый failover на fallback).
+    openrouter_free_timeout_sec: Annotated[float, _coerce_float(8.0)] = 8.0
     # WB CFO: OpenRouter только для HTML-обёртки (по умолчанию локальный отчёт — без задержек).
     wb_finance_openrouter_html: Annotated[bool, _coerce_bool(False)] = Field(
         default=False,

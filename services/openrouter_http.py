@@ -103,11 +103,16 @@ def reset_openrouter_startup_state_for_tests() -> None:
 
 async def _wait_openrouter_api(settings: Settings) -> None:
     """Smoke-check OpenRouter перед polling (аналог ``_wait_telegram_api``)."""
-    if not (settings.openrouter_key or "").strip():
-        raise RuntimeError("OPENROUTER_API_KEY не задан — бот не запущен.")
+    from services.billing.chat_pipeline import resolve_openrouter_api_key
+
+    api_key = resolve_openrouter_api_key(settings)
+    if not api_key:
+        raise RuntimeError(
+            "OPENROUTER_API_KEY / OPENROUTER_API_KEYS не заданы — бот не запущен."
+        )
 
     client = await get_openrouter_http_client(settings)
-    headers = {"Authorization": f"Bearer {settings.openrouter_key}"}
+    headers = {"Authorization": f"Bearer {api_key}"}
     last_error: Exception | None = None
     last_status: int | None = None
 

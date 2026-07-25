@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any
+import itertools
+import logging
+import threading
+from typing import Any, Sequence
 
 from content.messages import (
     FREE_TARIFF_ALLOWED_ROLES,
@@ -20,7 +23,7 @@ from services.billing.pricing import (
     FREE_CHAT_MODEL,
     PAID_CHAT_MODEL,
 )
-from config import settings
+from config import Settings, settings
 from content.chat_prompt import (
     BLOGGER_USER_COMPLIANCE_TAIL_MARKER,
     build_blogger_compliance_tail,
@@ -36,6 +39,89 @@ from services.billing.types import (
     TextChatBillingResult,
     UserBillingState,
 )
+
+logger = logging.getLogger(__name__)
+
+
+class OpenRouterKeyRotator:
+    """Round-robin пул OpenRouter API keys (снижает 429 на FREE-каскаде)."""
+
+    def __init__(self, keys: Sequence[str]) -> None:
+        clean = [str(k).strip() for k in keys if str(k).strip()]
+        self._keys = clean
+        self._cycle = itertools.cycle(clean) if clean else None
+        self._lock = threading.Lock()
+        self._last: str = clean[0] if clean else ""
+
+    @property
+    def size(self) -> int:
+        return len(self._keys)
+
+    def next_key(self) -> str:
+        if not self._cycle:
+            return ""
+        with self._lock:
+            self._last = next(self._cycle)
+            return self._last
+
+    def peek_last(self) -> str:
+        return self._last
+
+    def mark_rate_limited(self, key: str | None = None) -> str:
+        """После 429 — сразу берём следующий ключ пула."""
+        mid = (key or self._last or "").strip()
+        if mid and self.size > 1:
+            logger.warning(
+                "openrouter key rotator: 429 on key=...%s — rotating",
+                mid[-6:],
+            )
+        return self.next_key()
+
+
+_KEY_ROTATOR: OpenRouterKeyRotator | None = None
+_KEY_ROTATOR_LOCK = threading.Lock()
+
+
+def _collect_openrouter_keys(cfg: Settings | None = None) -> list[str]:
+    s = cfg or settings
+    keys: list[str] = []
+    for item in getattr(s, "openrouter_keys", None) or ():
+        k = str(item).strip()
+        if k and k not in keys:
+            keys.append(k)
+    primary = str(getattr(s, "openrouter_key", "") or "").strip()
+    if primary and primary not in keys:
+        keys.insert(0, primary)
+    return keys
+
+
+def get_openrouter_key_rotator(cfg: Settings | None = None) -> OpenRouterKeyRotator:
+    """Singleton rotator; при тестах можно сбросить через ``reset_openrouter_key_rotator``."""
+    global _KEY_ROTATOR
+    with _KEY_ROTATOR_LOCK:
+        if _KEY_ROTATOR is None:
+            keys = _collect_openrouter_keys(cfg)
+            _KEY_ROTATOR = OpenRouterKeyRotator(keys)
+            if _KEY_ROTATOR.size > 1:
+                logger.info("OpenRouter key pool: %s keys (round-robin)", _KEY_ROTATOR.size)
+        return _KEY_ROTATOR
+
+
+def reset_openrouter_key_rotator() -> None:
+    """Только тесты."""
+    global _KEY_ROTATOR
+    with _KEY_ROTATOR_LOCK:
+        _KEY_ROTATOR = None
+
+
+def resolve_openrouter_api_key(cfg: Settings | None = None) -> str:
+    """Следующий ключ из пула (или единственный ``OPENROUTER_API_KEY``)."""
+    s = cfg or settings
+    rotator = get_openrouter_key_rotator(s)
+    key = rotator.next_key()
+    if key:
+        return key
+    return str(getattr(s, "openrouter_key", "") or "").strip()
 
 
 def _unique_model_ids(*candidates: str) -> tuple[str, ...]:
@@ -64,6 +150,18 @@ _HARDCODED_FREE_FALLBACKS: tuple[str, ...] = (
     "nvidia/nemotron-nano-9b-v2:free",
     "google/gemma-4-31b-it:free",
 )
+
+# Per-model timeout FREE-каскада: быстрее failover на следующую :free, без «тишины» 25с.
+FREE_CASCADE_PER_MODEL_TIMEOUT_SEC = 8.0
+
+
+def free_chat_model_timeout_sec() -> float:
+    """Таймаут одного запроса в FREE :free каскаде (сек)."""
+    configured = float(getattr(settings, "openrouter_free_timeout_sec", 0) or 0)
+    if configured <= 0:
+        return FREE_CASCADE_PER_MODEL_TIMEOUT_SEC
+    # Не даём env раздуть ожидание выше железного потолка failover.
+    return min(configured, FREE_CASCADE_PER_MODEL_TIMEOUT_SEC)
 
 
 def _free_model_fallbacks() -> tuple[str, ...]:
