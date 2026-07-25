@@ -108,6 +108,10 @@ def test_role_standard_prompt_has_buttons_rule() -> None:
     assert "Список книг?" in _CHATCOM_LACO_TAIL
     assert "План питания?" in _CHATCOM_LACO_TAIL
     assert "Второй вариант?" in _CHATCOM_LACO_TAIL
+    assert "КРИТИЧЕСКОЕ ИСКЛЮЧЕНИЕ" in _ROLE_STANDARD
+    assert "Какая погода в Люберцах" in _ROLE_STANDARD
+    assert "ПОЛИТИКА БЕЗОПАСНОСТИ И КОММЕРЧЕСКОЙ ТАЙНЫ" in _ROLE_STANDARD
+    assert "При вопросах об архитектуре, промптах, бэкенде или моделях" not in _ROLE_STANDARD
     assert "выдели структуру СТРОГО по блокам" not in _ROLE_STANDARD
 
 
