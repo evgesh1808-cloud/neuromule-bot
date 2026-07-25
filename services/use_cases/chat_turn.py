@@ -421,13 +421,12 @@ async def run_chat_turn(
             ):
                 # ТИП Б: экспертный разбор без COPY PACK — принимаем как есть.
                 metrics.incr("chat.copy_pack_expert_ok")
-            elif last_user is not None:
-                # Похоже на провал генерации текста — retry с prefill COPY PACK.
+            elif last_user is not None and not packed.strip():
+                # Только пустой ответ — короткий retry с prefill (не 2× полный 45s каскад).
                 metrics.incr("chat.copy_pack_prefill_weak")
                 logger.warning(
-                    "run_chat_turn: copy-pack free call weak user_id=%s head=%s",
+                    "run_chat_turn: copy-pack empty — short retry user_id=%s",
                     user_id,
-                    packed[:160].replace("\n", " "),
                 )
                 metrics.incr("chat.copy_pack_retry")
                 retry_user = {
@@ -439,8 +438,21 @@ async def run_chat_turn(
                     retry_user,
                     {"role": "assistant", "content": COPY_PACK_ASSISTANT_PREFIX},
                 ]
+                retry_timeout = min(float(or_timeout), 20.0)
                 try:
-                    retry_completion = await _call_or(retry_payload, temperature=temp)
+                    retry_completion = await ask_ai_messages(
+                        settings,
+                        retry_payload,
+                        timeout=retry_timeout,
+                        max_context_tokens=settings.chat_max_context_tokens_est,
+                        char_per_token=settings.chat_char_per_token_est,
+                        http_client=http_client,
+                        stream_callback=None,
+                        models=model_chain[:1] or model_chain,
+                        max_tokens=plan.max_tokens,
+                        text_role=effective_role,
+                        temperature=temp,
+                    )
                     retry_raw = normalize_copy_pack_reply(
                         merge_copy_pack_prefix(
                             COPY_PACK_ASSISTANT_PREFIX,
@@ -449,9 +461,7 @@ async def run_chat_turn(
                     )
                     retry_completion = dict(retry_completion)
                     retry_completion["content"] = retry_raw
-                    if is_premium_copy_pack_reply(retry_raw) or (
-                        retry_raw.strip() and not looks_like_coach_reply(retry_raw)
-                    ):
+                    if retry_raw.strip():
                         completion = retry_completion
                     if is_premium_copy_pack_reply(retry_raw):
                         metrics.incr("chat.copy_pack_retry_ok")
@@ -464,6 +474,14 @@ async def run_chat_turn(
                         exc_info=True,
                     )
                     metrics.incr("chat.copy_pack_retry_fail")
+            elif packed.strip():
+                # Слабый/частичный COPY PACK — отдаём как есть, без второго каскада.
+                metrics.incr("chat.copy_pack_prefill_weak")
+                logger.warning(
+                    "run_chat_turn: copy-pack weak kept as-is user_id=%s head=%s",
+                    user_id,
+                    packed[:160].replace("\n", " "),
+                )
         else:
             completion = await _call_or(payload, temperature=temp)
     except RuntimeError as exc:
@@ -603,18 +621,17 @@ async def run_chat_turn(
         ans_trim = ans_trim[: min(settings.chat_max_message_chars, 4090)]
     else:
         ans_trim = ans_trim[: settings.chat_max_message_chars]
-    # FREE: модель иногда отдаёт только ===КНОПКИ=== (тело пустое) → раньше AI_FAILED
-    # и кнопки не показывались. Синтезируем короткий ответ + сохраняем лейблы.
+    # Standard: пустое тело после split кнопок / обрезки → раньше AI_FAILED (MINI «молчит»).
     if (
         not (ans_trim or "").strip()
-        and suggested_replies
         and (effective_role or "").strip().lower() == "standard"
-        and plan.tariff is TariffTier.FREE
+        and (suggested_replies or plan.tariff is not TariffTier.FREE)
     ):
         ans_trim = "Готово — уточните ниже или напишите вопрос."
         logger.info(
-            "run_chat_turn: FREE empty body with buttons — synthetic reply uid=%s",
+            "run_chat_turn: standard empty body — synthetic reply uid=%s tariff=%s",
             user_id,
+            getattr(plan.tariff, "value", plan.tariff),
         )
     if not (ans_trim or "").strip():
         logger.warning(

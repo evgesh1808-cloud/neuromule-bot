@@ -114,14 +114,28 @@ def reset_openrouter_key_rotator() -> None:
         _KEY_ROTATOR = None
 
 
-def resolve_openrouter_api_key(cfg: Settings | None = None) -> str:
-    """Следующий ключ из пула (или единственный ``OPENROUTER_API_KEY``)."""
+def resolve_openrouter_api_key(
+    cfg: Settings | None = None,
+    *,
+    rotate: bool = True,
+) -> str:
+    """Ключ OpenRouter.
+
+    ``rotate=True`` — round-robin пула (FREE ``:free``).
+    ``rotate=False`` — всегда primary ``OPENROUTER_API_KEY`` (MINI+/Gemini с кредитами).
+    """
     s = cfg or settings
+    primary = str(getattr(s, "openrouter_key", "") or "").strip()
+    if not rotate:
+        if primary:
+            return primary
+        keys = _collect_openrouter_keys(s)
+        return keys[0] if keys else ""
     rotator = get_openrouter_key_rotator(s)
     key = rotator.next_key()
     if key:
         return key
-    return str(getattr(s, "openrouter_key", "") or "").strip()
+    return primary
 
 
 def _unique_model_ids(*candidates: str) -> tuple[str, ...]:

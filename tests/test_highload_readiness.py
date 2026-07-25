@@ -30,24 +30,51 @@ def test_resolve_openrouter_api_key_uses_pool() -> None:
         openrouter_keys=["a", "b"],
     )
     try:
-        keys = {resolve_openrouter_api_key(s) for _ in range(6)}
+        keys = {resolve_openrouter_api_key(s, rotate=True) for _ in range(6)}
         assert "primary" in keys or "a" in keys
         assert len(keys) >= 2
     finally:
         reset_openrouter_key_rotator()
 
 
-def test_get_chat_headers_rotates_bearer() -> None:
+def test_resolve_openrouter_api_key_paid_pins_primary() -> None:
+    reset_openrouter_key_rotator()
+    s = Settings(
+        tg_token="t",
+        openrouter_key="primary-paid",
+        openrouter_keys=["free-a", "free-b"],
+    )
+    try:
+        pinned = {resolve_openrouter_api_key(s, rotate=False) for _ in range(5)}
+        assert pinned == {"primary-paid"}
+    finally:
+        reset_openrouter_key_rotator()
+
+
+def test_get_chat_headers_rotates_only_for_free_models() -> None:
     from services.ai_text import get_chat_headers
 
     reset_openrouter_key_rotator()
-    s = Settings(tg_token="t", openrouter_key="", openrouter_keys=["alpha", "beta"])
+    s = Settings(
+        tg_token="t",
+        openrouter_key="primary-paid",
+        openrouter_keys=["alpha", "beta"],
+    )
     try:
-        h1 = get_chat_headers(s)["Authorization"]
-        h2 = get_chat_headers(s)["Authorization"]
-        assert h1.startswith("Bearer ")
-        assert h2.startswith("Bearer ")
-        assert {h1, h2} == {"Bearer alpha", "Bearer beta"}
+        paid = {
+            get_chat_headers(s, model="google/gemini-2.5-flash")["Authorization"]
+            for _ in range(4)
+        }
+        assert paid == {"Bearer primary-paid"}
+
+        free = {
+            get_chat_headers(s, model="meta-llama/llama-3.3-70b-instruct:free")[
+                "Authorization"
+            ]
+            for _ in range(9)
+        }
+        assert len(free) >= 2
+        assert free & {"Bearer primary-paid", "Bearer alpha", "Bearer beta"}
     finally:
         reset_openrouter_key_rotator()
 

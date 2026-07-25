@@ -105,7 +105,8 @@ async def _wait_openrouter_api(settings: Settings) -> None:
     """Smoke-check OpenRouter перед polling (аналог ``_wait_telegram_api``)."""
     from services.billing.chat_pipeline import resolve_openrouter_api_key
 
-    api_key = resolve_openrouter_api_key(settings)
+    # Probe всегда на primary (не крутим пул FREE-ключей).
+    api_key = resolve_openrouter_api_key(settings, rotate=False)
     if not api_key:
         raise RuntimeError(
             "OPENROUTER_API_KEY / OPENROUTER_API_KEYS не заданы — бот не запущен."

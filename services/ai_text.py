@@ -185,11 +185,19 @@ async def _http_client_scope(
     yield await get_openrouter_http_client(settings)
 
 
-def get_chat_headers(settings: Settings) -> dict[str, str]:
-    """Заголовки авторизации для OpenRouter (Bearer + JSON, key pool round-robin)."""
+def _is_openrouter_free_model(model_id: str) -> bool:
+    mid = (model_id or "").strip().lower()
+    return mid == "openrouter/free" or mid.endswith(":free")
+
+
+def get_chat_headers(settings: Settings, *, model: str | None = None) -> dict[str, str]:
+    """Заголовки OpenRouter: FREE-модели — round-robin пула; paid Gemini — primary key."""
     from services.billing.chat_pipeline import resolve_openrouter_api_key
 
-    api_key = resolve_openrouter_api_key(settings)
+    rotate = _is_openrouter_free_model(model or "")
+    api_key = resolve_openrouter_api_key(settings, rotate=rotate)
+    if not api_key:
+        logger.error("OpenRouter API key empty (model=%s rotate=%s)", model, rotate)
     return {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -199,6 +207,12 @@ def get_chat_headers(settings: Settings) -> dict[str, str]:
 def _sanitize_openrouter_model_id(model_id: str) -> str:
     """Нормализует model id; суффикс ``:free`` и ``openrouter/free`` сохраняем."""
     return str(model_id or "").strip()
+
+
+def _httpx_timeout(timeout: float) -> httpx.Timeout:
+    """Fail-fast connect; read = per-model budget."""
+    read = max(5.0, float(timeout))
+    return httpx.Timeout(read, connect=min(8.0, read))
 
 
 def _build_openrouter_model_chain(model_ids: list[str]) -> list[str]:
@@ -268,18 +282,19 @@ async def _post_chat_completion(
     )
     response = await client.post(
         settings.openrouter_chat_url,
-        headers=get_chat_headers(settings),
+        headers=get_chat_headers(settings, model=model),
         json=payload,
-        timeout=timeout,
+        timeout=_httpx_timeout(timeout),
     )
     if response.status_code == 429:
-        # Rate-limit: крутим ключ пула + внешний цикл уйдёт на следующую модель.
-        try:
-            from services.billing.chat_pipeline import get_openrouter_key_rotator
+        # Rate-limit на :free — крутим пул ключей; paid остаётся на primary.
+        if _is_openrouter_free_model(model):
+            try:
+                from services.billing.chat_pipeline import get_openrouter_key_rotator
 
-            get_openrouter_key_rotator(settings).mark_rate_limited()
-        except Exception:
-            logger.debug("openrouter key rotate on 429 skipped", exc_info=True)
+                get_openrouter_key_rotator(settings).mark_rate_limited()
+            except Exception:
+                logger.debug("openrouter key rotate on 429 skipped", exc_info=True)
         logger.warning(
             "OpenRouter model=%s rate_limited (429) — falling back to next model/key",
             model,
@@ -391,10 +406,17 @@ async def _post_chat_completion_stream(
         async with client.stream(
             "POST",
             settings.openrouter_chat_url,
-            headers=get_chat_headers(settings),
+            headers=get_chat_headers(settings, model=model),
             json=payload,
-            timeout=timeout,
+            timeout=_httpx_timeout(timeout),
         ) as resp:
+            if resp.status_code == 429 and _is_openrouter_free_model(model):
+                try:
+                    from services.billing.chat_pipeline import get_openrouter_key_rotator
+
+                    get_openrouter_key_rotator(settings).mark_rate_limited()
+                except Exception:
+                    logger.debug("openrouter key rotate on stream 429 skipped", exc_info=True)
             if resp.status_code != 200:
                 body = (await resp.aread())[:800]
                 logger.warning(
