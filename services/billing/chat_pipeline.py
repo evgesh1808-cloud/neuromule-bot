@@ -23,9 +23,9 @@ from services.billing.pricing import (
 from config import settings
 from content.chat_prompt import (
     BLOGGER_USER_COMPLIANCE_TAIL_MARKER,
-    USER_COMPLIANCE_TAIL_MARKER,
     build_blogger_compliance_tail,
     build_user_compliance_tail,
+    user_message_has_compliance_tail,
 )
 from services.god_mode import billing_bypass
 from services.billing.types import (
@@ -139,14 +139,14 @@ def inject_compliance_rules_into_last_user_message(
                 if part.get("type") != "text":
                     continue
                 text = (part.get("text") or "").strip()
-                if USER_COMPLIANCE_TAIL_MARKER in text:
+                if user_message_has_compliance_tail(text):
                     return
                 part["text"] = f"{text}{suffix}" if text else suffix.lstrip()
                 return
             msg["content"] = [*content, {"type": "text", "text": suffix.lstrip()}]
             return
         text_content = (content or "").strip() if isinstance(content, str) else str(content or "").strip()
-        if USER_COMPLIANCE_TAIL_MARKER in text_content:
+        if user_message_has_compliance_tail(text_content):
             return
         msg["content"] = f"{text_content}{suffix}" if text_content else suffix.lstrip()
         return
@@ -398,6 +398,7 @@ def _blocked_plan(
         fallback_model_ids=plan.fallback_model_ids,
         blocked=True,
         block_reason=block_reason,
+        tariff=plan.tariff,
     )
 
 
@@ -486,6 +487,8 @@ async def _charge_text_chat_for_role(
         max_tokens=plan.max_tokens,
         use_premium_prompt=plan.use_premium_prompt,
         fallback_model_ids=plan.fallback_model_ids,
+        # Критично: без tariff все paid-юзеры падают в FREE-промпт/хвост.
+        tariff=plan.tariff,
     ), charge.charge_id
 
 

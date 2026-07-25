@@ -14,6 +14,7 @@ import logging
 
 from config import Settings
 from content.chat_prompt import build_memory_update_prompt, build_system_prompt
+from services.billing.chat_pipeline import inject_compliance_rules_into_last_user_message
 from services.billing.types import TariffTier
 from services import repository as repo
 from services.dialog_platform import DEFAULT_DIALOG_PLATFORM
@@ -96,6 +97,20 @@ async def build_openrouter_messages(
     for role, content in rows:
         if role in ("user", "assistant"):
             out.append({"role": role, "content": sanitize_dialog_content_for_chat(content)})
+
+    # Standard: жёстко вшить тарифный compliance-хвост в last user
+    # (FREE → ===КНОПКИ===; MINI+ → 4×<pre>). Inject идемпотентен по маркеру.
+    if (text_role or "").strip().lower() == "standard":
+        tier = tariff if isinstance(tariff, TariffTier) else TariffTier.from_db(
+            None if tariff is None else str(tariff)
+        )
+        is_free = tier is TariffTier.FREE
+        inject_compliance_rules_into_last_user_message(
+            out,
+            use_premium_prompt=not is_free,
+            text_role="standard",
+            chatcom_laconic=is_free,
+        )
     return out
 
 

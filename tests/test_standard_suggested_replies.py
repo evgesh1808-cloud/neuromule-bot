@@ -9,11 +9,14 @@ import pytest
 from content import messages as msg
 from services.standard_suggested_replies import (
     BUTTONS_MARKER,
+    build_chat_hint_callback,
     build_suggested_replies_keyboard,
     clear_suggested_replies_for_tests,
+    parse_chat_hint_callback,
     parse_std_reply_callback,
     remember_suggested_replies,
     resolve_suggested_reply,
+    resolve_suggested_reply_latest,
     split_suggested_replies,
 )
 
@@ -55,15 +58,37 @@ def test_remember_and_resolve_suggested_reply() -> None:
     assert resolve_suggested_reply("nope", 0, user_id=42) is None
 
 
-def test_keyboard_callback_format() -> None:
-    labels = ["А", "Б"]
+def test_keyboard_uses_chat_hint_prefix() -> None:
+    labels = ["Дай сказку?", "Другой пример?"]
     cid = remember_suggested_replies(7, labels)
     assert cid
     kb = build_suggested_replies_keyboard(cid, labels)
     assert kb is not None
     flat = [b for row in kb.inline_keyboard for b in row]
-    assert flat[0].callback_data == f"{msg.CB_STD_REPLY_PREFIX}0:{cid}"
-    assert parse_std_reply_callback(flat[1].callback_data) == (1, cid)
+    assert flat[0].callback_data == f"{msg.CB_CHAT_HINT_PREFIX}Дай сказку?"
+    assert parse_chat_hint_callback(flat[1].callback_data) == "Другой пример?"
+    assert flat[0].callback_data.startswith(msg.CB_CHAT_HINT_PREFIX)
+
+
+def test_chat_hint_fallback_to_std_reply_when_too_long() -> None:
+    # chat_hint: = 10 байт; кириллица ~2 байта/символ → длинная подпись не влезет
+    long = "Ж" * 40
+    assert build_chat_hint_callback(long) is None
+    cid = remember_suggested_replies(3, [long])
+    assert cid
+    kb = build_suggested_replies_keyboard(cid, [long])
+    assert kb is not None
+    data = kb.inline_keyboard[0][0].callback_data
+    assert data == f"{msg.CB_STD_REPLY_PREFIX}0:{cid}"
+    assert parse_std_reply_callback(data) == (0, cid)
+
+
+def test_resolve_suggested_reply_latest_fallback() -> None:
+    cid = remember_suggested_replies(11, ["Один", "Два"])
+    assert cid
+    assert resolve_suggested_reply_latest(11, 1) == "Два"
+    assert resolve_suggested_reply_latest(11, 9) is None
+    assert resolve_suggested_reply_latest(999, 0) is None
 
 
 def test_role_standard_prompt_has_buttons_rule() -> None:
@@ -76,8 +101,12 @@ def test_role_standard_prompt_has_buttons_rule() -> None:
     assert "ЕСТЕСТВЕННОСТЬ" in _NATURAL_SPEECH_RULE
     assert "===КНОПКИ===" in _CHATCOM_LACO_TAIL
     assert "Compliance: FREE TIER" in _CHATCOM_LACO_TAIL
+    assert "КРИТИЧЕСКИ ВАЖНО" in _CHATCOM_LACO_TAIL
+    assert "максимум 20 символов" in _CHATCOM_LACO_TAIL
+    assert "от 1 до 3 слов" in _CHATCOM_LACO_TAIL
     assert "Minimize output tokens" in _CHATCOM_LACO_TAIL
-    assert "ровно один сильный вариант" in _CHATCOM_LACO_TAIL
+    assert "ровно 3 строки" in _CHATCOM_LACO_TAIL
+    assert "Дай сказку?" in _CHATCOM_LACO_TAIL
     assert "выдели структуру СТРОГО по блокам" not in _ROLE_STANDARD
 
 

@@ -1,4 +1,4 @@
-"""Suggested Replies для роли ``standard``: парсинг ``===КНОПКИ===`` + callback-кэш."""
+"""Suggested Replies для роли ``standard``: парсинг ``===КНОПКИ===`` + callback."""
 
 from __future__ import annotations
 
@@ -17,8 +17,10 @@ BUTTONS_MARKER = "===КНОПКИ==="
 _MAX_LABELS = 3
 _MAX_LABEL_CHARS = 64
 _CONTEXT_ID_LEN = 8
+# Telegram Bot API: callback_data 1–64 bytes (UTF-8).
+_TG_CALLBACK_DATA_MAX_BYTES = 64
 
-# context_id -> (user_id, labels)
+# context_id -> (user_id, labels) — только fallback для длинных подписей / legacy
 _CACHE: dict[str, tuple[int, tuple[str, ...]]] = {}
 _BY_USER: dict[int, str] = {}
 
@@ -57,7 +59,10 @@ def split_suggested_replies(text: str) -> tuple[str, list[str]]:
 
 
 def remember_suggested_replies(user_id: int, labels: Sequence[str]) -> str | None:
-    """Кладёт подписи в кэш; возвращает ``context_id`` или ``None`` если пусто."""
+    """Кладёт подписи в кэш; возвращает ``context_id`` или ``None`` если пусто.
+
+    Нужен только как fallback, когда текст не помещается в ``chat_hint:``.
+    """
     clean = tuple(str(x).strip()[:_MAX_LABEL_CHARS] for x in labels if str(x).strip())
     if not clean:
         return None
@@ -70,13 +75,38 @@ def remember_suggested_replies(user_id: int, labels: Sequence[str]) -> str | Non
     return context_id
 
 
+def callback_data_fits(data: str) -> bool:
+    return len((data or "").encode("utf-8")) <= _TG_CALLBACK_DATA_MAX_BYTES
+
+
+def build_chat_hint_callback(label: str) -> str | None:
+    """``chat_hint:<текст>`` если укладывается в лимит Telegram, иначе ``None``."""
+    text = (label or "").strip()
+    if not text:
+        return None
+    data = f"{msg.CB_CHAT_HINT_PREFIX}{text}"
+    if callback_data_fits(data):
+        return data
+    return None
+
+
+def parse_chat_hint_callback(data: str) -> str | None:
+    """``chat_hint:<текст>`` → текст вопроса."""
+    prefix = msg.CB_CHAT_HINT_PREFIX
+    raw = data or ""
+    if not raw.startswith(prefix):
+        return None
+    text = raw[len(prefix) :].strip()
+    return text or None
+
+
 def resolve_suggested_reply(
     context_id: str,
     index: int,
     *,
     user_id: int,
 ) -> str | None:
-    """Достаёт полный текст кнопки по ``std_reply:<idx>:<context_id>``."""
+    """Достаёт полный текст кнопки по legacy ``std_reply:<idx>:<context_id>``."""
     cid = (context_id or "").strip()
     entry = _CACHE.get(cid)
     if entry is None:
@@ -87,6 +117,14 @@ def resolve_suggested_reply(
     if index < 0 or index >= len(labels):
         return None
     return labels[index]
+
+
+def resolve_suggested_reply_latest(user_id: int, index: int) -> str | None:
+    """Мягкий fallback: последняя сессия подсказок пользователя по индексу."""
+    cid = _BY_USER.get(int(user_id))
+    if not cid:
+        return None
+    return resolve_suggested_reply(cid, index, user_id=user_id)
 
 
 def parse_std_reply_callback(data: str) -> tuple[int, str] | None:
@@ -115,7 +153,11 @@ def build_suggested_replies_keyboard(
     context_id: str,
     labels: Sequence[str],
 ) -> InlineKeyboardMarkup | None:
-    """Инлайн-кнопки Suggested Replies под ответом standard."""
+    """Инлайн-кнопки Suggested Replies под ответом standard.
+
+    Предпочтительно ``chat_hint:<текст>`` (без UUID-сессии). Legacy
+    ``std_reply:<idx>:<context_id>`` — только если текст не влезает в 64 байта.
+    """
     rows: list[list[InlineKeyboardButton]] = []
     for i, label in enumerate(labels):
         text = (label or "").strip()
@@ -123,11 +165,23 @@ def build_suggested_replies_keyboard(
             continue
         # Telegram button text limit ~64
         btn_text = text if len(text) <= 64 else text[:61] + "…"
+        direct = build_chat_hint_callback(text)
+        if direct is not None:
+            callback_data = direct
+        else:
+            callback_data = f"{msg.CB_STD_REPLY_PREFIX}{i}:{context_id}"
+            if not callback_data_fits(callback_data):
+                logger.warning(
+                    "suggested reply callback too long idx=%s len=%s",
+                    i,
+                    len(callback_data.encode("utf-8")),
+                )
+                continue
         rows.append(
             [
                 InlineKeyboardButton(
                     text=btn_text,
-                    callback_data=f"{msg.CB_STD_REPLY_PREFIX}{i}:{context_id}",
+                    callback_data=callback_data,
                 )
             ]
         )

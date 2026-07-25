@@ -445,8 +445,9 @@ async def handle_neurotext_user_message(
 ) -> None:
     """Единая точка: текст, фото или документ → ``run_chat_turn``.
 
-    ``forced_user_text`` / ``forced_user_id`` — Suggested Reply (callback ``std_reply:``):
-    текст кнопки и uid пользователя (у ``callback.message.from_user`` — бот).
+    ``forced_user_text`` / ``forced_user_id`` — Suggested Reply
+    (``chat_hint:`` / legacy ``std_reply:``): текст кнопки и uid пользователя
+    (у ``callback.message.from_user`` — бот).
     """
     is_photo = bool(message.photo) and forced_user_text is None
     is_document = bool(message.document) and forced_user_text is None

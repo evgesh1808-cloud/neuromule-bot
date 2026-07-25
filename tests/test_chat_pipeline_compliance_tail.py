@@ -9,7 +9,11 @@ from services.billing.chat_pipeline import (
 )
 from services.billing.pricing import PAID_CHAT_MODEL
 from services.billing.types import TariffTier
-from content.chat_prompt import BLOGGER_USER_COMPLIANCE_TAIL_MARKER, USER_COMPLIANCE_TAIL_MARKER
+from content.chat_prompt import (
+    BLOGGER_USER_COMPLIANCE_TAIL_MARKER,
+    FREE_COMPLIANCE_TAIL_MARKER,
+    USER_COMPLIANCE_TAIL_MARKER,
+)
 
 
 def test_inject_appends_to_last_user_only() -> None:
@@ -113,10 +117,21 @@ def test_prepare_openrouter_uses_chatcom_tail_for_standard() -> None:
         chatcom_laconic=True,
     )
     body = payload[1]["content"]
-    assert "Compliance: FREE TIER" in body
+    assert FREE_COMPLIANCE_TAIL_MARKER in body
     assert "===КНОПКИ===" in body
+    assert "КРИТИЧЕСКИ ВАЖНО" in body
+    assert "максимум 20 символов" in body
     assert "Minimize output tokens" in body
     assert "премиум-комплаенс" not in body
+
+    # Идемпотентность: повторный inject не дублирует FREE-хвост.
+    prepare_openrouter_chat_messages(
+        payload,
+        use_premium_prompt=False,
+        text_role="standard",
+        chatcom_laconic=True,
+    )
+    assert payload[1]["content"].count(FREE_COMPLIANCE_TAIL_MARKER) == 1
 
 
 def test_prepare_openrouter_skips_chatcom_tail_for_smart_standard() -> None:
@@ -246,6 +261,38 @@ def test_paid_standard_uses_copy_pack_voice() -> None:
     assert "<pre>" in mini_sys
     assert "копирайтер" in mini_sys.lower()
     assert "SYSTEM_ROLE" not in mini_sys
+
+
+def test_charged_plan_preserves_tariff_for_prompt_branching() -> None:
+    """Регрессия: после atomic_spend tariff не должен сбрасываться в FREE."""
+    from services.billing.chat_pipeline import _blocked_plan
+    from services.billing.types import ChatRoutePlan, CurrencyKind
+
+    paid = ChatRoutePlan(
+        model_id="google/gemini-2.5-flash",
+        price_type=CurrencyKind.ENERGY,
+        energy_cost=1,
+        crystal_cost=1,
+        is_expert_role=False,
+        max_tokens=1500,
+        use_premium_prompt=True,
+        tariff=TariffTier.SMART,
+    )
+    blocked = _blocked_plan(paid, block_reason="zero_balance")
+    assert blocked.tariff is TariffTier.SMART
+    assert blocked.use_premium_prompt is True
+
+    from content.chat_prompt import build_custom_role_prompt
+
+    paid_role = build_custom_role_prompt("standard", blocked.tariff)
+    # Если tariff потерян → FREE-хвост «в кавычках»; при SMART — copy-pack.
+    assert "PREMIUM COPY PACK" in paid_role
+    assert "Compliance: FREE TIER" not in paid_role
+    assert "элитный эксперт-копирайтер" in paid_role
+
+    free_role = build_custom_role_prompt("standard", TariffTier.FREE)
+    assert "Compliance: FREE TIER" in free_role
+    assert "PREMIUM COPY PACK" not in free_role
 
 
 def test_standard_max_tokens_free_vs_paid() -> None:

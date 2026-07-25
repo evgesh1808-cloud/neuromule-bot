@@ -55,8 +55,20 @@ ANSWER_GENERATION_RULES = (
 # Обратная совместимость для импортов
 HTML_FORMATTING_RULE = ANSWER_GENERATION_RULES
 
-# Маркер хвоста user-сообщения (дедупликация при повторной инъекции).
+# Маркеры хвоста user-сообщения (дедупликация при повторной инъекции).
 USER_COMPLIANCE_TAIL_MARKER = "[Системный"
+FREE_COMPLIANCE_TAIL_MARKER = "[Compliance: FREE TIER]"
+PREMIUM_COPY_PACK_TAIL_MARKER = "[Compliance: PREMIUM COPY PACK]"
+
+
+def user_message_has_compliance_tail(text: str) -> bool:
+    """True, если в user-тексте уже есть compliance/Chatcom-хвост."""
+    body = text or ""
+    return (
+        USER_COMPLIANCE_TAIL_MARKER in body
+        or FREE_COMPLIANCE_TAIL_MARKER in body
+        or PREMIUM_COPY_PACK_TAIL_MARKER in body
+    )
 
 # Фокус на последнем сообщении пользователя (анти-склейка истории).
 _CURRENT_REQUEST_FOCUS_RULE = (
@@ -119,14 +131,24 @@ _STANDARD_UNIVERSAL_CORE = (
 # Лаконичный хвост только для тарифа FREE (роль «Стандарт»).
 _CHATCOM_LACO_TAIL = (
     "\n\n[Compliance: FREE TIER]\n"
-    "IMPORTANT: Minimize output tokens. Do not elaborate. "
-    "Если пользователю нужен готовый текст или реплика — дай ровно один сильный вариант "
-    "в кавычках без лишних объяснений. "
-    "В самом конце ответа ты ОБЯЗАН сгенерировать блок инлайн-кнопок строго в формате:\n"
+    "1. Minimize output tokens. Do not elaborate. Без приветствий и теории.\n"
+    "2. Если нужен готовый текст или реплика — ровно один сильный вариант в кавычках "
+    "без лишних объяснений.\n"
+    "3. Основной ответ — кратко и по делу (Query-Type Routing из system).\n"
+    "4. Только Telegram HTML (<b>, <i>, <code>, <pre>, <blockquote expandable>); "
+    "Markdown запрещён; все теги закрыты.\n"
+    "5. КРИТИЧЕСКИ ВАЖНО: В самом конце ответа, после основного текста, "
+    "ты ОБЯЗАН перенести строку и напечатать технический маркер строго в формате "
+    "'===КНОПКИ===' (без пробелов, кавычек и дополнительных символов). "
+    "Сразу под ним сгенерируй ровно 3 строки с уточняющими вопросами. "
+    "Не используй для кнопок списки или HTML-теги. "
+    "Варианты вопросов под маркером ===КНОПКИ=== должны быть ультра-короткими — "
+    "строго от 1 до 3 слов (максимум 20 символов на строку). Избегай длинных размышлений.\n"
+    "Пример правильного финала:\n"
     "===КНОПКИ===\n"
-    "Уточняющий вопрос один?\n"
-    "Второй вариант вопроса?\n"
-    "Третий вариант вопроса?"
+    "Дай сказку?\n"
+    "Другой пример?\n"
+    "Для мальчика?"
 )
 
 _FREE_USER_COMPLIANCE_TAIL = (
@@ -573,8 +595,8 @@ def build_custom_role_prompt(role_id: str, tariff: TariffTier | str | None = Non
     """
     Инструкция роли с учётом тарифа.
 
-    ``standard`` + FREE → Chatcom (``_ROLE_STANDARD`` + ``_CHATCOM_LACO_TAIL``).
-    ``standard`` + MINI/SMART/ULTRA → самостоятельный ``_PAID_STANDARD_SYSTEM`` (copy-pack).
+    ``standard`` + FREE → ``_ROLE_STANDARD`` + ``_CHATCOM_LACO_TAIL``.
+    ``standard`` + MINI/SMART/ULTRA → только ``_PAID_STANDARD_SYSTEM`` (copy-pack).
     """
     from services.billing.types import TariffTier
     from services.use_cases.neurotext_turn import normalize_text_role_id
@@ -588,8 +610,12 @@ def build_custom_role_prompt(role_id: str, tariff: TariffTier | str | None = Non
     tier = tariff if isinstance(tariff, TariffTier) else TariffTier.from_db(
         None if tariff is None else str(tariff)
     )
+    # Жёсткое ветвление: FREE ≠ paid. Не смешивать хвосты/system.
     if tier is TariffTier.FREE:
         return _ROLE_STANDARD + _CHATCOM_LACO_TAIL
+    if tier in (TariffTier.MINI, TariffTier.SMART, TariffTier.ULTRA):
+        return _PAID_STANDARD_SYSTEM
+    # Неизвестный tier → copy-pack безопаснее, чем FREE «в кавычках».
     return _PAID_STANDARD_SYSTEM
 
 

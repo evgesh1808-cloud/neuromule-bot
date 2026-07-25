@@ -167,9 +167,15 @@ async def text_role_process(message: Message, state: FSMContext) -> None:
     await handle_neurotext_user_message(message, state)
 
 
-@router.callback_query(F.data.startswith(msg.CB_STD_REPLY_PREFIX))
+@router.callback_query(
+    F.data.startswith(msg.CB_CHAT_HINT_PREFIX) | F.data.startswith(msg.CB_STD_REPLY_PREFIX)
+)
 async def cb_standard_suggested_reply(callback: CallbackQuery, state: FSMContext) -> None:
-    """Suggested Reply в режиме standard → тот же пайплайн + списание 1⚡/1💎."""
+    """Suggested Reply в режиме standard → тот же пайплайн + списание 1⚡/1💎.
+
+    Основной путь: ``chat_hint:<текст>`` (текст в callback, без UUID-сессии).
+    Legacy: ``std_reply:<idx>:<context_id>`` + in-memory кэш / soft-fallback.
+    """
     from platforms.neurotext_flow import ensure_neurotext_waiting_state
     from platforms.neurotext_input import handle_neurotext_user_message
     from services.billing.chat_pipeline import can_afford_role_minimum
@@ -177,21 +183,33 @@ async def cb_standard_suggested_reply(callback: CallbackQuery, state: FSMContext
     from services.god_mode import billing_bypass
     from services.standard_suggested_replies import (
         build_standard_zero_balance_keyboard,
+        parse_chat_hint_callback,
         parse_std_reply_callback,
         resolve_suggested_reply,
+        resolve_suggested_reply_latest,
     )
 
     if callback.from_user is None or callback.message is None:
         await callback.answer()
         return
 
-    parsed = parse_std_reply_callback(callback.data or "")
-    if parsed is None:
-        await callback.answer()
-        return
-    index, context_id = parsed
+    data = callback.data or ""
     user_id = callback.from_user.id
-    label = resolve_suggested_reply(context_id, index, user_id=user_id)
+    label: str | None = None
+
+    if data.startswith(msg.CB_CHAT_HINT_PREFIX):
+        label = parse_chat_hint_callback(data)
+    else:
+        parsed = parse_std_reply_callback(data)
+        if parsed is None:
+            await callback.answer()
+            return
+        index, context_id = parsed
+        label = resolve_suggested_reply(context_id, index, user_id=user_id)
+        if not label:
+            # Старая кнопка после смены context_id — пробуем последнюю сессию
+            label = resolve_suggested_reply_latest(user_id, index)
+
     if not label:
         await callback.answer("Кнопка устарела. Задайте вопрос текстом.", show_alert=True)
         return
@@ -208,7 +226,7 @@ async def cb_standard_suggested_reply(callback: CallbackQuery, state: FSMContext
             return
 
     await callback.answer()
-    await state.update_data(text_role="standard")
+    await state.update_data(text_role="standard", pending_chat_hint=label)
     await ensure_neurotext_waiting_state(state)
     await handle_neurotext_user_message(
         callback.message,
