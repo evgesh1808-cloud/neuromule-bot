@@ -361,10 +361,11 @@ async def run_chat_turn(
             and plan.use_premium_prompt
             and plan.tariff is not TariffTier.FREE
         )
+        # Paid standard: температура из ChatRoutePlan (0.75), не дефолт 0.0/0.1.
         temp = (
             _BLOGGER_TEMPERATURE
             if is_blogger_role
-            else (0.1 if _copy_pack_mode else None)
+            else (plan.temperature if _copy_pack_mode else None)
         )
 
         async def _call_or(messages: list, *, temperature: float | None) -> dict:
@@ -413,7 +414,7 @@ async def run_chat_turn(
                     last_user,
                     {"role": "assistant", "content": COPY_PACK_ASSISTANT_PREFIX},
                 ]
-                completion = await _call_or(prefill_payload, temperature=0.1)
+                completion = await _call_or(prefill_payload, temperature=temp)
                 packed = _pack_content(completion.get("content") or "")
                 completion = dict(completion)
                 completion["content"] = packed
@@ -438,7 +439,7 @@ async def run_chat_turn(
                         {"role": "assistant", "content": COPY_PACK_ASSISTANT_PREFIX},
                     ]
                     try:
-                        retry_completion = await _call_or(retry_payload, temperature=0.05)
+                        retry_completion = await _call_or(retry_payload, temperature=temp)
                         retry_raw = _pack_content(retry_completion.get("content") or "")
                         retry_completion = dict(retry_completion)
                         retry_completion["content"] = retry_raw

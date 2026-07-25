@@ -123,6 +123,8 @@ class ChatRoutePlan:
     blocked: bool = False
     block_reason: str = ""
     tariff: TariffTier = TariffTier.FREE
+    # OpenRouter sampling; None → дефолт клиента. Copy Pack (paid standard) → 0.75.
+    temperature: float | None = None
 
 
 @dataclass(frozen=True)

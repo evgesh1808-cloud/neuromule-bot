@@ -264,6 +264,11 @@ def role_allowed_for_tariff(role_id: str, tariff: TariffTier) -> bool:
 _FREE_CHAT_MAX_OUTPUT_TOKENS = 400
 
 
+# Copy Pack (standard на MINI/SMART/ULTRA + PAID_CHAT_MODEL): выше дефолта,
+# иначе Gemini даёт почти одинаковые варианты в 4×<pre>.
+_COPY_PACK_TEMPERATURE = 0.75
+
+
 def plan_text_chat(user: UserBillingState, role_type: str) -> ChatRoutePlan:
     """Рассчитать модель, лимит ``max_tokens`` и стоимость без списания."""
     role_id = (role_type or "standard").strip().lower()
@@ -285,7 +290,19 @@ def plan_text_chat(user: UserBillingState, role_type: str) -> ChatRoutePlan:
             return free_max
         return premium_max if expert or tariff is not TariffTier.FREE else free_max
 
+    def _temperature_for_role() -> float | None:
+        # Paid standard / Copy Pack → креативная температура для PAID_CHAT_MODEL.
+        if role_id == "standard" and tariff in (
+            TariffTier.MINI,
+            TariffTier.SMART,
+            TariffTier.ULTRA,
+        ):
+            return _COPY_PACK_TEMPERATURE
+        return None
+
     def _plan(**kwargs: Any) -> ChatRoutePlan:
+        if "temperature" not in kwargs:
+            kwargs["temperature"] = _temperature_for_role()
         return ChatRoutePlan(tariff=tariff, **kwargs)
 
     if not role_allowed_for_tariff(role_id, tariff):
@@ -399,6 +416,7 @@ def _blocked_plan(
         blocked=True,
         block_reason=block_reason,
         tariff=plan.tariff,
+        temperature=plan.temperature,
     )
 
 
@@ -489,6 +507,7 @@ async def _charge_text_chat_for_role(
         fallback_model_ids=plan.fallback_model_ids,
         # Критично: без tariff все paid-юзеры падают в FREE-промпт/хвост.
         tariff=plan.tariff,
+        temperature=plan.temperature,
     ), charge.charge_id
 
 

@@ -101,12 +101,13 @@ def test_role_standard_prompt_has_buttons_rule() -> None:
     assert "ЕСТЕСТВЕННОСТЬ" in _NATURAL_SPEECH_RULE
     assert "===КНОПКИ===" in _CHATCOM_LACO_TAIL
     assert "Compliance: FREE TIER" in _CHATCOM_LACO_TAIL
-    assert "КРИТИЧЕСКИ ВАЖНО" in _CHATCOM_LACO_TAIL
-    assert "максимум 20 символов" in _CHATCOM_LACO_TAIL
-    assert "от 1 до 3 слов" in _CHATCOM_LACO_TAIL
+    assert "КРИТИЧЕСКИ ВАЖНО ДЛЯ ИНТЕРФЕЙСА" in _CHATCOM_LACO_TAIL
+    assert "НАПРЯМУЮ продолжают" in _CHATCOM_LACO_TAIL
+    assert "1–3 слова" in _CHATCOM_LACO_TAIL
     assert "Minimize output tokens" in _CHATCOM_LACO_TAIL
-    assert "ровно 3 строки" in _CHATCOM_LACO_TAIL
-    assert "Дай сказку?" in _CHATCOM_LACO_TAIL
+    assert "Список книг?" in _CHATCOM_LACO_TAIL
+    assert "План питания?" in _CHATCOM_LACO_TAIL
+    assert "Второй вариант?" in _CHATCOM_LACO_TAIL
     assert "выдели структуру СТРОГО по блокам" not in _ROLE_STANDARD
 
 

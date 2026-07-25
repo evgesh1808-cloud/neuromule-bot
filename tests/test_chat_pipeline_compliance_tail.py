@@ -119,8 +119,9 @@ def test_prepare_openrouter_uses_chatcom_tail_for_standard() -> None:
     body = payload[1]["content"]
     assert FREE_COMPLIANCE_TAIL_MARKER in body
     assert "===КНОПКИ===" in body
-    assert "КРИТИЧЕСКИ ВАЖНО" in body
-    assert "максимум 20 символов" in body
+    assert "КРИТИЧЕСКИ ВАЖНО ДЛЯ ИНТЕРФЕЙСА" in body
+    assert "НАПРЯМУЮ продолжают" in body
+    assert "Список книг?" in body
     assert "Minimize output tokens" in body
     assert "премиум-комплаенс" not in body
 
@@ -154,6 +155,8 @@ def test_prepare_openrouter_skips_chatcom_tail_for_smart_standard() -> None:
     assert "Строго 4 блока" in body
     assert "===КНОПКИ===" in body  # запрет упоминается в хвосте
     assert "Без блоков ===КНОПКИ===" in body
+    assert "КРЕАТИВНОСТЬ" in body
+    assert "уникальный, неповторяющийся заход" in body
 
 
 def test_prepare_openrouter_injects_compliance_without_hard_collapse() -> None:
@@ -334,6 +337,25 @@ def test_standard_max_tokens_free_vs_paid() -> None:
     assert settings.openrouter_premium_max_output_tokens == 1500
     assert free_plan.use_premium_prompt is False
     assert smart_plan.use_premium_prompt is True
+    assert free_plan.temperature is None
+    assert smart_plan.temperature == 0.75
+
+    mini_user = UserBillingState(
+        user_id=3,
+        current_tariff=TariffTier.MINI,
+        energy_free=0,
+        energy_paid=200,
+        crystals=10,
+        last_energy_reset=None,
+        invited_by_id=None,
+        first_purchase_done=True,
+        photo_daily_date=None,
+        photo_daily_count=0,
+    )
+    mini_plan = plan_text_chat(mini_user, "standard")
+    assert mini_plan.temperature == 0.75
+    # Не standard → температура не поднимается.
+    assert plan_text_chat(smart_user, "blogger_content").temperature is None
 
 
 def test_model_route_for_role_blogger_on_paid_tariff() -> None:
