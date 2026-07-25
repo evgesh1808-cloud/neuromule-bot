@@ -119,9 +119,10 @@ def test_prepare_openrouter_uses_chatcom_tail_for_standard() -> None:
     body = payload[1]["content"]
     assert FREE_COMPLIANCE_TAIL_MARKER in body
     assert "===КНОПКИ===" in body
-    assert "КРИТИЧЕСКИ ВАЖНО ДЛЯ ИНТЕРФЕЙСА" in body
-    assert "НАПРЯМУЮ продолжают" in body
-    assert "Список книг?" in body
+    assert "СИНТАКСИЧЕСКИЙ ЯКОРЬ" in body
+    assert "КРИТИЧЕСКИ ВАЖНО" in body
+    assert "оштрафован" in body
+    assert "Вопрос подсказка один?" in body
     assert "Minimize output tokens" in body
     assert "премиум-комплаенс" not in body
 
