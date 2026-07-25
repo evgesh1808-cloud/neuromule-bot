@@ -21,10 +21,11 @@ _CONTEXT_ID_LEN = 8
 _TG_CALLBACK_DATA_MAX_BYTES = 64
 
 # FREE: если модель забыла / обрезала ===КНОПКИ=== — железные подсказки.
+# Короткие лейблы (≤20 символов) стабильно влезают в chat_hint: callback_data.
 FREE_FALLBACK_SUGGESTED_REPLIES: tuple[str, ...] = (
-    "🔍 Можно подробнее?",
-    "🔄 Другой вариант",
-    "💡 Как применить?",
+    "Можно подробнее?",
+    "Другой вариант?",
+    "Как применить?",
 )
 
 # context_id -> (user_id, labels) — только fallback для длинных подписей / legacy

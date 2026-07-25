@@ -50,6 +50,22 @@ async def test_free_cannot_disable_suggested_replies(repo_module) -> None:
     assert await repo_module.get_show_suggested_replies(uid) is True
 
 
+@pytest.mark.asyncio
+async def test_free_ignores_stored_zero_for_suggested_replies(repo_module) -> None:
+    """Регрессия: в колонке может лежать 0 — FREE всё равно должен видеть кнопки."""
+    import aiosqlite
+
+    uid = 77005
+    await repo_module.ensure_user(uid)
+    async with aiosqlite.connect(repo_module.DB_PATH) as db:
+        await db.execute(
+            "UPDATE users SET show_suggested_replies = 0, tariff = 'FREE' WHERE id = ?",
+            (uid,),
+        )
+        await db.commit()
+    assert await repo_module.get_show_suggested_replies(uid) is True
+
+
 def test_cabinet_keyboard_hides_toggle_on_free() -> None:
     kb = cabinet_keyboard(show_suggested_replies=None)
     flat = [btn.callback_data for row in kb.inline_keyboard for btn in row]

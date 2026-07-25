@@ -57,9 +57,9 @@ def test_split_suggested_replies_free_fallback_when_marker_missing() -> None:
     )
     assert body == "Короткий ответ про футбол."
     assert labels == list(FREE_FALLBACK_SUGGESTED_REPLIES)
-    assert "🔍 Можно подробнее?" in labels
-    assert "🔄 Другой вариант" in labels
-    assert "💡 Как применить?" in labels
+    assert "Можно подробнее?" in labels
+    assert "Другой вариант?" in labels
+    assert "Как применить?" in labels
 
 
 def test_split_suggested_replies_free_fallback_keeps_model_labels() -> None:

@@ -675,6 +675,8 @@ async def _ensure_show_suggested_replies_column(db: aiosqlite.Connection) -> Non
 
 async def get_show_suggested_replies(user_id: int) -> bool:
     """Эффективный флаг Suggested Replies с учётом тарифа и явного override в БД."""
+    from services.billing.types import TariffTier
+
     await ensure_user(user_id)
     async with aiosqlite.connect(DB_PATH) as db:
         await _ensure_show_suggested_replies_column(db)
@@ -687,6 +689,9 @@ async def get_show_suggested_replies(user_id: int) -> bool:
     if not row:
         return True
     stored, tariff = row[0], row[1]
+    # FREE: кнопки всегда включены (игнорируем мусорный 0 в колонке).
+    if TariffTier.from_db(tariff) is TariffTier.FREE:
+        return True
     if stored is None:
         return default_show_suggested_replies(tariff)
     return bool(int(stored))
