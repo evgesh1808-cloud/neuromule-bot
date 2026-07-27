@@ -710,6 +710,13 @@ async def run_chat_turn(
                 # FREE: 100% кнопки даже если LLM забыла / обрезала ===КНОПКИ===.
                 fallback_if_missing=plan.tariff is TariffTier.FREE,
             )
+            if plan.tariff is TariffTier.FREE:
+                from services.standard_suggested_replies import ensure_free_hint_labels
+
+                reply_labels = ensure_free_hint_labels(
+                    reply_labels,
+                    body=content_for_format,
+                )
             suggested_replies = tuple(reply_labels)
 
         if (effective_role or "").strip().lower() in _BLOGGER_ROLE_IDS:

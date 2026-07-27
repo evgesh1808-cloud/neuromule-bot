@@ -211,8 +211,18 @@ async def cb_standard_suggested_reply(callback: CallbackQuery, state: FSMContext
             label = resolve_suggested_reply_latest(user_id, index)
 
     if not label:
-        await callback.answer("Кнопка устарела. Задайте вопрос текстом.", show_alert=True)
-        return
+        # Legacy std_reply после рестарта: не «устарела» — подставляем FREE-фолбэк по индексу.
+        from services.standard_suggested_replies import FREE_FALLBACK_SUGGESTED_REPLIES
+
+        if data.startswith(msg.CB_STD_REPLY_PREFIX):
+            parsed = parse_std_reply_callback(data)
+            if parsed is not None:
+                index, _cid = parsed
+                if 0 <= index < len(FREE_FALLBACK_SUGGESTED_REPLIES):
+                    label = FREE_FALLBACK_SUGGESTED_REPLIES[index]
+        if not label:
+            await callback.answer("Кнопка устарела. Задайте вопрос текстом.", show_alert=True)
+            return
 
     if not billing_bypass(user_id):
         user = await load_user_billing(user_id)

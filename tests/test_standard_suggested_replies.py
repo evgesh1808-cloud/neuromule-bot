@@ -52,14 +52,62 @@ def test_split_suggested_replies_without_marker() -> None:
 
 def test_split_suggested_replies_free_fallback_when_marker_missing() -> None:
     body, labels = split_suggested_replies(
-        "Короткий ответ про футбол.",
+        "Короткий ответ про футбол и тренировки.",
         fallback_if_missing=True,
     )
-    assert body == "Короткий ответ про футбол."
-    assert labels == list(FREE_FALLBACK_SUGGESTED_REPLIES)
-    assert "Можно подробнее?" in labels
-    assert "Другой вариант?" in labels
-    assert "Как применить?" in labels
+    assert body == "Короткий ответ про футбол и тренировки."
+    assert len(labels) == 3
+    joined = " ".join(labels).lower()
+    # Контекст из текста, не чистый шаблон «расскажи подробнее».
+    assert "футбол" in joined or "трениров" in joined
+    assert labels != list(FREE_FALLBACK_SUGGESTED_REPLIES)
+
+
+def test_derive_contextual_hints_from_bold_and_list() -> None:
+    from services.standard_suggested_replies import derive_contextual_free_hints
+
+    body = (
+        "Как заряжать <b>iPhone</b> правильно.\n"
+        "1. Используй оригинал кабель\n"
+        "2. Не оставляй на ночь\n"
+        "3. Калибруй батарею раз в месяц"
+    )
+    hints = derive_contextual_free_hints(body)
+    assert len(hints) == 3
+    joined = " ".join(hints).lower()
+    assert "iphone" in joined or "кабель" in joined or "ночь" in joined or "батаре" in joined
+
+
+def test_ensure_replaces_generic_with_contextual() -> None:
+    from services.standard_suggested_replies import ensure_free_hint_labels
+
+    labels = ensure_free_hint_labels(
+        ["Расскажи подробнее", "Дай пример", "Что делать дальше?"],
+        body="План запуска Telegram-бота: вебхуки, polling и деплой на VDS.",
+    )
+    assert len(labels) == 3
+    assert all(not x.lower().startswith("расскажи") for x in labels)
+    joined = " ".join(labels).lower()
+    assert any(k in joined for k in ("telegram", "вебхук", "polling", "деплой", "бот"))
+
+
+def test_build_free_hint_keyboard_never_none() -> None:
+    from services.standard_suggested_replies import build_free_hint_keyboard
+
+    kb = build_free_hint_keyboard()
+    assert kb is not None
+    flat = [b for row in kb.inline_keyboard for b in row]
+    assert len(flat) == 3
+    assert all(b.callback_data.startswith(msg.CB_CHAT_HINT_PREFIX) for b in flat)
+    assert all(len((b.callback_data or "").encode("utf-8")) <= 64 for b in flat)
+
+    kb2 = build_free_hint_keyboard([])
+    assert kb2 is not None
+    assert len(kb2.inline_keyboard) == 3
+
+    kb3 = build_free_hint_keyboard(["Только одна"])
+    assert len(kb3.inline_keyboard) == 3
+
 
 
 def test_split_suggested_replies_free_fallback_keeps_model_labels() -> None:
@@ -167,12 +215,16 @@ def test_role_standard_prompt_has_buttons_rule() -> None:
     assert "ЧТО ВКЛЮЧЕНО И ДОСТУПНО НА ТАРИФЕ FREE" in _STANDARD_FREE_CORE
     assert "Flux Schnell" in _STANDARD_FREE_CORE
     assert "Совет дня" in _STANDARD_FREE_CORE
+    assert "ОБЪЕМ И СТРУКТУРА ОТВЕТА" in _STANDARD_FREE_CORE
+    assert "3–4" in _STANDARD_FREE_CORE
     assert "6 последними" in _STANDARD_FREE_CORE
-    assert "≤400" in _STANDARD_FREE_CORE
     assert "===КНОПКИ===" in _CHATCOM_LACO_TAIL
     assert "Compliance: FREE TIER" in _CHATCOM_LACO_TAIL
-    assert "≤400" in _CHATCOM_LACO_TAIL or "2–4" in _CHATCOM_LACO_TAIL
-    assert "Первый вопрос?" in _CHATCOM_LACO_TAIL
+    assert "3–4" in _CHATCOM_LACO_TAIL
+    assert "follow-up" in _CHATCOM_LACO_TAIL
+    assert "якорям" in _CHATCOM_LACO_TAIL
+    assert "Кабель или беспроводная?" in _STANDARD_FREE_CORE
+    assert "ЗАПРЕЩЕНО писать общие фразы" in _STANDARD_FREE_CORE
     assert "КРИТИЧЕСКОЕ ИСКЛЮЧЕНИЕ" in _ROLE_STANDARD
     assert "Какая погода в Люберцах" in _ROLE_STANDARD
     assert "ПОЛИТИКА БЕЗОПАСНОСТИ И КОММЕРЧЕСКОЙ ТАЙНЫ" in _ROLE_STANDARD
@@ -182,7 +234,7 @@ def test_role_standard_prompt_has_buttons_rule() -> None:
 
 @pytest.mark.asyncio
 async def test_run_chat_turn_strips_buttons_into_suggested_replies() -> None:
-    from services.billing.types import ChatRoutePlan, CurrencyKind, TextChatBillingResult
+    from services.billing.types import ChatRoutePlan, CurrencyKind, TextChatBillingResult, TariffTier
     from services.use_cases.chat_turn import ChatTurnOutcome, run_chat_turn
 
     completion = {
@@ -205,6 +257,7 @@ async def test_run_chat_turn_strips_buttons_into_suggested_replies() -> None:
         use_premium_prompt=False,
         fallback_model_ids=(),
         blocked=False,
+        tariff=TariffTier.MINI,
     )
     billing = TextChatBillingResult(
         effective_role_id="standard",

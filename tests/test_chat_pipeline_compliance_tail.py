@@ -121,7 +121,7 @@ def test_prepare_openrouter_uses_chatcom_tail_for_standard() -> None:
     assert "===КНОПКИ===" in body
     assert "Первый вопрос?" in body
     assert "ROUTE LOCK: FREE LACO" in body
-    assert "≤400" in body or "2–4" in body
+    assert "3–4" in body
     assert "премиум-комплаенс" not in body
 
     # Идемпотентность: повторный inject не дублирует FREE-хвост.

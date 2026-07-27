@@ -22,12 +22,116 @@ _CONTEXT_ID_LEN = 8
 _TG_CALLBACK_DATA_MAX_BYTES = 64
 _CHAT_HINT_PREFIX_BYTES = len(msg.CB_CHAT_HINT_PREFIX.encode("utf-8"))
 
-# FREE: если модель забыла / обрезала ===КНОПКИ=== — железные подсказки.
-# Короткие лейблы (≤20 символов) стабильно влезают в chat_hint: callback_data.
+# FREE: последний резерв, если из текста ответа якоря не извлеклись.
 FREE_FALLBACK_SUGGESTED_REPLIES: tuple[str, ...] = (
-    "Можно подробнее?",
-    "Другой вариант?",
-    "Как применить?",
+    "Расскажи подробнее",
+    "Дай пример",
+    "Что делать дальше?",
+)
+# ASCII-резерв, если UTF-8 callback внезапно не влез (не должно случаться).
+_EMERGENCY_ASCII_HINTS: tuple[str, ...] = ("More details", "Give example", "Next step")
+
+# Шаблонные лейблы — выкидываем, если есть якоря из тела ответа.
+_GENERIC_HINT_NORMS: frozenset[str] = frozenset(
+    {
+        "расскажи подробнее",
+        "расскажи подробнее?",
+        "дай пример",
+        "дай пример?",
+        "что делать дальше",
+        "что делать дальше?",
+        "что дальше",
+        "что дальше?",
+        "подробнее",
+        "подробнее?",
+        "ещё",
+        "еще",
+        "продолжай",
+        "продолжи",
+        "понятно",
+        "ок",
+        "уточни",
+        "пример",
+        "первый вопрос?",
+        "второй вопрос?",
+        "третий вопрос?",
+    }
+)
+
+_STOPWORDS_RU: frozenset[str] = frozenset(
+    {
+        "это",
+        "эта",
+        "этот",
+        "эти",
+        "как",
+        "что",
+        "для",
+        "или",
+        "если",
+        "также",
+        "чтобы",
+        "при",
+        "без",
+        "над",
+        "под",
+        "про",
+        "все",
+        "всё",
+        "вас",
+        "вам",
+        "ваш",
+        "ваша",
+        "ваше",
+        "можно",
+        "нужно",
+        "будет",
+        "есть",
+        "нет",
+        "уже",
+        "ещё",
+        "еще",
+        "очень",
+        "просто",
+        "только",
+        "после",
+        "перед",
+        "между",
+        "через",
+        "более",
+        "менее",
+        "которые",
+        "который",
+        "которая",
+        "которое",
+        "такой",
+        "такая",
+        "такое",
+        "такие",
+        "свой",
+        "своя",
+        "свое",
+        "свои",
+        "один",
+        "одна",
+        "одно",
+        "когда",
+        "куда",
+        "откуда",
+        "почему",
+        "зачем",
+        "здесь",
+        "там",
+        "тогда",
+        "сейчас",
+        "сегодня",
+        "потом",
+        "сначала",
+        "например",
+        "нейросеть",
+        "нейромул",
+        "neuromule",
+    }
 )
 
 # context_id -> (user_id, labels) — только legacy ``std_reply:`` (старые сообщения)
@@ -65,6 +169,123 @@ def fit_label_for_chat_hint(label: str) -> str:
     return cut + ell
 
 
+def _norm_hint(label: str) -> str:
+    return re.sub(r"\s+", " ", (label or "").strip().lower()).rstrip("?.!…")
+
+
+def is_generic_hint_label(label: str) -> bool:
+    """True для шаблонных «подробнее/пример» — их лучше заменить якорями из ответа."""
+    n = _norm_hint(label)
+    if not n:
+        return True
+    if n in _GENERIC_HINT_NORMS:
+        return True
+    if re.fullmatch(r"(первый|второй|третий)\s+вопрос\??", n):
+        return True
+    return False
+
+
+def _plain_answer_text(body: str) -> str:
+    text = html.unescape(body or "")
+    text = re.sub(r"(?is)<pre\b[^>]*>.*?</pre>", " ", text)
+    text = re.sub(r"(?is)<code\b[^>]*>.*?</code>", " ", text)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _clip_anchor(phrase: str, *, max_words: int = 4, max_chars: int = 28) -> str:
+    words = [w for w in re.split(r"\s+", (phrase or "").strip()) if w]
+    if not words:
+        return ""
+    clipped = " ".join(words[:max_words]).strip(" .,;:!?—–-")
+    if len(clipped) > max_chars:
+        clipped = clipped[: max_chars - 1].rstrip() + "…"
+    return clipped
+
+
+def _extract_answer_anchors(body: str, *, limit: int = 5) -> list[str]:
+    """Якоря темы из тела ответа: <b>, пункты списка, значимые слова."""
+    raw = body or ""
+    anchors: list[str] = []
+    seen: set[str] = set()
+
+    def _push(phrase: str) -> None:
+        clip = _clip_anchor(sanitize_suggested_label(phrase))
+        if not clip:
+            return
+        key = _norm_hint(clip)
+        if len(key) < 3 or key in seen or key in _STOPWORDS_RU:
+            return
+        if is_generic_hint_label(clip):
+            return
+        seen.add(key)
+        anchors.append(clip)
+
+    for m in re.finditer(r"(?is)<b>(.*?)</b>", raw):
+        _push(m.group(1))
+        if len(anchors) >= limit:
+            return anchors
+
+    plain_lines = re.sub(r"<[^>]+>", "\n", raw)
+    for line in plain_lines.splitlines():
+        line = sanitize_suggested_label(line)
+        if not line:
+            continue
+        m = re.match(r"^(?:\d+[.)]|[-•*])\s+(.+)$", line)
+        if m:
+            _push(m.group(1))
+            if len(anchors) >= limit:
+                return anchors
+
+    plain = _plain_answer_text(raw)
+    for tok in re.findall(r"[A-Za-zА-Яа-яЁё0-9][A-Za-zА-Яа-яЁё0-9\-]{3,}", plain):
+        low = tok.lower()
+        if low in _STOPWORDS_RU or low.isdigit():
+            continue
+        _push(tok)
+        if len(anchors) >= limit:
+            break
+    return anchors
+
+
+def derive_contextual_free_hints(body: str) -> list[str]:
+    """До 3 follow-up по якорям ответа (без второго вызова LLM)."""
+    anchors = _extract_answer_anchors(body)
+    if not anchors:
+        return []
+    out: list[str] = []
+    for i, anchor in enumerate(anchors):
+        if len(out) >= _MAX_LABELS:
+            break
+        if len(anchors) >= 3:
+            if i == 0:
+                label = f"Про {anchor}?"
+            elif i == 1:
+                label = f"Пример: {anchor}"
+            else:
+                label = f"Как с {anchor}?"
+        else:
+            templates = (
+                "{a} — подробнее?",
+                "Пример: {a}",
+                "Как с {a}?",
+            )
+            label = templates[i % len(templates)].format(a=anchor)
+        fitted = fit_label_for_chat_hint(label)
+        if fitted and fitted not in out and not is_generic_hint_label(fitted):
+            out.append(fitted)
+    if len(out) < _MAX_LABELS and anchors:
+        a0 = anchors[0]
+        for extra in (f"Риски {a0}?", f"Шаги: {a0}", f"Альтернатива {a0}?"):
+            if len(out) >= _MAX_LABELS:
+                break
+            fitted = fit_label_for_chat_hint(extra)
+            if fitted and fitted not in out:
+                out.append(fitted)
+    return out[:_MAX_LABELS]
+
+
 def split_suggested_replies(
     text: str,
     *,
@@ -73,7 +294,7 @@ def split_suggested_replies(
     """Отделяет тело ответа от блока ``===КНОПКИ===`` (если есть).
 
     ``fallback_if_missing=True`` (FREE standard): при отсутствии маркера/лейблов
-    и непустом теле ответа подставляет ``FREE_FALLBACK_SUGGESTED_REPLIES``.
+    дописывает кнопки из якорей ответа, иначе — ``FREE_FALLBACK_SUGGESTED_REPLIES``.
     """
     raw = text or ""
     idx = raw.find(BUTTONS_MARKER)
@@ -82,9 +303,9 @@ def split_suggested_replies(
         m = re.search(r"===?\s*КНОПКИ\s*===?", raw, flags=re.IGNORECASE)
         if not m:
             body = raw.strip()
-            if fallback_if_missing and body:
+            if fallback_if_missing:
                 logger.info("suggested_replies: FREE fallback — marker missing")
-                return body, list(FREE_FALLBACK_SUGGESTED_REPLIES)
+                return body, ensure_free_hint_labels(body=body)
             return body, []
         idx = m.start()
         marker_end = m.end()
@@ -105,13 +326,13 @@ def split_suggested_replies(
         if not label:
             continue
         # Сразу под лимит callback — иначе раньше уходили в мёртвый std_reply UUID.
-        labels.append(fit_label_for_chat_hint(label))
+        fitted = fit_label_for_chat_hint(label)
+        if fitted:
+            labels.append(fitted)
         if len(labels) >= _MAX_LABELS:
             break
-    labels = [x for x in labels if x]
-    if not labels and fallback_if_missing and body.strip():
-        logger.info("suggested_replies: FREE fallback — empty labels after marker")
-        return body, list(FREE_FALLBACK_SUGGESTED_REPLIES)
+    if fallback_if_missing:
+        labels = ensure_free_hint_labels(labels, body=body)
     return body, labels
 
 
@@ -120,9 +341,7 @@ def remember_suggested_replies(user_id: int, labels: Sequence[str]) -> str | Non
 
     Нужен только для legacy ``std_reply:`` (старые сообщения в чате).
     """
-    clean = tuple(
-        fit_label_for_chat_hint(str(x)) for x in labels if fit_label_for_chat_hint(str(x))
-    )
+    clean = tuple(ensure_free_hint_labels(labels))
     if not clean:
         return None
     context_id = secrets.token_hex(_CONTEXT_ID_LEN // 2)
@@ -158,6 +377,83 @@ def parse_chat_hint_callback(data: str) -> str | None:
         return None
     text = raw[len(prefix) :].strip()
     return text or None
+
+
+def ensure_free_hint_labels(
+    labels: Sequence[str] | None = None,
+    *,
+    body: str | None = None,
+) -> list[str]:
+    """Ровно 3 рабочих лейбла под ``chat_hint:``.
+
+    Сначала валидные лейблы модели (не шаблонные, если есть тело),
+    затем якоря из ``body``, затем статический FREE-фолбэк.
+    """
+    contextual = derive_contextual_free_hints(body or "")
+    out: list[str] = []
+    for raw in labels or ():
+        fitted = fit_label_for_chat_hint(str(raw))
+        if not fitted or fitted in out:
+            continue
+        # Шаблонные «подробнее» выкидываем, если можем заменить контекстом.
+        if contextual and is_generic_hint_label(fitted):
+            continue
+        out.append(fitted)
+        if len(out) >= _MAX_LABELS:
+            break
+    for fb in contextual:
+        if len(out) >= _MAX_LABELS:
+            break
+        fitted = fit_label_for_chat_hint(fb)
+        if fitted and fitted not in out:
+            out.append(fitted)
+    for fb in FREE_FALLBACK_SUGGESTED_REPLIES:
+        if len(out) >= _MAX_LABELS:
+            break
+        fitted = fit_label_for_chat_hint(fb)
+        if fitted and fitted not in out:
+            out.append(fitted)
+    i = 0
+    while len(out) < _MAX_LABELS and i < len(_EMERGENCY_ASCII_HINTS):
+        out.append(_EMERGENCY_ASCII_HINTS[i])
+        i += 1
+    return out[:_MAX_LABELS]
+
+
+def build_free_hint_keyboard(
+    labels: Sequence[str] | None = None,
+    *,
+    body: str | None = None,
+) -> InlineKeyboardMarkup:
+    """Железная клавиатура FREE: всегда 3 кнопки ``chat_hint:``, никогда ``None``."""
+    clean = ensure_free_hint_labels(labels, body=body)
+    rows: list[list[InlineKeyboardButton]] = []
+    for i, label in enumerate(clean):
+        callback_data = build_chat_hint_callback(label)
+        if callback_data is None:
+            emergency = _EMERGENCY_ASCII_HINTS[i % len(_EMERGENCY_ASCII_HINTS)]
+            callback_data = build_chat_hint_callback(emergency) or (
+                f"{msg.CB_CHAT_HINT_PREFIX}{emergency}"
+            )
+            # Truncate bytes if needed
+            while not callback_data_fits(callback_data) and len(callback_data) > len(
+                msg.CB_CHAT_HINT_PREFIX
+            ):
+                callback_data = callback_data[:-1]
+            label = emergency
+        text = parse_chat_hint_callback(callback_data) or label
+        btn_text = text if len(text) <= 64 else text[:61] + "…"
+        rows.append([InlineKeyboardButton(text=btn_text, callback_data=callback_data)])
+    if not rows:
+        rows = [
+            [
+                InlineKeyboardButton(
+                    text="Next",
+                    callback_data=f"{msg.CB_CHAT_HINT_PREFIX}Next",
+                )
+            ]
+        ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def resolve_suggested_reply(
@@ -213,11 +509,10 @@ def build_suggested_replies_keyboard(
     context_id: str,
     labels: Sequence[str],
 ) -> InlineKeyboardMarkup | None:
-    """Инлайн-кнопки Suggested Replies под ответом standard.
+    """Инлайн-кнопки Suggested Replies под ответом standard (paid/общий путь).
 
-    Всегда ``chat_hint:<текст>`` (текст усечён под 64 байта). Legacy
-    ``std_reply:`` больше не создаём — in-memory UUID ломал FREE после рестарта.
-    ``context_id`` оставлен в сигнатуре для совместимости вызовов.
+    Всегда ``chat_hint:<текст>``. Пустой список → ``None`` (для FREE вызывайте
+    ``build_free_hint_keyboard`` — он никогда не возвращает ``None``).
     """
     _ = context_id  # legacy API
     rows: list[list[InlineKeyboardButton]] = []
@@ -228,16 +523,8 @@ def build_suggested_replies_keyboard(
         text = parse_chat_hint_callback(callback_data) or ""
         if not text:
             continue
-        # Telegram button text limit ~64 символа
         btn_text = text if len(text) <= 64 else text[:61] + "…"
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text=btn_text,
-                    callback_data=callback_data,
-                )
-            ]
-        )
+        rows.append([InlineKeyboardButton(text=btn_text, callback_data=callback_data)])
         if len(rows) >= _MAX_LABELS:
             break
     if not rows:

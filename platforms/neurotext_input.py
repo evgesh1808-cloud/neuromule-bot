@@ -73,10 +73,20 @@ async def _standard_suggested_reply_markup(user_id: int, result: ChatTurnResult)
         from services.billing.types import TariffTier
         from services.repository import get_show_suggested_replies, get_user_row
         from services.standard_suggested_replies import (
-            FREE_FALLBACK_SUGGESTED_REPLIES,
+            build_free_hint_keyboard,
             build_suggested_replies_keyboard,
             remember_suggested_replies,
         )
+
+        row = await get_user_row(user_id)
+        is_free = bool(row and TariffTier.from_db(row.tariff) is TariffTier.FREE)
+
+        # FREE: кнопки всегда — pref/БД/пустые лейблы не имеют значения.
+        if is_free:
+            return build_free_hint_keyboard(
+                labels or None,
+                body=getattr(result, "assistant_message", None) or "",
+            )
 
         if not await get_show_suggested_replies(user_id):
             logger.info(
@@ -85,38 +95,24 @@ async def _standard_suggested_reply_markup(user_id: int, result: ChatTurnResult)
                 len(labels),
             )
             return None
-
-        row = await get_user_row(user_id)
-        is_free = bool(row and TariffTier.from_db(row.tariff) is TariffTier.FREE)
-
-        # FREE safety net: нет лейблов ИЛИ клавиатура не собралась → универсальные 3 кнопки.
-        if not labels and is_free:
-            labels = list(FREE_FALLBACK_SUGGESTED_REPLIES)
-            logger.info("suggested_replies: platform FREE fallback uid=%s", user_id)
         if not labels:
             return None
 
-        context_id = remember_suggested_replies(user_id, labels)
-        if not context_id:
-            return None
-        kb = build_suggested_replies_keyboard(context_id, labels)
-        if kb is None and is_free:
-            labels = list(FREE_FALLBACK_SUGGESTED_REPLIES)
-            context_id = remember_suggested_replies(user_id, labels)
-            if not context_id:
-                return None
-            kb = build_suggested_replies_keyboard(context_id, labels)
-            logger.info("suggested_replies: rebuilt FREE fallback keyboard uid=%s", user_id)
-        if kb is None:
-            logger.warning(
-                "suggested_replies: keyboard build failed uid=%s n=%s",
-                user_id,
-                len(labels),
-            )
-        return kb
+        context_id = remember_suggested_replies(user_id, labels) or "x"
+        return build_suggested_replies_keyboard(context_id, labels)
     except Exception:
         # Ошибка БД/клавиатуры не должна глушить весь ответ пользователю.
         logger.exception("suggested_replies: markup failed uid=%s", user_id)
+        try:
+            from services.billing.types import TariffTier
+            from services.repository import get_user_row
+            from services.standard_suggested_replies import build_free_hint_keyboard
+
+            row = await get_user_row(user_id)
+            if row and TariffTier.from_db(row.tariff) is TariffTier.FREE:
+                return build_free_hint_keyboard()
+        except Exception:
+            logger.exception("suggested_replies: FREE emergency keyboard failed uid=%s", user_id)
         return None
 
 
@@ -125,23 +121,20 @@ async def _free_standard_fallback_keyboard(user_id: int):
     try:
         from services.billing.types import TariffTier
         from services.repository import get_user_row
-        from services.standard_suggested_replies import (
-            FREE_FALLBACK_SUGGESTED_REPLIES,
-            build_suggested_replies_keyboard,
-            remember_suggested_replies,
-        )
+        from services.standard_suggested_replies import build_free_hint_keyboard
 
         row = await get_user_row(user_id)
         if not row or TariffTier.from_db(row.tariff) is not TariffTier.FREE:
             return None
-        labels = list(FREE_FALLBACK_SUGGESTED_REPLIES)
-        context_id = remember_suggested_replies(user_id, labels)
-        if not context_id:
-            return None
-        return build_suggested_replies_keyboard(context_id, labels)
+        return build_free_hint_keyboard()
     except Exception:
         logger.exception("suggested_replies: FREE fail keyboard uid=%s", user_id)
-        return None
+        try:
+            from services.standard_suggested_replies import build_free_hint_keyboard
+
+            return build_free_hint_keyboard()
+        except Exception:
+            return None
 
 
 async def _blogger_reply_markup(user_id: int, assistant_message: str, *, blogger_post_raw: str | None = None):
