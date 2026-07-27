@@ -52,3 +52,20 @@ async def test_claim_chat_busy_notice_cooldown(repo_module) -> None:
     # Истёкший кулдаун снова разрешает уведомление.
     rls._BUSY_NOTICE_UNTIL[uid] = 0.0
     assert await rls.claim_chat_busy_notice(s, uid, cooldown_sec=2) is True
+
+
+@pytest.mark.asyncio
+async def test_remember_and_pop_chat_busy_message_id(repo_module) -> None:
+    from unittest.mock import MagicMock
+
+    from services import rate_limit_service as rls
+
+    s = MagicMock()
+    s.redis_url = ""
+    uid = 991004
+    rls._BUSY_NOTICE_MSG_ID.pop(uid, None)
+
+    await rls.remember_chat_busy_message_id(s, uid, 4242)
+    assert rls._BUSY_NOTICE_MSG_ID.get(uid) == 4242
+    assert await rls.pop_chat_busy_message_id(s, uid) == 4242
+    assert await rls.pop_chat_busy_message_id(s, uid) is None

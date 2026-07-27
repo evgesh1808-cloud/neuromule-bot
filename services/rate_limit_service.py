@@ -72,7 +72,9 @@ async def release_chat_lock(settings: Settings, user_id: int) -> None:
 
 # Кулдаун предупреждения «ещё отвечаю» (антиспам повторных кликов).
 _BUSY_NOTICE_COOLDOWN_SEC = 2
+_BUSY_NOTICE_MSG_TTL_SEC = 30
 _BUSY_NOTICE_UNTIL: dict[int, float] = {}
+_BUSY_NOTICE_MSG_ID: dict[int, int] = {}
 
 
 async def claim_chat_busy_notice(
@@ -107,6 +109,45 @@ def _memory_claim_busy_notice(user_id: int, ttl_sec: int) -> bool:
         return False
     _BUSY_NOTICE_UNTIL[int(user_id)] = now + float(ttl_sec)
     return True
+
+
+async def remember_chat_busy_message_id(
+    settings: Settings,
+    user_id: int,
+    message_id: int,
+    *,
+    ttl_sec: int = _BUSY_NOTICE_MSG_TTL_SEC,
+) -> None:
+    """Сохраняет ``message_id`` предупреждения (``lock_msg_id:{uid}``, TTL 30с)."""
+    uid = int(user_id)
+    mid = int(message_id)
+    ttl = max(1, int(ttl_sec))
+    url = (settings.redis_url or "").strip()
+    if url:
+        try:
+            await _redis_remember_busy_message_id(url, uid, mid, ttl)
+            return
+        except ImportError:
+            pass
+        except Exception:
+            logger.debug("Redis lock_msg_id set failed", exc_info=True)
+    _BUSY_NOTICE_MSG_ID[uid] = mid
+
+
+async def pop_chat_busy_message_id(settings: Settings, user_id: int) -> int | None:
+    """Забирает и очищает сохранённый ``message_id`` предупреждения."""
+    uid = int(user_id)
+    url = (settings.redis_url or "").strip()
+    if url:
+        try:
+            mid = await _redis_pop_busy_message_id(url, uid)
+            if mid is not None:
+                return mid
+        except ImportError:
+            pass
+        except Exception:
+            logger.debug("Redis lock_msg_id pop failed", exc_info=True)
+    return _BUSY_NOTICE_MSG_ID.pop(uid, None)
 
 
 @asynccontextmanager
@@ -196,5 +237,33 @@ async def _redis_claim_busy_notice(url: str, user_id: int, ttl_sec: int) -> bool
         # SET NX EX: True только при первом клике в окне кулдауна.
         ok = await client.set(key, "1", nx=True, ex=ttl_sec)
         return bool(ok)
+    finally:
+        await client.aclose()
+
+
+async def _redis_remember_busy_message_id(
+    url: str, user_id: int, message_id: int, ttl_sec: int
+) -> None:
+    import redis.asyncio as redis
+
+    key = f"lock_msg_id:{user_id}"
+    client = redis.from_url(url, encoding="utf-8", decode_responses=True)
+    try:
+        await client.set(key, str(int(message_id)), ex=ttl_sec)
+    finally:
+        await client.aclose()
+
+
+async def _redis_pop_busy_message_id(url: str, user_id: int) -> int | None:
+    import redis.asyncio as redis
+
+    key = f"lock_msg_id:{user_id}"
+    client = redis.from_url(url, encoding="utf-8", decode_responses=True)
+    try:
+        raw = await client.get(key)
+        if raw is None:
+            return None
+        await client.delete(key)
+        return int(raw)
     finally:
         await client.aclose()

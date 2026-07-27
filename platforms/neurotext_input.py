@@ -439,6 +439,24 @@ def _chat_ai_failure_text(result) -> str:
     return msg.TXT_CHAT_AI_UNAVAILABLE
 
 
+async def _delete_chat_busy_notice(message: Message, user_id: int) -> None:
+    """Удаляет «⏳ ещё отвечаю», если его message_id сохранён в Redis/памяти."""
+    from services.rate_limit_service import pop_chat_busy_message_id
+
+    mid = await pop_chat_busy_message_id(settings, user_id)
+    if mid is None:
+        return
+    try:
+        await message.bot.delete_message(chat_id=message.chat.id, message_id=mid)
+    except Exception:
+        logger.debug(
+            "chat_busy notice delete failed uid=%s mid=%s",
+            user_id,
+            mid,
+            exc_info=True,
+        )
+
+
 async def _reply_chat_turn_result(
     message: Message,
     result,
@@ -457,6 +475,7 @@ async def _reply_chat_turn_result(
         else (message.from_user.id if message.from_user else 0)
     )
     if result.outcome is ChatTurnOutcome.SUCCESS:
+        await _delete_chat_busy_notice(message, owner_id)
         if result.user_notice:
             await message.answer(
                 result.user_notice,
@@ -588,7 +607,13 @@ async def _reply_chat_turn_result(
     if result.outcome is ChatTurnOutcome.CHAT_BUSY:
         notice = (result.user_notice or "").strip()
         if notice:
-            await message.answer(notice)
+            from services.rate_limit_service import remember_chat_busy_message_id
+
+            sent = await message.answer(notice)
+            if sent is not None and getattr(sent, "message_id", None) is not None:
+                await remember_chat_busy_message_id(
+                    settings, owner_id, int(sent.message_id)
+                )
         return
     if result.outcome is ChatTurnOutcome.ROLE_NOT_ALLOWED:
         await message.answer(
