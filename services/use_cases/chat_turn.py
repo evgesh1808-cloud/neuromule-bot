@@ -276,6 +276,7 @@ async def run_chat_turn(
 
     from content.messages import TXT_CHAT_BUSY
     from services.billing.chat_pipeline import FREE_CHAT_MODEL_TIMEOUT_SEC
+    from services.rate_limit_service import claim_chat_busy_notice
 
     async with free_chat_lock(
         settings,
@@ -287,10 +288,13 @@ async def run_chat_turn(
             if charge_id:
                 await refund_charge(charge_id)
             await rollback_last(settings, user_id)
-            return ChatTurnResult(
-                outcome=ChatTurnOutcome.CHAT_BUSY,
-                user_notice=TXT_CHAT_BUSY,
-            )
+            # Антиспам: одно предупреждение на 2 сек, повторные клики — молча.
+            if await claim_chat_busy_notice(settings, user_id):
+                return ChatTurnResult(
+                    outcome=ChatTurnOutcome.CHAT_BUSY,
+                    user_notice=TXT_CHAT_BUSY,
+                )
+            return ChatTurnResult(outcome=ChatTurnOutcome.CHAT_BUSY)
 
         await dialog_append(user_id, "user", history_text, platform=platform)
         payload = await conv.build_openrouter_messages(

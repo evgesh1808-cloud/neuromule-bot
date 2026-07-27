@@ -586,7 +586,9 @@ async def _reply_chat_turn_result(
         await message.answer(msg.TXT_CHAT_RATE_LIMIT)
         return
     if result.outcome is ChatTurnOutcome.CHAT_BUSY:
-        await message.answer(result.user_notice or msg.TXT_CHAT_BUSY)
+        notice = (result.user_notice or "").strip()
+        if notice:
+            await message.answer(notice)
         return
     if result.outcome is ChatTurnOutcome.ROLE_NOT_ALLOWED:
         await message.answer(

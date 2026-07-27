@@ -32,3 +32,23 @@ async def test_free_chat_lock_context_manager(repo_module) -> None:
         assert ok3 is True
     async with free_chat_lock(s, uid, enabled=False, ttl_sec=12) as ok4:
         assert ok4 is True
+
+
+@pytest.mark.asyncio
+async def test_claim_chat_busy_notice_cooldown(repo_module) -> None:
+    from unittest.mock import MagicMock
+
+    from services import rate_limit_service as rls
+
+    s = MagicMock()
+    s.redis_url = ""
+    uid = 991003
+    rls._BUSY_NOTICE_UNTIL.pop(uid, None)
+
+    assert await rls.claim_chat_busy_notice(s, uid, cooldown_sec=2) is True
+    assert await rls.claim_chat_busy_notice(s, uid, cooldown_sec=2) is False
+    assert await rls.claim_chat_busy_notice(s, uid, cooldown_sec=2) is False
+
+    # Истёкший кулдаун снова разрешает уведомление.
+    rls._BUSY_NOTICE_UNTIL[uid] = 0.0
+    assert await rls.claim_chat_busy_notice(s, uid, cooldown_sec=2) is True

@@ -70,6 +70,45 @@ async def release_chat_lock(settings: Settings, user_id: int) -> None:
     await repo.chat_lock_release(user_id)
 
 
+# Кулдаун предупреждения «ещё отвечаю» (антиспам повторных кликов).
+_BUSY_NOTICE_COOLDOWN_SEC = 2
+_BUSY_NOTICE_UNTIL: dict[int, float] = {}
+
+
+async def claim_chat_busy_notice(
+    settings: Settings,
+    user_id: int,
+    *,
+    cooldown_sec: int = _BUSY_NOTICE_COOLDOWN_SEC,
+) -> bool:
+    """True — показать TXT_CHAT_BUSY; False — молча игнорировать повторный клик.
+
+    Redis: ``SET lock_msg_cooldown:{uid} NX EX`` (атомарно).
+    Без Redis: короткий in-memory TTL.
+    """
+    ttl = max(1, int(cooldown_sec))
+    url = (settings.redis_url or "").strip()
+    if url:
+        try:
+            return await _redis_claim_busy_notice(url, user_id, ttl)
+        except ImportError:
+            logger.warning("redis пакет не установлен, busy-notice cooldown in-memory")
+        except Exception:
+            logger.exception("Redis busy-notice cooldown failed, fallback in-memory")
+    return _memory_claim_busy_notice(user_id, ttl)
+
+
+def _memory_claim_busy_notice(user_id: int, ttl_sec: int) -> bool:
+    import time
+
+    now = time.monotonic()
+    until = _BUSY_NOTICE_UNTIL.get(int(user_id), 0.0)
+    if until > now:
+        return False
+    _BUSY_NOTICE_UNTIL[int(user_id)] = now + float(ttl_sec)
+    return True
+
+
 @asynccontextmanager
 async def free_chat_lock(
     settings: Settings,
@@ -144,5 +183,18 @@ async def _redis_release_chat_lock(url: str, user_id: int) -> None:
     client = redis.from_url(url, encoding="utf-8", decode_responses=True)
     try:
         await client.delete(key)
+    finally:
+        await client.aclose()
+
+
+async def _redis_claim_busy_notice(url: str, user_id: int, ttl_sec: int) -> bool:
+    import redis.asyncio as redis
+
+    key = f"lock_msg_cooldown:{user_id}"
+    client = redis.from_url(url, encoding="utf-8", decode_responses=True)
+    try:
+        # SET NX EX: True только при первом клике в окне кулдауна.
+        ok = await client.set(key, "1", nx=True, ex=ttl_sec)
+        return bool(ok)
     finally:
         await client.aclose()
