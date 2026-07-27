@@ -321,7 +321,10 @@ def test_paid_standard_uses_copy_pack_voice() -> None:
     assert "ЧТО ВКЛЮЧЕНО И ДОСТУПНО НА ТАРИФЕ FREE" in free_role
     assert "Flux Schnell" in free_role
     assert "Совет дня" in free_role
-    assert "6 последними" in free_role
+    assert "последними 6" in free_role or "6 последними" in free_role
+    assert "РАБОТА С КОНТЕКСТОМ" in free_role
+    assert "ОДНОСЛОЖНЫМ или УТОЧНЯЮЩИМ" in free_role
+    assert "Запрещено просить пользователя" in free_role
     assert "СИНТАКСИЧЕСКИЙ ЯКОРЬ" in free_role
     assert "ЗАПРЕТ НА ГАЛЛЮЦИНАЦИИ" in free_role
     assert "до 400 символов" in free_role

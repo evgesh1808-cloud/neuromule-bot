@@ -259,7 +259,10 @@ def test_role_standard_prompt_has_buttons_rule() -> None:
     assert "ЗАПРЕТ НА ГАЛЛЮЦИНАЦИИ" in _STANDARD_FREE_CORE
     assert "до 400 символов" in _STANDARD_FREE_CORE
     assert "NeuroMule 2026" in _STANDARD_FREE_CORE
-    assert "6 последними" in _STANDARD_FREE_CORE
+    assert "6 последними" in _STANDARD_FREE_CORE or "последними 6" in _STANDARD_FREE_CORE
+    assert "Запрещено просить пользователя" in _STANDARD_FREE_CORE
+    assert "ОДНОСЛОЖНЫМ или УТОЧНЯЮЩИМ" in _STANDARD_FREE_CORE
+    assert "РАБОТА С КОНТЕКСТОМ" in _STANDARD_FREE_CORE
     assert "===КНОПКИ===" in _CHATCOM_LACO_TAIL
     assert "Compliance: FREE TIER" in _CHATCOM_LACO_TAIL
     assert "400" in _CHATCOM_LACO_TAIL
