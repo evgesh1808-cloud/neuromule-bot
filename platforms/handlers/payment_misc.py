@@ -106,17 +106,11 @@ from services.repository import (
 )
 from services.telegram_safe_text import sanitize_telegram_plain_text
 from services.use_cases.animate_generation_turn import AnimateGenOutcome, run_animate_generation_turn
-from platforms.telegram_chat_action import chat_action_loop
-from platforms.telegram_chat_stream import create_throttled_stream_reply
-from platforms.telegram_chunks import answer_chat_text
 from platforms.telegram_quote import (
     REPLY_TO_BOT_FILTER,
-    build_quoted_user_prompt,
     has_neurotext_message_input,
     is_reply_to_bot_message,
-    resolve_neurotext_quote_input,
 )
-from services.use_cases.chat_turn import ChatTurnOutcome, run_chat_turn
 from services.use_cases.music_generation_turn import MusicGenOutcome, run_music_generation_turn
 from services.use_cases.cabinet_turn import build_cabinet_view
 from services.billing import shop as payment_shop
@@ -399,67 +393,17 @@ async def chat_media_neurotext(message: Message, state: FSMContext) -> None:
     StateFilter(None),
     (F.text & ~F.text.startswith("/")) | REPLY_TO_BOT_FILTER,
 )
-async def chat_handler(message: Message) -> None:
+async def chat_handler(message: Message, state: FSMContext) -> None:
+    """Idle-чат без FSM: тот же путь, что Нейротекст — иначе FREE-кнопки не вешаются."""
     text = (message.text or "").strip()
     if not has_neurotext_message_input(message):
         return
     if text in _reply_menu_button_texts() and not is_reply_to_bot_message(message):
         return
 
-    uid = message.from_user.id
-    quoted_text, user_text = resolve_neurotext_quote_input(message)
-    user_prompt = build_quoted_user_prompt(user_text, quoted_text)
-    max_len = settings.chat_max_message_chars
-    raw = user_prompt[:max_len]
-    dialog_text: str | None = user_text[:max_len] if quoted_text else None
-    stream_handle = (
-        create_throttled_stream_reply(message, deps.bot(), settings)
-        if settings.telegram_chat_streaming
-        else None
-    )
-    async with chat_action_loop(deps.bot(), message.chat.id, "typing"):
-        result = await run_chat_turn(
-            settings,
-            uid,
-            raw,
-            dialog_user_text=dialog_text,
-            stream_callback=stream_handle.on_stream if stream_handle else None,
-        )
-    if result.outcome is ChatTurnOutcome.SUCCESS:
-        if stream_handle is not None and result.assistant_message:
-            await stream_handle.finalize(result.assistant_message)
-        elif stream_handle is None:
-            await answer_chat_text(message, result.assistant_message or "", settings)
-        return
-    if result.outcome is ChatTurnOutcome.EMPTY_INPUT:
-        await message.answer(msg.TXT_CHAT_EMPTY)
-        return
-    if result.outcome is ChatTurnOutcome.CONTEXT_TOO_LARGE:
-        await message.answer(msg.TXT_CHAT_CONTEXT_TOO_LARGE)
-        return
-    if result.outcome is ChatTurnOutcome.RATE_LIMITED:
-        await message.answer(msg.TXT_CHAT_RATE_LIMIT)
-        return
-    if result.outcome is ChatTurnOutcome.CHAT_BUSY:
-        await message.answer(result.user_notice or msg.TXT_CHAT_BUSY)
-        return
-    if result.outcome is ChatTurnOutcome.ROLE_NOT_ALLOWED:
-        await message.answer(msg.TXT_PREMIUM_ROLE_LOCKED, reply_markup=paycat.shop_packages_keyboard())
-        return
-    if result.outcome is ChatTurnOutcome.INSUFFICIENT_BALANCE:
-        await message.answer(
-            msg.TXT_INSUFFICIENT_BALANCE,
-            reply_markup=paycat.shop_packages_keyboard(),
-        )
-        return
-    if result.outcome is ChatTurnOutcome.DAILY_LIMIT_EXCEEDED:
-        await message.answer(
-            result.user_notice or msg.TXT_CHAT_DAILY_LIMIT,
-            reply_markup=paycat.shop_packages_keyboard(),
-            parse_mode=ParseMode.HTML,
-        )
-        return
-    await message.answer(msg.TXT_GEN_JOB_FAILED)
+    from platforms.neurotext_input import handle_neurotext_user_message
+
+    await handle_neurotext_user_message(message, state)
 
 
 @router.message(F.document)

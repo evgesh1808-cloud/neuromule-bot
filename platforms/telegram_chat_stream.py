@@ -30,7 +30,7 @@ class StreamReplyHandle:
     Колбэк SSE для ``ask_ai_messages`` и принудительная финальная правка полным текстом.
 
     Передавайте ``handle.on_stream`` в ``stream_callback``; после ``run_chat_turn`` вызовите
-    ``await handle.finalize(assistant_message)``.
+    ``await handle.finalize(assistant_message, reply_markup=...)``.
     """
 
     _apply_text: Any = field(repr=False)
@@ -48,6 +48,9 @@ class StreamReplyHandle:
         on_finalized: Any = None,
     ) -> "Message | None":
         capped = prepare_telegram_html_text(full_text or "")
+        # Пустой текст + кнопки: всё равно показать клавиатуру (не терять FREE hints).
+        if not capped and reply_markup is not None:
+            capped = "…"
         await self._apply_text(capped, force=True, reply_markup=reply_markup)
         sent = self._sent_message()
         if on_finalized is not None and sent is not None:
@@ -74,13 +77,20 @@ def create_throttled_stream_reply(message: "Message", bot: "Bot", settings: Sett
     }
     interval = max(0.15, float(settings.telegram_stream_edit_interval_sec))
 
-    async def _send(text: str):
+    async def _send(
+        text: str,
+        *,
+        reply_markup: "InlineKeyboardMarkup | None" = None,
+    ):
+        kwargs: dict = {}
+        if reply_markup is not None:
+            kwargs["reply_markup"] = reply_markup
         if state["use_html"]:
             try:
-                return await message.answer(text, parse_mode=ParseMode.HTML)
+                return await message.answer(text, parse_mode=ParseMode.HTML, **kwargs)
             except TelegramBadRequest:
                 state["use_html"] = False
-        return await message.answer(sanitize_telegram_plain_text(text))
+        return await message.answer(sanitize_telegram_plain_text(text), **kwargs)
 
     async def _edit(text: str) -> bool:
         if state["sent_msg"] is None:
@@ -113,15 +123,16 @@ def create_throttled_stream_reply(message: "Message", bot: "Bot", settings: Sett
         force: bool = False,
         reply_markup: "InlineKeyboardMarkup | None" = None,
     ) -> None:
-        if not capped:
+        if not capped and reply_markup is None:
             return
+        if not capped:
+            capped = "…"
         now = time.monotonic()
         if state["sent_msg"] is None:
-            state["sent_msg"] = await _send(capped)
+            # Кнопки сразу на первом answer — не полагаемся только на edit_reply_markup.
+            state["sent_msg"] = await _send(capped, reply_markup=reply_markup)
             state["last_edit_mono"] = now
             state["last_text"] = capped
-            if reply_markup is not None:
-                await _apply_reply_markup(reply_markup)
             return
         if capped == state["last_text"] and reply_markup is None:
             return
@@ -144,7 +155,17 @@ def create_throttled_stream_reply(message: "Message", bot: "Bot", settings: Sett
                 message_id=state["sent_msg"].message_id,
                 reply_markup=reply_markup,
             )
+            return
         except TelegramBadRequest:
-            logger.debug("stream reply edit_reply_markup failed", exc_info=True)
+            logger.warning(
+                "stream reply edit_reply_markup failed — fallback answer with markup",
+                exc_info=True,
+            )
+        # Fallback: новое сообщение с тем же текстом + кнопки (лучше дубль, чем без кнопок).
+        try:
+            text = state["last_text"] or "…"
+            state["sent_msg"] = await _send(text, reply_markup=reply_markup)
+        except Exception:
+            logger.exception("stream reply markup fallback answer failed")
 
     return StreamReplyHandle(_apply_text=_apply_text, _sent_msg_ref=lambda: state["sent_msg"])

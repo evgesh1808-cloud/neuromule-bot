@@ -130,25 +130,74 @@ async def _free_standard_fallback_keyboard(
     user_id: int,
     *,
     body: str | None = None,
+    tariff: object | None = None,
+    labels: list[str] | tuple[str, ...] | None = None,
 ):
     """Клавиатура из 3 кнопок для FREE (в т.ч. при AI_FAILED / если markup=None)."""
-    try:
-        from services.billing.types import TariffTier
-        from services.repository import get_user_row
-        from services.standard_suggested_replies import build_free_hint_keyboard
+    from services.billing.types import TariffTier
+    from services.standard_suggested_replies import build_free_hint_keyboard
 
-        row = await get_user_row(user_id)
-        if not row or TariffTier.from_db(row.tariff) is not TariffTier.FREE:
+    try:
+        is_free = tariff is TariffTier.FREE
+        if not is_free:
+            from services.repository import get_user_row
+
+            row = await get_user_row(user_id)
+            is_free = bool(row and TariffTier.from_db(row.tariff) is TariffTier.FREE)
+        if not is_free:
             return None
-        return build_free_hint_keyboard(body=body or "")
+        return build_free_hint_keyboard(labels, body=body or "")
     except Exception:
         logger.exception("suggested_replies: FREE fail keyboard uid=%s", user_id)
         try:
-            from services.standard_suggested_replies import build_free_hint_keyboard
-
-            return build_free_hint_keyboard(body=body or "")
+            if tariff is TariffTier.FREE:
+                return build_free_hint_keyboard(labels, body=body or "")
         except Exception:
-            return None
+            logger.exception("suggested_replies: FREE emergency keyboard failed uid=%s", user_id)
+        return None
+
+
+def _iron_free_hint_keyboard(result: ChatTurnResult):
+    """Синхронный last-resort: FREE SUCCESS без кнопок недопустим."""
+    from services.billing.types import TariffTier
+    from services.standard_suggested_replies import build_free_hint_keyboard
+
+    if getattr(result, "tariff", None) is not TariffTier.FREE:
+        return None
+    role = (result.effective_text_role or "standard").strip().lower()
+    if role not in ("", "standard"):
+        return None
+    try:
+        return build_free_hint_keyboard(
+            list(getattr(result, "suggested_replies", ()) or ()) or None,
+            body=getattr(result, "assistant_message", None) or "",
+        )
+    except Exception:
+        logger.exception("suggested_replies: iron FREE keyboard failed")
+        return build_free_hint_keyboard()
+
+
+async def _success_reply_keyboard(owner_id: int, result: ChatTurnResult):
+    """Клавиатура под SUCCESS-ответом: blogger → standard hints → FREE iron."""
+    blogger_kb = None
+    blogger_post_id: str | None = None
+    if (result.effective_text_role or "") in _BLOGGER_ROLE_IDS:
+        blogger_kb, blogger_post_id = await _blogger_reply_markup(
+            owner_id,
+            result.assistant_message or "",
+            blogger_post_raw=result.blogger_post_raw,
+        )
+    reply_kb = blogger_kb or await _standard_suggested_reply_markup(owner_id, result)
+    if reply_kb is None:
+        reply_kb = await _free_standard_fallback_keyboard(
+            owner_id,
+            body=result.assistant_message,
+            tariff=getattr(result, "tariff", None),
+            labels=list(getattr(result, "suggested_replies", ()) or ()) or None,
+        )
+    if reply_kb is None:
+        reply_kb = _iron_free_hint_keyboard(result)
+    return reply_kb, blogger_post_id
 
 
 async def _blogger_reply_markup(user_id: int, assistant_message: str, *, blogger_post_raw: str | None = None):
@@ -370,20 +419,7 @@ async def _reply_chat_turn_result(
                 parse_mode=ParseMode.HTML,
             )
         if stream_handle is not None and result.assistant_message:
-            blogger_kb = None
-            blogger_post_id: str | None = None
-            if (result.effective_text_role or "") in _BLOGGER_ROLE_IDS:
-                blogger_kb, blogger_post_id = await _blogger_reply_markup(
-                    owner_id,
-                    result.assistant_message,
-                    blogger_post_raw=result.blogger_post_raw,
-                )
-            reply_kb = blogger_kb or await _standard_suggested_reply_markup(owner_id, result)
-            if reply_kb is None:
-                reply_kb = await _free_standard_fallback_keyboard(
-                    owner_id,
-                    body=result.assistant_message,
-                )
+            reply_kb, blogger_post_id = await _success_reply_keyboard(owner_id, result)
 
             async def _bind_blogger_post(sent_message: Message) -> None:
                 if not blogger_post_id:
@@ -439,21 +475,9 @@ async def _reply_chat_turn_result(
                         parse_mode=ParseMode.HTML,
                     )
                 else:
-                    blogger_kb = None
-                    if (result.effective_text_role or "") in _BLOGGER_ROLE_IDS:
-                        blogger_kb, _blogger_post_id = await _blogger_reply_markup(
-                            owner_id,
-                            result.assistant_message,
-                            blogger_post_raw=result.blogger_post_raw,
-                        )
-                    reply_kb = blogger_kb or await _standard_suggested_reply_markup(
+                    reply_kb, _blogger_post_id = await _success_reply_keyboard(
                         owner_id, result
                     )
-                    if reply_kb is None:
-                        reply_kb = await _free_standard_fallback_keyboard(
-                            owner_id,
-                            body=result.assistant_message,
-                        )
                     await answer_chat_text(
                         message,
                         result.assistant_message,
