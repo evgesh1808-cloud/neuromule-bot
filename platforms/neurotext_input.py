@@ -20,7 +20,7 @@ from platforms.telegram_flood_safe import flood_safe_answer, flood_safe_chat_act
 from platforms.telegram_chat_action import chat_action_loop
 from platforms.telegram_chat_stream import create_throttled_stream_reply
 from platforms.table_generator_delivery import send_table_generator_pack
-from platforms.telegram_chunks import answer_chat_text
+from platforms.telegram_chunks import answer_chat_text, answer_free_standard_success
 from platforms.telegram_quote import (
     build_quoted_user_prompt,
     has_neurotext_message_input,
@@ -464,25 +464,41 @@ async def _reply_chat_turn_result(
                 parse_mode=ParseMode.HTML,
             )
         if stream_handle is not None and result.assistant_message:
-            reply_kb, blogger_post_id = await _success_reply_keyboard(owner_id, result)
-
-            async def _bind_blogger_post(sent_message: Message) -> None:
-                if not blogger_post_id:
-                    return
-                from services import blogger_post_cache
-
-                await blogger_post_cache.bind_telegram_message(
-                    blogger_post_id,
-                    owner_id,
-                    chat_id=sent_message.chat.id,
-                    message_id=sent_message.message_id,
+            role = (result.effective_text_role or "standard").strip().lower()
+            is_free = await _user_is_free(
+                owner_id, tariff_hint=getattr(result, "tariff", None)
+            )
+            # FREE: стрим отключаем — только атомарный send с кнопками.
+            if is_free and role in ("", "standard"):
+                await answer_free_standard_success(
+                    message,
+                    result.assistant_message,
+                    settings,
+                    labels=list(getattr(result, "suggested_replies", ()) or ())
+                    or None,
+                )
+            else:
+                reply_kb, blogger_post_id = await _success_reply_keyboard(
+                    owner_id, result
                 )
 
-            await stream_handle.finalize(
-                result.assistant_message,
-                reply_markup=reply_kb,
-                on_finalized=_bind_blogger_post if blogger_post_id else None,
-            )
+                async def _bind_blogger_post(sent_message: Message) -> None:
+                    if not blogger_post_id:
+                        return
+                    from services import blogger_post_cache
+
+                    await blogger_post_cache.bind_telegram_message(
+                        blogger_post_id,
+                        owner_id,
+                        chat_id=sent_message.chat.id,
+                        message_id=sent_message.message_id,
+                    )
+
+                await stream_handle.finalize(
+                    result.assistant_message,
+                    reply_markup=reply_kb,
+                    on_finalized=_bind_blogger_post if blogger_post_id else None,
+                )
         elif stream_handle is None:
             if result.table_raw_json:
                 try:
@@ -520,31 +536,29 @@ async def _reply_chat_turn_result(
                         parse_mode=ParseMode.HTML,
                     )
                 else:
-                    reply_kb, _blogger_post_id = await _success_reply_keyboard(
-                        owner_id, result
-                    )
-                    if reply_kb is None and await _user_is_free(
+                    role = (result.effective_text_role or "standard").strip().lower()
+                    is_free = await _user_is_free(
                         owner_id, tariff_hint=getattr(result, "tariff", None)
-                    ):
-                        from services.standard_suggested_replies import (
-                            build_free_hint_keyboard,
-                        )
-
-                        reply_kb = build_free_hint_keyboard(
-                            list(getattr(result, "suggested_replies", ()) or ())
-                            or None,
-                            body=result.assistant_message or "",
-                        )
-                        logger.error(
-                            "suggested_replies: SUCCESS free still had no kb — hard build uid=%s",
-                            owner_id,
-                        )
-                    await answer_chat_text(
-                        message,
-                        result.assistant_message,
-                        settings,
-                        reply_markup=reply_kb,
                     )
+                    # FREE Standard: ОДНА атомарная отправка (текст+кнопки вместе).
+                    if is_free and role in ("", "standard"):
+                        await answer_free_standard_success(
+                            message,
+                            result.assistant_message,
+                            settings,
+                            labels=list(getattr(result, "suggested_replies", ()) or ())
+                            or None,
+                        )
+                    else:
+                        reply_kb, _blogger_post_id = await _success_reply_keyboard(
+                            owner_id, result
+                        )
+                        await answer_chat_text(
+                            message,
+                            result.assistant_message,
+                            settings,
+                            reply_markup=reply_kb,
+                        )
             else:
                 # SUCCESS без текста — не молчим (раньше был silent return).
                 fail_kb = await _free_standard_fallback_keyboard(owner_id)
