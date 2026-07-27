@@ -120,6 +120,9 @@ def _is_whitelisted_callback(event: TelegramObject) -> bool:
     # Выбор роли / лайфстайл-подменю — иначе Lifestyle→Блогер за 2с ловит throttle.
     if data.startswith(msg.CB_SET_ROLE_PREFIX) or data.startswith(msg.CB_TEXT_ROLE_PREFIX):
         return True
+    # Suggested Replies FREE/MINI — не режем: иначе клик сразу после ответа «молчит».
+    if data.startswith(msg.CB_CHAT_HINT_PREFIX) or data.startswith(msg.CB_STD_REPLY_PREFIX):
+        return True
     if data in (
         msg.CB_SHOW_LIFESTYLE_SUBCATEGORIES,
         msg.CB_BACK_TO_ROLES_MENU,

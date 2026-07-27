@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import logging
 import re
 import secrets
@@ -19,6 +20,7 @@ _MAX_LABEL_CHARS = 64
 _CONTEXT_ID_LEN = 8
 # Telegram Bot API: callback_data 1–64 bytes (UTF-8).
 _TG_CALLBACK_DATA_MAX_BYTES = 64
+_CHAT_HINT_PREFIX_BYTES = len(msg.CB_CHAT_HINT_PREFIX.encode("utf-8"))
 
 # FREE: если модель забыла / обрезала ===КНОПКИ=== — железные подсказки.
 # Короткие лейблы (≤20 символов) стабильно влезают в chat_hint: callback_data.
@@ -28,9 +30,39 @@ FREE_FALLBACK_SUGGESTED_REPLIES: tuple[str, ...] = (
     "Как применить?",
 )
 
-# context_id -> (user_id, labels) — только fallback для длинных подписей / legacy
+# context_id -> (user_id, labels) — только legacy ``std_reply:`` (старые сообщения)
 _CACHE: dict[str, tuple[int, tuple[str, ...]]] = {}
 _BY_USER: dict[int, str] = {}
+
+
+def sanitize_suggested_label(label: str) -> str:
+    """Убирает HTML/кавычки/мусор — иначе callback ломается или выглядит «мёртвым»."""
+    text = html.unescape((label or "").strip())
+    text = re.sub(r"<[^>]+>", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) >= 2 and text[0] in "\"'«“„" and text[-1] in "\"'»”":
+        text = text[1:-1].strip()
+    return text[:_MAX_LABEL_CHARS]
+
+
+def fit_label_for_chat_hint(label: str) -> str:
+    """Обрезает лейбл так, чтобы ``chat_hint:<текст>`` всегда ≤64 байт UTF-8."""
+    text = sanitize_suggested_label(label)
+    if not text:
+        return ""
+    budget = _TG_CALLBACK_DATA_MAX_BYTES - _CHAT_HINT_PREFIX_BYTES
+    if budget <= 0:
+        return ""
+    raw = text.encode("utf-8")
+    if len(raw) <= budget:
+        return text
+    ell = "…"
+    ell_b = ell.encode("utf-8")
+    keep = max(0, budget - len(ell_b))
+    cut = raw[:keep].decode("utf-8", errors="ignore").rstrip()
+    if not cut:
+        return ""
+    return cut + ell
 
 
 def split_suggested_replies(
@@ -63,18 +95,20 @@ def split_suggested_replies(
     tail = raw[marker_end:]
     labels: list[str] = []
     for line in tail.splitlines():
-        label = (line or "").strip()
+        label = sanitize_suggested_label(line or "")
         if not label:
             continue
         # Убираем маркеры списка / нумерацию
         label = re.sub(r"^[\d]+[.)]\s*", "", label)
         label = re.sub(r"^[-•*]\s*", "", label)
-        label = label.strip()
+        label = sanitize_suggested_label(label)
         if not label:
             continue
-        labels.append(label[:_MAX_LABEL_CHARS])
+        # Сразу под лимит callback — иначе раньше уходили в мёртвый std_reply UUID.
+        labels.append(fit_label_for_chat_hint(label))
         if len(labels) >= _MAX_LABELS:
             break
+    labels = [x for x in labels if x]
     if not labels and fallback_if_missing and body.strip():
         logger.info("suggested_replies: FREE fallback — empty labels after marker")
         return body, list(FREE_FALLBACK_SUGGESTED_REPLIES)
@@ -84,9 +118,11 @@ def split_suggested_replies(
 def remember_suggested_replies(user_id: int, labels: Sequence[str]) -> str | None:
     """Кладёт подписи в кэш; возвращает ``context_id`` или ``None`` если пусто.
 
-    Нужен только как fallback, когда текст не помещается в ``chat_hint:``.
+    Нужен только для legacy ``std_reply:`` (старые сообщения в чате).
     """
-    clean = tuple(str(x).strip()[:_MAX_LABEL_CHARS] for x in labels if str(x).strip())
+    clean = tuple(
+        fit_label_for_chat_hint(str(x)) for x in labels if fit_label_for_chat_hint(str(x))
+    )
     if not clean:
         return None
     context_id = secrets.token_hex(_CONTEXT_ID_LEN // 2)
@@ -103,13 +139,14 @@ def callback_data_fits(data: str) -> bool:
 
 
 def build_chat_hint_callback(label: str) -> str | None:
-    """``chat_hint:<текст>`` если укладывается в лимит Telegram, иначе ``None``."""
-    text = (label or "").strip()
+    """``chat_hint:<текст>`` — всегда усечённый под 64 байта (не ``None`` из‑за длины)."""
+    text = fit_label_for_chat_hint(label)
     if not text:
         return None
     data = f"{msg.CB_CHAT_HINT_PREFIX}{text}"
     if callback_data_fits(data):
         return data
+    logger.warning("suggested_replies: chat_hint still too long after fit len=%s", len(data.encode()))
     return None
 
 
@@ -178,28 +215,21 @@ def build_suggested_replies_keyboard(
 ) -> InlineKeyboardMarkup | None:
     """Инлайн-кнопки Suggested Replies под ответом standard.
 
-    Предпочтительно ``chat_hint:<текст>`` (без UUID-сессии). Legacy
-    ``std_reply:<idx>:<context_id>`` — только если текст не влезает в 64 байта.
+    Всегда ``chat_hint:<текст>`` (текст усечён под 64 байта). Legacy
+    ``std_reply:`` больше не создаём — in-memory UUID ломал FREE после рестарта.
+    ``context_id`` оставлен в сигнатуре для совместимости вызовов.
     """
+    _ = context_id  # legacy API
     rows: list[list[InlineKeyboardButton]] = []
-    for i, label in enumerate(labels):
-        text = (label or "").strip()
+    for label in labels:
+        callback_data = build_chat_hint_callback(label)
+        if callback_data is None:
+            continue
+        text = parse_chat_hint_callback(callback_data) or ""
         if not text:
             continue
-        # Telegram button text limit ~64
+        # Telegram button text limit ~64 символа
         btn_text = text if len(text) <= 64 else text[:61] + "…"
-        direct = build_chat_hint_callback(text)
-        if direct is not None:
-            callback_data = direct
-        else:
-            callback_data = f"{msg.CB_STD_REPLY_PREFIX}{i}:{context_id}"
-            if not callback_data_fits(callback_data):
-                logger.warning(
-                    "suggested reply callback too long idx=%s len=%s",
-                    i,
-                    len(callback_data.encode("utf-8")),
-                )
-                continue
         rows.append(
             [
                 InlineKeyboardButton(

@@ -228,12 +228,26 @@ async def cb_standard_suggested_reply(callback: CallbackQuery, state: FSMContext
     await callback.answer()
     await state.update_data(text_role="standard", pending_chat_hint=label)
     await ensure_neurotext_waiting_state(state)
-    await handle_neurotext_user_message(
-        callback.message,
-        state,
-        forced_user_text=label,
-        forced_user_id=user_id,
-    )
+    try:
+        await handle_neurotext_user_message(
+            callback.message,
+            state,
+            forced_user_text=label,
+            forced_user_id=user_id,
+        )
+    except Exception:
+        logger.exception(
+            "cb_standard_suggested_reply failed uid=%s label=%r",
+            user_id,
+            label[:80],
+        )
+        try:
+            await callback.message.answer(
+                "⚠️ Не удалось обработать кнопку. Напишите вопрос текстом.",
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception:
+            pass
 
 
 @router.message(UserFlow.waiting_for_text_prompt)

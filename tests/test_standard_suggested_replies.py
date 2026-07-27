@@ -108,17 +108,35 @@ def test_keyboard_uses_chat_hint_prefix() -> None:
     assert flat[0].callback_data.startswith(msg.CB_CHAT_HINT_PREFIX)
 
 
-def test_chat_hint_fallback_to_std_reply_when_too_long() -> None:
-    # chat_hint: = 10 байт; кириллица ~2 байта/символ → длинная подпись не влезет
+def test_long_label_truncated_into_chat_hint_not_std_reply() -> None:
+    # Раньше длинные лейблы уходили в std_reply UUID → «устарела» после рестарта.
     long = "Ж" * 40
-    assert build_chat_hint_callback(long) is None
+    data = build_chat_hint_callback(long)
+    assert data is not None
+    assert data.startswith(msg.CB_CHAT_HINT_PREFIX)
+    assert len(data.encode("utf-8")) <= 64
     cid = remember_suggested_replies(3, [long])
     assert cid
     kb = build_suggested_replies_keyboard(cid, [long])
     assert kb is not None
-    data = kb.inline_keyboard[0][0].callback_data
-    assert data == f"{msg.CB_STD_REPLY_PREFIX}0:{cid}"
-    assert parse_std_reply_callback(data) == (0, cid)
+    cb = kb.inline_keyboard[0][0].callback_data
+    assert cb.startswith(msg.CB_CHAT_HINT_PREFIX)
+    assert not cb.startswith(msg.CB_STD_REPLY_PREFIX)
+    assert parse_chat_hint_callback(cb)
+
+
+def test_split_strips_html_and_fits_callback() -> None:
+    raw = (
+        "Ответ\n===КНОПКИ===\n"
+        "<b>Можно подробнее про тхэквондо для новичка?</b>\n"
+        '"Другой вариант?"\n'
+        "Как применить на практике сегодня вечером?"
+    )
+    body, labels = split_suggested_replies(raw)
+    assert body == "Ответ"
+    assert len(labels) == 3
+    assert all("<" not in x for x in labels)
+    assert all(len(f"{msg.CB_CHAT_HINT_PREFIX}{x}".encode("utf-8")) <= 64 for x in labels)
 
 
 def test_resolve_suggested_reply_latest_fallback() -> None:
@@ -146,6 +164,8 @@ def test_role_standard_prompt_has_buttons_rule() -> None:
     assert "НАПРЯМУЮ по теме" in _CHATCOM_LACO_TAIL
     assert "1–3 слова" in _CHATCOM_LACO_TAIL
     assert "Minimize output tokens" in _CHATCOM_LACO_TAIL
+    assert "OVERRIDE" in _CHATCOM_LACO_TAIL
+    assert "≤400" in _CHATCOM_LACO_TAIL or "2–4 коротких" in _CHATCOM_LACO_TAIL
     assert "Вопрос подсказка один?" in _CHATCOM_LACO_TAIL
     assert "Второй вопрос по теме?" in _CHATCOM_LACO_TAIL
     assert "Третий вопрос по теме?" in _CHATCOM_LACO_TAIL

@@ -240,12 +240,6 @@ def inject_compliance_rules_into_last_user_message(
     и плоскую верстку шагов (без вложенной нумерации) в длинных диалогах, когда system-prompt
     далеко от текущего вопроса. Для ``standard`` на FREE — ``_CHATCOM_LACO_TAIL``.
     """
-    suffix = build_user_compliance_tail(
-        premium=use_premium_prompt,
-        text_role=text_role,
-        chatcom_laconic=chatcom_laconic,
-        request_suggested_replies=request_suggested_replies,
-    )
     for i in range(len(messages) - 1, -1, -1):
         msg = messages[i]
         if msg.get("role") != "user":
@@ -258,13 +252,35 @@ def inject_compliance_rules_into_last_user_message(
                 text = (part.get("text") or "").strip()
                 if user_message_has_compliance_tail(text):
                     return
+                suffix = build_user_compliance_tail(
+                    premium=use_premium_prompt,
+                    text_role=text_role,
+                    chatcom_laconic=chatcom_laconic,
+                    request_suggested_replies=request_suggested_replies,
+                    user_text=text,
+                )
                 part["text"] = f"{text}{suffix}" if text else suffix.lstrip()
                 return
+            # Multimodal без text-part: route lock по пустому user_text → ТИП Б.
+            suffix = build_user_compliance_tail(
+                premium=use_premium_prompt,
+                text_role=text_role,
+                chatcom_laconic=chatcom_laconic,
+                request_suggested_replies=request_suggested_replies,
+                user_text="",
+            )
             msg["content"] = [*content, {"type": "text", "text": suffix.lstrip()}]
             return
         text_content = (content or "").strip() if isinstance(content, str) else str(content or "").strip()
         if user_message_has_compliance_tail(text_content):
             return
+        suffix = build_user_compliance_tail(
+            premium=use_premium_prompt,
+            text_role=text_role,
+            chatcom_laconic=chatcom_laconic,
+            request_suggested_replies=request_suggested_replies,
+            user_text=text_content,
+        )
         msg["content"] = f"{text_content}{suffix}" if text_content else suffix.lstrip()
         return
 

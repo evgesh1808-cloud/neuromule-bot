@@ -124,6 +124,8 @@ def test_prepare_openrouter_uses_chatcom_tail_for_standard() -> None:
     assert "оштрафован" in body
     assert "Вопрос подсказка один?" in body
     assert "Minimize output tokens" in body
+    assert "ROUTE LOCK: FREE LACO" in body
+    assert "OVERRIDE" in body
     assert "премиум-комплаенс" not in body
 
     # Идемпотентность: повторный inject не дублирует FREE-хвост.
@@ -151,16 +153,52 @@ def test_prepare_openrouter_skips_chatcom_tail_for_smart_standard() -> None:
     assert "Compliance: PREMIUM COPY PACK" in body
     assert "QUERY-TYPE ROUTING" in body
     assert "ТИП А" in body and "ТИП Б" in body
-    assert "разбор слов по составу" in body
-    assert "ОДИН прямой" in body
+    assert "ОДИН прямой" in body or "ОДНИМ экспертным" in body
     assert "Готово! Разные варианты на выбор" in body
     assert "<pre>" in body
-    assert "кастомными живыми заголовками" in body
     assert "КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО COPY PACK" in body or "ЗАПРЕЩЕНО COPY PACK" in body
     assert "===КНОПКИ===" in body  # запрет упоминается в хвосте
     assert "КРЕАТИВНОСТЬ" in body
+    # «вопрос» без «напиши текст» → якорь ТИП Б
+    assert "ROUTE LOCK: ТИП Б" in body
     assert "<b>Эмоциональный</b>" not in body
     assert "<b>Деловой</b>" not in body
+
+
+def test_paid_route_lock_type_b_for_personal_news() -> None:
+    from content.chat_prompt import looks_like_paid_copy_pack_request
+
+    assert looks_like_paid_copy_pack_request("Мой сын полюбил играть в футбол") is False
+    assert looks_like_paid_copy_pack_request("Как поддержать сына в секции?") is False
+    payload = [
+        {"role": "system", "content": "x"},
+        {"role": "user", "content": "Мой сын полюбил играть в футбол"},
+    ]
+    prepare_openrouter_chat_messages(
+        payload,
+        use_premium_prompt=True,
+        text_role="standard",
+        chatcom_laconic=False,
+    )
+    assert "ROUTE LOCK: ТИП Б" in payload[1]["content"]
+    assert "ROUTE LOCK: ТИП А" not in payload[1]["content"]
+
+
+def test_paid_route_lock_type_a_for_write_request() -> None:
+    from content.chat_prompt import looks_like_paid_copy_pack_request
+
+    assert looks_like_paid_copy_pack_request("Напиши поздравление с 30 лет") is True
+    payload = [
+        {"role": "system", "content": "x"},
+        {"role": "user", "content": "Напиши поздравление с 30 лет"},
+    ]
+    prepare_openrouter_chat_messages(
+        payload,
+        use_premium_prompt=True,
+        text_role="standard",
+        chatcom_laconic=False,
+    )
+    assert "ROUTE LOCK: ТИП А" in payload[1]["content"]
 
 
 def test_prepare_openrouter_injects_compliance_without_hard_collapse() -> None:
@@ -187,7 +225,7 @@ def test_prepare_openrouter_injects_compliance_without_hard_collapse() -> None:
     assert "QUERY-TYPE ROUTING" in payload[-1]["content"]
     assert "ТИП А" in payload[-1]["content"]
     assert "ТИП Б" in payload[-1]["content"]
-    assert "разбор слов по составу" in payload[-1]["content"]
+    assert "ROUTE LOCK: ТИП А" in payload[-1]["content"]
     assert "<pre>" in payload[-1]["content"]
 
 
@@ -241,9 +279,10 @@ def test_paid_standard_uses_copy_pack_voice() -> None:
     assert "QUERY-TYPE ROUTING" in prompt
     assert "ТИП А" in prompt and "ТИП Б" in prompt
     assert "ТЕКСТЫ ДЛЯ ПЕРЕСЫЛКИ И КОПИРОВАНИЯ" in prompt
-    assert "разбор слов по составу" in prompt
+    assert "По умолчанию ТИП Б" in prompt
+    assert "сын полюбил" in prompt.lower()
     assert "ОДИН прямой" in prompt
-    assert "КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать структуру COPY PACK" in prompt
+    assert "КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО COPY PACK" in prompt
     assert "ПРАВИЛО ЗАГОЛОВКОВ" in prompt
     assert "кастомный заголовок" in prompt.lower()
     assert "Даже на аналитический вопрос" not in prompt
@@ -276,8 +315,9 @@ def test_paid_standard_uses_copy_pack_voice() -> None:
     mini_role = build_custom_role_prompt("standard", TariffTier.MINI)
     ultra_role = build_custom_role_prompt("standard", TariffTier.ULTRA)
     assert "===КНОПКИ===" in free_role
-    assert "АВТОНОМНЫЙ ЭКСПЕРТ-АССИСТЕНТ" in free_role
-    assert "QUERY-TYPE ROUTING" in free_role
+    assert "АВТОНОМНЫЙ ЭКСПЕРТ-АССИСТЕНТ — FREE" in free_role
+    assert "QUERY-TYPE ROUTING (FREE)" in free_role
+    assert "3–4 пункта" not in free_role  # не тащим paid-аналитику на FREE
     assert "Compliance: FREE TIER" in free_role
     assert "PREMIUM COPY PACK" in mini_role
     assert "<pre>" in mini_role

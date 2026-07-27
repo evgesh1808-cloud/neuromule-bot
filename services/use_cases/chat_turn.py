@@ -363,11 +363,21 @@ async def run_chat_turn(
             and plan.use_premium_prompt
             and plan.tariff is not TariffTier.FREE
         )
-        # Paid standard: температура из ChatRoutePlan (0.75), не дефолт 0.0/0.1.
+        from content.chat_prompt import looks_like_paid_copy_pack_request
+
+        # ТИП А только при явном «напиши/смс/пост…»; иначе ТИП Б (диалог).
+        want_copy_pack = bool(
+            _copy_pack_mode and looks_like_paid_copy_pack_request(raw_user_text)
+        )
+        # Paid standard: Copy Pack → 0.75; Type B → ниже, иначе Gemini «угадывает» 4 варианта.
         temp = (
             _BLOGGER_TEMPERATURE
             if is_blogger_role
-            else (plan.temperature if _copy_pack_mode else None)
+            else (
+                0.75
+                if want_copy_pack
+                else (0.55 if _copy_pack_mode else None)
+            )
         )
 
         async def _call_or(messages: list, *, temperature: float | None) -> dict:
@@ -386,8 +396,10 @@ async def run_chat_turn(
             )
 
         if _copy_pack_mode:
+            from content.chat_prompt import _PAID_ROUTE_TYPE_B_LOCK
             from services.copy_pack import (
                 COPY_PACK_ASSISTANT_PREFIX,
+                COPY_PACK_OPENER_LINE,
                 COPY_PACK_RETRY_USER,
                 is_premium_copy_pack_reply,
                 looks_like_coach_reply,
@@ -395,9 +407,18 @@ async def run_chat_turn(
                 normalize_copy_pack_reply,
             )
 
+            def _is_unwanted_copy_pack(text: str) -> bool:
+                body = normalize_copy_pack_reply(strip_redacted_thinking(text or ""))
+                if is_premium_copy_pack_reply(body):
+                    return True
+                head = body[:200].lower()
+                return "готово! разные варианты" in head or "готово! разные стили" in head
+
             def _pack_content(raw: str) -> str:
-                """Склеивает prefill только если модель уже пошла в COPY PACK."""
+                """Склеивает prefill только для ТИП А; для ТИП Б не усиливаем COPY PACK."""
                 body = normalize_copy_pack_reply(strip_redacted_thinking(raw))
+                if not want_copy_pack:
+                    return body
                 if is_premium_copy_pack_reply(body) or "<pre>" in body.lower():
                     return normalize_copy_pack_reply(
                         merge_copy_pack_prefix(COPY_PACK_ASSISTANT_PREFIX, body)
@@ -414,15 +435,73 @@ async def run_chat_turn(
             packed = _pack_content(completion.get("content") or "")
             completion = dict(completion)
             completion["content"] = packed
-            if is_premium_copy_pack_reply(packed):
+
+            # Код-гард: на ТИП Б модель всё ещё выдаёт Copy Pack → один короткий retry.
+            if not want_copy_pack and _is_unwanted_copy_pack(packed) and last_user is not None:
+                metrics.incr("chat.copy_pack_rejected_type_b")
+                logger.warning(
+                    "run_chat_turn: Type B got Copy Pack — retry uid=%s head=%s",
+                    user_id,
+                    packed[:120].replace("\n", " "),
+                )
+                raw_user = str(last_user.get("content") or "")
+                for marker in ("[Compliance:", "[ROUTE LOCK:", "[Системный хвост"):
+                    idx = raw_user.find(marker)
+                    if idx >= 0:
+                        raw_user = raw_user[:idx].rstrip()
+                retry_payload = [
+                    *system_only,
+                    {
+                        "role": "user",
+                        "content": (
+                            f"{raw_user}{_PAID_ROUTE_TYPE_B_LOCK}\n"
+                            "Ответь ОДНИМ экспертным сообщением. "
+                            f"ЗАПРЕЩЕНО начинать с «{COPY_PACK_OPENER_LINE}» "
+                            "и выдавать 4 блока/<pre>."
+                        ),
+                    },
+                ]
+                try:
+                    retry_completion = await ask_ai_messages(
+                        settings,
+                        retry_payload,
+                        timeout=min(float(or_timeout), 25.0),
+                        max_context_tokens=settings.chat_max_context_tokens_est,
+                        char_per_token=settings.chat_char_per_token_est,
+                        http_client=http_client,
+                        stream_callback=None,
+                        models=model_chain[:1] or model_chain,
+                        max_tokens=min(int(plan.max_tokens), 900),
+                        text_role=effective_role,
+                        temperature=0.45,
+                    )
+                    retry_body = normalize_copy_pack_reply(
+                        strip_redacted_thinking(retry_completion.get("content") or "")
+                    )
+                    if retry_body.strip() and not _is_unwanted_copy_pack(retry_body):
+                        completion = dict(retry_completion)
+                        completion["content"] = retry_body
+                        packed = retry_body
+                        metrics.incr("chat.copy_pack_type_b_retry_ok")
+                    else:
+                        metrics.incr("chat.copy_pack_type_b_retry_fail")
+                except Exception:
+                    logger.warning(
+                        "run_chat_turn: Type B anti-copy-pack retry failed uid=%s",
+                        user_id,
+                        exc_info=True,
+                    )
+                    metrics.incr("chat.copy_pack_type_b_retry_fail")
+
+            if is_premium_copy_pack_reply(packed) and want_copy_pack:
                 metrics.incr("chat.copy_pack_prefill_ok")
             elif packed.strip() and (
                 looks_like_coach_reply(packed) or "<pre>" not in packed.lower()
             ):
                 # ТИП Б: экспертный разбор без COPY PACK — принимаем как есть.
                 metrics.incr("chat.copy_pack_expert_ok")
-            elif last_user is not None and not packed.strip():
-                # Только пустой ответ — короткий retry с prefill (не 2× полный 45s каскад).
+            elif want_copy_pack and last_user is not None and not packed.strip():
+                # Только пустой ответ на ТИП А — короткий retry с prefill.
                 metrics.incr("chat.copy_pack_prefill_weak")
                 logger.warning(
                     "run_chat_turn: copy-pack empty — short retry user_id=%s",
