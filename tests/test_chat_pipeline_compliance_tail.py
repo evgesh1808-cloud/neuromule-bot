@@ -121,7 +121,7 @@ def test_prepare_openrouter_uses_chatcom_tail_for_standard() -> None:
     assert "===КНОПКИ===" in body
     assert "follow-up" in body
     assert "ROUTE LOCK: FREE LACO" in body
-    assert "2–3" in body
+    assert "400" in body
     assert "премиум-комплаенс" not in body
 
     # Идемпотентность: повторный inject не дублирует FREE-хвост.
@@ -312,15 +312,24 @@ def test_paid_standard_uses_copy_pack_voice() -> None:
     ultra_role = build_custom_role_prompt("standard", TariffTier.ULTRA)
     assert "===КНОПКИ===" in free_role
     assert "АВТОНОМНЫЙ ЭКСПЕРТ-АССИСТЕНТ — FREE TIER" in free_role
+    assert "СИСТЕМНЫЙ КОНТЕКСТ ВРЕМЕНИ" in free_role
+    assert "Текущая дата:" in free_role
+    assert free_role.index("СИСТЕМНЫЙ КОНТЕКСТ ВРЕМЕНИ") < free_role.index(
+        "АВТОНОМНЫЙ ЭКСПЕРТ-АССИСТЕНТ — FREE TIER"
+    )
     assert "Функция закрыта на тарифе FREE" in free_role
     assert "ЧТО ВКЛЮЧЕНО И ДОСТУПНО НА ТАРИФЕ FREE" in free_role
     assert "Flux Schnell" in free_role
     assert "Совет дня" in free_role
     assert "6 последними" in free_role
     assert "СИНТАКСИЧЕСКИЙ ЯКОРЬ" in free_role
+    assert "ЗАПРЕТ НА ГАЛЛЮЦИНАЦИИ" in free_role
+    assert "до 400 символов" in free_role
+    assert "NeuroMule 2026" in free_role
     assert "QUERY-TYPE ROUTING (FREE)" not in free_role
     assert "3–4 пункта" not in free_role  # не тащим paid-аналитику на FREE
     assert "Compliance: FREE TIER" not in free_role  # хвост только в user inject
+    assert "СИСТЕМНЫЙ КОНТЕКСТ ВРЕМЕНИ" not in mini_role
     assert "PREMIUM COPY PACK" in mini_role
     assert "<pre>" in mini_role
     assert "PREMIUM COPY PACK" in ultra_role
@@ -364,7 +373,19 @@ def test_charged_plan_preserves_tariff_for_prompt_branching() -> None:
     free_role = build_custom_role_prompt("standard", TariffTier.FREE)
     assert "FREE TIER" in free_role
     assert "===КНОПКИ===" in free_role
+    assert "СИСТЕМНЫЙ КОНТЕКСТ ВРЕМЕНИ" in free_role
     assert "PREMIUM COPY PACK" not in free_role
+
+
+def test_build_free_time_context_uses_russian_date() -> None:
+    from datetime import datetime
+
+    from content.chat_prompt import build_free_time_context
+
+    ctx = build_free_time_context(now=datetime(2026, 7, 27, 12, 0, 0))
+    assert "СИСТЕМНЫЙ КОНТЕКСТ ВРЕМЕНИ" in ctx
+    assert "27 июля 2026 года" in ctx
+    assert "не выдумывай" in ctx
 
 
 def test_standard_max_tokens_free_vs_paid() -> None:

@@ -215,16 +215,16 @@ def test_role_standard_prompt_has_buttons_rule() -> None:
     assert "ЧТО ВКЛЮЧЕНО И ДОСТУПНО НА ТАРИФЕ FREE" in _STANDARD_FREE_CORE
     assert "Flux Schnell" in _STANDARD_FREE_CORE
     assert "Совет дня" in _STANDARD_FREE_CORE
-    assert "ОБЪЕМ И СТРУКТУРА ОТВЕТА" in _STANDARD_FREE_CORE
-    assert "2–3" in _STANDARD_FREE_CORE
+    assert "ЗАПРЕТ НА ГАЛЛЮЦИНАЦИИ" in _STANDARD_FREE_CORE
+    assert "до 400 символов" in _STANDARD_FREE_CORE
+    assert "NeuroMule 2026" in _STANDARD_FREE_CORE
     assert "6 последними" in _STANDARD_FREE_CORE
     assert "===КНОПКИ===" in _CHATCOM_LACO_TAIL
     assert "Compliance: FREE TIER" in _CHATCOM_LACO_TAIL
-    assert "2–3" in _CHATCOM_LACO_TAIL
+    assert "400" in _CHATCOM_LACO_TAIL
     assert "follow-up" in _CHATCOM_LACO_TAIL
-    assert "якорям" in _CHATCOM_LACO_TAIL
-    assert "Кабель или беспроводная?" in _STANDARD_FREE_CORE
-    assert "ЗАПРЕЩЕНО писать общие фразы" in _STANDARD_FREE_CORE
+    assert "Первый вопрос?" in _STANDARD_FREE_CORE
+    assert "РЖД" in _STANDARD_FREE_CORE
     assert "КРИТИЧЕСКОЕ ИСКЛЮЧЕНИЕ" in _ROLE_STANDARD
     assert "Какая погода в Люберцах" in _ROLE_STANDARD
     assert "ПОЛИТИКА БЕЗОПАСНОСТИ И КОММЕРЧЕСКОЙ ТАЙНЫ" in _ROLE_STANDARD
