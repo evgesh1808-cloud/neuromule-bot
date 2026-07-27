@@ -15,6 +15,8 @@ from content import messages as msg
 logger = logging.getLogger(__name__)
 
 BUTTONS_MARKER = "===КНОПКИ==="
+# Модель пишет КНОПКИ/кнопки/Кнопки, иногда с пробелами.
+_BUTTONS_MARKER_RE = re.compile(r"===\s*кнопки\s*===", flags=re.IGNORECASE)
 _MAX_LABELS = 3
 _MAX_LABEL_CHARS = 64
 _CONTEXT_ID_LEN = 8
@@ -286,6 +288,51 @@ def derive_contextual_free_hints(body: str) -> list[str]:
     return out[:_MAX_LABELS]
 
 
+def has_buttons_marker(text: str) -> bool:
+    """True, если в тексте есть маркер кнопок (любой регистр / пробелы)."""
+    return bool(_BUTTONS_MARKER_RE.search(text or ""))
+
+
+def clean_text_before_marker(text: str) -> str:
+    """Текст ответа без блока ``===КНОПКИ===`` (для отправки пользователю)."""
+    raw = text or ""
+    m = _BUTTONS_MARKER_RE.search(raw)
+    if not m:
+        return raw.strip()
+    return raw[: m.start()].rstrip()
+
+
+def force_append_free_buttons_block(
+    text: str,
+    *,
+    labels: Sequence[str] | None = None,
+) -> str:
+    """Если маркер забыт — бэкенд жёстко дописывает ``===КНОПКИ===`` + 3 строки."""
+    raw = (text or "").rstrip()
+    if has_buttons_marker(raw):
+        return raw
+    body = raw.strip()
+    hints = ensure_free_hint_labels(labels, body=body)
+    block = "\n".join((BUTTONS_MARKER, *hints))
+    logger.info("suggested_replies: FORCE append ===КНОПКИ=== (marker missing)")
+    return f"{body}\n{block}" if body else block
+
+
+def prepare_free_standard_reply(
+    model_text: str,
+) -> tuple[str, list[str], InlineKeyboardMarkup]:
+    """Полный FREE-пайплайн: дописка маркера → чистый текст → всегда 3 кнопки.
+
+    Эквивалент схемы:
+    force marker → clean_text_before_marker → build_free_hint_keyboard.
+    """
+    forced = force_append_free_buttons_block(model_text)
+    body, labels = split_suggested_replies(forced, fallback_if_missing=True)
+    labels = ensure_free_hint_labels(labels, body=body)
+    kb = build_free_hint_keyboard(labels, body=body)
+    return body, labels, kb
+
+
 def split_suggested_replies(
     text: str,
     *,
@@ -294,26 +341,21 @@ def split_suggested_replies(
     """Отделяет тело ответа от блока ``===КНОПКИ===`` (если есть).
 
     ``fallback_if_missing=True`` (FREE standard): при отсутствии маркера/лейблов
-    дописывает кнопки из якорей ответа, иначе — ``FREE_FALLBACK_SUGGESTED_REPLIES``.
+    сначала дописывает блок маркера, затем гарантирует 3 лейбла.
     """
     raw = text or ""
-    idx = raw.find(BUTTONS_MARKER)
-    if idx < 0:
-        # Модель иногда пишет маркер в другом регистре / с пробелами
-        m = re.search(r"===?\s*КНОПКИ\s*===?", raw, flags=re.IGNORECASE)
-        if not m:
-            body = raw.strip()
-            if fallback_if_missing:
-                logger.info("suggested_replies: FREE fallback — marker missing")
-                return body, ensure_free_hint_labels(body=body)
-            return body, []
-        idx = m.start()
-        marker_end = m.end()
-    else:
-        marker_end = idx + len(BUTTONS_MARKER)
+    if fallback_if_missing and not has_buttons_marker(raw):
+        raw = force_append_free_buttons_block(raw)
 
-    body = raw[:idx].rstrip()
-    tail = raw[marker_end:]
+    m = _BUTTONS_MARKER_RE.search(raw)
+    if not m:
+        body = raw.strip()
+        if fallback_if_missing:
+            return body, ensure_free_hint_labels(body=body)
+        return body, []
+
+    body = raw[: m.start()].rstrip()
+    tail = raw[m.end() :]
     labels: list[str] = []
     for line in tail.splitlines():
         label = sanitize_suggested_label(line or "")
@@ -334,6 +376,7 @@ def split_suggested_replies(
     if fallback_if_missing:
         labels = ensure_free_hint_labels(labels, body=body)
     return body, labels
+
 
 
 def remember_suggested_replies(user_id: int, labels: Sequence[str]) -> str | None:
@@ -424,8 +467,19 @@ def build_free_hint_keyboard(
     labels: Sequence[str] | None = None,
     *,
     body: str | None = None,
+    from_model_text: str | None = None,
 ) -> InlineKeyboardMarkup:
-    """Железная клавиатура FREE: всегда 3 кнопки ``chat_hint:``, никогда ``None``."""
+    """Железная клавиатура FREE: всегда 3 кнопки ``chat_hint:``, никогда ``None``.
+
+    ``from_model_text`` — сырой ответ модели: допишет маркер при необходимости и распарсит кнопки.
+    """
+    if from_model_text is not None:
+        clean_body, clean_labels = split_suggested_replies(
+            from_model_text,
+            fallback_if_missing=True,
+        )
+        return build_free_hint_keyboard(clean_labels, body=clean_body)
+
     clean = ensure_free_hint_labels(labels, body=body)
     rows: list[list[InlineKeyboardButton]] = []
     for i, label in enumerate(clean):

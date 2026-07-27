@@ -705,21 +705,17 @@ async def run_chat_turn(
         suggested_replies: tuple[str, ...] = ()
         content_for_format = content
         if (effective_role or "").strip().lower() == "standard":
-            from services.standard_suggested_replies import split_suggested_replies
-
-            content_for_format, reply_labels = split_suggested_replies(
-                content,
-                # FREE: 100% кнопки даже если LLM забыла / обрезала ===КНОПКИ===.
-                fallback_if_missing=plan.tariff is TariffTier.FREE,
-            )
             if plan.tariff is TariffTier.FREE:
-                from services.standard_suggested_replies import ensure_free_hint_labels
+                from services.standard_suggested_replies import prepare_free_standard_reply
 
-                reply_labels = ensure_free_hint_labels(
-                    reply_labels,
-                    body=content_for_format,
-                )
-            suggested_replies = tuple(reply_labels)
+                # Железобетон: дописка ===КНОПКИ=== + 3 лейбла + клавиатура (даже если LLM забыла).
+                content_for_format, reply_labels, _kb = prepare_free_standard_reply(content)
+                suggested_replies = tuple(reply_labels)
+            else:
+                from services.standard_suggested_replies import split_suggested_replies
+
+                content_for_format, reply_labels = split_suggested_replies(content)
+                suggested_replies = tuple(reply_labels)
 
         if (effective_role or "").strip().lower() in _BLOGGER_ROLE_IDS:
             from services.blogger_post_parser import (

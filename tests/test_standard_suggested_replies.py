@@ -91,6 +91,47 @@ def test_ensure_replaces_generic_with_contextual() -> None:
     assert any(k in joined for k in ("telegram", "вебхук", "polling", "деплой", "бот"))
 
 
+def test_force_append_buttons_marker_when_missing() -> None:
+    from services.standard_suggested_replies import (
+        BUTTONS_MARKER,
+        clean_text_before_marker,
+        force_append_free_buttons_block,
+        has_buttons_marker,
+        prepare_free_standard_reply,
+    )
+
+    raw = "Короткий ответ без маркера про футбол."
+    assert not has_buttons_marker(raw)
+    forced = force_append_free_buttons_block(raw)
+    assert BUTTONS_MARKER in forced
+    assert has_buttons_marker(forced)
+    assert clean_text_before_marker(forced) == raw
+
+    body, labels, kb = prepare_free_standard_reply(raw)
+    assert body == raw
+    assert BUTTONS_MARKER not in body
+    assert len(labels) == 3
+    assert kb is not None
+    assert len(kb.inline_keyboard) == 3
+
+
+def test_has_buttons_marker_case_insensitive() -> None:
+    from services.standard_suggested_replies import has_buttons_marker
+
+    assert has_buttons_marker("текст\n===кнопки===\nА?")
+    assert has_buttons_marker("текст\n=== Кнопки ===\nА?")
+    assert has_buttons_marker("текст\n===КНОПКИ===\nА?")
+    assert not has_buttons_marker("просто текст")
+
+
+def test_build_free_hint_keyboard_from_model_text() -> None:
+    from services.standard_suggested_replies import build_free_hint_keyboard
+
+    kb = build_free_hint_keyboard(from_model_text="Ответ про ромашку без маркера.")
+    assert kb is not None
+    assert len(kb.inline_keyboard) == 3
+
+
 def test_build_free_hint_keyboard_never_none() -> None:
     from services.standard_suggested_replies import build_free_hint_keyboard
 

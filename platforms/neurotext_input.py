@@ -160,7 +160,10 @@ async def _free_standard_fallback_keyboard(
 def _iron_free_hint_keyboard(result: ChatTurnResult):
     """Синхронный last-resort: FREE SUCCESS без кнопок недопустим."""
     from services.billing.types import TariffTier
-    from services.standard_suggested_replies import build_free_hint_keyboard
+    from services.standard_suggested_replies import (
+        build_free_hint_keyboard,
+        prepare_free_standard_reply,
+    )
 
     if getattr(result, "tariff", None) is not TariffTier.FREE:
         return None
@@ -168,17 +171,25 @@ def _iron_free_hint_keyboard(result: ChatTurnResult):
     if role not in ("", "standard"):
         return None
     try:
-        return build_free_hint_keyboard(
-            list(getattr(result, "suggested_replies", ()) or ()) or None,
-            body=getattr(result, "assistant_message", None) or "",
-        )
+        labels = list(getattr(result, "suggested_replies", ()) or ())
+        body = getattr(result, "assistant_message", None) or ""
+        if labels:
+            return build_free_hint_keyboard(labels, body=body)
+        # Нет лейблов — полный FORCE-пайплайн по тексту ответа.
+        _body, _labels, kb = prepare_free_standard_reply(body)
+        return kb
     except Exception:
         logger.exception("suggested_replies: iron FREE keyboard failed")
         return build_free_hint_keyboard()
 
 
 async def _success_reply_keyboard(owner_id: int, result: ChatTurnResult):
-    """Клавиатура под SUCCESS-ответом: blogger → standard hints → FREE iron."""
+    """Клавиатура под SUCCESS-ответом: blogger → standard hints → FREE iron.
+
+    Для FREE ``reply_markup`` всегда не ``None`` (принудительно).
+    """
+    from services.billing.types import TariffTier
+
     blogger_kb = None
     blogger_post_id: str | None = None
     if (result.effective_text_role or "") in _BLOGGER_ROLE_IDS:
@@ -197,6 +208,13 @@ async def _success_reply_keyboard(owner_id: int, result: ChatTurnResult):
         )
     if reply_kb is None:
         reply_kb = _iron_free_hint_keyboard(result)
+    # Принудительно: FREE standard SUCCESS без клавиатуры — недопустим.
+    if reply_kb is None and getattr(result, "tariff", None) is TariffTier.FREE:
+        from services.standard_suggested_replies import prepare_free_standard_reply
+
+        _b, _l, reply_kb = prepare_free_standard_reply(
+            result.assistant_message or ""
+        )
     return reply_kb, blogger_post_id
 
 
