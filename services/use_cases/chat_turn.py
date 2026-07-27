@@ -157,6 +157,8 @@ class ChatTurnResult:
     table_degradation_notice: str | None = None
     blogger_post_raw: str | None = None
     suggested_replies: tuple[str, ...] = ()
+    # Тариф плана чата (для FREE-кнопок без повторного гадания по БД).
+    tariff: object | None = None
 
 
 def _apply_user_content_override(
@@ -788,4 +790,5 @@ async def run_chat_turn(
             effective_text_role=effective_role,
             blogger_post_raw=blogger_post_raw,
             suggested_replies=suggested_replies,
+            tariff=plan.tariff,
         )

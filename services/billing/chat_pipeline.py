@@ -374,9 +374,9 @@ def role_allowed_for_tariff(role_id: str, tariff: TariffTier) -> bool:
     return True
 
 
-# Unit-economics FREE: жёсткий потолок ответа (кнопки + 1 короткий текст).
-# Запас под тело + ===КНОПКИ=== (при 400 модель часто отдавала только кнопки → AI_FAILED).
-_FREE_CHAT_MAX_OUTPUT_TOKENS = 640
+# Unit-economics FREE: потолок ответа с запасом под ===КНОПКИ===.
+# 640 часто резало мысль на полуслове — модель не доходила до маркера кнопок.
+_FREE_CHAT_MAX_OUTPUT_TOKENS = 900
 
 
 # Copy Pack (standard на MINI/SMART/ULTRA + PAID_CHAT_MODEL): выше дефолта,

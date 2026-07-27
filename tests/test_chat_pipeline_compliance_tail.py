@@ -119,9 +119,9 @@ def test_prepare_openrouter_uses_chatcom_tail_for_standard() -> None:
     body = payload[1]["content"]
     assert FREE_COMPLIANCE_TAIL_MARKER in body
     assert "===КНОПКИ===" in body
-    assert "Первый вопрос?" in body
+    assert "follow-up" in body
     assert "ROUTE LOCK: FREE LACO" in body
-    assert "3–4" in body
+    assert "2–3" in body
     assert "премиум-комплаенс" not in body
 
     # Идемпотентность: повторный inject не дублирует FREE-хвост.
@@ -401,7 +401,7 @@ def test_standard_max_tokens_free_vs_paid() -> None:
     from services.billing.chat_pipeline import _FREE_CHAT_MAX_OUTPUT_TOKENS
 
     assert free_plan.max_tokens == _FREE_CHAT_MAX_OUTPUT_TOKENS
-    assert 400 <= free_plan.max_tokens <= 800
+    assert 400 <= free_plan.max_tokens <= 1000
     assert smart_plan.max_tokens == settings.openrouter_premium_max_output_tokens
     assert settings.openrouter_premium_max_output_tokens == 1500
     assert free_plan.use_premium_prompt is False

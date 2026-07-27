@@ -216,11 +216,11 @@ def test_role_standard_prompt_has_buttons_rule() -> None:
     assert "Flux Schnell" in _STANDARD_FREE_CORE
     assert "Совет дня" in _STANDARD_FREE_CORE
     assert "ОБЪЕМ И СТРУКТУРА ОТВЕТА" in _STANDARD_FREE_CORE
-    assert "3–4" in _STANDARD_FREE_CORE
+    assert "2–3" in _STANDARD_FREE_CORE
     assert "6 последними" in _STANDARD_FREE_CORE
     assert "===КНОПКИ===" in _CHATCOM_LACO_TAIL
     assert "Compliance: FREE TIER" in _CHATCOM_LACO_TAIL
-    assert "3–4" in _CHATCOM_LACO_TAIL
+    assert "2–3" in _CHATCOM_LACO_TAIL
     assert "follow-up" in _CHATCOM_LACO_TAIL
     assert "якорям" in _CHATCOM_LACO_TAIL
     assert "Кабель или беспроводная?" in _STANDARD_FREE_CORE
