@@ -64,30 +64,58 @@ logger = logging.getLogger(__name__)
 _BLOGGER_ROLE_IDS = frozenset({"blogger_content", "blogger"})
 
 
+def _tariff_is_free(tariff: object | None) -> bool:
+    from services.billing.types import TariffTier
+
+    if tariff is TariffTier.FREE:
+        return True
+    if isinstance(tariff, str) and TariffTier.from_db(tariff) is TariffTier.FREE:
+        return True
+    return False
+
+
+async def _user_is_free(user_id: int, *, tariff_hint: object | None = None) -> bool:
+    if _tariff_is_free(tariff_hint):
+        return True
+    try:
+        from services.billing.types import TariffTier
+        from services.repository import get_user_row
+
+        row = await get_user_row(user_id)
+        return bool(row and TariffTier.from_db(row.tariff) is TariffTier.FREE)
+    except Exception:
+        logger.exception("suggested_replies: tariff lookup failed uid=%s", user_id)
+        return False
+
+
 async def _standard_suggested_reply_markup(user_id: int, result: ChatTurnResult):
     """Suggested Replies для роли standard (модель / FREE code-side fallback)."""
     try:
         labels = list(getattr(result, "suggested_replies", ()) or ())
         role = (result.effective_text_role or "").strip().lower()
-        from services.billing.types import TariffTier
-        from services.repository import get_show_suggested_replies, get_user_row
+        from services.repository import get_show_suggested_replies
         from services.standard_suggested_replies import (
             build_free_hint_keyboard,
             build_suggested_replies_keyboard,
             remember_suggested_replies,
         )
 
-        is_free = getattr(result, "tariff", None) is TariffTier.FREE
-        if not is_free:
-            row = await get_user_row(user_id)
-            is_free = bool(row and TariffTier.from_db(row.tariff) is TariffTier.FREE)
+        is_free = await _user_is_free(
+            user_id, tariff_hint=getattr(result, "tariff", None)
+        )
 
         # FREE standard: кнопки всегда — pref/БД/пустые лейблы не имеют значения.
         if is_free and role in ("", "standard"):
-            return build_free_hint_keyboard(
+            kb = build_free_hint_keyboard(
                 labels or None,
                 body=getattr(result, "assistant_message", None) or "",
             )
+            logger.info(
+                "suggested_replies: FREE keyboard ready uid=%s buttons=%s",
+                user_id,
+                len(kb.inline_keyboard),
+            )
+            return kb
 
         if role != "standard":
             return None
@@ -108,16 +136,11 @@ async def _standard_suggested_reply_markup(user_id: int, result: ChatTurnResult)
         # Ошибка БД/клавиатуры не должна глушить весь ответ пользователю.
         logger.exception("suggested_replies: markup failed uid=%s", user_id)
         try:
-            from services.billing.types import TariffTier
-            from services.repository import get_user_row
             from services.standard_suggested_replies import build_free_hint_keyboard
 
-            if getattr(result, "tariff", None) is TariffTier.FREE:
-                return build_free_hint_keyboard(
-                    body=getattr(result, "assistant_message", None) or "",
-                )
-            row = await get_user_row(user_id)
-            if row and TariffTier.from_db(row.tariff) is TariffTier.FREE:
+            if await _user_is_free(
+                user_id, tariff_hint=getattr(result, "tariff", None)
+            ):
                 return build_free_hint_keyboard(
                     body=getattr(result, "assistant_message", None) or "",
                 )
@@ -134,23 +157,16 @@ async def _free_standard_fallback_keyboard(
     labels: list[str] | tuple[str, ...] | None = None,
 ):
     """Клавиатура из 3 кнопок для FREE (в т.ч. при AI_FAILED / если markup=None)."""
-    from services.billing.types import TariffTier
     from services.standard_suggested_replies import build_free_hint_keyboard
 
     try:
-        is_free = tariff is TariffTier.FREE
-        if not is_free:
-            from services.repository import get_user_row
-
-            row = await get_user_row(user_id)
-            is_free = bool(row and TariffTier.from_db(row.tariff) is TariffTier.FREE)
-        if not is_free:
+        if not await _user_is_free(user_id, tariff_hint=tariff):
             return None
         return build_free_hint_keyboard(labels, body=body or "")
     except Exception:
         logger.exception("suggested_replies: FREE fail keyboard uid=%s", user_id)
         try:
-            if tariff is TariffTier.FREE:
+            if _tariff_is_free(tariff):
                 return build_free_hint_keyboard(labels, body=body or "")
         except Exception:
             logger.exception("suggested_replies: FREE emergency keyboard failed uid=%s", user_id)
@@ -159,13 +175,12 @@ async def _free_standard_fallback_keyboard(
 
 def _iron_free_hint_keyboard(result: ChatTurnResult):
     """Синхронный last-resort: FREE SUCCESS без кнопок недопустим."""
-    from services.billing.types import TariffTier
     from services.standard_suggested_replies import (
         build_free_hint_keyboard,
         prepare_free_standard_reply,
     )
 
-    if getattr(result, "tariff", None) is not TariffTier.FREE:
+    if not _tariff_is_free(getattr(result, "tariff", None)):
         return None
     role = (result.effective_text_role or "standard").strip().lower()
     if role not in ("", "standard"):
@@ -175,7 +190,6 @@ def _iron_free_hint_keyboard(result: ChatTurnResult):
         body = getattr(result, "assistant_message", None) or ""
         if labels:
             return build_free_hint_keyboard(labels, body=body)
-        # Нет лейблов — полный FORCE-пайплайн по тексту ответа.
         _body, _labels, kb = prepare_free_standard_reply(body)
         return kb
     except Exception:
@@ -188,7 +202,7 @@ async def _success_reply_keyboard(owner_id: int, result: ChatTurnResult):
 
     Для FREE ``reply_markup`` всегда не ``None`` (принудительно).
     """
-    from services.billing.types import TariffTier
+    from services.standard_suggested_replies import prepare_free_standard_reply
 
     blogger_kb = None
     blogger_post_id: str | None = None
@@ -208,13 +222,26 @@ async def _success_reply_keyboard(owner_id: int, result: ChatTurnResult):
         )
     if reply_kb is None:
         reply_kb = _iron_free_hint_keyboard(result)
-    # Принудительно: FREE standard SUCCESS без клавиатуры — недопустим.
-    if reply_kb is None and getattr(result, "tariff", None) is TariffTier.FREE:
-        from services.standard_suggested_replies import prepare_free_standard_reply
 
-        _b, _l, reply_kb = prepare_free_standard_reply(
-            result.assistant_message or ""
-        )
+    # Финальный FORCE: FREE + standard → кнопки любой ценой (БД или tariff на result).
+    if reply_kb is None and await _user_is_free(
+        owner_id, tariff_hint=getattr(result, "tariff", None)
+    ):
+        role = (result.effective_text_role or "standard").strip().lower()
+        if role in ("", "standard"):
+            try:
+                _b, _l, reply_kb = prepare_free_standard_reply(
+                    result.assistant_message or ""
+                )
+            except Exception:
+                from services.standard_suggested_replies import build_free_hint_keyboard
+
+                reply_kb = build_free_hint_keyboard()
+            logger.warning(
+                "suggested_replies: FORCE free keyboard uid=%s buttons=%s",
+                owner_id,
+                len(reply_kb.inline_keyboard) if reply_kb else 0,
+            )
     return reply_kb, blogger_post_id
 
 
@@ -496,6 +523,22 @@ async def _reply_chat_turn_result(
                     reply_kb, _blogger_post_id = await _success_reply_keyboard(
                         owner_id, result
                     )
+                    if reply_kb is None and await _user_is_free(
+                        owner_id, tariff_hint=getattr(result, "tariff", None)
+                    ):
+                        from services.standard_suggested_replies import (
+                            build_free_hint_keyboard,
+                        )
+
+                        reply_kb = build_free_hint_keyboard(
+                            list(getattr(result, "suggested_replies", ()) or ())
+                            or None,
+                            body=result.assistant_message or "",
+                        )
+                        logger.error(
+                            "suggested_replies: SUCCESS free still had no kb — hard build uid=%s",
+                            owner_id,
+                        )
                     await answer_chat_text(
                         message,
                         result.assistant_message,
