@@ -439,16 +439,25 @@ def _chat_ai_failure_text(result) -> str:
     return msg.TXT_CHAT_AI_UNAVAILABLE
 
 
-async def _delete_chat_busy_notice(message: Message, user_id: int) -> None:
-    """Удаляет «⏳ ещё отвечаю», если его message_id сохранён в Redis/памяти."""
-    from services.rate_limit_service import pop_chat_busy_message_id
+async def _delete_chat_busy_notice(
+    message: Message,
+    user_id: int,
+    *,
+    message_id: int | None = None,
+) -> None:
+    """Удаляет «⏳ ещё отвечаю» после успешного ответа ИИ."""
+    mid = message_id
+    if mid is None:
+        from services.rate_limit_service import pop_chat_busy_message_id
 
-    mid = await pop_chat_busy_message_id(settings, user_id)
+        mid = await pop_chat_busy_message_id(settings, user_id)
     if mid is None:
         return
     try:
-        await message.bot.delete_message(chat_id=message.chat.id, message_id=mid)
+        # В личке chat_id == user_id, в группах — message.chat.id.
+        await message.bot.delete_message(chat_id=message.chat.id, message_id=int(mid))
     except Exception:
+        # Уже удалено пользователем / слишком старое — игнорируем.
         logger.debug(
             "chat_busy notice delete failed uid=%s mid=%s",
             user_id,
@@ -475,7 +484,11 @@ async def _reply_chat_turn_result(
         else (message.from_user.id if message.from_user else 0)
     )
     if result.outcome is ChatTurnOutcome.SUCCESS:
-        await _delete_chat_busy_notice(message, owner_id)
+        await _delete_chat_busy_notice(
+            message,
+            owner_id,
+            message_id=getattr(result, "busy_notice_message_id", None),
+        )
         if result.user_notice:
             await message.answer(
                 result.user_notice,

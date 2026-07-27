@@ -159,6 +159,8 @@ class ChatTurnResult:
     suggested_replies: tuple[str, ...] = ()
     # Тариф плана чата (для FREE-кнопок без повторного гадания по БД).
     tariff: object | None = None
+    # Telegram message_id заглушки «⏳ ещё отвечаю» — удалить после SUCCESS.
+    busy_notice_message_id: int | None = None
 
 
 def _apply_user_content_override(
@@ -783,6 +785,10 @@ async def run_chat_turn(
             energy_cost=plan.energy_cost,
             crystal_cost=plan.crystal_cost,
         )
+        # Финал: забираем ID заглушки chat_lock (платформа удалит сообщение в Telegram).
+        from services.rate_limit_service import pop_chat_busy_message_id
+
+        busy_mid = await pop_chat_busy_message_id(settings, user_id)
         return ChatTurnResult(
             outcome=ChatTurnOutcome.SUCCESS,
             assistant_message=ans_trim,
@@ -791,4 +797,5 @@ async def run_chat_turn(
             blogger_post_raw=blogger_post_raw,
             suggested_replies=suggested_replies,
             tariff=plan.tariff,
+            busy_notice_message_id=busy_mid,
         )
