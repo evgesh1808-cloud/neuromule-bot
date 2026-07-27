@@ -17,15 +17,15 @@ _ENV_FILE = Path(__file__).resolve().with_name(".env")
 _DEFAULT_GEMINI_FLASH = "google/gemini-2.5-flash"
 _DEFAULT_GEMINI_FLASH_LITE = "google/gemini-2.5-flash-lite"
 # Не openrouter/free: роутер часто отдаёт content-safety / мёртвые ID → «бот молчит».
-_DEFAULT_FREE_CHAT_MODEL = "google/gemma-4-26b-a4b-it:free"
+_DEFAULT_FREE_CHAT_MODEL = "deepseek/deepseek-r1-distill-llama-8b:free"
 # Имя поля сохранено для обратной совместимости импортов/тестов.
 _DEFAULT_GEMINI_FLASH_FREE = _DEFAULT_FREE_CHAT_MODEL
-# Актуальные :free (июль 2026). gemma-4-31b часто 429; llama-3.2-3b снят.
+# Актуальные быстрые :free (каскад failover).
 _DEFAULT_FREE_MODELS: list[str] = [
-    "google/gemma-4-26b-a4b-it:free",
-    "openai/gpt-oss-20b:free",
-    "nvidia/nemotron-nano-9b-v2:free",
-    "google/gemma-4-31b-it:free",
+    "deepseek/deepseek-r1-distill-llama-8b:free",
+    "meta-llama/llama-3.1-8b-instruct:free",
+    "google/gemma-2-9b-it:free",
+    "qwen/qwen-2.5-7b-instruct:free",
 ]
 
 _DEFAULT_SMART_MODELS: list[str] = [
@@ -408,8 +408,8 @@ class Settings(BaseSettings):
         _nonempty_str("Подождите 1–3 минуты — генерация занимает время."),
     ] = "Подождите 1–3 минуты — генерация занимает время."
     promo_seeds: Annotated[str, _nonempty_str("")] = ""
-    free_daily_photo_limit: Annotated[int, _coerce_int(3)] = 3
-    free_daily_chat_limit: Annotated[int, _coerce_int(30)] = 30
+    free_daily_photo_limit: Annotated[int, _coerce_int(1)] = 1
+    free_daily_chat_limit: Annotated[int, _coerce_int(10)] = 10
     energy_low_threshold: Annotated[int, _coerce_int(50)] = 50
     cost_animate_video_suggest: Annotated[int, _coerce_int(20)] = 20
 
@@ -438,7 +438,7 @@ class Settings(BaseSettings):
     cost_chat_standard_crystals: Annotated[int, _coerce_int(1)] = 1
     cost_chat_expert_energy: Annotated[int, _coerce_int(5)] = 5
     cost_chat_expert_crystals: Annotated[int, _coerce_int(3)] = 3
-    daily_free_energy: Annotated[int, _coerce_int(30)] = 30
+    daily_free_energy: Annotated[int, _coerce_int(10)] = 10
 
     # --- Видео-сценарии (💎) ---
     cost_video_pro_5sec: Annotated[int, _coerce_int(35)] = 35
@@ -511,8 +511,8 @@ class Settings(BaseSettings):
         str,
         _openrouter_model_id(_DEFAULT_GEMINI_FLASH),
     ] = _DEFAULT_GEMINI_FLASH
-    free_image_model: Annotated[str, _nonempty_str("imagen4")] = "imagen4"
-    free_daily_text_limit: Annotated[int, _coerce_int(30)] = 30
+    free_image_model: Annotated[str, _nonempty_str("flux_schnell")] = "flux_schnell"
+    free_daily_text_limit: Annotated[int, _coerce_int(10)] = 10
 
     # --- Магазин: пакеты (дефолты = утверждённая сетка 2026) ---
     mini_energy: Annotated[int, _coerce_int(500)] = 500
@@ -566,10 +566,10 @@ class Settings(BaseSettings):
     chat_history_limit: Annotated[int, _coerce_int(6)] = 6
     chat_max_message_chars: Annotated[int, _coerce_int(8000)] = 8000
     dialog_prune_keep: Annotated[int, _coerce_int(50)] = 50
-    chat_rate_limit_per_minute: Annotated[int, _coerce_int(30)] = 30
+    chat_rate_limit_per_minute: Annotated[int, _coerce_int(20)] = 20
     openrouter_timeout_sec: Annotated[float, _coerce_float(45.0)] = 45.0
-    # Таймаут одного запроса FREE-каскада (12–18с: :free модели часто стартуют медленно).
-    openrouter_free_timeout_sec: Annotated[float, _coerce_float(18.0)] = 18.0
+    # Таймаут одного запроса FREE-каскада (жёсткий потолок 12с → быстрый failover).
+    openrouter_free_timeout_sec: Annotated[float, _coerce_float(12.0)] = 12.0
     # WB CFO: OpenRouter только для HTML-обёртки (по умолчанию локальный отчёт — без задержек).
     wb_finance_openrouter_html: Annotated[bool, _coerce_bool(False)] = Field(
         default=False,

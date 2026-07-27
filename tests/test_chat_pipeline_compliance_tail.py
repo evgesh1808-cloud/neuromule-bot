@@ -119,13 +119,9 @@ def test_prepare_openrouter_uses_chatcom_tail_for_standard() -> None:
     body = payload[1]["content"]
     assert FREE_COMPLIANCE_TAIL_MARKER in body
     assert "===КНОПКИ===" in body
-    assert "СИНТАКСИЧЕСКИЙ ЯКОРЬ" in body
-    assert "КРИТИЧЕСКИ ВАЖНО" in body
-    assert "оштрафован" in body
-    assert "Вопрос подсказка один?" in body
-    assert "Minimize output tokens" in body
+    assert "Первый вопрос?" in body
     assert "ROUTE LOCK: FREE LACO" in body
-    assert "OVERRIDE" in body
+    assert "≤400" in body or "2–4" in body
     assert "премиум-комплаенс" not in body
 
     # Идемпотентность: повторный inject не дублирует FREE-хвост.
@@ -315,10 +311,16 @@ def test_paid_standard_uses_copy_pack_voice() -> None:
     mini_role = build_custom_role_prompt("standard", TariffTier.MINI)
     ultra_role = build_custom_role_prompt("standard", TariffTier.ULTRA)
     assert "===КНОПКИ===" in free_role
-    assert "АВТОНОМНЫЙ ЭКСПЕРТ-АССИСТЕНТ — FREE" in free_role
-    assert "QUERY-TYPE ROUTING (FREE)" in free_role
+    assert "АВТОНОМНЫЙ ЭКСПЕРТ-АССИСТЕНТ — FREE TIER" in free_role
+    assert "Функция закрыта на тарифе FREE" in free_role
+    assert "ЧТО ВКЛЮЧЕНО И ДОСТУПНО НА ТАРИФЕ FREE" in free_role
+    assert "Flux Schnell" in free_role
+    assert "Совет дня" in free_role
+    assert "6 последними" in free_role
+    assert "СИНТАКСИЧЕСКИЙ ЯКОРЬ" in free_role
+    assert "QUERY-TYPE ROUTING (FREE)" not in free_role
     assert "3–4 пункта" not in free_role  # не тащим paid-аналитику на FREE
-    assert "Compliance: FREE TIER" in free_role
+    assert "Compliance: FREE TIER" not in free_role  # хвост только в user inject
     assert "PREMIUM COPY PACK" in mini_role
     assert "<pre>" in mini_role
     assert "PREMIUM COPY PACK" in ultra_role
@@ -360,7 +362,8 @@ def test_charged_plan_preserves_tariff_for_prompt_branching() -> None:
     assert "ДИНАМИЧЕСКИЙ ВЫБОР ФОРМАТА" in paid_role
 
     free_role = build_custom_role_prompt("standard", TariffTier.FREE)
-    assert "Compliance: FREE TIER" in free_role
+    assert "FREE TIER" in free_role
+    assert "===КНОПКИ===" in free_role
     assert "PREMIUM COPY PACK" not in free_role
 
 
@@ -435,10 +438,8 @@ def test_model_route_for_role_blogger_on_paid_tariff() -> None:
     assert "google/gemini-2.5-flash-lite" in smart_fb
 
     free_model, free_fb = _model_route_for_role("standard", TariffTier.FREE)
-    # openrouter/free принудительно заменяется: роутер отдаёт content-safety.
+    # Живой кэш или аварийный :free — без платных ID.
     assert free_model.endswith(":free")
-    assert free_model != "openrouter/free"
-    assert "google/gemma-4-26b-a4b-it:free" in (free_model, *free_fb)
-    assert "openai/gpt-oss-20b:free" in free_fb or free_model == "openai/gpt-oss-20b:free"
-    assert "meta-llama/llama-3.2-3b-instruct:free" not in free_fb
+    assert all(m.endswith(":free") for m in (free_model, *free_fb))
     assert "meta-llama/llama-3.3-70b-instruct:free" not in free_fb
+    assert "google/gemini-2.5-flash" not in free_fb

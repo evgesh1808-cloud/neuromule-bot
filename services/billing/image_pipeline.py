@@ -5,14 +5,14 @@ from __future__ import annotations
 from services.billing import store
 from services.billing.pricing import (
     FREE_IMAGEN_DAILY_LIMIT,
-    FREE_IMAGEN_OVERLIMIT_COST,
     FREE_PRO_IMAGE_COST,
     IMAGE_MODEL_ALIASES,
     PAID_IMAGE_MATRIX,
 )
 from services.billing.types import ImageSpendPlan, SpendFeature, SpendResult, TariffTier
 
-FREE_TIER_IMAGE_MODELS = frozenset({"imagen4", "flux_schnell"})
+# FREE: только Flux Schnell (1 бесплатный слот/день, далее за 💎).
+FREE_TIER_IMAGE_MODELS = frozenset({"flux_schnell"})
 
 
 def normalize_image_model(model_name: str) -> str:
@@ -33,7 +33,7 @@ def build_image_spend_plan(
     count = daily_count if daily_date == today else 0
 
     if tariff is TariffTier.FREE:
-        if model_key not in FREE_TIER_IMAGE_MODELS:
+        if model_key != "flux_schnell":
             return ImageSpendPlan(
                 model_key=model_key,
                 energy_cost=0,
@@ -43,38 +43,22 @@ def build_image_spend_plan(
                 blocked=True,
                 block_reason="free_image_model_blocked",
             )
-        if model_key == "imagen4":
-            if count < FREE_IMAGEN_DAILY_LIMIT:
-                return ImageSpendPlan(
-                    model_key=model_key,
-                    energy_cost=0,
-                    crystal_cost=0,
-                    crystals_only=False,
-                    use_free_daily_slot=True,
-                )
+        if count < FREE_IMAGEN_DAILY_LIMIT:
             return ImageSpendPlan(
                 model_key=model_key,
                 energy_cost=0,
-                crystal_cost=FREE_IMAGEN_OVERLIMIT_COST,
-                crystals_only=True,
-                use_free_daily_slot=False,
+                crystal_cost=0,
+                crystals_only=False,
+                use_free_daily_slot=True,
             )
-        if model_key == "flux_schnell":
-            if count < FREE_IMAGEN_DAILY_LIMIT:
-                return ImageSpendPlan(
-                    model_key=model_key,
-                    energy_cost=0,
-                    crystal_cost=0,
-                    crystals_only=False,
-                    use_free_daily_slot=True,
-                )
-            return ImageSpendPlan(
-                model_key=model_key,
-                energy_cost=0,
-                crystal_cost=FREE_PRO_IMAGE_COST,
-                crystals_only=True,
-                use_free_daily_slot=False,
-            )
+        # Лимит 1 фото исчерпан — дальше только кристаллы.
+        return ImageSpendPlan(
+            model_key=model_key,
+            energy_cost=0,
+            crystal_cost=FREE_PRO_IMAGE_COST,
+            crystals_only=True,
+            use_free_daily_slot=False,
+        )
 
     matrix = PAID_IMAGE_MATRIX.get(model_key)
     if not matrix:
@@ -123,20 +107,7 @@ async def spend_image_resource(user_id: int, model_name: str) -> SpendResult:
         )
         if charge:
             return SpendResult(ok=True, charge=charge)
-        # Слот занят (гонка или лимит) — докупка Imagen 4 за кристаллы на FREE.
-        if user.current_tariff is TariffTier.FREE and model_key == "imagen4":
-            charge = await store.atomic_spend(
-                user_id,
-                SpendFeature.IMAGE.value,
-                energy_need=0,
-                crystal_need=FREE_IMAGEN_OVERLIMIT_COST,
-                crystals_only=True,
-                reserve_photo_slot=False,
-                photo_daily_limit=FREE_IMAGEN_DAILY_LIMIT,
-            )
-            if charge:
-                return SpendResult(ok=True, charge=charge)
-            return SpendResult(ok=False, error="insufficient_balance")
+        # Слот занят (гонка или лимит) — докупка Flux за кристаллы на FREE.
         if user.current_tariff is TariffTier.FREE and model_key == "flux_schnell":
             charge = await store.atomic_spend(
                 user_id,

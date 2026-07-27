@@ -24,36 +24,29 @@ def test_shop_packs_have_prices() -> None:
     assert SHOP_PACKS["crystals_10"]["crystals"] == 10
 
 
-def test_free_imagen_plan_uses_slot() -> None:
-    plan = build_image_spend_plan(TariffTier.FREE, "imagen4", daily_count=1, daily_date="2026-05-19")
-    assert plan.use_free_daily_slot is True
-    assert plan.crystal_cost == 0
-
-
-def test_free_imagen_overlimit_charges_crystals() -> None:
-    from datetime import date
-
-    today = date.today().isoformat()
-    plan = build_image_spend_plan(TariffTier.FREE, "imagen4", daily_count=3, daily_date=today)
+def test_free_imagen_blocked() -> None:
+    plan = build_image_spend_plan(TariffTier.FREE, "imagen4", daily_count=0, daily_date=None)
+    assert plan.blocked is True
+    assert plan.block_reason == "free_image_model_blocked"
     assert plan.use_free_daily_slot is False
-    assert plan.crystals_only is True
-    assert plan.crystal_cost == 2
 
 
 def test_free_flux_uses_free_slot_under_daily_limit() -> None:
     plan = build_image_spend_plan(TariffTier.FREE, "flux_schnell", daily_count=0, daily_date=None)
     assert plan.use_free_daily_slot is True
     assert plan.crystal_cost == 0
+    assert plan.blocked is False
 
 
 def test_free_flux_overlimit_charges_pro_image_cost() -> None:
     from services.billing.pricing import FREE_PRO_IMAGE_COST
 
     today = date.today().isoformat()
-    plan = build_image_spend_plan(TariffTier.FREE, "flux_schnell", daily_count=3, daily_date=today)
+    plan = build_image_spend_plan(TariffTier.FREE, "flux_schnell", daily_count=1, daily_date=today)
     assert plan.use_free_daily_slot is False
     assert plan.crystals_only is True
     assert plan.crystal_cost == FREE_PRO_IMAGE_COST
+    assert plan.blocked is False
 
 
 def test_paid_flux_energy_or_crystals() -> None:
@@ -104,10 +97,10 @@ async def test_atomic_spend_and_refund_chat(repo_module) -> None:
     )
     assert charge is not None
     row = await repo_module.get_user_row(uid)
-    assert row.energy == 29
+    assert row.energy == 9
     assert await refund_charge(charge.charge_id)
     row2 = await repo_module.get_user_row(uid)
-    assert row2.energy == 30
+    assert row2.energy == 10
 
 
 @pytest.mark.asyncio

@@ -330,6 +330,8 @@ async def _clear_table_status_on_failure(status_message: Message | None) -> None
 
 def _chat_ai_failure_text(result) -> str:
     """Понятное сообщение при сбое OpenRouter (не generic «подкова» для медиа-очереди)."""
+    if result.user_notice:
+        return result.user_notice
     role = (result.effective_text_role or "").strip().lower()
     if role in _BLOGGER_ROLE_IDS:
         return msg.TXT_BLOGGER_AI_FAILED
@@ -467,6 +469,9 @@ async def _reply_chat_turn_result(
     if result.outcome is ChatTurnOutcome.RATE_LIMITED:
         await message.answer(msg.TXT_CHAT_RATE_LIMIT)
         return
+    if result.outcome is ChatTurnOutcome.CHAT_BUSY:
+        await message.answer(result.user_notice or msg.TXT_CHAT_BUSY)
+        return
     if result.outcome is ChatTurnOutcome.ROLE_NOT_ALLOWED:
         await message.answer(
             msg.TXT_PREMIUM_ROLE_LOCKED,
@@ -483,8 +488,9 @@ async def _reply_chat_turn_result(
         return
     if result.outcome is ChatTurnOutcome.DAILY_LIMIT_EXCEEDED:
         await message.answer(
-            msg.TXT_CHAT_DAILY_LIMIT,
+            result.user_notice or msg.TXT_CHAT_DAILY_LIMIT,
             reply_markup=paycat.shop_packages_keyboard(),
+            parse_mode=ParseMode.HTML,
         )
         return
     if result.outcome in (ChatTurnOutcome.AI_FAILED, ChatTurnOutcome.TABLE_JSON_INVALID):
@@ -493,10 +499,13 @@ async def _reply_chat_turn_result(
             fail_kb = await _free_standard_fallback_keyboard(owner_id)
         if result.user_notice:
             await _clear_table_status_on_failure(status_message)
+            notice_kb = fail_kb
+            if result.user_notice == msg.TXT_CHAT_AI_MAINTENANCE:
+                notice_kb = paycat.shop_packages_keyboard()
             await message.answer(
                 result.user_notice,
                 parse_mode=ParseMode.HTML,
-                reply_markup=fail_kb,
+                reply_markup=notice_kb,
             )
             return
         if table_context or table_subrole or prefer_table_error:

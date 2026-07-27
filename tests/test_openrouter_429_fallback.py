@@ -56,6 +56,48 @@ async def test_429_logs_warning_and_returns_none(
         timeout=10.0,
     )
     assert out is None
-    # В логе явное упоминание 429 / rate_limited.
+    # В логе явное упоминание 429 / недоступна.
     rec = [r.message for r in caplog.records]
-    assert any("429" in m or "rate_limited" in m for m in rec)
+    assert any("429" in m for m in rec)
+
+
+@pytest.mark.asyncio
+async def test_404_and_503_failover_to_next_model() -> None:
+    settings = SimpleNamespace(
+        openrouter_chat_url="https://x",
+        openrouter_key="k",
+        bot_name="NeuroMule",
+        openrouter_timeout_sec=12,
+        openrouter_max_output_tokens=512,
+        free_models=["a", "b"],
+        chat_char_per_token_est=3,
+    )
+
+    class _Client:
+        def __init__(self) -> None:
+            self.models: list[str] = []
+
+        async def post(self, url: str, *, headers, json, timeout):
+            self.models.append(json["model"])
+            if json["model"] == "gone:free":
+                return _StubResponse(404)
+            if json["model"] == "busy:free":
+                return _StubResponse(503)
+            return _StubResponse(200)
+
+    client = _Client()
+    out = await ai_text.ask_ai_messages(
+        settings,  # type: ignore[arg-type]
+        [{"role": "user", "content": "hi"}],
+        models=["gone:free", "busy:free", "ok:free"],
+        http_client=client,  # type: ignore[arg-type]
+        timeout=12.0,
+    )
+    assert out["content"] == "ok"
+    assert client.models == ["gone:free", "busy:free", "ok:free"]
+
+
+def test_httpx_timeout_uses_fast_connect() -> None:
+    t = ai_text._httpx_timeout(12.0)
+    assert t.connect == 3.0
+    assert float(t.read) == 12.0

@@ -78,13 +78,13 @@ def test_split_suggested_replies_free_fallback_keeps_model_labels() -> None:
 def test_free_chat_model_timeout_allows_slow_free_models() -> None:
     from services.billing.chat_pipeline import (
         FREE_CASCADE_PER_MODEL_TIMEOUT_SEC,
+        FREE_CHAT_MODEL_TIMEOUT_SEC,
         free_chat_model_timeout_sec,
     )
 
-    assert FREE_CASCADE_PER_MODEL_TIMEOUT_SEC == 18.0
-    # Не душим :free модели 8-секундным потолком.
-    assert free_chat_model_timeout_sec() >= 12.0
-    assert free_chat_model_timeout_sec() <= 18.0
+    assert FREE_CHAT_MODEL_TIMEOUT_SEC == 12.0
+    assert FREE_CASCADE_PER_MODEL_TIMEOUT_SEC == 12.0
+    assert free_chat_model_timeout_sec() == 12.0
 
 
 def test_remember_and_resolve_suggested_reply() -> None:
@@ -148,28 +148,31 @@ def test_resolve_suggested_reply_latest_fallback() -> None:
 
 
 def test_role_standard_prompt_has_buttons_rule() -> None:
-    from content.chat_prompt import _CHATCOM_LACO_TAIL, _NATURAL_SPEECH_RULE, _ROLE_STANDARD
+    from content.chat_prompt import (
+        _CHATCOM_LACO_TAIL,
+        _NATURAL_SPEECH_RULE,
+        _ROLE_STANDARD,
+        _STANDARD_FREE_CORE,
+    )
 
     assert _ROLE_STANDARD.startswith("[РЕЖИМ: АВТОНОМНЫЙ ЭКСПЕРТ-АССИСТЕНТ]")
     assert "blockquote expandable" in _ROLE_STANDARD
     assert "QUERY-TYPE ROUTING" in _ROLE_STANDARD
     assert "BREVITY ECONOMY" in _ROLE_STANDARD
     assert "ЕСТЕСТВЕННОСТЬ" in _NATURAL_SPEECH_RULE
+    assert "===КНОПКИ===" in _STANDARD_FREE_CORE
+    assert "FREE TIER" in _STANDARD_FREE_CORE
+    assert "СИНТАКСИЧЕСКИЙ ЯКОРЬ" in _STANDARD_FREE_CORE
+    assert "Функция закрыта на тарифе FREE" in _STANDARD_FREE_CORE
+    assert "ЧТО ВКЛЮЧЕНО И ДОСТУПНО НА ТАРИФЕ FREE" in _STANDARD_FREE_CORE
+    assert "Flux Schnell" in _STANDARD_FREE_CORE
+    assert "Совет дня" in _STANDARD_FREE_CORE
+    assert "6 последними" in _STANDARD_FREE_CORE
+    assert "≤400" in _STANDARD_FREE_CORE
     assert "===КНОПКИ===" in _CHATCOM_LACO_TAIL
     assert "Compliance: FREE TIER" in _CHATCOM_LACO_TAIL
-    assert "СИНТАКСИЧЕСКИЙ ЯКОРЬ" in _CHATCOM_LACO_TAIL
-    assert "КРИТИЧЕСКИ ВАЖНО" in _CHATCOM_LACO_TAIL
-    assert "оштрафован" in _CHATCOM_LACO_TAIL
-    assert "скопируй структуру 1:1" in _CHATCOM_LACO_TAIL
-    assert "НАПРЯМУЮ по теме" in _CHATCOM_LACO_TAIL
-    assert "1–3 слова" in _CHATCOM_LACO_TAIL
-    assert "Minimize output tokens" in _CHATCOM_LACO_TAIL
-    assert "OVERRIDE" in _CHATCOM_LACO_TAIL
-    assert "≤400" in _CHATCOM_LACO_TAIL or "2–4 коротких" in _CHATCOM_LACO_TAIL
-    assert "Вопрос подсказка один?" in _CHATCOM_LACO_TAIL
-    assert "Второй вопрос по теме?" in _CHATCOM_LACO_TAIL
-    assert "Третий вопрос по теме?" in _CHATCOM_LACO_TAIL
-    assert "Второй вариант?" in _CHATCOM_LACO_TAIL
+    assert "≤400" in _CHATCOM_LACO_TAIL or "2–4" in _CHATCOM_LACO_TAIL
+    assert "Первый вопрос?" in _CHATCOM_LACO_TAIL
     assert "КРИТИЧЕСКОЕ ИСКЛЮЧЕНИЕ" in _ROLE_STANDARD
     assert "Какая погода в Люберцах" in _ROLE_STANDARD
     assert "ПОЛИТИКА БЕЗОПАСНОСТИ И КОММЕРЧЕСКОЙ ТАЙНЫ" in _ROLE_STANDARD

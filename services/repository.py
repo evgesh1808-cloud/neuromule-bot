@@ -30,7 +30,7 @@ def _resolve_db_path() -> str:
 
 
 DB_PATH = _resolve_db_path()
-DAILY_ENERGY_LIMIT = 30
+DAILY_ENERGY_LIMIT = 10  # sync with config.daily_free_energy / DAILY_FREE_ENERGY
 
 
 async def _migrate_users(db: aiosqlite.Connection) -> None:
@@ -116,6 +116,14 @@ async def _migrate_rate_limit_hits(db: aiosqlite.Connection) -> None:
     await db.execute(
         "CREATE INDEX IF NOT EXISTS idx_rate_limit_hits_user_ts ON rate_limit_hits (user_id, ts)"
     )
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS chat_locks (
+            user_id INTEGER PRIMARY KEY,
+            expires_at REAL NOT NULL
+        )
+        """
+    )
 
 
 async def _migrate_blogger_post_drafts(db: aiosqlite.Connection) -> None:
@@ -151,7 +159,7 @@ async def _migrate_identity_map(db: aiosqlite.Connection) -> None:
         CREATE TABLE IF NOT EXISTS accounts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             tariff TEXT NOT NULL DEFAULT 'Free',
-            balance_energy INTEGER NOT NULL DEFAULT 30,
+            balance_energy INTEGER NOT NULL DEFAULT 10,
             balance_crystals INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL
         )
@@ -364,11 +372,11 @@ async def init_db(promo_seeds: str = "") -> None:
             """
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY,
-                energy INTEGER DEFAULT 30,
+                energy INTEGER DEFAULT 10,
                 crystals INTEGER DEFAULT 0,
                 balance INTEGER DEFAULT 0,
                 balance_crystals INTEGER DEFAULT 0,
-                balance_energy INTEGER DEFAULT 30,
+                balance_energy INTEGER DEFAULT 10,
                 -- NOTE: last_free_date — дата последнего «Совета дня» (не связано с ⚡/last_reset_date)
                 last_free_date TEXT,
                 last_reset_date TEXT,
@@ -619,9 +627,9 @@ async def ensure_user(user_id: int, username: str | None = None) -> None:
                     photo_daily_count,
                     accepted_terms
                 )
-                VALUES (?, 30, 0, 30, 0, 0, 30, 0, ?, 'Free', NULL, NULL, 0, 0)
+                VALUES (?, ?, 0, ?, 0, 0, ?, 0, ?, 'Free', NULL, NULL, 0, 0)
                 """,
-                (user_id, today),
+                (user_id, DAILY_ENERGY_LIMIT, DAILY_ENERGY_LIMIT, DAILY_ENERGY_LIMIT, today),
             )
         elif (exists[1] or "") != today:
             from services.billing.store import _migrate_billing_columns, _apply_daily_reset_if_needed
@@ -1525,6 +1533,37 @@ async def rate_limit_rollback_last(user_id: int) -> None:
             """,
             (user_id,),
         )
+        await db.commit()
+
+
+async def chat_lock_acquire(user_id: int, ttl_sec: int) -> bool:
+    """SQLite NX+TTL для FREE parallel-guard (fallback без Redis)."""
+    import time as _time
+
+    now = _time.time()
+    expires = now + max(1, int(ttl_sec))
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        await db.execute("DELETE FROM chat_locks WHERE expires_at <= ?", (now,))
+        async with db.execute(
+            "SELECT 1 FROM chat_locks WHERE user_id = ?",
+            (user_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        if row:
+            await db.execute("ROLLBACK")
+            return False
+        await db.execute(
+            "INSERT INTO chat_locks (user_id, expires_at) VALUES (?, ?)",
+            (user_id, expires),
+        )
+        await db.commit()
+    return True
+
+
+async def chat_lock_release(user_id: int) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM chat_locks WHERE user_id = ?", (user_id,))
         await db.commit()
 
 

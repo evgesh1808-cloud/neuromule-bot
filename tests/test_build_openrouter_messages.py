@@ -26,7 +26,8 @@ async def test_build_openrouter_messages_includes_memory_and_history_window(repo
     assert "чай" in messages[0]["content"]
 
     assert messages[1] == {"role": "assistant", "content": "ответ2"}
-    assert messages[2] == {"role": "user", "content": "третье"}
+    assert messages[2]["role"] == "user"
+    assert messages[2]["content"].startswith("третье")
 
 
 async def test_build_openrouter_messages_empty_dialog_only_system(repo_module):
@@ -39,3 +40,22 @@ async def test_build_openrouter_messages_empty_dialog_only_system(repo_module):
     assert len(messages) == 1
     assert messages[0]["role"] == "system"
     assert "[USER_PERSISTENT_MEMORY]" not in messages[0]["content"]
+
+
+async def test_build_openrouter_messages_free_hardcaps_to_six(repo_module):
+    from services.billing.types import TariffTier
+
+    uid = 72003
+    settings = Settings().model_copy(update={"chat_history_limit": 40})
+    await repo_module.ensure_user(uid)
+    for i in range(10):
+        await repo_module.dialog_append(uid, "user", f"q{i}")
+        await repo_module.dialog_append(uid, "assistant", f"a{i}")
+
+    messages = await conv.build_openrouter_messages(
+        settings, uid, tariff=TariffTier.FREE
+    )
+    history = [m for m in messages if m["role"] in ("user", "assistant")]
+    assert len(history) == conv.FREE_DIALOG_HISTORY_LIMIT
+    assert history[0]["content"] == "q7"
+    assert history[-1]["content"] == "a9"

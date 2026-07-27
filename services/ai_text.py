@@ -209,10 +209,17 @@ def _sanitize_openrouter_model_id(model_id: str) -> str:
     return str(model_id or "").strip()
 
 
-def _httpx_timeout(timeout: float) -> httpx.Timeout:
-    """Fail-fast connect; read = per-model budget."""
+def _httpx_timeout(timeout: float, *, connect: float = 3.0) -> httpx.Timeout:
+    """Короткий connect (по умолчанию 3с): лежащая модель → быстрый failover.
+    ``read``/общий лимит = per-model budget (FREE обычно 12с).
+    """
     read = max(5.0, float(timeout))
-    return httpx.Timeout(read, connect=min(8.0, read))
+    connect_sec = max(1.0, min(float(connect), read))
+    return httpx.Timeout(read, connect=connect_sec)
+
+
+# Мгновенный переход к следующей модели (без ожидания «оживления»).
+_OPENROUTER_FAILOVER_STATUS = frozenset({429, 404, 503})
 
 
 def _build_openrouter_model_chain(model_ids: list[str]) -> list[str]:
@@ -286,9 +293,9 @@ async def _post_chat_completion(
         json=payload,
         timeout=_httpx_timeout(timeout),
     )
-    if response.status_code == 429:
+    if response.status_code in _OPENROUTER_FAILOVER_STATUS:
         # Rate-limit на :free — крутим пул ключей; paid остаётся на primary.
-        if _is_openrouter_free_model(model):
+        if response.status_code == 429 and _is_openrouter_free_model(model):
             try:
                 from services.billing.chat_pipeline import get_openrouter_key_rotator
 
@@ -296,8 +303,9 @@ async def _post_chat_completion(
             except Exception:
                 logger.debug("openrouter key rotate on 429 skipped", exc_info=True)
         logger.warning(
-            "OpenRouter model=%s rate_limited (429) — falling back to next model/key",
+            "Модель %s недоступна (код %s). Мгновенный переход к следующей.",
             model,
+            response.status_code,
         )
         return None
     if response.status_code != 200:
@@ -410,13 +418,22 @@ async def _post_chat_completion_stream(
             json=payload,
             timeout=_httpx_timeout(timeout),
         ) as resp:
-            if resp.status_code == 429 and _is_openrouter_free_model(model):
-                try:
-                    from services.billing.chat_pipeline import get_openrouter_key_rotator
+            if resp.status_code in _OPENROUTER_FAILOVER_STATUS:
+                if resp.status_code == 429 and _is_openrouter_free_model(model):
+                    try:
+                        from services.billing.chat_pipeline import get_openrouter_key_rotator
 
-                    get_openrouter_key_rotator(settings).mark_rate_limited()
-                except Exception:
-                    logger.debug("openrouter key rotate on stream 429 skipped", exc_info=True)
+                        get_openrouter_key_rotator(settings).mark_rate_limited()
+                    except Exception:
+                        logger.debug("openrouter key rotate on stream 429 skipped", exc_info=True)
+                body = (await resp.aread())[:800]
+                logger.warning(
+                    "Модель %s недоступна (код %s). Мгновенный переход к следующей. body=%s",
+                    model,
+                    resp.status_code,
+                    _mask_openrouter_error_body(body),
+                )
+                return None
             if resp.status_code != 200:
                 body = (await resp.aread())[:800]
                 logger.warning(
@@ -464,6 +481,9 @@ async def _post_chat_completion_stream(
                 if acc
                 else None
             )
+    except (httpx.TimeoutException, httpx.NetworkError):
+        # Пусть внешний каскад сразу возьмёт следующую модель.
+        raise
     except Exception:
         logger.exception("OpenRouter stream model=%s failed", model)
         if acc:
@@ -575,6 +595,13 @@ async def ask_ai_messages(
                     if stream_callback is not None:
                         await stream_callback(result["content"], True)
                     return result
+            except (httpx.TimeoutException, httpx.NetworkError) as exc:
+                logger.error(
+                    "Таймаут или сетевая ошибка на модели %s (%s). Переключаемся.",
+                    model,
+                    type(exc).__name__,
+                )
+                continue
             except Exception:
                 logger.exception("OpenRouter model=%s request failed", model)
                 continue

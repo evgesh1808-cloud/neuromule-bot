@@ -162,9 +162,16 @@ def image_model_menu(
 
     if tariff is TariffTier.FREE:
         left = _imagen_free_slots_left(photo_daily_count, photo_daily_date)
+        from services.billing.pricing import FREE_PRO_IMAGE_COST
+
+        flux_label = (
+            f"⚡ Flux Schnell (Осталось: {left})"
+            if left > 0
+            else f"⚡ Flux Schnell ({FREE_PRO_IMAGE_COST} 💎)"
+        )
         rows = [
-            [InlineKeyboardButton(text=f"🎨 Imagen 4 (Осталось: {left})", callback_data=f"{prefix}imagen4")],
-            [InlineKeyboardButton(text="⚡ Flux Schnell (3 💎)", callback_data=f"{prefix}flux-schnell")],
+            [InlineKeyboardButton(text=flux_label, callback_data=f"{prefix}flux-schnell")],
+            [InlineKeyboardButton(text="🔒 Imagen 4 (Premium)", callback_data=f"{prefix}imagen4")],
             [InlineKeyboardButton(text="🔒 DALL-E 3 (Premium)", callback_data=f"{prefix}gpt_image2")],
             [InlineKeyboardButton(text="🔒 Nano Banana 2 (Premium)", callback_data=f"{prefix}nano_banana2")],
             [InlineKeyboardButton(text="🔒 Nano Banana Pro (Premium)", callback_data=f"{prefix}nano_banana_pro")],

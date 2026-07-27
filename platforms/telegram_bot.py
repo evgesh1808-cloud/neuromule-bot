@@ -225,6 +225,10 @@ async def run_telegram() -> None:
     # Контролируемый CPython GC: gen0→sleep(0)→gen1→sleep(0)→gen2 раз в 10 мин.
     # gc.collect идёт через run_in_executor → event loop не блокируется.
     _asyncio.create_task(controlled_gc_loop())
+    # Живой каталог OpenRouter :free для FREE-каскада (refresh раз в час).
+    from services.free_models_catalog import free_models_refresh_loop
+
+    _asyncio.create_task(free_models_refresh_loop())
     # Очередь AI-обложек блогера (OpenRouter Images) — один воркер, rate-limit 2с.
     from services.blogger_cover import start_cover_queue_worker
 

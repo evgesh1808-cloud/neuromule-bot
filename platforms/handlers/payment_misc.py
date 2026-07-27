@@ -440,6 +440,9 @@ async def chat_handler(message: Message) -> None:
     if result.outcome is ChatTurnOutcome.RATE_LIMITED:
         await message.answer(msg.TXT_CHAT_RATE_LIMIT)
         return
+    if result.outcome is ChatTurnOutcome.CHAT_BUSY:
+        await message.answer(result.user_notice or msg.TXT_CHAT_BUSY)
+        return
     if result.outcome is ChatTurnOutcome.ROLE_NOT_ALLOWED:
         await message.answer(msg.TXT_PREMIUM_ROLE_LOCKED, reply_markup=paycat.shop_packages_keyboard())
         return
@@ -450,7 +453,11 @@ async def chat_handler(message: Message) -> None:
         )
         return
     if result.outcome is ChatTurnOutcome.DAILY_LIMIT_EXCEEDED:
-        await message.answer(msg.TXT_CHAT_DAILY_LIMIT, reply_markup=paycat.shop_packages_keyboard())
+        await message.answer(
+            result.user_notice or msg.TXT_CHAT_DAILY_LIMIT,
+            reply_markup=paycat.shop_packages_keyboard(),
+            parse_mode=ParseMode.HTML,
+        )
         return
     await message.answer(msg.TXT_GEN_JOB_FAILED)
 

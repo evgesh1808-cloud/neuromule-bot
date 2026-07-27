@@ -20,7 +20,6 @@ from services.billing.pricing import (
     CHAT_EXPERT_ENERGY,
     CHAT_STANDARD_CRYSTALS,
     CHAT_STANDARD_ENERGY,
-    FREE_CHAT_MODEL,
     PAID_CHAT_MODEL,
 )
 from config import Settings, settings
@@ -147,51 +146,39 @@ def _unique_model_ids(*candidates: str) -> tuple[str, ...]:
     return tuple(out)
 
 
-_SLOW_FREE_MODEL_IDS = frozenset(
-    {
-        "meta-llama/llama-3.3-70b-instruct:free",
-        "nousresearch/hermes-3-llama-3.1-405b:free",
-        "nvidia/nemotron-3-ultra-550b-a55b:free",
-        "nvidia/nemotron-3-super-120b-a12b:free",
-    }
-)
-
-# Жёсткий резерв, если FREE_MODELS в .env устарели (404 «unavailable for free»).
+# Жёсткий резерв FREE-каскада (только :free). Env/платные ID не подмешиваем.
 # Без openrouter/free: роутер может выбрать content-safety → пустой/молчащий ответ.
 _HARDCODED_FREE_FALLBACKS: tuple[str, ...] = (
-    "google/gemma-4-26b-a4b-it:free",
-    "openai/gpt-oss-20b:free",
-    "nvidia/nemotron-nano-9b-v2:free",
-    "google/gemma-4-31b-it:free",
+    "deepseek/deepseek-r1-distill-llama-8b:free",  # логика / быстрые ответы
+    "meta-llama/llama-3.1-8b-instruct:free",  # стабильный стандарт
+    "google/gemma-2-9b-it:free",  # простые диалоги
+    "qwen/qwen-2.5-7b-instruct:free",  # сверхбыстрый резерв
 )
 
-# Per-model timeout FREE-каскада. 8с убивало gemma/gpt-oss (TTFB часто 10–15с) →
-# полный openrouter_unavailable. 18с: успевает первая модель, failover всё ещё быстрый.
-FREE_CASCADE_PER_MODEL_TIMEOUT_SEC = 18.0
-# Soft floor: env ниже 12с поднимаем (иначе снова «FREE молчит»).
-_FREE_CASCADE_TIMEOUT_FLOOR_SEC = 12.0
+# Жёсткий таймаут на одну модель: зависла → сразу следующая в каскаде.
+FREE_CHAT_MODEL_TIMEOUT_SEC = 12.0
+FREE_CASCADE_PER_MODEL_TIMEOUT_SEC = FREE_CHAT_MODEL_TIMEOUT_SEC
 
 
 def free_chat_model_timeout_sec() -> float:
-    """Таймаут одного запроса в FREE :free каскаде (сек)."""
+    """Таймаут одного запроса в FREE :free каскаде (сек). Потолок — 12с."""
     configured = float(getattr(settings, "openrouter_free_timeout_sec", 0) or 0)
     if configured <= 0:
-        return FREE_CASCADE_PER_MODEL_TIMEOUT_SEC
-    return max(
-        _FREE_CASCADE_TIMEOUT_FLOOR_SEC,
-        min(configured, FREE_CASCADE_PER_MODEL_TIMEOUT_SEC),
-    )
+        return FREE_CHAT_MODEL_TIMEOUT_SEC
+    return min(configured, FREE_CHAT_MODEL_TIMEOUT_SEC)
 
 
-def _free_model_fallbacks() -> tuple[str, ...]:
-    """Короткий резерв FREE: быстрые :free (без тяжёлых 70B/405B/550B)."""
-    from_env = [
-        mid for mid in settings.free_models if mid not in _SLOW_FREE_MODEL_IDS
-    ]
-    return _unique_model_ids(
-        *from_env,
-        *_HARDCODED_FREE_FALLBACKS,
-    )
+def _free_model_cascade() -> tuple[str, ...]:
+    """Живой :free каскад из кэша OpenRouter; иначе жёсткий hardcoded резерв."""
+    try:
+        from services.free_models_catalog import free_cascade_from_cache
+
+        live = free_cascade_from_cache()
+        if live:
+            return live
+    except Exception:
+        logger.debug("free cascade cache unavailable", exc_info=True)
+    return tuple(m for m in _HARDCODED_FREE_FALLBACKS if str(m).endswith(":free"))
 
 
 def _paid_model_fallbacks() -> tuple[str, ...]:
@@ -206,22 +193,16 @@ def _paid_model_fallbacks() -> tuple[str, ...]:
 _BLOGGER_ROLE_IDS = frozenset({"blogger_content", "blogger"})
 
 
-def _is_openrouter_free_model(model_id: str) -> bool:
-    mid = (model_id or "").strip().lower()
-    return mid == "openrouter/free" or mid.endswith(":free")
-
-
 def _model_route_for_role(role_id: str, tariff: TariffTier) -> tuple[str, tuple[str, ...]]:
-    """FREE → бесплатный каскад; MINI/SMART/ULTRA → Gemini 2.5 Flash."""
+    """FREE → жёсткий :free каскад; MINI/SMART/ULTRA → Gemini 2.5 Flash."""
     rid = (role_id or "").strip().lower()
     if rid in _BLOGGER_ROLE_IDS and tariff is not TariffTier.FREE:
         return PAID_CHAT_MODEL, _paid_model_fallbacks()
     if tariff is TariffTier.FREE:
-        # openrouter/free часто роутит в content-safety → «молчание»; берём явные :free.
-        primary = FREE_CHAT_MODEL if _is_openrouter_free_model(FREE_CHAT_MODEL) else _HARDCODED_FREE_FALLBACKS[0]
-        if primary == "openrouter/free":
-            primary = _HARDCODED_FREE_FALLBACKS[0]
-        return primary, _free_model_fallbacks()
+        cascade = _free_model_cascade()
+        primary = cascade[0]
+        clean_fallbacks = cascade[1:]
+        return primary, clean_fallbacks
     return PAID_CHAT_MODEL, _paid_model_fallbacks()
 
 

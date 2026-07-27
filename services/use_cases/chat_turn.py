@@ -22,7 +22,7 @@ from services.dialog_sanitize import compact_table_history_from_json
 from services.dialog_write_worker import commit_assistant_turn_queued
 from services.dialog_platform import DEFAULT_DIALOG_PLATFORM
 from services.neurotext_media import build_openrouter_user_content
-from services.rate_limit_service import allow_request, rollback_last
+from services.rate_limit_service import allow_request, free_chat_lock, rollback_last
 from services.billing import billing
 from services.billing.chat_pipeline import prepare_openrouter_chat_messages
 from services.billing.store import refund_charge
@@ -122,6 +122,7 @@ class ChatTurnOutcome(str, Enum):
     SUCCESS = "success"
     EMPTY_INPUT = "empty_input"
     RATE_LIMITED = "rate_limited"
+    CHAT_BUSY = "chat_busy"
     INSUFFICIENT_BALANCE = "insufficient_balance"
     ROLE_NOT_ALLOWED = "role_not_allowed"
     DAILY_LIMIT_EXCEEDED = "daily_limit_exceeded"
@@ -261,429 +262,502 @@ async def run_chat_turn(
             return ChatTurnResult(outcome=ChatTurnOutcome.ROLE_NOT_ALLOWED)
         if plan.block_reason == "role_requires_smart_tariff":
             return ChatTurnResult(outcome=ChatTurnOutcome.ROLE_NOT_ALLOWED)
+        # FREE: суточная энергия (10 ⚡) / нулевой баланс — без вызова модели.
+        if plan.tariff is TariffTier.FREE and plan.block_reason == "zero_balance":
+            from content.messages import TXT_FREE_ENERGY_EXHAUSTED
+
+            return ChatTurnResult(
+                outcome=ChatTurnOutcome.DAILY_LIMIT_EXCEEDED,
+                user_notice=TXT_FREE_ENERGY_EXHAUSTED,
+            )
         return ChatTurnResult(outcome=ChatTurnOutcome.INSUFFICIENT_BALANCE)
 
-    await dialog_append(user_id, "user", history_text, platform=platform)
-    payload = await conv.build_openrouter_messages(
+    from content.messages import TXT_CHAT_BUSY
+    from services.billing.chat_pipeline import FREE_CHAT_MODEL_TIMEOUT_SEC
+
+    async with free_chat_lock(
         settings,
         user_id,
-        effective_role,
-        premium=plan.use_premium_prompt,
-        platform=platform,
-        tariff=plan.tariff,
-    )
-    user_content = build_openrouter_user_content(
-        raw_user_text,
-        image_data_url=user_image_data_url,
-    )
-    if user_image_data_url or (dialog_user_text is not None and history_text != raw_user_text):
-        _apply_user_content_override(payload, user_content)
-
-    from services.repository import get_show_suggested_replies
-
-    suggest_replies = await get_show_suggested_replies(user_id)
-    _role_for_prep = (effective_role or "").strip().lower()
-    # Standard: умное саммари истории → [Контекст: …] в system (вместо hard-collapse).
-    if _role_for_prep == "standard":
-        from services.context_summarize import compact_standard_dialog_context
-
-        async def _summary_ask(
-            msgs: list,
-            **kwargs: Any,
-        ) -> dict[str, Any]:
-            return await ask_ai_messages(
-                settings,
-                msgs,
-                http_client=http_client,
-                **kwargs,
+        enabled=plan.tariff is TariffTier.FREE,
+        ttl_sec=FREE_CHAT_MODEL_TIMEOUT_SEC,
+    ) as got_lock:
+        if not got_lock:
+            if charge_id:
+                await refund_charge(charge_id)
+            await rollback_last(settings, user_id)
+            return ChatTurnResult(
+                outcome=ChatTurnOutcome.CHAT_BUSY,
+                user_notice=TXT_CHAT_BUSY,
             )
 
-        await compact_standard_dialog_context(payload, ask_fn=_summary_ask)
-
-    prepare_openrouter_chat_messages(
-        payload,
-        use_premium_prompt=plan.use_premium_prompt,
-        text_role=effective_role,
-        chatcom_laconic=plan.tariff is TariffTier.FREE,
-        request_suggested_replies=(
-            plan.tariff is not TariffTier.FREE
-            and _role_for_prep == "standard"
-            and suggest_replies
-        ),
-    )
-
-    def _estimate_payload_tokens(msgs: list) -> int:
-        return estimate_messages_prompt_tokens(msgs, settings=settings)
-
-    payload, fits_limit = prune_context_messages(
-        payload,
-        max_messages=settings.chat_history_limit,
-        max_tokens_est=settings.chat_max_context_tokens_est,
-        estimate_tokens=_estimate_payload_tokens,
-    )
-    if not fits_limit:
-        await dialog_pop_last_for_user(user_id, platform=platform)
-        if charge_id:
-            await refund_charge(charge_id)
-        await rollback_last(settings, user_id)
-        return ChatTurnResult(outcome=ChatTurnOutcome.CONTEXT_TOO_LARGE)
-
-    if send_typing is not None:
-        try:
-            await send_typing()
-        except Exception:
-            logger.debug("send_typing failed", exc_info=True)
-
-    is_table_role = (effective_role or "").strip().lower() == "table_generator"
-    # OpenRouter SSE (free router / Gemini) часто зависает без чанков → «бот молчит».
-    # Пока стрим нестабилен — всегда non-stream.
-    if stream_callback is not None:
-        logger.debug("run_chat_turn: stream_callback ignored (SSE temporarily disabled)")
-
-    # Основная модель из биллинга + резервный каскад (FREE → :free, MINI+ → Gemini/smart_models).
-    model_chain: list[str] = []
-    for mid in (plan.model_id, *plan.fallback_model_ids):
-        mid = str(mid).strip()
-        if mid and mid not in model_chain:
-            model_chain.append(mid)
-
-    try:
-        is_blogger_role = (effective_role or "").strip().lower() in _BLOGGER_ROLE_IDS
-        is_free_tariff = plan.tariff is TariffTier.FREE
-        from services.billing.chat_pipeline import free_chat_model_timeout_sec
-
-        or_timeout = (
-            free_chat_model_timeout_sec()
-            if is_free_tariff
-            else settings.openrouter_timeout_sec
+        await dialog_append(user_id, "user", history_text, platform=platform)
+        payload = await conv.build_openrouter_messages(
+            settings,
+            user_id,
+            effective_role,
+            premium=plan.use_premium_prompt,
+            platform=platform,
+            tariff=plan.tariff,
         )
-        _role_l = (effective_role or "").strip().lower()
-        _copy_pack_mode = (
-            _role_l == "standard"
-            and plan.use_premium_prompt
-            and plan.tariff is not TariffTier.FREE
+        user_content = build_openrouter_user_content(
+            raw_user_text,
+            image_data_url=user_image_data_url,
         )
-        from content.chat_prompt import looks_like_paid_copy_pack_request
+        if user_image_data_url or (dialog_user_text is not None and history_text != raw_user_text):
+            _apply_user_content_override(payload, user_content)
 
-        # ТИП А только при явном «напиши/смс/пост…»; иначе ТИП Б (диалог).
-        want_copy_pack = bool(
-            _copy_pack_mode and looks_like_paid_copy_pack_request(raw_user_text)
-        )
-        # Paid standard: Copy Pack → 0.75; Type B → ниже, иначе Gemini «угадывает» 4 варианта.
-        temp = (
-            _BLOGGER_TEMPERATURE
-            if is_blogger_role
-            else (
-                0.75
-                if want_copy_pack
-                else (0.55 if _copy_pack_mode else None)
-            )
-        )
+        from services.repository import get_show_suggested_replies
 
-        async def _call_or(messages: list, *, temperature: float | None) -> dict:
-            return await ask_ai_messages(
-                settings,
-                messages,
-                timeout=or_timeout,
-                max_context_tokens=settings.chat_max_context_tokens_est,
-                char_per_token=settings.chat_char_per_token_est,
-                http_client=http_client,
-                stream_callback=None,
-                models=model_chain,
-                max_tokens=plan.max_tokens,
-                text_role=effective_role,
-                temperature=temperature,
-            )
+        suggest_replies = await get_show_suggested_replies(user_id)
+        _role_for_prep = (effective_role or "").strip().lower()
+        # Standard: умное саммари истории → [Контекст: …] в system (вместо hard-collapse).
+        if _role_for_prep == "standard":
+            from services.context_summarize import compact_standard_dialog_context
 
-        if _copy_pack_mode:
-            from content.chat_prompt import _PAID_ROUTE_TYPE_B_LOCK
-            from services.copy_pack import (
-                COPY_PACK_ASSISTANT_PREFIX,
-                COPY_PACK_OPENER_LINE,
-                COPY_PACK_RETRY_USER,
-                is_premium_copy_pack_reply,
-                looks_like_coach_reply,
-                merge_copy_pack_prefix,
-                normalize_copy_pack_reply,
-            )
-
-            def _is_unwanted_copy_pack(text: str) -> bool:
-                body = normalize_copy_pack_reply(strip_redacted_thinking(text or ""))
-                if is_premium_copy_pack_reply(body):
-                    return True
-                head = body[:200].lower()
-                return "готово! разные варианты" in head or "готово! разные стили" in head
-
-            def _pack_content(raw: str) -> str:
-                """Склеивает prefill только для ТИП А; для ТИП Б не усиливаем COPY PACK."""
-                body = normalize_copy_pack_reply(strip_redacted_thinking(raw))
-                if not want_copy_pack:
-                    return body
-                if is_premium_copy_pack_reply(body) or "<pre>" in body.lower():
-                    return normalize_copy_pack_reply(
-                        merge_copy_pack_prefix(COPY_PACK_ASSISTANT_PREFIX, body)
-                    )
-                return body
-
-            last_user = next(
-                (m for m in reversed(payload) if m.get("role") == "user"),
-                None,
-            )
-            system_only = [m for m in payload if m.get("role") == "system"]
-            # Сначала свободный вызов: ТИП Б (аналитика) не должен получать forced prefill.
-            completion = await _call_or(payload, temperature=temp)
-            packed = _pack_content(completion.get("content") or "")
-            completion = dict(completion)
-            completion["content"] = packed
-
-            # Код-гард: на ТИП Б модель всё ещё выдаёт Copy Pack → один короткий retry.
-            if not want_copy_pack and _is_unwanted_copy_pack(packed) and last_user is not None:
-                metrics.incr("chat.copy_pack_rejected_type_b")
-                logger.warning(
-                    "run_chat_turn: Type B got Copy Pack — retry uid=%s head=%s",
-                    user_id,
-                    packed[:120].replace("\n", " "),
+            async def _summary_ask(
+                msgs: list,
+                **kwargs: Any,
+            ) -> dict[str, Any]:
+                return await ask_ai_messages(
+                    settings,
+                    msgs,
+                    http_client=http_client,
+                    **kwargs,
                 )
-                raw_user = str(last_user.get("content") or "")
-                for marker in ("[Compliance:", "[ROUTE LOCK:", "[Системный хвост"):
-                    idx = raw_user.find(marker)
-                    if idx >= 0:
-                        raw_user = raw_user[:idx].rstrip()
-                retry_payload = [
-                    *system_only,
-                    {
-                        "role": "user",
-                        "content": (
-                            f"{raw_user}{_PAID_ROUTE_TYPE_B_LOCK}\n"
-                            "Ответь ОДНИМ экспертным сообщением. "
-                            f"ЗАПРЕЩЕНО начинать с «{COPY_PACK_OPENER_LINE}» "
-                            "и выдавать 4 блока/<pre>."
-                        ),
-                    },
-                ]
-                try:
-                    retry_completion = await ask_ai_messages(
-                        settings,
-                        retry_payload,
-                        timeout=min(float(or_timeout), 25.0),
-                        max_context_tokens=settings.chat_max_context_tokens_est,
-                        char_per_token=settings.chat_char_per_token_est,
-                        http_client=http_client,
-                        stream_callback=None,
-                        models=model_chain[:1] or model_chain,
-                        max_tokens=min(int(plan.max_tokens), 900),
-                        text_role=effective_role,
-                        temperature=0.45,
-                    )
-                    retry_body = normalize_copy_pack_reply(
-                        strip_redacted_thinking(retry_completion.get("content") or "")
-                    )
-                    if retry_body.strip() and not _is_unwanted_copy_pack(retry_body):
-                        completion = dict(retry_completion)
-                        completion["content"] = retry_body
-                        packed = retry_body
-                        metrics.incr("chat.copy_pack_type_b_retry_ok")
-                    else:
-                        metrics.incr("chat.copy_pack_type_b_retry_fail")
-                except Exception:
-                    logger.warning(
-                        "run_chat_turn: Type B anti-copy-pack retry failed uid=%s",
-                        user_id,
-                        exc_info=True,
-                    )
-                    metrics.incr("chat.copy_pack_type_b_retry_fail")
 
-            if is_premium_copy_pack_reply(packed) and want_copy_pack:
-                metrics.incr("chat.copy_pack_prefill_ok")
-            elif packed.strip() and (
-                looks_like_coach_reply(packed) or "<pre>" not in packed.lower()
-            ):
-                # ТИП Б: экспертный разбор без COPY PACK — принимаем как есть.
-                metrics.incr("chat.copy_pack_expert_ok")
-            elif want_copy_pack and last_user is not None and not packed.strip():
-                # Только пустой ответ на ТИП А — короткий retry с prefill.
-                metrics.incr("chat.copy_pack_prefill_weak")
-                logger.warning(
-                    "run_chat_turn: copy-pack empty — short retry user_id=%s",
-                    user_id,
-                )
-                metrics.incr("chat.copy_pack_retry")
-                retry_user = {
-                    "role": "user",
-                    "content": f"{last_user.get('content') or ''}\n\n{COPY_PACK_RETRY_USER}",
-                }
-                retry_payload = [
-                    *system_only,
-                    retry_user,
-                    {"role": "assistant", "content": COPY_PACK_ASSISTANT_PREFIX},
-                ]
-                retry_timeout = min(float(or_timeout), 20.0)
-                try:
-                    retry_completion = await ask_ai_messages(
-                        settings,
-                        retry_payload,
-                        timeout=retry_timeout,
-                        max_context_tokens=settings.chat_max_context_tokens_est,
-                        char_per_token=settings.chat_char_per_token_est,
-                        http_client=http_client,
-                        stream_callback=None,
-                        models=model_chain[:1] or model_chain,
-                        max_tokens=plan.max_tokens,
-                        text_role=effective_role,
-                        temperature=temp,
-                    )
-                    retry_raw = normalize_copy_pack_reply(
-                        merge_copy_pack_prefix(
-                            COPY_PACK_ASSISTANT_PREFIX,
-                            strip_redacted_thinking(retry_completion.get("content") or ""),
-                        )
-                    )
-                    retry_completion = dict(retry_completion)
-                    retry_completion["content"] = retry_raw
-                    if retry_raw.strip():
-                        completion = retry_completion
-                    if is_premium_copy_pack_reply(retry_raw):
-                        metrics.incr("chat.copy_pack_retry_ok")
-                    else:
-                        metrics.incr("chat.copy_pack_retry_fail")
-                except Exception:
-                    logger.warning(
-                        "run_chat_turn: copy-pack retry failed user_id=%s",
-                        user_id,
-                        exc_info=True,
-                    )
-                    metrics.incr("chat.copy_pack_retry_fail")
-            elif packed.strip():
-                # Слабый/частичный COPY PACK — отдаём как есть, без второго каскада.
-                metrics.incr("chat.copy_pack_prefill_weak")
-                logger.warning(
-                    "run_chat_turn: copy-pack weak kept as-is user_id=%s head=%s",
-                    user_id,
-                    packed[:160].replace("\n", " "),
-                )
-        else:
-            completion = await _call_or(payload, temperature=temp)
-    except RuntimeError as exc:
-        err = str(exc)
-        if err in ("context_too_long", "context_too_long_tokens"):
+            await compact_standard_dialog_context(payload, ask_fn=_summary_ask)
+
+        prepare_openrouter_chat_messages(
+            payload,
+            use_premium_prompt=plan.use_premium_prompt,
+            text_role=effective_role,
+            chatcom_laconic=plan.tariff is TariffTier.FREE,
+            request_suggested_replies=(
+                plan.tariff is not TariffTier.FREE
+                and _role_for_prep == "standard"
+                and suggest_replies
+            ),
+        )
+
+        def _estimate_payload_tokens(msgs: list) -> int:
+            return estimate_messages_prompt_tokens(msgs, settings=settings)
+
+        payload, fits_limit = prune_context_messages(
+            payload,
+            max_messages=(
+                conv.FREE_DIALOG_HISTORY_LIMIT
+                if plan.tariff is TariffTier.FREE
+                else settings.chat_history_limit
+            ),
+            max_tokens_est=settings.chat_max_context_tokens_est,
+            estimate_tokens=_estimate_payload_tokens,
+        )
+        if not fits_limit:
             await dialog_pop_last_for_user(user_id, platform=platform)
             if charge_id:
                 await refund_charge(charge_id)
             await rollback_last(settings, user_id)
             return ChatTurnResult(outcome=ChatTurnOutcome.CONTEXT_TOO_LARGE)
-        logger.exception("run_chat_turn: OpenRouter failed user_id=%s err=%s", user_id, err)
-        await dialog_pop_last_for_user(user_id, platform=platform)
-        if charge_id:
-            await refund_charge(charge_id)
-        await rollback_last(settings, user_id)
-        return ChatTurnResult(outcome=ChatTurnOutcome.AI_FAILED, effective_text_role=effective_role)
-    except Exception:
-        logger.exception("run_chat_turn: OpenRouter failed user_id=%s", user_id)
-        await dialog_pop_last_for_user(user_id, platform=platform)
-        if charge_id:
-            await refund_charge(charge_id)
-        await rollback_last(settings, user_id)
-        return ChatTurnResult(outcome=ChatTurnOutcome.AI_FAILED, effective_text_role=effective_role)
 
-    content = completion.get("content") or ""
-    if not strip_redacted_thinking(content).strip() and not is_table_role:
-        logger.warning("run_chat_turn: empty model content user_id=%s role=%s", user_id, effective_role)
-        await dialog_pop_last_for_user(user_id, platform=platform)
-        if charge_id:
-            await refund_charge(charge_id)
-        await rollback_last(settings, user_id)
-        return ChatTurnResult(outcome=ChatTurnOutcome.AI_FAILED, effective_text_role=effective_role)
-    try:
-        prompt_tokens = int(completion.get("prompt_tokens") or 0)
-        completion_tokens = int(completion.get("completion_tokens") or 0)
-    except (TypeError, ValueError):
-        prompt_tokens = 0
-        completion_tokens = 0
+        if send_typing is not None:
+            try:
+                await send_typing()
+            except Exception:
+                logger.debug("send_typing failed", exc_info=True)
 
-    _record_openrouter_usage(
-        user_id=user_id,
-        model_id=plan.model_id,
-        role=effective_role,
-        prompt_tokens=max(prompt_tokens, 0),
-        completion_tokens=max(completion_tokens, 0),
-    )
+        is_table_role = (effective_role or "").strip().lower() == "table_generator"
+        # OpenRouter SSE (free router / Gemini) часто зависает без чанков → «бот молчит».
+        # Пока стрим нестабилен — всегда non-stream.
+        if stream_callback is not None:
+            logger.debug("run_chat_turn: stream_callback ignored (SSE temporarily disabled)")
 
-    raw_answer = strip_redacted_thinking(content)
-    if (effective_role or "").strip().lower() == "standard" and plan.use_premium_prompt:
-        from services.copy_pack import normalize_copy_pack_reply
+        # Основная модель из биллинга + резервный каскад (FREE → :free, MINI+ → Gemini/smart_models).
+        model_chain: list[str] = []
+        for mid in (plan.model_id, *plan.fallback_model_ids):
+            mid = str(mid).strip()
+            if mid and mid not in model_chain:
+                model_chain.append(mid)
 
-        raw_answer = normalize_copy_pack_reply(raw_answer)
-        content = raw_answer
-    is_table_role = (effective_role or "").strip().lower() == "table_generator"
-
-    if is_table_role:
         try:
-            table_json = canonicalize_table_json(raw_answer)
-            if not table_json:
-                raise ValueError("invalid or empty table JSON")
+            is_blogger_role = (effective_role or "").strip().lower() in _BLOGGER_ROLE_IDS
+            is_free_tariff = plan.tariff is TariffTier.FREE
+            from services.billing.chat_pipeline import free_chat_model_timeout_sec
 
-            ai_insights = extract_table_ai_insights(raw_answer)
-            await commit_assistant_turn_queued(
-                user_id,
-                compact_table_history_from_json(table_json, table_subrole=effective_role),
-                settings.dialog_prune_keep,
-                platform=platform,
+            or_timeout = (
+                free_chat_model_timeout_sec()
+                if is_free_tariff
+                else settings.openrouter_timeout_sec
             )
-            report_id = await insert_table_report(user_id, table_json)
-            conv.schedule_memory_refresh(settings, user_id, platform=platform)
-            _record_chat_success_billing(
-                role=effective_role,
-                energy_cost=plan.energy_cost,
-                crystal_cost=plan.crystal_cost,
+            _role_l = (effective_role or "").strip().lower()
+            _copy_pack_mode = (
+                _role_l == "standard"
+                and plan.use_premium_prompt
+                and plan.tariff is not TariffTier.FREE
             )
-            return ChatTurnResult(
-                outcome=ChatTurnOutcome.SUCCESS,
-                assistant_message=None,
-                user_notice=billing_result.notice,
-                effective_text_role=effective_role,
-                table_raw_json=table_json,
-                table_report_id=report_id,
-                table_ai_insights=ai_insights,
+            from content.chat_prompt import looks_like_paid_copy_pack_request
+
+            # ТИП А только при явном «напиши/смс/пост…»; иначе ТИП Б (диалог).
+            want_copy_pack = bool(
+                _copy_pack_mode and looks_like_paid_copy_pack_request(raw_user_text)
             )
-        except Exception:
-            logger.warning(
-                "run_chat_turn: table JSON pipeline failed user_id=%s raw=%s",
-                user_id,
-                raw_answer[:500],
-                exc_info=True,
+            # Paid standard: Copy Pack → 0.75; Type B → ниже, иначе Gemini «угадывает» 4 варианта.
+            temp = (
+                _BLOGGER_TEMPERATURE
+                if is_blogger_role
+                else (
+                    0.75
+                    if want_copy_pack
+                    else (0.55 if _copy_pack_mode else None)
+                )
             )
+
+            async def _call_or(messages: list, *, temperature: float | None) -> dict:
+                return await ask_ai_messages(
+                    settings,
+                    messages,
+                    timeout=or_timeout,
+                    max_context_tokens=settings.chat_max_context_tokens_est,
+                    char_per_token=settings.chat_char_per_token_est,
+                    http_client=http_client,
+                    stream_callback=None,
+                    models=model_chain,
+                    max_tokens=plan.max_tokens,
+                    text_role=effective_role,
+                    temperature=temperature,
+                )
+
+            if _copy_pack_mode:
+                from content.chat_prompt import _PAID_ROUTE_TYPE_B_LOCK
+                from services.copy_pack import (
+                    COPY_PACK_ASSISTANT_PREFIX,
+                    COPY_PACK_OPENER_LINE,
+                    COPY_PACK_RETRY_USER,
+                    is_premium_copy_pack_reply,
+                    looks_like_coach_reply,
+                    merge_copy_pack_prefix,
+                    normalize_copy_pack_reply,
+                )
+
+                def _is_unwanted_copy_pack(text: str) -> bool:
+                    body = normalize_copy_pack_reply(strip_redacted_thinking(text or ""))
+                    if is_premium_copy_pack_reply(body):
+                        return True
+                    head = body[:200].lower()
+                    return "готово! разные варианты" in head or "готово! разные стили" in head
+
+                def _pack_content(raw: str) -> str:
+                    """Склеивает prefill только для ТИП А; для ТИП Б не усиливаем COPY PACK."""
+                    body = normalize_copy_pack_reply(strip_redacted_thinking(raw))
+                    if not want_copy_pack:
+                        return body
+                    if is_premium_copy_pack_reply(body) or "<pre>" in body.lower():
+                        return normalize_copy_pack_reply(
+                            merge_copy_pack_prefix(COPY_PACK_ASSISTANT_PREFIX, body)
+                        )
+                    return body
+
+                last_user = next(
+                    (m for m in reversed(payload) if m.get("role") == "user"),
+                    None,
+                )
+                system_only = [m for m in payload if m.get("role") == "system"]
+                # Сначала свободный вызов: ТИП Б (аналитика) не должен получать forced prefill.
+                completion = await _call_or(payload, temperature=temp)
+                packed = _pack_content(completion.get("content") or "")
+                completion = dict(completion)
+                completion["content"] = packed
+
+                # Код-гард: на ТИП Б модель всё ещё выдаёт Copy Pack → один короткий retry.
+                if not want_copy_pack and _is_unwanted_copy_pack(packed) and last_user is not None:
+                    metrics.incr("chat.copy_pack_rejected_type_b")
+                    logger.warning(
+                        "run_chat_turn: Type B got Copy Pack — retry uid=%s head=%s",
+                        user_id,
+                        packed[:120].replace("\n", " "),
+                    )
+                    raw_user = str(last_user.get("content") or "")
+                    for marker in ("[Compliance:", "[ROUTE LOCK:", "[Системный хвост"):
+                        idx = raw_user.find(marker)
+                        if idx >= 0:
+                            raw_user = raw_user[:idx].rstrip()
+                    retry_payload = [
+                        *system_only,
+                        {
+                            "role": "user",
+                            "content": (
+                                f"{raw_user}{_PAID_ROUTE_TYPE_B_LOCK}\n"
+                                "Ответь ОДНИМ экспертным сообщением. "
+                                f"ЗАПРЕЩЕНО начинать с «{COPY_PACK_OPENER_LINE}» "
+                                "и выдавать 4 блока/<pre>."
+                            ),
+                        },
+                    ]
+                    try:
+                        retry_completion = await ask_ai_messages(
+                            settings,
+                            retry_payload,
+                            timeout=min(float(or_timeout), 25.0),
+                            max_context_tokens=settings.chat_max_context_tokens_est,
+                            char_per_token=settings.chat_char_per_token_est,
+                            http_client=http_client,
+                            stream_callback=None,
+                            models=model_chain[:1] or model_chain,
+                            max_tokens=min(int(plan.max_tokens), 900),
+                            text_role=effective_role,
+                            temperature=0.45,
+                        )
+                        retry_body = normalize_copy_pack_reply(
+                            strip_redacted_thinking(retry_completion.get("content") or "")
+                        )
+                        if retry_body.strip() and not _is_unwanted_copy_pack(retry_body):
+                            completion = dict(retry_completion)
+                            completion["content"] = retry_body
+                            packed = retry_body
+                            metrics.incr("chat.copy_pack_type_b_retry_ok")
+                        else:
+                            metrics.incr("chat.copy_pack_type_b_retry_fail")
+                    except Exception:
+                        logger.warning(
+                            "run_chat_turn: Type B anti-copy-pack retry failed uid=%s",
+                            user_id,
+                            exc_info=True,
+                        )
+                        metrics.incr("chat.copy_pack_type_b_retry_fail")
+
+                if is_premium_copy_pack_reply(packed) and want_copy_pack:
+                    metrics.incr("chat.copy_pack_prefill_ok")
+                elif packed.strip() and (
+                    looks_like_coach_reply(packed) or "<pre>" not in packed.lower()
+                ):
+                    # ТИП Б: экспертный разбор без COPY PACK — принимаем как есть.
+                    metrics.incr("chat.copy_pack_expert_ok")
+                elif want_copy_pack and last_user is not None and not packed.strip():
+                    # Только пустой ответ на ТИП А — короткий retry с prefill.
+                    metrics.incr("chat.copy_pack_prefill_weak")
+                    logger.warning(
+                        "run_chat_turn: copy-pack empty — short retry user_id=%s",
+                        user_id,
+                    )
+                    metrics.incr("chat.copy_pack_retry")
+                    retry_user = {
+                        "role": "user",
+                        "content": f"{last_user.get('content') or ''}\n\n{COPY_PACK_RETRY_USER}",
+                    }
+                    retry_payload = [
+                        *system_only,
+                        retry_user,
+                        {"role": "assistant", "content": COPY_PACK_ASSISTANT_PREFIX},
+                    ]
+                    retry_timeout = min(float(or_timeout), 20.0)
+                    try:
+                        retry_completion = await ask_ai_messages(
+                            settings,
+                            retry_payload,
+                            timeout=retry_timeout,
+                            max_context_tokens=settings.chat_max_context_tokens_est,
+                            char_per_token=settings.chat_char_per_token_est,
+                            http_client=http_client,
+                            stream_callback=None,
+                            models=model_chain[:1] or model_chain,
+                            max_tokens=plan.max_tokens,
+                            text_role=effective_role,
+                            temperature=temp,
+                        )
+                        retry_raw = normalize_copy_pack_reply(
+                            merge_copy_pack_prefix(
+                                COPY_PACK_ASSISTANT_PREFIX,
+                                strip_redacted_thinking(retry_completion.get("content") or ""),
+                            )
+                        )
+                        retry_completion = dict(retry_completion)
+                        retry_completion["content"] = retry_raw
+                        if retry_raw.strip():
+                            completion = retry_completion
+                        if is_premium_copy_pack_reply(retry_raw):
+                            metrics.incr("chat.copy_pack_retry_ok")
+                        else:
+                            metrics.incr("chat.copy_pack_retry_fail")
+                    except Exception:
+                        logger.warning(
+                            "run_chat_turn: copy-pack retry failed user_id=%s",
+                            user_id,
+                            exc_info=True,
+                        )
+                        metrics.incr("chat.copy_pack_retry_fail")
+                elif packed.strip():
+                    # Слабый/частичный COPY PACK — отдаём как есть, без второго каскада.
+                    metrics.incr("chat.copy_pack_prefill_weak")
+                    logger.warning(
+                        "run_chat_turn: copy-pack weak kept as-is user_id=%s head=%s",
+                        user_id,
+                        packed[:160].replace("\n", " "),
+                    )
+            else:
+                completion = await _call_or(payload, temperature=temp)
+        except RuntimeError as exc:
+            err = str(exc)
+            if err in ("context_too_long", "context_too_long_tokens"):
+                await dialog_pop_last_for_user(user_id, platform=platform)
+                if charge_id:
+                    await refund_charge(charge_id)
+                await rollback_last(settings, user_id)
+                return ChatTurnResult(outcome=ChatTurnOutcome.CONTEXT_TOO_LARGE)
+            logger.exception("run_chat_turn: OpenRouter failed user_id=%s err=%s", user_id, err)
             await dialog_pop_last_for_user(user_id, platform=platform)
             if charge_id:
                 await refund_charge(charge_id)
             await rollback_last(settings, user_id)
-            return ChatTurnResult(outcome=ChatTurnOutcome.TABLE_JSON_INVALID)
+            # FREE: весь :free-каскад исчерпан → сообщение про техобслуживание + upsell.
+            notice = None
+            if err == "openrouter_unavailable" and plan.tariff is TariffTier.FREE:
+                from content.messages import TXT_CHAT_AI_MAINTENANCE
 
-    blogger_post_raw: str | None = None
-    suggested_replies: tuple[str, ...] = ()
-    content_for_format = content
-    if (effective_role or "").strip().lower() == "standard":
-        from services.standard_suggested_replies import split_suggested_replies
+                notice = TXT_CHAT_AI_MAINTENANCE
+            return ChatTurnResult(
+                outcome=ChatTurnOutcome.AI_FAILED,
+                effective_text_role=effective_role,
+                user_notice=notice,
+            )
+        except Exception:
+            logger.exception("run_chat_turn: OpenRouter failed user_id=%s", user_id)
+            await dialog_pop_last_for_user(user_id, platform=platform)
+            if charge_id:
+                await refund_charge(charge_id)
+            await rollback_last(settings, user_id)
+            return ChatTurnResult(outcome=ChatTurnOutcome.AI_FAILED, effective_text_role=effective_role)
 
-        content_for_format, reply_labels = split_suggested_replies(
-            content,
-            # FREE: 100% кнопки даже если LLM забыла / обрезала ===КНОПКИ===.
-            fallback_if_missing=plan.tariff is TariffTier.FREE,
+        content = completion.get("content") or ""
+        if not strip_redacted_thinking(content).strip() and not is_table_role:
+            logger.warning("run_chat_turn: empty model content user_id=%s role=%s", user_id, effective_role)
+            await dialog_pop_last_for_user(user_id, platform=platform)
+            if charge_id:
+                await refund_charge(charge_id)
+            await rollback_last(settings, user_id)
+            return ChatTurnResult(outcome=ChatTurnOutcome.AI_FAILED, effective_text_role=effective_role)
+        try:
+            prompt_tokens = int(completion.get("prompt_tokens") or 0)
+            completion_tokens = int(completion.get("completion_tokens") or 0)
+        except (TypeError, ValueError):
+            prompt_tokens = 0
+            completion_tokens = 0
+
+        _record_openrouter_usage(
+            user_id=user_id,
+            model_id=plan.model_id,
+            role=effective_role,
+            prompt_tokens=max(prompt_tokens, 0),
+            completion_tokens=max(completion_tokens, 0),
         )
-        suggested_replies = tuple(reply_labels)
 
-    if (effective_role or "").strip().lower() in _BLOGGER_ROLE_IDS:
-        from services.blogger_post_parser import (
-            is_blogger_response_degraded,
-            normalize_blogger_raw_output,
-            reassemble_blogger_sections,
-        )
+        raw_answer = strip_redacted_thinking(content)
+        if (effective_role or "").strip().lower() == "standard" and plan.use_premium_prompt:
+            from services.copy_pack import normalize_copy_pack_reply
 
-        blogger_sections = normalize_blogger_raw_output(content)
-        if is_blogger_response_degraded(blogger_sections):
-            logger.warning(
-                "run_chat_turn: degraded blogger output user_id=%s raw=%s",
+            raw_answer = normalize_copy_pack_reply(raw_answer)
+            content = raw_answer
+        is_table_role = (effective_role or "").strip().lower() == "table_generator"
+
+        if is_table_role:
+            try:
+                table_json = canonicalize_table_json(raw_answer)
+                if not table_json:
+                    raise ValueError("invalid or empty table JSON")
+
+                ai_insights = extract_table_ai_insights(raw_answer)
+                await commit_assistant_turn_queued(
+                    user_id,
+                    compact_table_history_from_json(table_json, table_subrole=effective_role),
+                    settings.dialog_prune_keep,
+                    platform=platform,
+                )
+                report_id = await insert_table_report(user_id, table_json)
+                conv.schedule_memory_refresh(settings, user_id, platform=platform)
+                _record_chat_success_billing(
+                    role=effective_role,
+                    energy_cost=plan.energy_cost,
+                    crystal_cost=plan.crystal_cost,
+                )
+                return ChatTurnResult(
+                    outcome=ChatTurnOutcome.SUCCESS,
+                    assistant_message=None,
+                    user_notice=billing_result.notice,
+                    effective_text_role=effective_role,
+                    table_raw_json=table_json,
+                    table_report_id=report_id,
+                    table_ai_insights=ai_insights,
+                )
+            except Exception:
+                logger.warning(
+                    "run_chat_turn: table JSON pipeline failed user_id=%s raw=%s",
+                    user_id,
+                    raw_answer[:500],
+                    exc_info=True,
+                )
+                await dialog_pop_last_for_user(user_id, platform=platform)
+                if charge_id:
+                    await refund_charge(charge_id)
+                await rollback_last(settings, user_id)
+                return ChatTurnResult(outcome=ChatTurnOutcome.TABLE_JSON_INVALID)
+
+        blogger_post_raw: str | None = None
+        suggested_replies: tuple[str, ...] = ()
+        content_for_format = content
+        if (effective_role or "").strip().lower() == "standard":
+            from services.standard_suggested_replies import split_suggested_replies
+
+            content_for_format, reply_labels = split_suggested_replies(
+                content,
+                # FREE: 100% кнопки даже если LLM забыла / обрезала ===КНОПКИ===.
+                fallback_if_missing=plan.tariff is TariffTier.FREE,
+            )
+            suggested_replies = tuple(reply_labels)
+
+        if (effective_role or "").strip().lower() in _BLOGGER_ROLE_IDS:
+            from services.blogger_post_parser import (
+                is_blogger_response_degraded,
+                normalize_blogger_raw_output,
+                reassemble_blogger_sections,
+            )
+
+            blogger_sections = normalize_blogger_raw_output(content)
+            if is_blogger_response_degraded(blogger_sections):
+                logger.warning(
+                    "run_chat_turn: degraded blogger output user_id=%s raw=%s",
+                    user_id,
+                    content[:500],
+                )
+                await dialog_pop_last_for_user(user_id, platform=platform)
+                if charge_id:
+                    await refund_charge(charge_id)
+                await rollback_last(settings, user_id)
+                return ChatTurnResult(
+                    outcome=ChatTurnOutcome.AI_FAILED,
+                    effective_text_role=effective_role,
+                )
+            blogger_post_raw = reassemble_blogger_sections(blogger_sections)
+
+        ans_trim = format_assistant_for_role(content_for_format, effective_role)
+        if plan.max_tokens <= 1000:
+            ans_trim = ans_trim[: min(settings.chat_max_message_chars, 4090)]
+        else:
+            ans_trim = ans_trim[: settings.chat_max_message_chars]
+        # Standard: пустое тело после split кнопок / обрезки → раньше AI_FAILED (MINI «молчит»).
+        if (
+            not (ans_trim or "").strip()
+            and (effective_role or "").strip().lower() == "standard"
+            and (suggested_replies or plan.tariff is not TariffTier.FREE)
+        ):
+            ans_trim = "Готово — уточните ниже или напишите вопрос."
+            logger.info(
+                "run_chat_turn: standard empty body — synthetic reply uid=%s tariff=%s",
                 user_id,
-                content[:500],
+                getattr(plan.tariff, "value", plan.tariff),
+            )
+        if not (ans_trim or "").strip():
+            logger.warning(
+                "run_chat_turn: empty assistant output user_id=%s role=%s",
+                user_id,
+                effective_role,
             )
             await dialog_pop_last_for_user(user_id, platform=platform)
             if charge_id:
@@ -693,51 +767,18 @@ async def run_chat_turn(
                 outcome=ChatTurnOutcome.AI_FAILED,
                 effective_text_role=effective_role,
             )
-        blogger_post_raw = reassemble_blogger_sections(blogger_sections)
-
-    ans_trim = format_assistant_for_role(content_for_format, effective_role)
-    if plan.max_tokens <= 1000:
-        ans_trim = ans_trim[: min(settings.chat_max_message_chars, 4090)]
-    else:
-        ans_trim = ans_trim[: settings.chat_max_message_chars]
-    # Standard: пустое тело после split кнопок / обрезки → раньше AI_FAILED (MINI «молчит»).
-    if (
-        not (ans_trim or "").strip()
-        and (effective_role or "").strip().lower() == "standard"
-        and (suggested_replies or plan.tariff is not TariffTier.FREE)
-    ):
-        ans_trim = "Готово — уточните ниже или напишите вопрос."
-        logger.info(
-            "run_chat_turn: standard empty body — synthetic reply uid=%s tariff=%s",
-            user_id,
-            getattr(plan.tariff, "value", plan.tariff),
+        await commit_assistant_turn_queued(user_id, ans_trim, settings.dialog_prune_keep, platform=platform)
+        conv.schedule_memory_refresh(settings, user_id, platform=platform)
+        _record_chat_success_billing(
+            role=effective_role,
+            energy_cost=plan.energy_cost,
+            crystal_cost=plan.crystal_cost,
         )
-    if not (ans_trim or "").strip():
-        logger.warning(
-            "run_chat_turn: empty assistant output user_id=%s role=%s",
-            user_id,
-            effective_role,
-        )
-        await dialog_pop_last_for_user(user_id, platform=platform)
-        if charge_id:
-            await refund_charge(charge_id)
-        await rollback_last(settings, user_id)
         return ChatTurnResult(
-            outcome=ChatTurnOutcome.AI_FAILED,
+            outcome=ChatTurnOutcome.SUCCESS,
+            assistant_message=ans_trim,
+            user_notice=billing_result.notice,
             effective_text_role=effective_role,
+            blogger_post_raw=blogger_post_raw,
+            suggested_replies=suggested_replies,
         )
-    await commit_assistant_turn_queued(user_id, ans_trim, settings.dialog_prune_keep, platform=platform)
-    conv.schedule_memory_refresh(settings, user_id, platform=platform)
-    _record_chat_success_billing(
-        role=effective_role,
-        energy_cost=plan.energy_cost,
-        crystal_cost=plan.crystal_cost,
-    )
-    return ChatTurnResult(
-        outcome=ChatTurnOutcome.SUCCESS,
-        assistant_message=ans_trim,
-        user_notice=billing_result.notice,
-        effective_text_role=effective_role,
-        blogger_post_raw=blogger_post_raw,
-        suggested_replies=suggested_replies,
-    )

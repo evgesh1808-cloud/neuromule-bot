@@ -22,6 +22,9 @@ from services.dialog_sanitize import sanitize_dialog_content_for_chat
 
 logger = logging.getLogger(__name__)
 
+# FREE: строго последние 6 реплик (≈3 вопроса + 3 ответа), без раздувания через .env.
+FREE_DIALOG_HISTORY_LIMIT = 6
+
 _MEMORY_MODEL_FALLBACK: tuple[str, ...] = (
     "google/gemini-2.5-flash",
     "google/gemini-2.5-flash-lite",
@@ -66,7 +69,8 @@ async def build_openrouter_messages(
 
     Порядок:
         1) system — базовая роль + защита от injection + блок persistent_memory;
-        2) последние ``settings.chat_history_limit`` реплик user/assistant из БД (хронологически).
+        2) последние N реплик user/assistant из БД (хронологически);
+           FREE → жёстко ``FREE_DIALOG_HISTORY_LIMIT`` (6), иначе ``chat_history_limit``.
 
     Для роли ``standard`` полная история затем сжимается в ``chat_turn`` через
     ``compact_standard_dialog_context`` → ультра-короткий ``[Контекст: …]`` в system
@@ -80,6 +84,20 @@ async def build_openrouter_messages(
     Возвращает:
         Список словарей ``{"role": "...", "content": "..."}``.
     """
+    # История: FREE-кап только при явном тарифе FREE (chat_turn всегда передаёт plan.tariff).
+    if isinstance(tariff, TariffTier):
+        tier = tariff
+    elif tariff is None:
+        tier = None
+    else:
+        tier = TariffTier.from_db(str(tariff))
+
+    hist_limit = (
+        FREE_DIALOG_HISTORY_LIMIT
+        if tier is TariffTier.FREE
+        else max(1, int(settings.chat_history_limit))
+    )
+
     mem = await repo.get_persistent_memory(user_id)
     user_city: str | None = None
     if text_role in ("blogger_content", "blogger"):
@@ -92,19 +110,21 @@ async def build_openrouter_messages(
         user_city=user_city,
         tariff=tariff,
     )
-    rows = await repo.dialog_fetch_last(user_id, settings.chat_history_limit, platform=platform)
+    rows = await repo.dialog_fetch_last(user_id, hist_limit, platform=platform)
     out: list[dict[str, str]] = [{"role": "system", "content": system}]
     for role, content in rows:
         if role in ("user", "assistant"):
             out.append({"role": role, "content": sanitize_dialog_content_for_chat(content)})
 
+    # FREE: ещё раз обрезаем хвост (на случай лишних ролей в rows).
+    if tier is TariffTier.FREE and len(out) > 1 + FREE_DIALOG_HISTORY_LIMIT:
+        out = [out[0], *out[1:][-FREE_DIALOG_HISTORY_LIMIT:]]
+
     # Standard: жёстко вшить тарифный compliance-хвост в last user
     # (FREE → ===КНОПКИ===; MINI+ → 4×<pre>). Inject идемпотентен по маркеру.
     if (text_role or "").strip().lower() == "standard":
-        tier = tariff if isinstance(tariff, TariffTier) else TariffTier.from_db(
-            None if tariff is None else str(tariff)
-        )
-        is_free = tier is TariffTier.FREE
+        prompt_tier = tier if tier is not None else TariffTier.from_db(None)
+        is_free = prompt_tier is TariffTier.FREE
         inject_compliance_rules_into_last_user_message(
             out,
             use_premium_prompt=not is_free,

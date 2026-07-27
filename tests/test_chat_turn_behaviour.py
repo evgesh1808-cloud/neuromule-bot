@@ -44,8 +44,11 @@ async def test_run_chat_turn_openrouter_all_500(repo_module):
         r = await run_chat_turn(s, uid, "hi", http_client=client)
 
     assert r.outcome is ChatTurnOutcome.AI_FAILED
+    from content.messages import TXT_CHAT_AI_MAINTENANCE
+
+    assert r.user_notice == TXT_CHAT_AI_MAINTENANCE
     row = await repo_module.get_user_row(uid)
-    assert row.energy == 30
+    assert row.energy == 10
 
 
 async def test_run_chat_turn_empty_model_output_refunds(repo_module):

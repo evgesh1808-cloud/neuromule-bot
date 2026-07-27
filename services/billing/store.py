@@ -348,7 +348,7 @@ async def _apply_daily_reset_if_needed(db: aiosqlite.Connection, user_id: int, t
 
 
 async def reset_daily_free_energy() -> None:
-    """Массовый сброс в 00:00 (cron): FREE -> 30 ⚡ free, платные -> 0 free."""
+    """Массовый сброс в 00:00 (cron): FREE -> DAILY_FREE_ENERGY ⚡ free, платные -> 0 free."""
     today = date.today().isoformat()
     async with aiosqlite.connect(_db_path()) as db:
         await db.execute(
