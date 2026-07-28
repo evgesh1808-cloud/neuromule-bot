@@ -274,12 +274,22 @@ async def _refresh_or_resend_daily_advice(
     *,
     callback: CallbackQuery | None = None,
 ) -> None:
-    """Повторный клик в тот же день: edit старого сообщения или новая копия."""
-    if callback is not None:
-        try:
-            await callback.answer()
-        except TelegramBadRequest:
-            pass
+    """Повторный клик в тот же день: Callback → edit; Reply-кнопка → короткое напоминание."""
+    display_name = _display_name_for_advice(target, user)
+
+    # Reply-кнопка меню: не дублируем простыню, только короткое предупреждение.
+    if callback is None:
+        await target.answer(
+            f"🔮 {display_name}, твой прогноз на сегодня уже рассчитан выше! "
+            "Новый космос откроется завтра после 00:05 МСК. "
+            "Твой баланс энергии не потрачен. ✨"
+        )
+        return
+
+    try:
+        await callback.answer()
+    except TelegramBadRequest:
+        pass
 
     user_profile = daily_advice_user_profile_from_repo_user(user)
     if user_profile is None:
@@ -294,7 +304,7 @@ async def _refresh_or_resend_daily_advice(
         return
 
     kb = _daily_advice_full_report_keyboard()
-    current_time_str = datetime.now(_MSK).strftime("%H:%M")
+    current_time_str = datetime.now(_MSK).strftime("%H:%M:%S")
     refreshed_text = (
         f"✨ Твой Барометр обновлён на момент: {current_time_str} МСК\n\n"
         f"{original_pool_text}"
