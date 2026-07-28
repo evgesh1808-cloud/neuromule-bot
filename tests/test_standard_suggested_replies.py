@@ -206,47 +206,61 @@ def test_remember_and_resolve_suggested_reply() -> None:
     assert resolve_suggested_reply("nope", 0, user_id=42) is None
 
 
-def test_keyboard_uses_chat_hint_prefix() -> None:
-    labels = ["Дай сказку?", "Другой пример?"]
+def test_keyboard_uses_std_reply_with_short_display() -> None:
+    labels = ["Дай сказку про дракона и рыцаря?", "Другой пример?"]
     cid = remember_suggested_replies(7, labels)
     assert cid
     kb = build_suggested_replies_keyboard(cid, labels)
     assert kb is not None
     flat = [b for row in kb.inline_keyboard for b in row]
-    assert flat[0].callback_data == f"{msg.CB_CHAT_HINT_PREFIX}Дай сказку?"
-    assert parse_chat_hint_callback(flat[1].callback_data) == "Другой пример?"
-    assert flat[0].callback_data.startswith(msg.CB_CHAT_HINT_PREFIX)
+    assert flat[0].callback_data == f"{msg.CB_STD_REPLY_PREFIX}0:{cid}"
+    assert flat[1].callback_data == f"{msg.CB_STD_REPLY_PREFIX}1:{cid}"
+    assert resolve_suggested_reply(cid, 0, user_id=7) == "Дай сказку про дракона и рыцаря?"
+    assert len(flat[0].text) <= 34
+    assert flat[0].text.endswith("…") or len(labels[0]) <= 34
 
 
-def test_long_label_truncated_into_chat_hint_not_std_reply() -> None:
-    # Раньше длинные лейблы уходили в std_reply UUID → «устарела» после рестарта.
+def test_long_label_stored_full_via_std_reply() -> None:
+    # Полный смысл в кэше; на кнопке — короткий display; callback без chat_hint-обрезки.
+    long = "Как применить тхэквондо для новичка?"
+    assert len(long) <= 48
+    cid = remember_suggested_replies(3, [long])
+    assert cid
+    kb = build_suggested_replies_keyboard(cid, [long])
+    assert kb is not None
+    btn = kb.inline_keyboard[0][0]
+    assert btn.callback_data.startswith(msg.CB_STD_REPLY_PREFIX)
+    assert not btn.callback_data.startswith(msg.CB_CHAT_HINT_PREFIX)
+    assert resolve_suggested_reply(cid, 0, user_id=3) == long
+    assert len(btn.text) <= 34
+    from services.standard_suggested_replies import expand_suggested_reply_prompt
+
+    prompt = expand_suggested_reply_prompt(long)
+    assert "Продолжая наш текущий разговор" in prompt
+    assert "тхэквондо" in prompt
+
+
+def test_chat_hint_still_fits_64_bytes() -> None:
     long = "Ж" * 40
     data = build_chat_hint_callback(long)
     assert data is not None
     assert data.startswith(msg.CB_CHAT_HINT_PREFIX)
     assert len(data.encode("utf-8")) <= 64
-    cid = remember_suggested_replies(3, [long])
-    assert cid
-    kb = build_suggested_replies_keyboard(cid, [long])
-    assert kb is not None
-    cb = kb.inline_keyboard[0][0].callback_data
-    assert cb.startswith(msg.CB_CHAT_HINT_PREFIX)
-    assert not cb.startswith(msg.CB_STD_REPLY_PREFIX)
-    assert parse_chat_hint_callback(cb)
+    assert parse_chat_hint_callback(data)
 
 
-def test_split_strips_html_and_fits_callback() -> None:
+def test_split_strips_html_and_keeps_readable_labels() -> None:
     raw = (
         "Ответ\n===КНОПКИ===\n"
-        "<b>Можно подробнее про тхэквондо для новичка?</b>\n"
+        "<b>Можно подробнее про тхэквондо?</b>\n"
         '"Другой вариант?"\n'
-        "Как применить на практике сегодня вечером?"
+        "Как применить?"
     )
     body, labels = split_suggested_replies(raw)
     assert body == "Ответ"
     assert len(labels) == 3
     assert all("<" not in x for x in labels)
-    assert all(len(f"{msg.CB_CHAT_HINT_PREFIX}{x}".encode("utf-8")) <= 64 for x in labels)
+    assert "тхэквондо" in labels[0].lower()
 
 
 def test_resolve_suggested_reply_latest_fallback() -> None:
@@ -379,4 +393,6 @@ async def test_run_chat_turn_strips_buttons_into_suggested_replies() -> None:
     assert result.assistant_message is not None
     assert BUTTONS_MARKER not in result.assistant_message
     assert "Следующий шаг" not in (result.assistant_message or "")
-    assert result.suggested_replies == ("Следующий шаг", "Другой вопрос")
+    # Pref ON → fallback может дописать 3-й лейбл; первые два — из ответа модели.
+    assert result.suggested_replies[:2] == ("Следующий шаг", "Другой вопрос")
+    assert len(result.suggested_replies) >= 2

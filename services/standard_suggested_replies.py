@@ -18,7 +18,8 @@ BUTTONS_MARKER = "===КНОПКИ==="
 # Модель пишет КНОПКИ/кнопки/Кнопки, иногда с пробелами.
 _BUTTONS_MARKER_RE = re.compile(r"===\s*кнопки\s*===", flags=re.IGNORECASE)
 _MAX_LABELS = 3
-_MAX_LABEL_CHARS = 64
+_MAX_LABEL_CHARS = 48  # полный текст follow-up в кэше / на клик
+_MAX_BUTTON_DISPLAY_CHARS = 34  # читаемый текст на кнопке (мобильный Telegram)
 _CONTEXT_ID_LEN = 8
 # Telegram Bot API: callback_data 1–64 bytes (UTF-8).
 _TG_CALLBACK_DATA_MAX_BYTES = 64
@@ -171,6 +172,31 @@ def fit_label_for_chat_hint(label: str) -> str:
     return cut + ell
 
 
+def button_display_text(
+    label: str,
+    *,
+    max_chars: int = _MAX_BUTTON_DISPLAY_CHARS,
+) -> str:
+    """Короткий видимый текст кнопки (не путать с полным follow-up в кэше)."""
+    text = sanitize_suggested_label(label)
+    if not text:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 1].rstrip(" .,;:—–-") + "…"
+
+
+def expand_suggested_reply_prompt(label: str) -> str:
+    """Кликнутая подсказка → явный follow-up с якорем на текущий диалог."""
+    q = sanitize_suggested_label(label) or (label or "").strip()
+    if not q:
+        return "Продолжи наш разговор: уточни следующий практический шаг."
+    return (
+        "Продолжая наш текущий разговор и опираясь на твой предыдущий ответ, "
+        f"ответь на уточнение: {q}"
+    )
+
+
 def _norm_hint(label: str) -> str:
     return re.sub(r"\s+", " ", (label or "").strip().lower()).rstrip("?.!…")
 
@@ -196,7 +222,7 @@ def _plain_answer_text(body: str) -> str:
     return text
 
 
-def _clip_anchor(phrase: str, *, max_words: int = 4, max_chars: int = 28) -> str:
+def _clip_anchor(phrase: str, *, max_words: int = 3, max_chars: int = 22) -> str:
     words = [w for w in re.split(r"\s+", (phrase or "").strip()) if w]
     if not words:
         return ""
@@ -274,7 +300,7 @@ def derive_contextual_free_hints(body: str) -> list[str]:
                 "Как с {a}?",
             )
             label = templates[i % len(templates)].format(a=anchor)
-        fitted = fit_label_for_chat_hint(label)
+        fitted = sanitize_suggested_label(label)
         if fitted and fitted not in out and not is_generic_hint_label(fitted):
             out.append(fitted)
     if len(out) < _MAX_LABELS and anchors:
@@ -282,7 +308,7 @@ def derive_contextual_free_hints(body: str) -> list[str]:
         for extra in (f"Риски {a0}?", f"Шаги: {a0}", f"Альтернатива {a0}?"):
             if len(out) >= _MAX_LABELS:
                 break
-            fitted = fit_label_for_chat_hint(extra)
+            fitted = sanitize_suggested_label(extra)
             if fitted and fitted not in out:
                 out.append(fitted)
     return out[:_MAX_LABELS]
@@ -367,8 +393,8 @@ def split_suggested_replies(
         label = sanitize_suggested_label(label)
         if not label:
             continue
-        # Сразу под лимит callback — иначе раньше уходили в мёртвый std_reply UUID.
-        fitted = fit_label_for_chat_hint(label)
+        # Полный лейбл в кэш/ответ; усечение под chat_hint — только при сборке FREE callback.
+        fitted = sanitize_suggested_label(label)
         if fitted:
             labels.append(fitted)
         if len(labels) >= _MAX_LABELS:
@@ -380,18 +406,25 @@ def split_suggested_replies(
 
 
 def remember_suggested_replies(user_id: int, labels: Sequence[str]) -> str | None:
-    """Кладёт подписи в кэш; возвращает ``context_id`` или ``None`` если пусто.
+    """Кладёт полные подписи в кэш; возвращает ``context_id`` или ``None`` если пусто.
 
-    Нужен только для legacy ``std_reply:`` (старые сообщения в чате).
+    Не дописывает FREE-фолбэк — только то, что реально показали на кнопках.
     """
-    clean = tuple(ensure_free_hint_labels(labels))
+    clean_list: list[str] = []
+    for raw in labels:
+        fitted = sanitize_suggested_label(str(raw))
+        if fitted and fitted not in clean_list:
+            clean_list.append(fitted)
+        if len(clean_list) >= _MAX_LABELS:
+            break
+    clean = tuple(clean_list)
     if not clean:
         return None
     context_id = secrets.token_hex(_CONTEXT_ID_LEN // 2)
     prev = _BY_USER.get(int(user_id))
     if prev and prev in _CACHE:
         _CACHE.pop(prev, None)
-    _CACHE[context_id] = (int(user_id), clean[:_MAX_LABELS])
+    _CACHE[context_id] = (int(user_id), clean)
     _BY_USER[int(user_id)] = context_id
     return context_id
 
@@ -427,7 +460,7 @@ def ensure_free_hint_labels(
     *,
     body: str | None = None,
 ) -> list[str]:
-    """Ровно 3 рабочих лейбла под ``chat_hint:``.
+    """Ровно 3 коротких рабочих лейбла (для кнопок и follow-up).
 
     Сначала валидные лейблы модели (не шаблонные, если есть тело),
     затем якоря из ``body``, затем статический FREE-фолбэк.
@@ -435,7 +468,7 @@ def ensure_free_hint_labels(
     contextual = derive_contextual_free_hints(body or "")
     out: list[str] = []
     for raw in labels or ():
-        fitted = fit_label_for_chat_hint(str(raw))
+        fitted = sanitize_suggested_label(str(raw))
         if not fitted or fitted in out:
             continue
         # Шаблонные «подробнее» выкидываем, если можем заменить контекстом.
@@ -447,13 +480,13 @@ def ensure_free_hint_labels(
     for fb in contextual:
         if len(out) >= _MAX_LABELS:
             break
-        fitted = fit_label_for_chat_hint(fb)
+        fitted = sanitize_suggested_label(fb)
         if fitted and fitted not in out:
             out.append(fitted)
     for fb in FREE_FALLBACK_SUGGESTED_REPLIES:
         if len(out) >= _MAX_LABELS:
             break
-        fitted = fit_label_for_chat_hint(fb)
+        fitted = sanitize_suggested_label(fb)
         if fitted and fitted not in out:
             out.append(fitted)
     i = 0
@@ -495,8 +528,8 @@ def build_free_hint_keyboard(
             ):
                 callback_data = callback_data[:-1]
             label = emergency
-        text = parse_chat_hint_callback(callback_data) or label
-        btn_text = text if len(text) <= 64 else text[:61] + "…"
+        # На кнопке — короткий текст; в callback — усечённый под 64 байта chat_hint.
+        btn_text = button_display_text(label) or parse_chat_hint_callback(callback_data) or "…"
         rows.append([InlineKeyboardButton(text=btn_text, callback_data=callback_data)])
     if not rows:
         rows = [
@@ -563,21 +596,31 @@ def build_suggested_replies_keyboard(
     context_id: str,
     labels: Sequence[str],
 ) -> InlineKeyboardMarkup | None:
-    """Инлайн-кнопки Suggested Replies под ответом standard (paid/общий путь).
+    """Инлайн-кнопки Suggested Replies (paid / общий путь).
 
-    Всегда ``chat_hint:<текст>``. Пустой список → ``None`` (для FREE вызывайте
-    ``build_free_hint_keyboard`` — он никогда не возвращает ``None``).
+    Полный текст follow-up лежит в in-memory кэше ``context_id``;
+    callback = ``std_reply:<idx>:<context_id>`` (без обрезки смысла в 64 байта).
+    На кнопке — короткий display-текст.
     """
-    _ = context_id  # legacy API
+    cid = (context_id or "").strip()
+    if not cid:
+        return None
     rows: list[list[InlineKeyboardButton]] = []
-    for label in labels:
-        callback_data = build_chat_hint_callback(label)
-        if callback_data is None:
+    for i, label in enumerate(labels):
+        full = sanitize_suggested_label(str(label))
+        if not full:
             continue
-        text = parse_chat_hint_callback(callback_data) or ""
-        if not text:
+        btn_text = button_display_text(full)
+        if not btn_text:
             continue
-        btn_text = text if len(text) <= 64 else text[:61] + "…"
+        callback_data = f"{msg.CB_STD_REPLY_PREFIX}{i}:{cid}"
+        if not callback_data_fits(callback_data):
+            # context_id слишком длинный — не должно случаться (8 hex).
+            logger.warning(
+                "suggested_replies: std_reply callback too long cid=%s",
+                cid,
+            )
+            continue
         rows.append([InlineKeyboardButton(text=btn_text, callback_data=callback_data)])
         if len(rows) >= _MAX_LABELS:
             break

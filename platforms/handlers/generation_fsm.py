@@ -183,6 +183,7 @@ async def cb_standard_suggested_reply(callback: CallbackQuery, state: FSMContext
     from services.god_mode import billing_bypass
     from services.standard_suggested_replies import (
         build_standard_zero_balance_keyboard,
+        expand_suggested_reply_prompt,
         parse_chat_hint_callback,
         parse_std_reply_callback,
         resolve_suggested_reply,
@@ -236,13 +237,14 @@ async def cb_standard_suggested_reply(callback: CallbackQuery, state: FSMContext
             return
 
     await callback.answer()
-    await state.update_data(text_role="standard", pending_chat_hint=label)
+    follow_up = expand_suggested_reply_prompt(label)
+    await state.update_data(text_role="standard", pending_chat_hint=follow_up)
     await ensure_neurotext_waiting_state(state)
     try:
         await handle_neurotext_user_message(
             callback.message,
             state,
-            forced_user_text=label,
+            forced_user_text=follow_up,
             forced_user_id=user_id,
         )
     except Exception:
