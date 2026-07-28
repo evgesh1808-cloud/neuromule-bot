@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 from datetime import date, datetime, timedelta, timezone
+from string import Template
 from typing import Any
 
 from services.hd_logic import (
@@ -45,107 +46,111 @@ HD_POOL_TYPES: tuple[tuple[str, str], ...] = (
 HD_POOL_KEYS: tuple[str, ...] = tuple(k for k, _ in HD_POOL_TYPES)
 
 _REQUIRED_PLACEHOLDERS: tuple[str, ...] = (
-    "{display_name}",
-    "{birth_date}",
-    "{birth_time}",
-    "{birth_place}",
-    "{user_role}",
+    "$display_name",
+    "$user_role",
 )
 
 _SECTION_KEYS: tuple[str, ...] = ("barometer", "navigator", "step_plus", "energy_drain")
 
-# Аварийные шаблоны (0 API): если Gemini не заполнил пул — юзер всё равно получает совет.
+_DEFAULT_ROLE_LABELS = frozenset(
+    {
+        "",
+        "по умолчанию",
+        "default",
+        "не указана",
+        "не указано",
+    }
+)
+
+# Премиум-fallback (0 API). Метаданные рождения НЕ в тексте — только имя и роль.
+# Плейсхолдеры: $display_name, $user_role (string.Template / safe_substitute).
 _BUILTIN_SECTIONS: dict[str, dict[str, str]] = {
     "generator": {
         "barometer": (
-            "Сегодня энергия дня мягкая и практичная: лучше опираться на то, "
-            "что реально откликается в теле, а не на чужие планы."
+            "Поле дня плотное и телесное: космос просит не теории, а живого отклика. "
+            "То, что звенит внутри, сегодня важнее чужих расписаний."
         ),
         "navigator": (
-            "{display_name}, для ГЕНЕРАТОРА в роли {user_role} сегодня важно "
-            "отвечать только на то, что даёт внутренний «да». "
-            "Твой якорь — рождение {birth_date} {birth_time}, {birth_place}: "
-            "держи ритм удовлетворения, а не гонки."
+            "$display_name — ты ГЕНЕРАТОР. В $user_role твоя сила не в том, чтобы тянуть всё подряд, "
+            "а в том, чтобы отвечать только на зов, который даёт внутреннее «да». "
+            "Стратегия дня: удовлетворение как компас, а не скорость."
         ),
         "step_plus": (
-            "{display_name}, 3 минуты: перечисли вслух 3 дела, на которые тело "
-            "отвечает лёгким «да», и начни с одного."
+            "$display_name, три тихих вдоха — и одно дело, на которое тело отвечает теплом. "
+            "Начни с него, остальное подождёт."
         ),
         "energy_drain": (
-            "Не соглашайся из роли {user_role} на «надо», если внутри тихое «нет»."
+            "Не бери на себя чужое «надо» в $user_role, если внутри уже звучит мягкое «нет»."
         ),
     },
     "mg": {
         "barometer": (
-            "День быстрый и многозадачный: легко распылиться. Сила — в коротких "
-            "импульсах с проверкой отклика."
+            "Небо сегодня быстрое: импульсы приходят пачками. Красота дня — в коротких рывках "
+            "с проверкой отклика, а не в бесконечном переключении."
         ),
         "navigator": (
-            "{display_name}, МАНИФЕСТИРУЮЩИЙ ГЕНЕРАТОР в роли {user_role}: "
-            "сегодня можно ускоряться, но только после короткого «да» внутри. "
-            "Контекст рождения {birth_date} {birth_time}, {birth_place} — "
-            "не путай скорость с правильным направлением."
+            "$display_name — ты МАНИФЕСТИРУЮЩИЙ ГЕНЕРАТОР. В $user_role можно ускоряться, "
+            "но только после вспышки настоящего интереса. "
+            "Скорость без направления сегодня крадёт магию."
         ),
         "step_plus": (
-            "{display_name}, выбери одно мелкое действие на 2 минуты и сделай "
-            "его до конца без переключений."
+            "$display_name, выбери один микро-шаг на две минуты и доведи его до конца "
+            "без второго экрана и без «ещё одного» таба."
         ),
         "energy_drain": (
-            "Не прыгай между десятью задачами роли {user_role} без паузы на отклик."
+            "Не распыляй себя в $user_role на десять стартов — сегодня побеждает завершённый импульс."
         ),
     },
     "manifestor": {
         "barometer": (
-            "Воздух дня инициативный: кто ясно обозначает намерение — двигается легче."
+            "Воздух инициативы: день любит тех, кто ясно называет намерение. "
+            "Тишина без сигнала сегодня дороже прямого слова."
         ),
         "navigator": (
-            "{display_name}, МАНИФЕСТОР в роли {user_role}: сегодня сила в том, "
-            "чтобы объявить курс и дать другим пространство. "
-            "Рождение {birth_date} {birth_time}, {birth_place} напоминает: "
-            "ты не обязан ждать разрешения на свой ход."
+            "$display_name — ты МАНИФЕСТОР. В $user_role твоя власть — обозначить курс и дать "
+            "пространству откликнуться. Тебе не нужно ждать разрешения, чтобы сделать первый ход."
         ),
         "step_plus": (
-            "{display_name}, напиши одним предложением, что запускаешь сегодня, "
-            "и сообщи это нужному человеку."
+            "$display_name, сформулируй одним предложением, что запускаешь сегодня, "
+            "и озвучь это человеку, чьё присутствие реально важно."
         ),
         "energy_drain": (
-            "Не тяни инициативу роли {user_role} в тишине — молчание сейчас дороже конфликта."
+            "Не держи удар в $user_role внутри себя — непроговорённая инициатива превращается в давление."
         ),
     },
     "projector": {
         "barometer": (
-            "День внимательный и точечный: меньше шума — больше точности узнавания."
+            "День тонкой настройки: меньше шума — больше точных узнаваний. "
+            "Сегодня ценится ясность взгляда, а не объём усилий."
         ),
         "navigator": (
-            "{display_name}, ПРОЕКТОР в роли {user_role}: сегодня береги фокус и "
-            "жди приглашения в суть, а не в суету. "
-            "Точка опоры — {birth_date} {birth_time}, {birth_place}: "
-            "твоя ценность в ясности, не в объёме работы."
+            "$display_name — ты ПРОЕКТОР. В $user_role твоя ценность раскрывается там, "
+            "где тебя пригласили в суть. Не распыляй фокус на сцены, где тебя не слышат."
         ),
         "step_plus": (
-            "{display_name}, 4 минуты тишины без экрана — затем один чёткий совет "
-            "только тому, кто реально спросил."
+            "$display_name, четыре минуты без экрана — затем один точный совет "
+            "только тому, кто действительно открыл дверь вопросом."
         ),
         "energy_drain": (
-            "Не доказывай ценность роли {user_role} через перегруз и непрошеные советы."
+            "Не доказывай свою ценность в $user_role через перегруз и непрошеные вмешательства."
         ),
     },
     "reflector": {
         "barometer": (
-            "День зеркальный: атмосфера вокруг сильно влияет на самочувствие — "
-            "выбирай среду осознанно."
+            "День-зеркало: пространство вокруг пишет твоё самочувствие. "
+            "Выбор среды сейчас важнее скорости решений."
         ),
         "navigator": (
-            "{display_name}, РЕФЛЕКТОР в роли {user_role}: сегодня важнее качество "
-            "пространства, чем скорость решений. "
-            "Рождение {birth_date} {birth_time}, {birth_place} — "
-            "дай себе цикл, прежде чем закреплять выбор."
+            "$display_name — ты РЕФЛЕКТОР. В $user_role мудрость приходит циклами, не вспышками. "
+            "Позволь дню отзвучать в тебе, прежде чем закреплять выбор."
         ),
         "step_plus": (
-            "{display_name}, смени фон на 5 минут: другая комната, воздух или тихая музыка."
+            "$display_name, смени фон на пять минут: воздух, другая комната или тихая музыка — "
+            "дай системе обновиться."
         ),
         "energy_drain": (
-            "Не принимай жёстких решений роли {user_role} под чужим давлением «прямо сейчас»."
+            "Не принимай жёстких решений в $user_role под чужим «прямо сейчас» — "
+            "давление снаружи не равно твоему внутреннему сроку."
         ),
     },
 }
@@ -230,14 +235,35 @@ class _SafeFormatMap(dict[str, str]):
         return "{" + key + "}"
 
 
+def _normalize_role_for_copy(user_role: str) -> str:
+    """Анкетный «по умолчанию» не должен звучать в премиум-тексте."""
+    role = (user_role or "").strip()
+    if role.lower() in _DEFAULT_ROLE_LABELS:
+        return "своём ритме"
+    return role
+
+
 def _safe_format(template: str, **kwargs: str) -> str:
-    """``.format`` без падения на лишних/битых скобках от модели."""
+    """
+    Безопасная подстановка: ``string.Template.safe_substitute``.
+
+    Поддерживает и ``$display_name``, и legacy ``{display_name}`` из старых строк пула.
+    Лишние ``{...}`` / ``$unknown`` не роняют процесс.
+    """
     text = template or ""
+    if not text:
+        return ""
+    # Legacy → Template syntax
+    for key in kwargs:
+        text = text.replace("{" + key + "}", "$" + key)
     try:
-        return text.format_map(_SafeFormatMap(**{k: str(v) for k, v in kwargs.items()}))
+        return Template(text).safe_substitute(**{k: str(v) for k, v in kwargs.items()})
     except Exception:
-        logger.debug("safe_format fallback", exc_info=True)
-        return text
+        logger.debug("Template.safe_substitute failed, format_map fallback", exc_info=True)
+        try:
+            return text.format_map(_SafeFormatMap(**{k: str(v) for k, v in kwargs.items()}))
+        except Exception:
+            return text
 
 
 def assemble_daily_advice_from_pool(
@@ -252,13 +278,15 @@ def assemble_daily_advice_from_pool(
 ) -> str:
     """0 LLM: локальная подстановка плейсхолдеров в секции пула."""
     name = (display_name or "").strip() or "друг"
-    role = (user_role or "").strip() or "по умолчанию"
+    role = _normalize_role_for_copy(user_role)
+    # birth_* принимаем для совместимости API хендлера, в премиум-копирайт не выводим.
+    _ = (birth_date, birth_time, birth_place)
     ctx = {
         "display_name": name,
-        "birth_date": (birth_date or "").strip() or "не указана",
-        "birth_time": (birth_time or "").strip() or "не указано",
-        "birth_place": (birth_place or "").strip() or "не указан",
         "user_role": role,
+        "birth_date": (birth_date or "").strip(),
+        "birth_time": (birth_time or "").strip(),
+        "birth_place": (birth_place or "").strip(),
     }
     barometer = _safe_format(pool_row.get("barometer", ""), **ctx)
     navigator = _safe_format(pool_row.get("navigator", ""), **ctx)
@@ -296,21 +324,24 @@ def _build_pool_prompt(*, advice_date: str, hd_type_key: str, hd_type_ru: str) -
         weekday = ""
     placeholders = ", ".join(_REQUIRED_PLACEHOLDERS)
     return (
-        "Ты — харизматичный цифровой коуч NeuroMule 🐎⚡️, топ-эксперт по Дизайну Человека.\n"
+        "Ты — премиальный голос NeuroMule 🐎⚡️, эксперт Human Design с мистическим, "
+        "дорогим и точным тоном (уровень Co-Star / Chani, но на русском).\n"
         f"Дата совета: {advice_date} ({weekday}).\n"
-        f"HD-тип для этого шаблона: {hd_type_ru} (ключ {hd_type_key}).\n\n"
-        "Сгенерируй JSON-объект с ЧЕТЫРЬМЯ строковыми полями:\n"
-        '  "barometer" — 1–2 предложения: общая планетарная погода дня для всех;\n'
-        '  "navigator" — 2 предложения: совет именно этому HD-типу;\n'
-        '  "step_plus" — одно бытовое действие на 2–5 минут;\n'
-        '  "energy_drain" — одна ловушка ума / куда не сливать силы.\n\n'
-        "ОБЯЗАТЕЛЬНО: в поле navigator должны встретиться ВСЕ плейсхолдеры "
-        f"ровно в таком виде: {placeholders}.\n"
-        "В step_plus и energy_drain используй хотя бы {display_name} и {user_role}.\n"
-        "barometer — без персональных плейсхолдеров и без города рождения.\n\n"
-        "Правила текста: без HTML и Markdown; акценты — эмодзи и КАПС; "
-        "без слов «ИИ», «бот», «нейросеть»; тёплый бытовой тон.\n"
-        "Верни ТОЛЬКО валидный JSON без markdown-оград."
+        f"HD-тип шаблона: {hd_type_ru} (ключ {hd_type_key}).\n\n"
+        "Верни JSON с четырьмя строками:\n"
+        '  "barometer" — 1–2 предложения: космическая погода дня для всех;\n'
+        '  "navigator" — 2 предложения: совет этому HD-типу;\n'
+        '  "step_plus" — одно лёгкое действие на 2–5 минут;\n'
+        '  "energy_drain" — одна ловушка / куда не сливать силы.\n\n'
+        "ПЛЕЙСХОЛДЕРЫ (строго dollar-syntax Template):\n"
+        f"В navigator обязательно: {placeholders}.\n"
+        "В step_plus и energy_drain — хотя бы $display_name и/или $user_role.\n"
+        "ЗАПРЕЩЕНО писать дату/время/город рождения, «роль по умолчанию», "
+        "«твоя анкета», «данные рождения». Имя и роль вплетай нативно.\n"
+        "barometer — без личных плейсхолдеров.\n\n"
+        "Без HTML/Markdown; без слов «ИИ», «бот», «нейросеть». "
+        "Тон: тёплый, мистический, премиальный.\n"
+        "Только валидный JSON, без markdown-оград."
     )
 
 
@@ -325,8 +356,7 @@ def _normalize_sections(parsed: dict[str, Any]) -> dict[str, str]:
     if any(ph not in navigator for ph in _REQUIRED_PLACEHOLDERS):
         navigator = (
             f"{navigator}\n"
-            "(Контекст: {display_name}, роль {user_role}, "
-            "рождение {birth_date} {birth_time}, {birth_place}.)"
+            "$display_name — держи стратегию типа в $user_role без спешки."
         )
     out["navigator"] = navigator
     return out
