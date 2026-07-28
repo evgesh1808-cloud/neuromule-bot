@@ -477,17 +477,20 @@ async def resolve_pool_row_for_request(hd_type_key_or_label: str) -> dict[str, s
     """
     Request path (мгновенно): кэш сегодня/вчера → builtin seed в БД.
 
-    Gemini только в cron; здесь не ждём API, чтобы не ловить «Высшие силы».
+    Никогда не бросает: при любой ошибке БД возвращает builtin в памяти.
     """
     raw = (hd_type_key_or_label or "").strip().lower()
     key = raw if raw in HD_POOL_KEYS else resolve_hd_pool_key(hd_type_key_or_label)
+    builtin = builtin_pool_row(key)
 
-    row = await fetch_pool_with_stale_fallback(key)
-    if row:
-        return row
+    try:
+        row = await fetch_pool_with_stale_fallback(key)
+        if row:
+            return row
+    except Exception:
+        logger.exception("fetch_pool_with_stale_fallback failed key=%s", key)
 
     day = advice_date_iso_msk()
-    builtin = builtin_pool_row(key)
     try:
         await upsert_daily_advice_pool(
             advice_date=day,

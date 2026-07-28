@@ -1,6 +1,7 @@
 """SQLite через aiosqlite: пользователи, рефералы, лимиты, промокоды, диалог, платежи."""
 from __future__ import annotations
 
+import logging
 import os
 import sqlite3
 import time
@@ -12,6 +13,8 @@ import aiosqlite
 
 from services.db_timing import TimedQuery
 from services.dialog_platform import DEFAULT_DIALOG_PLATFORM, normalize_dialog_platform
+
+logger = logging.getLogger(__name__)
 
 
 def _resolve_db_path() -> str:
@@ -1025,6 +1028,26 @@ async def rollback_daily_advice(user_id: int) -> None:
         await db.commit()
 
 
+_DAILY_ADVICE_POOL_DDL = """
+CREATE TABLE IF NOT EXISTS daily_advice_pool (
+    advice_date TEXT NOT NULL,
+    hd_type_key TEXT NOT NULL,
+    barometer TEXT NOT NULL,
+    navigator TEXT NOT NULL,
+    step_plus TEXT NOT NULL,
+    energy_drain TEXT NOT NULL,
+    raw_json TEXT,
+    model_id TEXT,
+    created_at REAL NOT NULL,
+    PRIMARY KEY (advice_date, hd_type_key)
+)
+"""
+
+
+async def _ensure_daily_advice_pool_table(db: aiosqlite.Connection) -> None:
+    await db.execute(_DAILY_ADVICE_POOL_DDL)
+
+
 async def get_daily_advice_pool(
     advice_date: str,
     hd_type_key: str,
@@ -1034,17 +1057,23 @@ async def get_daily_advice_pool(
     day = (advice_date or "").strip()
     if not day or not key:
         return None
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
-            """
-            SELECT barometer, navigator, step_plus, energy_drain, model_id
-            FROM daily_advice_pool
-            WHERE advice_date = ? AND hd_type_key = ?
-            """,
-            (day, key),
-        ) as cur:
-            row = await cur.fetchone()
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await _ensure_daily_advice_pool_table(db)
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                """
+                SELECT barometer, navigator, step_plus, energy_drain, model_id
+                FROM daily_advice_pool
+                WHERE advice_date = ? AND hd_type_key = ?
+                """,
+                (day, key),
+            ) as cur:
+                row = await cur.fetchone()
+            await db.commit()
+    except Exception:
+        logger.exception("get_daily_advice_pool failed date=%s key=%s", day, key)
+        return None
     if row is None:
         return None
     return {
@@ -1073,6 +1102,7 @@ async def upsert_daily_advice_pool(
     if not day or not key:
         raise ValueError("advice_date and hd_type_key are required")
     async with aiosqlite.connect(DB_PATH) as db:
+        await _ensure_daily_advice_pool_table(db)
         await db.execute(
             """
             INSERT INTO daily_advice_pool (
@@ -1108,12 +1138,18 @@ async def list_daily_advice_pool_keys(advice_date: str) -> list[str]:
     day = (advice_date or "").strip()
     if not day:
         return []
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute(
-            "SELECT hd_type_key FROM daily_advice_pool WHERE advice_date = ?",
-            (day,),
-        ) as cur:
-            rows = await cur.fetchall()
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await _ensure_daily_advice_pool_table(db)
+            async with db.execute(
+                "SELECT hd_type_key FROM daily_advice_pool WHERE advice_date = ?",
+                (day,),
+            ) as cur:
+                rows = await cur.fetchall()
+            await db.commit()
+    except Exception:
+        logger.exception("list_daily_advice_pool_keys failed date=%s", day)
+        return []
     return [str(r[0]) for r in rows if r and r[0]]
 
 

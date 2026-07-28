@@ -92,6 +92,7 @@ from services.hd_logic import (
 )
 from services.daily_advice_pool import (
     assemble_daily_advice_from_pool,
+    builtin_pool_row,
     resolve_hd_pool_key,
     resolve_pool_row_for_request,
 )
@@ -266,12 +267,8 @@ async def _send_daily_advice(
     try:
         pool_row = await resolve_pool_row_for_request(pool_key)
     except Exception:
-        await rollback_daily_advice(uid)
-        if charge_id:
-            await refund_charge(charge_id)
         logger.exception("daily advice pool resolve failed uid=%s key=%s", uid, pool_key)
-        await target.answer(msg.TXT_HD_DAILY_ADVICE_GENERATION_FAILED)
-        return
+        pool_row = builtin_pool_row(pool_key)
 
     try:
         final_text = sanitize_telegram_plain_text(
@@ -285,19 +282,48 @@ async def _send_daily_advice(
                 cta_text=get_dynamic_cta_for_today(),
             )
         )
-        if not final_text:
-            raise RuntimeError("assembled daily advice empty")
-        await target.answer(
-            final_text,
-            reply_markup=_daily_advice_full_report_keyboard(),
-        )
+        if not final_text.strip():
+            final_text = sanitize_telegram_plain_text(
+                assemble_daily_advice_from_pool(
+                    builtin_pool_row(pool_key),
+                    display_name=_display_name_for_advice(target, user),
+                    birth_date=user_profile.get("birth_date", ""),
+                    birth_time=user_profile.get("birth_time", ""),
+                    birth_place=user_profile.get("birth_place", ""),
+                    user_role=user_profile.get("user_role", ""),
+                    cta_text=get_dynamic_cta_for_today(),
+                )
+            )
+        kb = _daily_advice_full_report_keyboard()
+        try:
+            await target.answer(final_text, reply_markup=kb)
+        except TelegramBadRequest:
+            await target.answer(final_text)
         await commit_daily_advice(uid)
     except Exception:
         await rollback_daily_advice(uid)
         if charge_id:
             await refund_charge(charge_id)
         logger.exception("hd_free_advice_failed user_id=%s", uid)
-        await target.answer(msg.TXT_HD_DAILY_ADVICE_GENERATION_FAILED)
+        # Последний шанс: короткий текст без клавиатуры и без пула.
+        try:
+            await target.answer(
+                sanitize_telegram_plain_text(
+                    assemble_daily_advice_from_pool(
+                        builtin_pool_row(pool_key),
+                        display_name=_display_name_for_advice(target, user),
+                        birth_date=user_profile.get("birth_date", ""),
+                        birth_time=user_profile.get("birth_time", ""),
+                        birth_place=user_profile.get("birth_place", ""),
+                        user_role=user_profile.get("user_role", ""),
+                        cta_text=get_dynamic_cta_for_today(),
+                    )
+                )
+            )
+            await commit_daily_advice(uid)
+        except Exception:
+            logger.exception("hd_free_advice ultimate fallback failed uid=%s", uid)
+            await target.answer(msg.TXT_HD_DAILY_ADVICE_GENERATION_FAILED)
 
 @router.message(UserFlow.waiting_advice_birth, Command("cancel"))
 async def advice_birth_cancel(message: Message, state: FSMContext) -> None:
