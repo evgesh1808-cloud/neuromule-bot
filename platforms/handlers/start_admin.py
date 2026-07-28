@@ -437,6 +437,7 @@ async def cmd_reset_me(message: Message, state: FSMContext) -> None:
     await message.answer(
         "✅ Профиль «Совета дня» сброшен для теста:\n"
         "• last_free_date — очищен\n"
+        "• last_advice_message_id — очищен\n"
         "• advice_pending_at — снят\n"
         "• hd_type и advice_birth_data — очищены\n\n"
         "Нажми 🔮 Совет дня. Если остался платный hd_birth_data — "

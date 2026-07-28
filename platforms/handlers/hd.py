@@ -6,6 +6,7 @@ import logging
 import random
 import re
 import time
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
 
@@ -111,6 +112,7 @@ from services.repository import (
     set_user_accepted_terms,
     try_begin_daily_advice,
     update_balance,
+    update_user_last_advice_id,
 )
 from services.telegram_safe_text import sanitize_telegram_plain_text
 from services.use_cases.animate_generation_turn import AnimateGenOutcome, run_animate_generation_turn
@@ -213,6 +215,120 @@ def _display_name_for_advice(target: Message, user_row) -> str:
     return "друг"
 
 
+_MSK = timezone(timedelta(hours=3))
+
+
+def _user_col(user_row, name: str, default=None):
+    keys = user_row.keys() if hasattr(user_row, "keys") else ()
+    if name not in keys:
+        return default
+    return user_row[name]
+
+
+async def _compose_daily_advice_text(target: Message, user, user_profile: dict) -> str:
+    """0 LLM: пул + эфемериды → готовый текст совета."""
+    pool_key = resolve_hd_pool_key(user_profile.get("hd_type", ""))
+    advice_day = advice_date_iso_msk()
+    try:
+        pool_row = await resolve_pool_row_for_request(pool_key)
+    except Exception:
+        logger.exception("daily advice pool resolve failed key=%s", pool_key)
+        pool_row = builtin_pool_row(pool_key, advice_date=advice_day)
+
+    birth_raw = (user_profile.get("birth_raw") or "").strip()
+    if not birth_raw:
+        birth_raw = " ".join(
+            [
+                user_profile.get("birth_date", ""),
+                user_profile.get("birth_time", ""),
+                user_profile.get("birth_place", ""),
+            ]
+        ).strip()
+    energy_wave = resolve_energy_wave(birth_raw=birth_raw, advice_date=advice_day)
+    assemble_kwargs = {
+        "display_name": _display_name_for_advice(target, user),
+        "birth_date": user_profile.get("birth_date", ""),
+        "birth_time": user_profile.get("birth_time", ""),
+        "birth_place": user_profile.get("birth_place", ""),
+        "user_role": user_profile.get("user_role", ""),
+        "cta_text": get_dynamic_cta_for_today(),
+        "energy_wave": energy_wave,
+    }
+    text_out = sanitize_telegram_plain_text(
+        assemble_daily_advice_from_pool(pool_row, **assemble_kwargs)
+    )
+    if text_out.strip():
+        return text_out
+    return sanitize_telegram_plain_text(
+        assemble_daily_advice_from_pool(
+            builtin_pool_row(pool_key, advice_date=advice_day),
+            **assemble_kwargs,
+        )
+    )
+
+
+async def _refresh_or_resend_daily_advice(
+    target: Message,
+    uid: int,
+    user,
+    *,
+    callback: CallbackQuery | None = None,
+) -> None:
+    """Повторный клик в тот же день: edit старого сообщения или новая копия."""
+    if callback is not None:
+        try:
+            await callback.answer()
+        except TelegramBadRequest:
+            pass
+
+    user_profile = daily_advice_user_profile_from_repo_user(user)
+    if user_profile is None:
+        await target.answer(msg.TXT_HD_DAILY_ADVICE_ALREADY_TODAY)
+        return
+
+    try:
+        original_pool_text = await _compose_daily_advice_text(target, user, user_profile)
+    except Exception:
+        logger.exception("daily advice refresh compose failed uid=%s", uid)
+        await target.answer(msg.TXT_HD_DAILY_ADVICE_ALREADY_TODAY)
+        return
+
+    kb = _daily_advice_full_report_keyboard()
+    current_time_str = datetime.now(_MSK).strftime("%H:%M")
+    refreshed_text = (
+        f"✨ Твой Барометр обновлён на момент: {current_time_str} МСК\n\n"
+        f"{original_pool_text}"
+    )
+    mid_raw = _user_col(user, "last_advice_message_id")
+    try:
+        mid = int(mid_raw) if mid_raw is not None else 0
+    except (TypeError, ValueError):
+        mid = 0
+
+    if mid > 0:
+        try:
+            await target.bot.edit_message_text(
+                chat_id=uid,
+                message_id=mid,
+                text=refreshed_text,
+                reply_markup=kb,
+            )
+            return
+        except Exception:
+            logger.info(
+                "daily advice edit failed uid=%s mid=%s — resending",
+                uid,
+                mid,
+                exc_info=True,
+            )
+
+    try:
+        new_msg = await target.answer(original_pool_text, reply_markup=kb)
+    except TelegramBadRequest:
+        new_msg = await target.answer(original_pool_text)
+    await update_user_last_advice_id(uid, new_msg.message_id)
+
+
 async def _send_daily_advice(
     target: Message,
     uid: int,
@@ -225,7 +341,7 @@ async def _send_daily_advice(
     today = today_iso()
 
     if not billing_bypass(uid) and (user["last_free_date"] or "") == today:
-        await target.answer(msg.TXT_HD_DAILY_ADVICE_ALREADY_TODAY)
+        await _refresh_or_resend_daily_advice(target, uid, user, callback=callback)
         return
 
     spend = await spend_hd_advice(uid)
@@ -267,50 +383,15 @@ async def _send_daily_advice(
 
     pool_key = resolve_hd_pool_key(user_profile.get("hd_type", ""))
     advice_day = advice_date_iso_msk()
-    try:
-        pool_row = await resolve_pool_row_for_request(pool_key)
-    except Exception:
-        logger.exception("daily advice pool resolve failed uid=%s key=%s", uid, pool_key)
-        pool_row = builtin_pool_row(pool_key, advice_date=advice_day)
-
-    # Локальные эфемериды: пересечение натала с небом дня → «энергетическая волна».
-    birth_raw = (user_profile.get("birth_raw") or "").strip()
-    if not birth_raw:
-        birth_raw = " ".join(
-            [
-                user_profile.get("birth_date", ""),
-                user_profile.get("birth_time", ""),
-                user_profile.get("birth_place", ""),
-            ]
-        ).strip()
-    energy_wave = resolve_energy_wave(birth_raw=birth_raw, advice_date=advice_day)
-    display_name = _display_name_for_advice(target, user)
-    assemble_kwargs = {
-        "display_name": display_name,
-        "birth_date": user_profile.get("birth_date", ""),
-        "birth_time": user_profile.get("birth_time", ""),
-        "birth_place": user_profile.get("birth_place", ""),
-        "user_role": user_profile.get("user_role", ""),
-        "cta_text": get_dynamic_cta_for_today(),
-        "energy_wave": energy_wave,
-    }
 
     try:
-        final_text = sanitize_telegram_plain_text(
-            assemble_daily_advice_from_pool(pool_row, **assemble_kwargs)
-        )
-        if not final_text.strip():
-            final_text = sanitize_telegram_plain_text(
-                assemble_daily_advice_from_pool(
-                    builtin_pool_row(pool_key, advice_date=advice_day),
-                    **assemble_kwargs,
-                )
-            )
+        final_text = await _compose_daily_advice_text(target, user, user_profile)
         kb = _daily_advice_full_report_keyboard()
         try:
-            await target.answer(final_text, reply_markup=kb)
+            sent = await target.answer(final_text, reply_markup=kb)
         except TelegramBadRequest:
-            await target.answer(final_text)
+            sent = await target.answer(final_text)
+        await update_user_last_advice_id(uid, sent.message_id)
         await commit_daily_advice(uid)
     except Exception:
         await rollback_daily_advice(uid)
@@ -318,14 +399,21 @@ async def _send_daily_advice(
             await refund_charge(charge_id)
         logger.exception("hd_free_advice_failed user_id=%s", uid)
         try:
-            await target.answer(
+            sent = await target.answer(
                 sanitize_telegram_plain_text(
                     assemble_daily_advice_from_pool(
                         builtin_pool_row(pool_key, advice_date=advice_day),
-                        **assemble_kwargs,
+                        display_name=_display_name_for_advice(target, user),
+                        birth_date=user_profile.get("birth_date", ""),
+                        birth_time=user_profile.get("birth_time", ""),
+                        birth_place=user_profile.get("birth_place", ""),
+                        user_role=user_profile.get("user_role", ""),
+                        cta_text=get_dynamic_cta_for_today(),
+                        energy_wave="мягкая волна ясности",
                     )
                 )
             )
+            await update_user_last_advice_id(uid, sent.message_id)
             await commit_daily_advice(uid)
         except Exception:
             logger.exception("hd_free_advice ultimate fallback failed uid=%s", uid)
@@ -363,10 +451,7 @@ async def advice_birth_save(message: Message, state: FSMContext) -> None:
 @router.callback_query(F.data == msg.CB_HD_FREE_ADVICE)
 async def hd_free_advice(callback: CallbackQuery, state: FSMContext) -> None:
     uid = callback.from_user.id
-    user = await get_user(uid)
-    if not billing_bypass(uid) and (user["last_free_date"] or "") == today_iso():
-        await callback.answer(msg.TXT_HD_FREE_ADVICE_USED_ALERT, show_alert=True)
-        return
+    # Повторный клик в тот же день обрабатывает _send_daily_advice (edit/resend).
     await _send_daily_advice(callback.message, uid, state, callback=callback)
 
 @router.message(UserFlow.waiting_hd_birth_data, F.text)

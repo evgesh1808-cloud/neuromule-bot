@@ -426,6 +426,7 @@ _USER_COLUMNS = {
     "has_pro_analysis",
     "advice_birth_data",
     "advice_user_role",
+    "last_advice_message_id",
 }
 
 

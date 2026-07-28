@@ -78,6 +78,11 @@ async def _migrate_users(db: aiosqlite.Connection) -> None:
             "show_suggested_replies",
             "ALTER TABLE users ADD COLUMN show_suggested_replies INTEGER",
         ),
+        # ID последнего сообщения «Совета дня» (для edit при повторном клике в тот же день).
+        (
+            "last_advice_message_id",
+            "ALTER TABLE users ADD COLUMN last_advice_message_id INTEGER",
+        ),
     ]
     for name, ddl in alters:
         if name not in cols:
@@ -1162,6 +1167,7 @@ async def reset_admin_daily_advice_test_state(user_id: int) -> None:
             UPDATE users SET
                 last_free_date = NULL,
                 advice_pending_at = NULL,
+                last_advice_message_id = NULL,
                 hd_type = NULL,
                 advice_birth_data = NULL
             WHERE id = ?
@@ -1169,6 +1175,21 @@ async def reset_admin_daily_advice_test_state(user_id: int) -> None:
             (user_id,),
         )
         await db.commit()
+
+
+async def update_user_last_advice_id(user_id: int, message_id: int | None) -> None:
+    """Сохраняет Telegram message_id последнего «Совета дня» (или сбрасывает в NULL)."""
+    await ensure_user(user_id)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE users SET last_advice_message_id = ? WHERE id = ?",
+            (message_id, user_id),
+        )
+        await db.commit()
+
+
+# Обратная совместимость со старым именем хелпера.
+update_user_last_advice_message_id = update_user_last_advice_id
 
 
 async def rollback_daily_photo_slot(user_id: int) -> None:
