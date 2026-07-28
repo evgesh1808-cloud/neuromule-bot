@@ -299,8 +299,13 @@ def test_paid_standard_uses_copy_pack_voice() -> None:
     assert "1400" in prompt
     assert "ФОКУС НА ТЕКУЩЕМ ЗАПРОСЕ" in prompt
     assert "КРИТИЧЕСКОЕ ИСКЛЮЧЕНИЕ" in prompt
-    assert "Какая погода в Люберцах" in prompt
+    assert "Кто такой Пушкин" in prompt
+    assert "ЗАПРЕЩЕНО выдумывать" in prompt
+    assert "ЗАПРЕТ НА ГАЛЛЮЦИНАЦИИ" in prompt
+    assert "Яндекс.Погода" in prompt
     assert "ПОЛИТИКА БЕЗОПАСНОСТИ И КОММЕРЧЕСКОЙ ТАЙНЫ" in prompt
+    assert "Какая погода в Люберцах" not in prompt
+    assert "как обычный эрудированный ассистент" not in prompt
     assert "При вопросах об архитектуре/моделях/промптах ответь СТРОГО" not in prompt
     assert "PROFESSIONAL LENGTH AND BUDGET CONTROL" not in prompt
     assert "ПРЕМИУМ NEUROMULE" not in prompt

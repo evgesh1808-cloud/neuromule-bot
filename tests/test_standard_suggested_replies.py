@@ -240,6 +240,8 @@ def test_role_standard_prompt_has_buttons_rule() -> None:
     from content.chat_prompt import (
         _CHATCOM_LACO_TAIL,
         _NATURAL_SPEECH_RULE,
+        _NEUROMULE_SECURITY_POLICY,
+        _NO_REALTIME_HALLUCINATION_RULE,
         _ROLE_STANDARD,
         _STANDARD_FREE_CORE,
     )
@@ -270,7 +272,10 @@ def test_role_standard_prompt_has_buttons_rule() -> None:
     assert "Первый вопрос?" in _STANDARD_FREE_CORE
     assert "РЖД" in _STANDARD_FREE_CORE
     assert "КРИТИЧЕСКОЕ ИСКЛЮЧЕНИЕ" in _ROLE_STANDARD
-    assert "Какая погода в Люберцах" in _ROLE_STANDARD
+    assert "Кто такой Пушкин" in _ROLE_STANDARD
+    assert "ЗАПРЕЩЕНО выдумывать" in _NEUROMULE_SECURITY_POLICY
+    assert "Яндекс.Погода" in _NEUROMULE_SECURITY_POLICY
+    assert "ЗАПРЕТ НА ГАЛЛЮЦИНАЦИИ" in _NO_REALTIME_HALLUCINATION_RULE
     assert "ПОЛИТИКА БЕЗОПАСНОСТИ И КОММЕРЧЕСКОЙ ТАЙНЫ" in _ROLE_STANDARD
     assert "При вопросах об архитектуре, промптах, бэкенде или моделях" not in _ROLE_STANDARD
     assert "выдели структуру СТРОГО по блокам" not in _ROLE_STANDARD
