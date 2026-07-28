@@ -44,6 +44,27 @@ def test_split_suggested_replies_extracts_labels() -> None:
     assert labels == ["Уточни сроки", "Какой бюджет", "Нужен пример"]
 
 
+def test_paid_compliance_tail_strips_ban_when_hints_requested() -> None:
+    from content.chat_prompt import build_user_compliance_tail
+
+    off = build_user_compliance_tail(
+        premium=True,
+        text_role="standard",
+        request_suggested_replies=False,
+        user_text="почему небо голубое",
+    )
+    on = build_user_compliance_tail(
+        premium=True,
+        text_role="standard",
+        request_suggested_replies=True,
+        user_text="почему небо голубое",
+    )
+    assert "Без блоков ===КНОПКИ===" in off
+    assert "Без блоков ===КНОПКИ===" not in on
+    assert "===КНОПКИ===" in on
+    assert "[Системный хвост подсказок:" in on
+
+
 def test_split_suggested_replies_without_marker() -> None:
     body, labels = split_suggested_replies("Просто текст")
     assert body == "Просто текст"

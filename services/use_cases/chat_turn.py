@@ -720,7 +720,11 @@ async def run_chat_turn(
             else:
                 from services.standard_suggested_replies import split_suggested_replies
 
-                content_for_format, reply_labels = split_suggested_replies(content)
+                # Pref ON: даже если модель забыла ===КНОПКИ=== — code-side fallback (как FREE).
+                content_for_format, reply_labels = split_suggested_replies(
+                    content,
+                    fallback_if_missing=bool(suggest_replies),
+                )
                 suggested_replies = tuple(reply_labels)
 
         if (effective_role or "").strip().lower() in _BLOGGER_ROLE_IDS:

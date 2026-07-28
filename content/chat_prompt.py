@@ -349,13 +349,16 @@ def build_user_compliance_tail(
     if role == "standard" and premium:
         base = _PAID_STANDARD_COMPLIANCE_TAIL
         if request_suggested_replies:
-            # Убираем запрет на ===КНОПКИ=== из базового хвоста, затем добавляем инструкцию.
-            base = (
-                base.replace(" Без блоков ===КНОПКИ===.", "")
-                .replace(" Без ===КНОПКИ===.", "")
-                .replace(" Без блока ===КНОПКИ===.", "")
-            )
-            base = base + _PAID_SUGGESTED_REPLIES_TAIL
+            # Реальный бан в хвосте (с запятой и оговоркой) — иначе модель видит запрет + просьбу.
+            for ban in (
+                "Без блоков ===КНОПКИ===, если хвост подсказок явно не запросил их. ",
+                "Без блоков ===КНОПКИ===, если хвост подсказок явно не запросил их.",
+                " Без блоков ===КНОПКИ===.",
+                " Без ===КНОПКИ===.",
+                " Без блока ===КНОПКИ===.",
+            ):
+                base = base.replace(ban, "")
+            base = base.rstrip() + _PAID_SUGGESTED_REPLIES_TAIL
         # Код-якорь: без явного «напиши текст» — ТИП Б (иначе Gemini уходит в 4 варианта).
         if looks_like_paid_copy_pack_request(user_text or ""):
             return base + _PAID_ROUTE_TYPE_A_LOCK

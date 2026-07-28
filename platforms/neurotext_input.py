@@ -128,6 +128,17 @@ async def _standard_suggested_reply_markup(user_id: int, result: ChatTurnResult)
             )
             return None
         if not labels:
+            from services.standard_suggested_replies import ensure_free_hint_labels
+
+            labels = ensure_free_hint_labels(
+                body=getattr(result, "assistant_message", None) or "",
+            )
+            logger.info(
+                "suggested_replies: paid fallback labels uid=%s n=%s",
+                user_id,
+                len(labels),
+            )
+        if not labels:
             return None
 
         context_id = remember_suggested_replies(user_id, labels) or "x"
