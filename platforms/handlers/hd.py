@@ -91,11 +91,13 @@ from services.hd_logic import (
     update_user,
 )
 from services.daily_advice_pool import (
+    advice_date_iso_msk,
     assemble_daily_advice_from_pool,
     builtin_pool_row,
     resolve_hd_pool_key,
     resolve_pool_row_for_request,
 )
+from services.hd_day_sky import resolve_energy_wave
 from services.repository import (
     add_promo_code,
     clear_user_dialog_and_memory,
@@ -218,7 +220,7 @@ async def _send_daily_advice(
     *,
     callback: CallbackQuery | None = None,
 ) -> None:
-    """Пул «Совета дня»: лимит → lock → birth → assemble из БД (0 LLM в request path)."""
+    """Пул «Совета дня»: лимит → lock → birth → эфемериды + assemble (0 LLM)."""
     user = await get_user(uid)
     today = today_iso()
 
@@ -264,34 +266,44 @@ async def _send_daily_advice(
             pass
 
     pool_key = resolve_hd_pool_key(user_profile.get("hd_type", ""))
+    advice_day = advice_date_iso_msk()
     try:
         pool_row = await resolve_pool_row_for_request(pool_key)
     except Exception:
         logger.exception("daily advice pool resolve failed uid=%s key=%s", uid, pool_key)
-        pool_row = builtin_pool_row(pool_key)
+        pool_row = builtin_pool_row(pool_key, advice_date=advice_day)
+
+    # Локальные эфемериды: пересечение натала с небом дня → «энергетическая волна».
+    birth_raw = (user_profile.get("birth_raw") or "").strip()
+    if not birth_raw:
+        birth_raw = " ".join(
+            [
+                user_profile.get("birth_date", ""),
+                user_profile.get("birth_time", ""),
+                user_profile.get("birth_place", ""),
+            ]
+        ).strip()
+    energy_wave = resolve_energy_wave(birth_raw=birth_raw, advice_date=advice_day)
+    display_name = _display_name_for_advice(target, user)
+    assemble_kwargs = {
+        "display_name": display_name,
+        "birth_date": user_profile.get("birth_date", ""),
+        "birth_time": user_profile.get("birth_time", ""),
+        "birth_place": user_profile.get("birth_place", ""),
+        "user_role": user_profile.get("user_role", ""),
+        "cta_text": get_dynamic_cta_for_today(),
+        "energy_wave": energy_wave,
+    }
 
     try:
         final_text = sanitize_telegram_plain_text(
-            assemble_daily_advice_from_pool(
-                pool_row,
-                display_name=_display_name_for_advice(target, user),
-                birth_date=user_profile.get("birth_date", ""),
-                birth_time=user_profile.get("birth_time", ""),
-                birth_place=user_profile.get("birth_place", ""),
-                user_role=user_profile.get("user_role", ""),
-                cta_text=get_dynamic_cta_for_today(),
-            )
+            assemble_daily_advice_from_pool(pool_row, **assemble_kwargs)
         )
         if not final_text.strip():
             final_text = sanitize_telegram_plain_text(
                 assemble_daily_advice_from_pool(
-                    builtin_pool_row(pool_key),
-                    display_name=_display_name_for_advice(target, user),
-                    birth_date=user_profile.get("birth_date", ""),
-                    birth_time=user_profile.get("birth_time", ""),
-                    birth_place=user_profile.get("birth_place", ""),
-                    user_role=user_profile.get("user_role", ""),
-                    cta_text=get_dynamic_cta_for_today(),
+                    builtin_pool_row(pool_key, advice_date=advice_day),
+                    **assemble_kwargs,
                 )
             )
         kb = _daily_advice_full_report_keyboard()
@@ -305,18 +317,12 @@ async def _send_daily_advice(
         if charge_id:
             await refund_charge(charge_id)
         logger.exception("hd_free_advice_failed user_id=%s", uid)
-        # Последний шанс: короткий текст без клавиатуры и без пула.
         try:
             await target.answer(
                 sanitize_telegram_plain_text(
                     assemble_daily_advice_from_pool(
-                        builtin_pool_row(pool_key),
-                        display_name=_display_name_for_advice(target, user),
-                        birth_date=user_profile.get("birth_date", ""),
-                        birth_time=user_profile.get("birth_time", ""),
-                        birth_place=user_profile.get("birth_place", ""),
-                        user_role=user_profile.get("user_role", ""),
-                        cta_text=get_dynamic_cta_for_today(),
+                        builtin_pool_row(pool_key, advice_date=advice_day),
+                        **assemble_kwargs,
                     )
                 )
             )

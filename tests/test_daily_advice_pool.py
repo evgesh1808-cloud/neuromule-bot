@@ -25,7 +25,7 @@ def test_resolve_hd_pool_key_five_types() -> None:
 def test_assemble_substitutes_placeholders() -> None:
     row = {
         "barometer": "Сегодня мягкий день для всех.",
-        "navigator": "$display_name — путь в $user_role без спешки.",
+        "navigator": "$display_name — путь в $user_role без спешки. Волна: $energy_wave.",
         "step_plus": "Сделай паузу, $display_name.",
         "energy_drain": "Не спорь из $user_role.",
     }
@@ -37,9 +37,11 @@ def test_assemble_substitutes_placeholders() -> None:
         birth_place="Москва",
         user_role="предприниматель",
         cta_text="CTA_LINE",
+        energy_wave="прилив творческого самовыражения",
     )
     assert "Женя" in text
     assert "предприниматель" in text
+    assert "прилив творческого самовыражения" in text
     assert "CTA_LINE" in text
     assert "14.05.1990" not in text
     assert "Москва" not in text
@@ -63,10 +65,12 @@ def test_assemble_hides_default_role_label() -> None:
         birth_place="3",
         user_role="по умолчанию",
         cta_text="",
+        energy_wave="фокус на деталях",
     )
     assert "Аня" in text
     assert "по умолчанию" not in text
     assert "своём ритме" in text
+    assert "фокус на деталях" in text
 
 
 def test_assemble_safe_on_broken_braces() -> None:
@@ -90,11 +94,17 @@ def test_assemble_safe_on_broken_braces() -> None:
 
 
 def test_builtin_templates_are_premium_voice() -> None:
+    banned = ("ворот", "канал", "транзитн", "16-48", "якорь — рождение")
     for key in pool.HD_POOL_KEYS:
         row = pool.builtin_pool_row(key, advice_date="2026-07-29")
         assert "$display_name" in row["navigator"]
+        assert "$energy_wave" in row["navigator"]
         assert "birth_date" not in row["navigator"]
         assert "рожд" not in row["navigator"].lower()
+        blob = " ".join(row[k] for k in ("barometer", "navigator", "step_plus", "energy_drain"))
+        low = blob.lower()
+        for stem in banned:
+            assert stem not in low
         text = assemble_daily_advice_from_pool(
             row,
             display_name="Оля",
@@ -103,8 +113,10 @@ def test_builtin_templates_are_premium_voice() -> None:
             birth_place="Казань",
             user_role="мама",
             cta_text="X",
+            energy_wave="творческий импульс",
         )
         assert "Оля" in text
+        assert "творческий импульс" in text
         assert "Казань" not in text
         assert "X" in text
 

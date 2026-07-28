@@ -300,6 +300,8 @@ def daily_advice_user_profile_from_repo_user(user: object) -> DailyAdviceUserPro
         "birth_date": parsed["birth_date"],
         "birth_time": parsed["birth_time"],
         "birth_place": parsed["birth_place"],
+        # Сырая строка для локального пересечения с эфемеридами дня (0 LLM).
+        "birth_raw": birth_notes,
     }
 
 

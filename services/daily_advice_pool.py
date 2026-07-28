@@ -1,8 +1,11 @@
-"""Пул «Совета дня»: ночной refill через Gemini SDK + мгновенная сборка без LLM.
+"""Пул «Совета дня»: ночной refill (эфемериды + Gemini) + мгновенная сборка без LLM.
+
+Ночной cron (~00:05 МСК): локальный pyswisseph → бриф погоды дня → Gemini Free Tier
+на 5 HD-ключей (без жаргона). Request path: пересечение натала с небом дня →
+строка из ``daily_advice_pool`` → ``Template.safe_substitute`` (~мс, 0 API).
 
 Эмбарго на OpenRouter в cron: только ``_configure_genai`` / ``_GEMINI_MODEL_CHAIN``.
-Если пул пуст (Gemini недоступен) — встроенные шаблоны + опциональный
-emergency Gemini refill одного ключа, чтобы юзер не видел «Высшие силы».
+Если пул пуст — встроенные шаблоны с ротацией по дню недели МСК.
 """
 
 from __future__ import annotations
@@ -30,7 +33,8 @@ from services.repository import (
 logger = logging.getLogger(__name__)
 
 _MSK = timezone(timedelta(hours=3))
-_REFILL_HOUR_MSK = 3
+_REFILL_HOUR_MSK = 0
+_REFILL_MINUTE_MSK = 5
 _GEMINI_POOL_TIMEOUT_SEC = 45.0
 _BETWEEN_TYPES_SLEEP_SEC = 1.5
 _MAX_RETRIES_PER_TYPE = 3
@@ -49,6 +53,7 @@ _REQUIRED_PLACEHOLDERS: tuple[str, ...] = (
     "$display_name",
     "$user_role",
 )
+_OPTIONAL_PLACEHOLDERS: tuple[str, ...] = ("$energy_wave",)
 
 _SECTION_KEYS: tuple[str, ...] = ("barometer", "navigator", "step_plus", "energy_drain")
 
@@ -62,8 +67,8 @@ _DEFAULT_ROLE_LABELS = frozenset(
     }
 )
 
-# Премиум-fallback (0 API). Метаданные рождения НЕ в тексте — только имя и роль.
-# Плейсхолдеры: $display_name, $user_role (string.Template / safe_substitute).
+# Премиум-fallback (0 API). Без дат рождения и HD-жаргона.
+# Плейсхолдеры: $display_name, $user_role, $energy_wave (Template.safe_substitute).
 _BUILTIN_SECTIONS: dict[str, dict[str, str]] = {
     "generator": {
         "barometer": (
@@ -73,7 +78,7 @@ _BUILTIN_SECTIONS: dict[str, dict[str, str]] = {
         "navigator": (
             "$display_name — ты ГЕНЕРАТОР. В $user_role твоя сила не в том, чтобы тянуть всё подряд, "
             "а в том, чтобы отвечать только на зов, который даёт внутреннее «да». "
-            "Стратегия дня: удовлетворение как компас, а не скорость."
+            "Сейчас в тебе звучит $energy_wave — пусть удовлетворение будет компасом, а не скорость."
         ),
         "step_plus": (
             "$display_name, три тихих вдоха — и одно дело, на которое тело отвечает теплом. "
@@ -91,7 +96,7 @@ _BUILTIN_SECTIONS: dict[str, dict[str, str]] = {
         "navigator": (
             "$display_name — ты МАНИФЕСТИРУЮЩИЙ ГЕНЕРАТОР. В $user_role можно ускоряться, "
             "но только после вспышки настоящего интереса. "
-            "Скорость без направления сегодня крадёт магию."
+            "Сегодня тебя несёт $energy_wave — скорость без направления крадёт магию."
         ),
         "step_plus": (
             "$display_name, выбери один микро-шаг на две минуты и доведи его до конца "
@@ -108,7 +113,8 @@ _BUILTIN_SECTIONS: dict[str, dict[str, str]] = {
         ),
         "navigator": (
             "$display_name — ты МАНИФЕСТОР. В $user_role твоя власть — обозначить курс и дать "
-            "пространству откликнуться. Тебе не нужно ждать разрешения, чтобы сделать первый ход."
+            "пространству откликнуться. Сейчас усиливается $energy_wave — "
+            "тебе не нужно ждать разрешения на первый ход."
         ),
         "step_plus": (
             "$display_name, сформулируй одним предложением, что запускаешь сегодня, "
@@ -125,7 +131,8 @@ _BUILTIN_SECTIONS: dict[str, dict[str, str]] = {
         ),
         "navigator": (
             "$display_name — ты ПРОЕКТОР. В $user_role твоя ценность раскрывается там, "
-            "где тебя пригласили в суть. Не распыляй фокус на сцены, где тебя не слышат."
+            "где тебя пригласили в суть. Сейчас в тебе $energy_wave — "
+            "не распыляй фокус на сцены, где тебя не слышат."
         ),
         "step_plus": (
             "$display_name, четыре минуты без экрана — затем один точный совет "
@@ -142,7 +149,7 @@ _BUILTIN_SECTIONS: dict[str, dict[str, str]] = {
         ),
         "navigator": (
             "$display_name — ты РЕФЛЕКТОР. В $user_role мудрость приходит циклами, не вспышками. "
-            "Позволь дню отзвучать в тебе, прежде чем закреплять выбор."
+            "Сегодня особенно слышна $energy_wave — позволь дню отзвучать, прежде чем закреплять выбор."
         ),
         "step_plus": (
             "$display_name, смени фон на пять минут: воздух, другая комната или тихая музыка — "
@@ -337,26 +344,33 @@ def assemble_daily_advice_from_pool(
     pool_row: dict[str, str],
     *,
     display_name: str,
-    birth_date: str,
-    birth_time: str,
-    birth_place: str,
-    user_role: str,
-    cta_text: str,
+    birth_date: str = "",
+    birth_time: str = "",
+    birth_place: str = "",
+    user_role: str = "",
+    cta_text: str = "",
+    energy_wave: str = "",
 ) -> str:
-    """0 LLM: локальная подстановка плейсхолдеров в секции пула."""
+    """0 LLM: ``Template.safe_substitute`` + вычищение жаргона."""
+    from services.hd_day_sky import strip_banned_jargon
+
     name = (display_name or "").strip() or "друг"
     role = _normalize_role_for_copy(user_role)
-    # birth_* принимаем для совместимости API хендлера, в премиум-копирайт не выводим.
+    wave = (energy_wave or "").strip() or "мягкая волна ясности"
+    # birth_* — совместимость API; в премиум-копирайт не выводим (пустые подстановки).
     _ = (birth_date, birth_time, birth_place)
     ctx = {
         "display_name": name,
         "user_role": role,
-        "birth_date": (birth_date or "").strip(),
-        "birth_time": (birth_time or "").strip(),
-        "birth_place": (birth_place or "").strip(),
+        "energy_wave": wave,
+        "birth_date": "",
+        "birth_time": "",
+        "birth_place": "",
     }
     barometer = _safe_format(pool_row.get("barometer", ""), **ctx)
     navigator = _safe_format(pool_row.get("navigator", ""), **ctx)
+    if wave and wave not in navigator:
+        navigator = f"{navigator} Сейчас в тебе звучит {wave}.".strip()
     step_plus = _safe_format(pool_row.get("step_plus", ""), **ctx)
     energy_drain = _safe_format(pool_row.get("energy_drain", ""), **ctx)
     cta = (cta_text or "").strip()
@@ -379,51 +393,62 @@ def assemble_daily_advice_from_pool(
     ]
     body = "\n".join(parts).strip()
     if cta:
-        return f"{body}\n\n{cta}"
-    return body
+        body = f"{body}\n\n{cta}"
+    return strip_banned_jargon(body)
 
 
 def _build_pool_prompt(*, advice_date: str, hd_type_key: str, hd_type_ru: str) -> str:
+    from services.hd_day_sky import day_sky_prompt_blurb
+
     try:
         d = date.fromisoformat(advice_date)
         weekday = _WEEKDAY_RU[d.weekday()]
     except ValueError:
         weekday = ""
-    placeholders = ", ".join(_REQUIRED_PLACEHOLDERS)
+    required = ", ".join(_REQUIRED_PLACEHOLDERS)
+    optional = ", ".join(_OPTIONAL_PLACEHOLDERS)
+    sky = day_sky_prompt_blurb(advice_date)
     return (
-        "Ты — премиальный голос NeuroMule 🐎⚡️, эксперт Human Design с мистическим, "
-        "дорогим и точным тоном (уровень Co-Star / Chani, но на русском).\n"
-        f"Дата совета: {advice_date} ({weekday}).\n"
-        f"HD-тип шаблона: {hd_type_ru} (ключ {hd_type_key}).\n\n"
+        "Ты — премиальный голос NeuroMule 🐎⚡️. Пиши просто, тепло и глубоко — "
+        "как мудрый друг, а не как учебник Human Design.\n"
+        f"Дата: {advice_date} ({weekday}). HD-тип шаблона: {hd_type_ru} ({hd_type_key}).\n\n"
+        f"{sky}\n\n"
         "Верни JSON с четырьмя строками:\n"
-        '  "barometer" — 1–2 предложения: космическая погода дня для всех;\n'
-        '  "navigator" — 2 предложения: совет этому HD-типу;\n'
+        '  "barometer" — 1–2 предложения: погода дня для всех (чувства/состояния);\n'
+        '  "navigator" — 2 предложения: совет этому типу простым языком;\n'
         '  "step_plus" — одно лёгкое действие на 2–5 минут;\n'
-        '  "energy_drain" — одна ловушка / куда не сливать силы.\n\n'
-        "ПЛЕЙСХОЛДЕРЫ (строго dollar-syntax Template):\n"
-        f"В navigator обязательно: {placeholders}.\n"
-        "В step_plus и energy_drain — хотя бы $display_name и/или $user_role.\n"
-        "ЗАПРЕЩЕНО писать дату/время/город рождения, «роль по умолчанию», "
-        "«твоя анкета», «данные рождения». Имя и роль вплетай нативно.\n"
-        "barometer — без личных плейсхолдеров.\n\n"
-        "Без HTML/Markdown; без слов «ИИ», «бот», «нейросеть». "
-        "Тон: тёплый, мистический, премиальный.\n"
-        "Только валидный JSON, без markdown-оград."
+        '  "energy_drain" — одна ловушка ума.\n\n'
+        f"Плейсхолдеры (dollar-syntax): в navigator обязательно {required}. "
+        f"Желательно также {optional}. "
+        "В step_plus/energy_drain — $display_name и/или $user_role.\n\n"
+        "ЖЁСТКИЙ ЗАПРЕТ (ни слова): ворота, каналы, линии, транзитное Солнце, "
+        "номера вроде 16-48 / 21 / 48, бодиграф, нейтрино, эклиптика, "
+        "дата/время/город рождения, «роль по умолчанию», «анкета», «якорь».\n"
+        "Описывай планетарные активации только как психологические состояния: "
+        "«прилив лидерской энергии», «фокус на деталях», «творческий импульс», "
+        "«волна мастерства», «потребность в паузе» и т.п.\n"
+        "Без HTML/Markdown. Без слов «ИИ», «бот», «нейросеть». "
+        "Только валидный JSON."
     )
 
 
 def _normalize_sections(parsed: dict[str, Any]) -> dict[str, str]:
+    from services.hd_day_sky import strip_banned_jargon
+
     out: dict[str, str] = {}
     for key in _SECTION_KEYS:
         val = parsed.get(key)
         if not isinstance(val, str) or not val.strip():
             raise ValueError(f"missing section {key!r}")
-        out[key] = val.strip()
+        out[key] = strip_banned_jargon(val.strip())
+        if not out[key]:
+            raise ValueError(f"section {key!r} empty after jargon scrub")
     navigator = out["navigator"]
     if any(ph not in navigator for ph in _REQUIRED_PLACEHOLDERS):
         navigator = (
             f"{navigator}\n"
-            "$display_name — держи стратегию типа в $user_role без спешки."
+            "$display_name — держи свой ритм в $user_role без спешки. "
+            "Сейчас в тебе звучит $energy_wave."
         )
     out["navigator"] = navigator
     return out
@@ -620,20 +645,25 @@ async def resolve_pool_row_for_request(hd_type_key_or_label: str) -> dict[str, s
     return builtin
 
 
-def _seconds_until_next_msk_hour(hour: int, *, now: datetime | None = None) -> float:
+def _seconds_until_next_msk_clock(
+    hour: int,
+    minute: int = 0,
+    *,
+    now: datetime | None = None,
+) -> float:
     moment = now or datetime.now(_MSK)
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=_MSK)
     else:
         moment = moment.astimezone(_MSK)
-    target = moment.replace(hour=hour, minute=0, second=0, microsecond=0)
+    target = moment.replace(hour=hour, minute=minute, second=0, microsecond=0)
     if moment >= target:
         target = target + timedelta(days=1)
     return max(5.0, (target - moment).total_seconds())
 
 
 async def daily_advice_pool_refill_loop() -> None:
-    """Фон: при старте дозаполнить сегодня; далее каждый день в 03:00 МСК."""
+    """Фон: при старте дозаполнить сегодня; далее каждый день в 00:05 МСК."""
     # Стартовый проход — не блокируем polling дольше, чем нужно: ошибки глотаем.
     try:
         await ensure_today_pool_filled()
@@ -641,11 +671,12 @@ async def daily_advice_pool_refill_loop() -> None:
         logger.exception("daily_advice_pool startup refill failed")
 
     while True:
-        delay = _seconds_until_next_msk_hour(_REFILL_HOUR_MSK)
+        delay = _seconds_until_next_msk_clock(_REFILL_HOUR_MSK, _REFILL_MINUTE_MSK)
         logger.info(
-            "daily_advice_pool_refill_loop sleep %.0fs until next %02d:00 MSK",
+            "daily_advice_pool_refill_loop sleep %.0fs until next %02d:%02d MSK",
             delay,
             _REFILL_HOUR_MSK,
+            _REFILL_MINUTE_MSK,
         )
         await asyncio.sleep(delay)
         try:
