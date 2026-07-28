@@ -432,6 +432,22 @@ async def init_db(promo_seeds: str = "") -> None:
         await _migrate_promo_codes(db)
         await db.execute(
             """
+            CREATE TABLE IF NOT EXISTS daily_advice_pool (
+                advice_date TEXT NOT NULL,
+                hd_type_key TEXT NOT NULL,
+                barometer TEXT NOT NULL,
+                navigator TEXT NOT NULL,
+                step_plus TEXT NOT NULL,
+                energy_drain TEXT NOT NULL,
+                raw_json TEXT,
+                model_id TEXT,
+                created_at REAL NOT NULL,
+                PRIMARY KEY (advice_date, hd_type_key)
+            )
+            """
+        )
+        await db.execute(
+            """
             CREATE TABLE IF NOT EXISTS payment_charges (
                 charge_id TEXT PRIMARY KEY,
                 user_id INTEGER NOT NULL,
@@ -1007,6 +1023,98 @@ async def rollback_daily_advice(user_id: int) -> None:
             (user_id,),
         )
         await db.commit()
+
+
+async def get_daily_advice_pool(
+    advice_date: str,
+    hd_type_key: str,
+) -> dict[str, str] | None:
+    """Секции пула «Совета дня» на дату и HD-ключ или ``None``."""
+    key = (hd_type_key or "").strip().lower()
+    day = (advice_date or "").strip()
+    if not day or not key:
+        return None
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT barometer, navigator, step_plus, energy_drain, model_id
+            FROM daily_advice_pool
+            WHERE advice_date = ? AND hd_type_key = ?
+            """,
+            (day, key),
+        ) as cur:
+            row = await cur.fetchone()
+    if row is None:
+        return None
+    return {
+        "barometer": str(row["barometer"] or ""),
+        "navigator": str(row["navigator"] or ""),
+        "step_plus": str(row["step_plus"] or ""),
+        "energy_drain": str(row["energy_drain"] or ""),
+        "model_id": str(row["model_id"] or ""),
+    }
+
+
+async def upsert_daily_advice_pool(
+    *,
+    advice_date: str,
+    hd_type_key: str,
+    barometer: str,
+    navigator: str,
+    step_plus: str,
+    energy_drain: str,
+    raw_json: str | None = None,
+    model_id: str | None = None,
+) -> None:
+    """Пишет/обновляет одну строку пула на (дата, HD-тип)."""
+    day = (advice_date or "").strip()
+    key = (hd_type_key or "").strip().lower()
+    if not day or not key:
+        raise ValueError("advice_date and hd_type_key are required")
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO daily_advice_pool (
+                advice_date, hd_type_key, barometer, navigator, step_plus,
+                energy_drain, raw_json, model_id, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(advice_date, hd_type_key) DO UPDATE SET
+                barometer = excluded.barometer,
+                navigator = excluded.navigator,
+                step_plus = excluded.step_plus,
+                energy_drain = excluded.energy_drain,
+                raw_json = excluded.raw_json,
+                model_id = excluded.model_id,
+                created_at = excluded.created_at
+            """,
+            (
+                day,
+                key,
+                (barometer or "").strip(),
+                (navigator or "").strip(),
+                (step_plus or "").strip(),
+                (energy_drain or "").strip(),
+                raw_json,
+                model_id,
+                time.time(),
+            ),
+        )
+        await db.commit()
+
+
+async def list_daily_advice_pool_keys(advice_date: str) -> list[str]:
+    """Ключи HD-типов, уже лежащие в пуле на дату."""
+    day = (advice_date or "").strip()
+    if not day:
+        return []
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT hd_type_key FROM daily_advice_pool WHERE advice_date = ?",
+            (day,),
+        ) as cur:
+            rows = await cur.fetchall()
+    return [str(r[0]) for r in rows if r and r[0]]
 
 
 async def reset_admin_daily_advice_test_state(user_id: int) -> None:

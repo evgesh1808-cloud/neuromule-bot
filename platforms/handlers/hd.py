@@ -1,7 +1,6 @@
 """Telegram handlers."""
 from __future__ import annotations
 
-import asyncio
 import html
 import logging
 import random
@@ -78,7 +77,6 @@ from services.hd_logic import (
     create_pdf,
     daily_advice_user_profile_from_repo_user,
     format_premium_report,
-    generate_daily_forecast,
     generate_premium_report,
     get_calculated_gates,
     get_dynamic_cta_for_today,
@@ -91,6 +89,11 @@ from services.hd_logic import (
     today_iso,
     try_consume_crystals,
     update_user,
+)
+from services.daily_advice_pool import (
+    assemble_daily_advice_from_pool,
+    fetch_pool_with_stale_fallback,
+    resolve_hd_pool_key,
 )
 from services.repository import (
     add_promo_code,
@@ -195,35 +198,16 @@ def _daily_advice_full_report_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-async def _background_advice_worker(
-    bot,
-    chat_id: int,
-    user_profile: dict[str, str],
-    *,
-    current_cta_text: str,
-) -> str:
-    """Генерация совета дня с удержанием chat action «typing» на всё время запроса к Gemini."""
-
-    async def _typing_hold_loop() -> None:
-        while True:
-            try:
-                await bot.send_chat_action(chat_id=chat_id, action="typing")
-            except Exception:
-                pass
-            await asyncio.sleep(4)
-
-    typing_task = asyncio.create_task(_typing_hold_loop())
-    try:
-        return await generate_daily_forecast(
-            user_profile,
-            current_cta_text=current_cta_text,
-        )
-    finally:
-        typing_task.cancel()
-        try:
-            await typing_task
-        except asyncio.CancelledError:
-            pass
+def _display_name_for_advice(target: Message, user_row) -> str:
+    tg_name = ""
+    if target.from_user is not None:
+        tg_name = (target.from_user.first_name or "").strip()
+    if tg_name:
+        return tg_name
+    keys = user_row.keys() if hasattr(user_row, "keys") else ()
+    if "username" in keys and user_row["username"]:
+        return str(user_row["username"]).strip()
+    return "друг"
 
 
 async def _send_daily_advice(
@@ -233,16 +217,14 @@ async def _send_daily_advice(
     *,
     callback: CallbackQuery | None = None,
 ) -> None:
-    """Пайплайн бесплатного «Совета дня»: лимит → биллинг → lock → Gemini → commit."""
+    """Пул «Совета дня»: лимит → lock → birth → assemble из БД (0 LLM в request path)."""
     user = await get_user(uid)
     today = today_iso()
 
-    # Шаг 1: суточный лимит (God Mode — без ограничений)
     if not billing_bypass(uid) and (user["last_free_date"] or "") == today:
         await target.answer(msg.TXT_HD_DAILY_ADVICE_ALREADY_TODAY)
         return
 
-    # Шаг 2: архитектурный биллинг (HD_ADVICE_COST=0 → пропуск)
     spend = await spend_hd_advice(uid)
     if not spend.ok:
         if spend.error == "insufficient_crystals":
@@ -256,14 +238,12 @@ async def _send_daily_advice(
         return
     charge_id = spend.charge.charge_id if spend.charge else ""
 
-    # Шаг 3: антиспам-lock
     if not await try_begin_daily_advice(uid):
         if charge_id:
             await refund_charge(charge_id)
         await target.answer(msg.TXT_HD_DAILY_ADVICE_BUSY)
         return
 
-    # Шаг 4: профиль / дата рождения (hd_birth_data → advice_birth_data)
     user_profile = daily_advice_user_profile_from_repo_user(user)
     if user_profile is None:
         if state is not None:
@@ -276,27 +256,37 @@ async def _send_daily_advice(
             await refund_charge(charge_id)
         return
 
-    # Шаг 5: заглушка + снятие часиков на inline-кнопке
-    placeholder = await target.answer(msg.TXT_HD_DAILY_ADVICE_CONNECTING)
     if callback is not None:
         try:
             await callback.answer()
         except TelegramBadRequest:
             pass
 
-    cta_text = get_dynamic_cta_for_today()
+    pool_key = resolve_hd_pool_key(user_profile.get("hd_type", ""))
+    pool_row = await fetch_pool_with_stale_fallback(pool_key)
+    if pool_row is None:
+        await rollback_daily_advice(uid)
+        if charge_id:
+            await refund_charge(charge_id)
+        logger.error("daily advice pool miss uid=%s key=%s", uid, pool_key)
+        await target.answer(msg.TXT_HD_DAILY_ADVICE_GENERATION_FAILED)
+        return
+
     try:
-        # Шаг 6: фоновая генерация (typing-loop + Gemini stream=False)
-        raw_forecast = await _background_advice_worker(
-            deps.bot(),
-            target.chat.id,
-            user_profile,
-            current_cta_text=cta_text,
+        final_text = sanitize_telegram_plain_text(
+            assemble_daily_advice_from_pool(
+                pool_row,
+                display_name=_display_name_for_advice(target, user),
+                birth_date=user_profile.get("birth_date", ""),
+                birth_time=user_profile.get("birth_time", ""),
+                birth_place=user_profile.get("birth_place", ""),
+                user_role=user_profile.get("user_role", ""),
+                cta_text=get_dynamic_cta_for_today(),
+            )
         )
-        final_text = sanitize_telegram_plain_text(raw_forecast.strip())
         if not final_text:
-            raise RuntimeError("Gemini returned empty daily advice")
-        await placeholder.edit_text(
+            raise RuntimeError("assembled daily advice empty")
+        await target.answer(
             final_text,
             reply_markup=_daily_advice_full_report_keyboard(),
         )
@@ -306,10 +296,7 @@ async def _send_daily_advice(
         if charge_id:
             await refund_charge(charge_id)
         logger.exception("hd_free_advice_failed user_id=%s", uid)
-        try:
-            await placeholder.edit_text(msg.TXT_HD_DAILY_ADVICE_GENERATION_FAILED)
-        except TelegramBadRequest:
-            pass
+        await target.answer(msg.TXT_HD_DAILY_ADVICE_GENERATION_FAILED)
 
 @router.message(UserFlow.waiting_advice_birth, Command("cancel"))
 async def advice_birth_cancel(message: Message, state: FSMContext) -> None:
