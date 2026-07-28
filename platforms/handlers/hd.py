@@ -92,8 +92,8 @@ from services.hd_logic import (
 )
 from services.daily_advice_pool import (
     assemble_daily_advice_from_pool,
-    fetch_pool_with_stale_fallback,
     resolve_hd_pool_key,
+    resolve_pool_row_for_request,
 )
 from services.repository import (
     add_promo_code,
@@ -263,12 +263,13 @@ async def _send_daily_advice(
             pass
 
     pool_key = resolve_hd_pool_key(user_profile.get("hd_type", ""))
-    pool_row = await fetch_pool_with_stale_fallback(pool_key)
-    if pool_row is None:
+    try:
+        pool_row = await resolve_pool_row_for_request(pool_key)
+    except Exception:
         await rollback_daily_advice(uid)
         if charge_id:
             await refund_charge(charge_id)
-        logger.error("daily advice pool miss uid=%s key=%s", uid, pool_key)
+        logger.exception("daily advice pool resolve failed uid=%s key=%s", uid, pool_key)
         await target.answer(msg.TXT_HD_DAILY_ADVICE_GENERATION_FAILED)
         return
 

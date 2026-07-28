@@ -105,6 +105,25 @@ async def test_pool_cache_hit_and_yesterday_fallback(repo_module) -> None:
 
 
 @pytest.mark.asyncio
+async def test_resolve_pool_row_uses_builtin_when_empty(repo_module) -> None:
+    row = await pool.resolve_pool_row_for_request("reflector")
+    assert row["barometer"]
+    assert "{display_name}" in row["navigator"]
+    text = assemble_daily_advice_from_pool(
+        row,
+        display_name="Оля",
+        birth_date="02.02.2002",
+        birth_time="09:00",
+        birth_place="Казань",
+        user_role="мама",
+        cta_text="X",
+    )
+    assert "Оля" in text
+    assert "Казань" in text
+    assert "X" in text
+
+
+@pytest.mark.asyncio
 async def test_get_daily_advice_pool_roundtrip(repo_module) -> None:
     day = "2099-01-15"
     await repo_module.upsert_daily_advice_pool(

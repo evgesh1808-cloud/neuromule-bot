@@ -1,7 +1,8 @@
 """Пул «Совета дня»: ночной refill через Gemini SDK + мгновенная сборка без LLM.
 
-Эмбарго: OpenRouter здесь ЗАПРЕЩЁН. Только ``_configure_genai`` / ``_GEMINI_MODEL_CHAIN``.
-Request path пользователя не вызывает этот refill — только ``assemble_daily_advice_from_pool``.
+Эмбарго на OpenRouter в cron: только ``_configure_genai`` / ``_GEMINI_MODEL_CHAIN``.
+Если пул пуст (Gemini недоступен) — встроенные шаблоны + опциональный
+emergency Gemini refill одного ключа, чтобы юзер не видел «Высшие силы».
 """
 
 from __future__ import annotations
@@ -52,6 +53,139 @@ _REQUIRED_PLACEHOLDERS: tuple[str, ...] = (
 )
 
 _SECTION_KEYS: tuple[str, ...] = ("barometer", "navigator", "step_plus", "energy_drain")
+
+# Аварийные шаблоны (0 API): если Gemini не заполнил пул — юзер всё равно получает совет.
+_BUILTIN_SECTIONS: dict[str, dict[str, str]] = {
+    "generator": {
+        "barometer": (
+            "Сегодня энергия дня мягкая и практичная: лучше опираться на то, "
+            "что реально откликается в теле, а не на чужие планы."
+        ),
+        "navigator": (
+            "{display_name}, для ГЕНЕРАТОРА в роли {user_role} сегодня важно "
+            "отвечать только на то, что даёт внутренний «да». "
+            "Твой якорь — рождение {birth_date} {birth_time}, {birth_place}: "
+            "держи ритм удовлетворения, а не гонки."
+        ),
+        "step_plus": (
+            "{display_name}, 3 минуты: перечисли вслух 3 дела, на которые тело "
+            "отвечает лёгким «да», и начни с одного."
+        ),
+        "energy_drain": (
+            "Не соглашайся из роли {user_role} на «надо», если внутри тихое «нет»."
+        ),
+    },
+    "mg": {
+        "barometer": (
+            "День быстрый и многозадачный: легко распылиться. Сила — в коротких "
+            "импульсах с проверкой отклика."
+        ),
+        "navigator": (
+            "{display_name}, МАНИФЕСТИРУЮЩИЙ ГЕНЕРАТОР в роли {user_role}: "
+            "сегодня можно ускоряться, но только после короткого «да» внутри. "
+            "Контекст рождения {birth_date} {birth_time}, {birth_place} — "
+            "не путай скорость с правильным направлением."
+        ),
+        "step_plus": (
+            "{display_name}, выбери одно мелкое действие на 2 минуты и сделай "
+            "его до конца без переключений."
+        ),
+        "energy_drain": (
+            "Не прыгай между десятью задачами роли {user_role} без паузы на отклик."
+        ),
+    },
+    "manifestor": {
+        "barometer": (
+            "Воздух дня инициативный: кто ясно обозначает намерение — двигается легче."
+        ),
+        "navigator": (
+            "{display_name}, МАНИФЕСТОР в роли {user_role}: сегодня сила в том, "
+            "чтобы объявить курс и дать другим пространство. "
+            "Рождение {birth_date} {birth_time}, {birth_place} напоминает: "
+            "ты не обязан ждать разрешения на свой ход."
+        ),
+        "step_plus": (
+            "{display_name}, напиши одним предложением, что запускаешь сегодня, "
+            "и сообщи это нужному человеку."
+        ),
+        "energy_drain": (
+            "Не тяни инициативу роли {user_role} в тишине — молчание сейчас дороже конфликта."
+        ),
+    },
+    "projector": {
+        "barometer": (
+            "День внимательный и точечный: меньше шума — больше точности узнавания."
+        ),
+        "navigator": (
+            "{display_name}, ПРОЕКТОР в роли {user_role}: сегодня береги фокус и "
+            "жди приглашения в суть, а не в суету. "
+            "Точка опоры — {birth_date} {birth_time}, {birth_place}: "
+            "твоя ценность в ясности, не в объёме работы."
+        ),
+        "step_plus": (
+            "{display_name}, 4 минуты тишины без экрана — затем один чёткий совет "
+            "только тому, кто реально спросил."
+        ),
+        "energy_drain": (
+            "Не доказывай ценность роли {user_role} через перегруз и непрошеные советы."
+        ),
+    },
+    "reflector": {
+        "barometer": (
+            "День зеркальный: атмосфера вокруг сильно влияет на самочувствие — "
+            "выбирай среду осознанно."
+        ),
+        "navigator": (
+            "{display_name}, РЕФЛЕКТОР в роли {user_role}: сегодня важнее качество "
+            "пространства, чем скорость решений. "
+            "Рождение {birth_date} {birth_time}, {birth_place} — "
+            "дай себе цикл, прежде чем закреплять выбор."
+        ),
+        "step_plus": (
+            "{display_name}, смени фон на 5 минут: другая комната, воздух или тихая музыка."
+        ),
+        "energy_drain": (
+            "Не принимай жёстких решений роли {user_role} под чужим давлением «прямо сейчас»."
+        ),
+    },
+}
+
+
+def builtin_pool_row(hd_type_key: str) -> dict[str, str]:
+    """Статический шаблон секций для ключа (fallback без Gemini)."""
+    key = hd_type_key if hd_type_key in _BUILTIN_SECTIONS else "generator"
+    row = dict(_BUILTIN_SECTIONS[key])
+    row["model_id"] = "builtin"
+    return row
+
+
+async def seed_builtin_pool_for_missing(advice_date: str | None = None) -> int:
+    """Дописывает builtin-секции для отсутствующих ключей (без LLM)."""
+    day = (advice_date or advice_date_iso_msk()).strip()
+    have = set(await list_daily_advice_pool_keys(day))
+    written = 0
+    for key in HD_POOL_KEYS:
+        if key in have:
+            continue
+        row = builtin_pool_row(key)
+        await upsert_daily_advice_pool(
+            advice_date=day,
+            hd_type_key=key,
+            barometer=row["barometer"],
+            navigator=row["navigator"],
+            step_plus=row["step_plus"],
+            energy_drain=row["energy_drain"],
+            raw_json=None,
+            model_id="builtin",
+        )
+        written += 1
+    if written:
+        logger.warning(
+            "daily advice pool seeded %s builtin rows for %s",
+            written,
+            day,
+        )
+    return written
 
 
 def advice_date_iso_msk(*, now: datetime | None = None) -> str:
@@ -301,14 +435,19 @@ async def refill_daily_advice_pool(
 
 
 async def ensure_today_pool_filled() -> int:
-    """Если на сегодня нет всех 5 ключей — дозаполняет через Gemini."""
+    """Gemini-дозаполнение; если ключи всё ещё пусты — builtin seed."""
     day = advice_date_iso_msk()
     have = set(await list_daily_advice_pool_keys(day))
     missing = [k for k in HD_POOL_KEYS if k not in have]
-    if not missing:
-        return 0
-    logger.info("daily advice pool missing keys for %s: %s", day, missing)
-    return await refill_daily_advice_pool(day, only_keys=missing)
+    written = 0
+    if missing:
+        logger.info("daily advice pool missing keys for %s: %s", day, missing)
+        try:
+            written = await refill_daily_advice_pool(day, only_keys=missing)
+        except Exception:
+            logger.exception("ensure_today_pool_filled Gemini refill failed")
+    seeded = await seed_builtin_pool_for_missing(day)
+    return written + seeded
 
 
 async def fetch_pool_with_stale_fallback(
@@ -332,6 +471,36 @@ async def fetch_pool_with_stale_fallback(
             yesterday,
         )
     return row
+
+
+async def resolve_pool_row_for_request(hd_type_key_or_label: str) -> dict[str, str]:
+    """
+    Request path (мгновенно): кэш сегодня/вчера → builtin seed в БД.
+
+    Gemini только в cron; здесь не ждём API, чтобы не ловить «Высшие силы».
+    """
+    raw = (hd_type_key_or_label or "").strip().lower()
+    key = raw if raw in HD_POOL_KEYS else resolve_hd_pool_key(hd_type_key_or_label)
+
+    row = await fetch_pool_with_stale_fallback(key)
+    if row:
+        return row
+
+    day = advice_date_iso_msk()
+    builtin = builtin_pool_row(key)
+    try:
+        await upsert_daily_advice_pool(
+            advice_date=day,
+            hd_type_key=key,
+            barometer=builtin["barometer"],
+            navigator=builtin["navigator"],
+            step_plus=builtin["step_plus"],
+            energy_drain=builtin["energy_drain"],
+            model_id="builtin",
+        )
+    except Exception:
+        logger.exception("builtin pool upsert failed key=%s", key)
+    return builtin
 
 
 def _seconds_until_next_msk_hour(hour: int, *, now: datetime | None = None) -> float:
@@ -365,7 +534,12 @@ async def daily_advice_pool_refill_loop() -> None:
         try:
             # Полный refill на новую дату (existing пуст → все 5).
             await refill_daily_advice_pool(advice_date_iso_msk())
+            await seed_builtin_pool_for_missing(advice_date_iso_msk())
         except Exception:
             logger.exception("daily_advice_pool_refill_loop tick failed")
+            try:
+                await seed_builtin_pool_for_missing(advice_date_iso_msk())
+            except Exception:
+                logger.exception("builtin seed after refill tick failed")
         # Защита от двойного тика в ту же минуту.
         await asyncio.sleep(60.0)
