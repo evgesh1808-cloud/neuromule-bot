@@ -161,9 +161,7 @@ def builtin_pool_row(
     *,
     advice_date: str | None = None,
 ) -> dict[str, str]:
-    """Builtin-секции на дату: разные варианты по дню МСК (не копия вчерашнего)."""
-    import hashlib
-
+    """Builtin-секции на дату: разные варианты по дню недели МСК."""
     key = hd_type_key if hd_type_key in _BUILTIN_SECTIONS else "generator"
     day = (advice_date or advice_date_iso_msk()).strip()
     base = dict(_BUILTIN_SECTIONS[key])
@@ -172,15 +170,14 @@ def builtin_pool_row(
         wd = date.fromisoformat(day).weekday()  # 0=пн … 6=вс
     except ValueError:
         wd = 0
-    # стабильный индекс 0..6 от даты+типа (не зависит от PYTHONHASHSEED)
-    digest = hashlib.md5(f"{day}:{key}".encode("utf-8")).hexdigest()
-    idx = int(digest[:8], 16) % 7
-    bar_extra, step_extra, drain_extra = spice[idx if idx < len(spice) else wd % len(spice)]
+    # Индекс строго по дню недели МСК → соседние дни всегда разные.
+    idx = wd % 7
+    bar_extra, step_extra, drain_extra = spice[idx]
     # Подмешиваем дневной акцент, чтобы текст не совпадал с вчерашним.
     base["barometer"] = f"{base['barometer']} {bar_extra}".strip()
     base["step_plus"] = f"{base['step_plus']} {step_extra}".strip()
     base["energy_drain"] = f"{base['energy_drain']} {drain_extra}".strip()
-    base["model_id"] = f"builtin:d{idx}"
+    base["model_id"] = f"builtin:wd{idx}"
     return base
 
 
