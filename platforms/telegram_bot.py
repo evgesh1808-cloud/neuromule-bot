@@ -205,6 +205,15 @@ async def run_telegram() -> None:
             "Задайте OPENROUTER_API_KEY или OPENROUTER_API_KEYS в .env"
         )
 
+    try:
+        from google import genai as _genai_probe  # noqa: F401
+    except ImportError:
+        logger.error(
+            "Пакет google-genai НЕ установлен: «Совет дня»/HD пойдут через "
+            "OpenRouter-fallback. На VDS: pip install 'google-genai>=1.0' "
+            "&& pm2 restart neuromule-tg"
+        )
+
     log_openrouter_proxy_configuration(settings)
     probe_openrouter_proxy(settings)
     await init_openrouter_http_client(settings)

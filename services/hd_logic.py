@@ -1,6 +1,7 @@
 """HD Premium: Gemini report generation, SQLite helpers, and PDF export."""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -73,6 +74,10 @@ _GEMINI_MODEL_CHAIN: tuple[str, ...] = (
     "gemini-2.0-flash",
     "gemini-flash-latest",
 )
+# Таймаут одной Gemini-модели в «Совете дня» (сек); дальше — следующая / OpenRouter.
+_GEMINI_DAILY_TIMEOUT_SEC = 20.0
+_OPENROUTER_DAILY_TIMEOUT_SEC = 45.0
+_OPENROUTER_DAILY_MAX_TOKENS = 900
 _PDF_FONT_NAME = "HDReportFont"
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _PREMIUM_REPORT_KEYS = ("money", "love", "energy", "plan")
@@ -432,6 +437,115 @@ def _configure_genai() -> "genai.Client":
     return genai.Client(api_key=api_key)
 
 
+def _extract_gemini_text(response: object) -> str:
+    """Безопасно достаёт текст: ``response.text`` может бросать при safety-block."""
+    try:
+        text = getattr(response, "text", None)
+        if isinstance(text, str) and text.strip():
+            return text.strip()
+    except Exception:  # noqa: BLE001 — property .text у google-genai
+        logger.debug("Gemini response.text unavailable", exc_info=True)
+
+    try:
+        candidates = getattr(response, "candidates", None) or ()
+        chunks: list[str] = []
+        for cand in candidates:
+            content = getattr(cand, "content", None)
+            parts = getattr(content, "parts", None) or ()
+            for part in parts:
+                piece = getattr(part, "text", None)
+                if isinstance(piece, str) and piece:
+                    chunks.append(piece)
+        return "".join(chunks).strip()
+    except Exception:  # noqa: BLE001
+        logger.debug("Gemini candidates parse failed", exc_info=True)
+        return ""
+
+
+def _openrouter_models_for_daily_advice() -> list[str]:
+    """Каскад OpenRouter: Gemini через OR → lite → живые :free."""
+    from business_catalog import PAID_CHAT_MODEL
+
+    models: list[str] = []
+    seen: set[str] = set()
+
+    def _add(mid: str) -> None:
+        m = (mid or "").strip()
+        if m and m not in seen:
+            seen.add(m)
+            models.append(m)
+
+    _add(PAID_CHAT_MODEL)
+    _add("google/gemini-2.5-flash-lite")
+    try:
+        from services.free_models_catalog import free_cascade_from_cache
+
+        for mid in free_cascade_from_cache()[:4]:
+            _add(mid)
+    except Exception:
+        logger.debug("free cascade for daily advice unavailable", exc_info=True)
+    for mid in (
+        "deepseek/deepseek-r1-distill-llama-8b:free",
+        "meta-llama/llama-3.1-8b-instruct:free",
+        "google/gemma-2-9b-it:free",
+    ):
+        _add(mid)
+    return models
+
+
+async def _generate_daily_via_gemini(prompt: str) -> str:
+    """Прямой Gemini SDK; пустая строка / исключение — вызывающий код уйдёт в fallback."""
+    client = _configure_genai()
+    errors: list[str] = []
+    for model_name in _GEMINI_MODEL_CHAIN:
+        try:
+            response = await asyncio.wait_for(
+                client.aio.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                ),
+                timeout=_GEMINI_DAILY_TIMEOUT_SEC,
+            )
+            text = _extract_gemini_text(response)
+            if text:
+                return text
+            errors.append(f"{model_name}: empty")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Gemini %s: совет дня недоступен: %s", model_name, exc)
+            errors.append(f"{model_name}: {exc!r}")
+            continue
+    raise RuntimeError("gemini_unavailable: " + "; ".join(errors))
+
+
+async def _generate_daily_via_openrouter(prompt: str) -> str:
+    """Резерв «Совета дня», если google-genai / Gemini API недоступны."""
+    from services.ai_text import ask_ai_messages
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "Ты — NeuroMule 🐎⚡️. Выполни инструкцию пользователя дословно. "
+                "Пиши только на русском. Без markdown (**), без HTML. "
+                "Не добавляй вступлений вроде «Конечно»."
+            ),
+        },
+        {"role": "user", "content": prompt},
+    ]
+    completion = await ask_ai_messages(
+        _app_settings,
+        messages,
+        timeout=_OPENROUTER_DAILY_TIMEOUT_SEC,
+        models=_openrouter_models_for_daily_advice(),
+        max_tokens=_OPENROUTER_DAILY_MAX_TOKENS,
+        temperature=0.85,
+    )
+    text = (completion.get("content") or "").strip()
+    if not text:
+        raise RuntimeError("openrouter_daily_advice_empty")
+    return text
+
+
 async def gemini_generate_plain_text(prompt: str) -> str:
     """
     Один запрос текста к Gemini с перебором моделей (совместимость, отчёты без JSON-режима).
@@ -445,9 +559,10 @@ async def gemini_generate_plain_text(prompt: str) -> str:
                 model=model_name,
                 contents=prompt,
             )
-            text = (getattr(response, "text", "") or "").strip()
+            text = _extract_gemini_text(response)
             if text:
                 return text
+            errors.append(f"{model_name}: empty")
         except Exception as exc:  # noqa: BLE001 — перебор моделей по сети/API
             logger.warning("Gemini модель %s: не удалось получить текст: %s", model_name, exc)
             errors.append(f"{model_name}: {exc!r}")
@@ -742,24 +857,32 @@ async def generate_daily_forecast(
     *,
     current_cta_text: str,
 ) -> str:
-    """Совет дня целиком (google-genai SDK, non-stream, каскад моделей)."""
+    """Совет дня: Gemini SDK → при сбое/отсутствии пакета — OpenRouter."""
     prompt = build_daily_advice_prompt(user_profile, current_cta_text=current_cta_text)
-    client = _configure_genai()
     errors: list[str] = []
-    for model_name in _GEMINI_MODEL_CHAIN:
+
+    if genai is not None:
         try:
-            response = await client.aio.models.generate_content(
-                model=model_name,
-                contents=prompt,
-            )
-            text = (getattr(response, "text", "") or "").strip()
-            if text:
-                return text
+            return await _generate_daily_via_gemini(prompt)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Gemini %s: совет дня недоступен: %s", model_name, exc)
-            errors.append(f"{model_name}: {exc!r}")
-            continue
-    raise RuntimeError("gemini_unavailable: " + "; ".join(errors))
+            logger.warning("Gemini daily advice failed, trying OpenRouter: %s", exc)
+            errors.append(f"gemini: {exc!r}")
+    else:
+        logger.error(
+            "Пакет google-genai не установлен — «Совет дня» через OpenRouter. "
+            "На VDS: pip install 'google-genai>=1.0'"
+        )
+        errors.append("google-genai_missing")
+
+    try:
+        text = await _generate_daily_via_openrouter(prompt)
+        logger.info("daily advice served via OpenRouter fallback")
+        return text
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("OpenRouter daily advice fallback failed")
+        errors.append(f"openrouter: {exc!r}")
+
+    raise RuntimeError("daily_advice_unavailable: " + "; ".join(errors))
 
 
 async def generate_daily_advice(
