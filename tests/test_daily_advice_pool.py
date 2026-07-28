@@ -91,7 +91,7 @@ def test_assemble_safe_on_broken_braces() -> None:
 
 def test_builtin_templates_are_premium_voice() -> None:
     for key in pool.HD_POOL_KEYS:
-        row = pool.builtin_pool_row(key)
+        row = pool.builtin_pool_row(key, advice_date="2026-07-29")
         assert "$display_name" in row["navigator"]
         assert "birth_date" not in row["navigator"]
         assert "рожд" not in row["navigator"].lower()
@@ -107,6 +107,13 @@ def test_builtin_templates_are_premium_voice() -> None:
         assert "Оля" in text
         assert "Казань" not in text
         assert "X" in text
+
+
+def test_builtin_differs_by_date() -> None:
+    a = pool.builtin_pool_row("generator", advice_date="2026-07-28")
+    b = pool.builtin_pool_row("generator", advice_date="2026-07-29")
+    assert a["barometer"] != b["barometer"] or a["step_plus"] != b["step_plus"]
+    assert a.get("model_id") != b.get("model_id") or a["barometer"] != b["barometer"]
 
 
 @pytest.mark.asyncio

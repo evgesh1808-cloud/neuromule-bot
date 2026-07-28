@@ -156,12 +156,82 @@ _BUILTIN_SECTIONS: dict[str, dict[str, str]] = {
 }
 
 
-def builtin_pool_row(hd_type_key: str) -> dict[str, str]:
-    """Статический шаблон секций для ключа (fallback без Gemini)."""
+def builtin_pool_row(
+    hd_type_key: str,
+    *,
+    advice_date: str | None = None,
+) -> dict[str, str]:
+    """Builtin-секции на дату: разные варианты по дню МСК (не копия вчерашнего)."""
+    import hashlib
+
     key = hd_type_key if hd_type_key in _BUILTIN_SECTIONS else "generator"
-    row = dict(_BUILTIN_SECTIONS[key])
-    row["model_id"] = "builtin"
-    return row
+    day = (advice_date or advice_date_iso_msk()).strip()
+    base = dict(_BUILTIN_SECTIONS[key])
+    spice = _WEEKDAY_SPICE.get(key, _WEEKDAY_SPICE["generator"])
+    try:
+        wd = date.fromisoformat(day).weekday()  # 0=пн … 6=вс
+    except ValueError:
+        wd = 0
+    # стабильный индекс 0..6 от даты+типа (не зависит от PYTHONHASHSEED)
+    digest = hashlib.md5(f"{day}:{key}".encode("utf-8")).hexdigest()
+    idx = int(digest[:8], 16) % 7
+    bar_extra, step_extra, drain_extra = spice[idx if idx < len(spice) else wd % len(spice)]
+    # Подмешиваем дневной акцент, чтобы текст не совпадал с вчерашним.
+    base["barometer"] = f"{base['barometer']} {bar_extra}".strip()
+    base["step_plus"] = f"{base['step_plus']} {step_extra}".strip()
+    base["energy_drain"] = f"{base['energy_drain']} {drain_extra}".strip()
+    base["model_id"] = f"builtin:d{idx}"
+    return base
+
+
+# Короткий «вкус дня» (7 шт.) — крутится по дате, чтобы не было копии вчерашнего текста.
+_WEEKDAY_SPICE: dict[str, tuple[tuple[str, str, str], ...]] = {
+    "generator": (
+        ("Сегодня особенно важно тело как компас.", "Сделай это до полудня.", "Не спорь с усталостью."),
+        ("Ритм дня медленный и честный.", "Закрой один хвост.", "Не геройствуй."),
+        ("Поле любит завершённые круги.", "Отметь «готово» вслух.", "Не открывай новое раньше времени."),
+        ("Мягкий магнетизм: пусть приходит само.", "Спроси тело шёпотом.", "Не дави логикой."),
+        ("Фильтр шума включён.", "Пауза 10 секунд перед «да».", "Не спасай чужой хаос."),
+        ("Легкость — верный вектор.", "Смени комнату на 3 минуты.", "Не носи маску героя."),
+        ("Один верный шаг сильнее десяти суетливых.", "Отложи ложное срочное.", "Не путай календарь с зовом."),
+    ),
+    "mg": (
+        ("Импульсы пачками — выбирай.", "Две минуты — один финиш.", "Не коллекционируй старты."),
+        ("Можно зажечь и отпустить.", "Таймер 12 минут.", "Брось мёртвое без стыда."),
+        ("Планы должны дышать.", "Окно «для импульса» 15 минут.", "Не убивай отклик графиком."),
+        ("Отделяй блеск от настоящего «да».", "Спроси: «ещё вкусно?»", "Закрой лишние вкладки."),
+        ("Малая победа = большой заряд.", "Закрой мини-цикл.", "Не прыгай дальше раньше времени."),
+        ("Игривый эфир — для эксперимента.", "Один странный шаг из любопытства.", "Не объясняй всем разворот."),
+        ("Работай волнами.", "90 секунд пустоты после рывка.", "Не игнорируй спад."),
+    ),
+    "manifestor": (
+        ("Ясный сигнал сильнее шёпота.", "Озвучь запуск.", "Не копи инициативу."),
+        ("Информируй — и иди.", "Короткий статус «я делаю X».", "Не исчезай без слова."),
+        ("Малый запуск под твоим контролем.", "Первый шаг за 5 минут.", "Не жди комитета."),
+        ("Границы звучат чисто.", "Одно спокойное «нет».", "Не оправдывайся."),
+        ("Тихий лидер тоже лидер.", "Намерение утром — действие до обеда.", "Не собирай реакции всех."),
+        ("Верни авторство дня.", "Вычеркни чужое дело.", "Не тащи чужой сценарий."),
+        ("Один ударный ход.", "Поставь флаг запуска.", "Не тони в черновиках."),
+    ),
+    "projector": (
+        ("Точность важнее объёма.", "Совет — только по запросу.", "Не доказывай ценность."),
+        ("Говори мало и в точку.", "Один уточняющий вопрос.", "Без непрошеной экспертизы."),
+        ("Не каждая встреча твоя.", "Сократи опустошающий созвон.", "Не сиди «на всякий случай»."),
+        ("Один фокус — одна система.", "Одно наблюдение — и стоп.", "Не растаскивай внимание."),
+        ("Пусть найдут тебя.", "Один видимый сигнал о себе.", "Не охоться за вниманием."),
+        ("Право не успевать «как все».", "Дневник: где меня увидели?", "Не сравнивай темп."),
+        ("Одна верная реплика.", "Ответь на самый живой запрос.", "Не раздавай себя заранее."),
+    ),
+    "reflector": (
+        ("Среда пишет самочувствие.", "Смени фон на 5 минут.", "Чужой срок — не твой."),
+        ("Отделяй своё от атмосферы.", "Выйди из комнаты на 3 минуты.", "Не носи чужие эмоции."),
+        ("Цикл важнее вспышки.", "Пересмотри завтра одно «да».", "Не подписывай под давлением."),
+        ("Правильные люди = кислород.", "10 минут с тем, где легко.", "Уйди из токсичного поля."),
+        ("Наблюдай без самокритики.", "Запиши наблюдение без вывода.", "Не бей себя отражением."),
+        ("Гибкость — сила.", "Смени свет или плейлист.", "Не требуй чужого постоянства."),
+        ("Малый круг питательнее сцены.", "Скажи «нет» рассеивающему событию.", "Не разливайся на всех."),
+    ),
+}
 
 
 async def seed_builtin_pool_for_missing(advice_date: str | None = None) -> int:
@@ -172,7 +242,7 @@ async def seed_builtin_pool_for_missing(advice_date: str | None = None) -> int:
     for key in HD_POOL_KEYS:
         if key in have:
             continue
-        row = builtin_pool_row(key)
+        row = builtin_pool_row(key, advice_date=day)
         await upsert_daily_advice_pool(
             advice_date=day,
             hd_type_key=key,
@@ -181,7 +251,7 @@ async def seed_builtin_pool_for_missing(advice_date: str | None = None) -> int:
             step_plus=row["step_plus"],
             energy_drain=row["energy_drain"],
             raw_json=None,
-            model_id="builtin",
+            model_id=row.get("model_id") or "builtin",
         )
         written += 1
     if written:
@@ -505,22 +575,39 @@ async def fetch_pool_with_stale_fallback(
 
 async def resolve_pool_row_for_request(hd_type_key_or_label: str) -> dict[str, str]:
     """
-    Request path (мгновенно): кэш сегодня/вчера → builtin seed в БД.
+    Request path: только кэш НА СЕГОДНЯ (МСК) → иначе builtin на сегодня.
 
-    Никогда не бросает: при любой ошибке БД возвращает builtin в памяти.
+    Вчерашний stale НЕ отдаём: из‑за него текст повторялся день за днём.
     """
     raw = (hd_type_key_or_label or "").strip().lower()
     key = raw if raw in HD_POOL_KEYS else resolve_hd_pool_key(hd_type_key_or_label)
-    builtin = builtin_pool_row(key)
+    day = advice_date_iso_msk()
 
     try:
-        row = await fetch_pool_with_stale_fallback(key)
+        row = await get_daily_advice_pool(day, key)
         if row:
+            mid = (row.get("model_id") or "").strip()
+            # Старые сиды без дневной ротации — перезаписываем на вариант дня.
+            if mid in {"", "builtin"}:
+                builtin = builtin_pool_row(key, advice_date=day)
+                try:
+                    await upsert_daily_advice_pool(
+                        advice_date=day,
+                        hd_type_key=key,
+                        barometer=builtin["barometer"],
+                        navigator=builtin["navigator"],
+                        step_plus=builtin["step_plus"],
+                        energy_drain=builtin["energy_drain"],
+                        model_id=builtin.get("model_id") or "builtin",
+                    )
+                except Exception:
+                    logger.exception("builtin pool refresh failed key=%s", key)
+                return builtin
             return row
     except Exception:
-        logger.exception("fetch_pool_with_stale_fallback failed key=%s", key)
+        logger.exception("get_daily_advice_pool failed key=%s day=%s", key, day)
 
-    day = advice_date_iso_msk()
+    builtin = builtin_pool_row(key, advice_date=day)
     try:
         await upsert_daily_advice_pool(
             advice_date=day,
@@ -529,7 +616,7 @@ async def resolve_pool_row_for_request(hd_type_key_or_label: str) -> dict[str, s
             navigator=builtin["navigator"],
             step_plus=builtin["step_plus"],
             energy_drain=builtin["energy_drain"],
-            model_id="builtin",
+            model_id=builtin.get("model_id") or "builtin",
         )
     except Exception:
         logger.exception("builtin pool upsert failed key=%s", key)
