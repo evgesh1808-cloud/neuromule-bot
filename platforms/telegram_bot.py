@@ -24,6 +24,7 @@ from platforms.telegram_utils import HelpInstructionWordFilter, is_admin_user
 from services.app_logging import setup_logging
 from services.dialog_write_worker import start_dialog_write_worker
 from services.last_share_media import clear_expired_cache_loop
+from services.hint_session_store import clear_expired_hint_sessions_loop
 from services.metrics_http import serve_metrics
 from services.openrouter_http import (
     _wait_openrouter_api,
@@ -231,6 +232,8 @@ async def run_telegram() -> None:
     # Фоновый GC кэша шеринга (24ч tick, TTL 48ч). Защищает RAM от
     # бесконечного роста при долгой работе процесса.
     _asyncio.create_task(clear_expired_cache_loop())
+    # HintSession L2 GC: TTL 7 дней, tick раз в сутки (после init_db).
+    _asyncio.create_task(clear_expired_hint_sessions_loop())
     # Контролируемый CPython GC: gen0→sleep(0)→gen1→sleep(0)→gen2 раз в 10 мин.
     # gc.collect идёт через run_in_executor → event loop не блокируется.
     _asyncio.create_task(controlled_gc_loop())

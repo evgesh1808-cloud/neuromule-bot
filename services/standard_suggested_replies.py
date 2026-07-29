@@ -625,7 +625,7 @@ async def persist_hint_session(action_uuid: str) -> None:
             root_user_prompt=session.root_user_prompt,
             message_id=session.message_id,
         )
-        deleted = await store.delete_expired_hint_sessions(limit=50)
+        deleted = await store.clear_expired_hint_sessions()
         if deleted:
             metrics.incr("hint_session_gc", value=deleted)
     except Exception:

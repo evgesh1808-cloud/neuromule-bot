@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+import asyncio
 from typing import Any, Sequence
 
 import aiosqlite
@@ -128,26 +129,46 @@ async def get_hint_session(action_uuid: str, *, user_id: int) -> dict[str, Any] 
     }
 
 
-async def delete_expired_hint_sessions(*, limit: int = 500) -> int:
-    """GC просроченных сессий. Возвращает число удалённых строк."""
-    now = time.time()
-    cap = max(1, min(int(limit), 5000))
+async def clear_expired_hint_sessions(*, now: float | None = None) -> int:
+    """``DELETE FROM hint_sessions WHERE expires_at < ?``. Возвращает число строк."""
+    ts = time.time() if now is None else float(now)
     async with aiosqlite.connect(_db_path()) as db:
-        # SQLite: удаляем по expires_at, ограничиваем через subquery.
         cur = await db.execute(
-            """
-            DELETE FROM hint_sessions
-            WHERE action_uuid IN (
-                SELECT action_uuid FROM hint_sessions
-                WHERE expires_at <= ?
-                LIMIT ?
-            )
-            """,
-            (now, cap),
+            "DELETE FROM hint_sessions WHERE expires_at < ?",
+            (ts,),
         )
         deleted = int(cur.rowcount or 0)
         await db.commit()
+    if deleted:
+        logger.info("hint_sessions: gc removed=%s", deleted)
     return deleted
+
+
+async def delete_expired_hint_sessions(*, limit: int = 500) -> int:
+    """Совместимый alias: батчевый GC (lazy на create). Полный sweep — ``clear_expired_hint_sessions``."""
+    _ = limit
+    return await clear_expired_hint_sessions()
+
+
+async def clear_expired_hint_sessions_loop(
+    *,
+    interval_sec: float = 24 * 3600,
+) -> None:
+    """Фоновый GC раз в сутки (старт + каждый tick). Запускать из telegram_bot."""
+    logger.info(
+        "hint_sessions: gc loop started interval=%ss ttl=%ss",
+        int(interval_sec),
+        int(DEFAULT_HINT_SESSION_TTL_SEC),
+    )
+    while True:
+        try:
+            await clear_expired_hint_sessions()
+        except Exception:
+            logger.exception("hint_sessions: gc tick failed")
+        try:
+            await asyncio.sleep(max(60.0, float(interval_sec)))
+        except asyncio.CancelledError:
+            raise
 
 
 async def clear_hint_sessions_for_tests() -> None:
