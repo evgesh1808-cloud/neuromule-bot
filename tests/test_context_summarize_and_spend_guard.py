@@ -242,3 +242,48 @@ def test_preflight_and_tariff_mapping(monkeypatch: pytest.MonkeyPatch) -> None:
     snap = snapshot(day=day)
     assert snap["free_chats"][1] == 1
     assert snap["user_tokens"][2] == 25
+
+
+@pytest.mark.asyncio
+async def test_compact_standard_keeps_last_assistant_for_short_followup() -> None:
+    from services.context_summarize import compact_standard_dialog_context
+
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "Расскажи про тхэквондо для сына 7 лет"},
+        {
+            "role": "assistant",
+            "content": "Тхэквондо развивает дисциплину и координацию. Секция 2 раза в неделю.",
+        },
+        {
+            "role": "user",
+            "content": (
+                "Про сроки?\n\n[Compliance: PREMIUM COPY PACK]\n"
+                "ТИП Б по умолчанию. Длинный хвост комплаенса…"
+            ),
+        },
+    ]
+    out = await compact_standard_dialog_context(messages, ask_fn=None)
+    roles = [m["role"] for m in out]
+    assert roles == ["system", "assistant", "user"]
+    assert "Тхэквондо развивает" in out[1]["content"]
+    assert out[2]["content"].startswith("Про сроки?")
+    assert "[Контекст:" in out[0]["content"]
+    assert "тхэквондо" in out[0]["content"].lower() or "Тхэквондо" in out[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_compact_standard_drops_assistant_for_long_user() -> None:
+    from services.context_summarize import compact_standard_dialog_context
+
+    long_q = "Объясни подробно " + ("историю тхэквондо " * 20)
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "привет"},
+        {"role": "assistant", "content": "старый ответ"},
+        {"role": "user", "content": long_q},
+    ]
+    out = await compact_standard_dialog_context(messages, ask_fn=None)
+    roles = [m["role"] for m in out]
+    assert roles == ["system", "user"]
+    assert "старый ответ" not in " ".join(m["content"] for m in out if m["role"] != "system")

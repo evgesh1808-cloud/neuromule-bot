@@ -30,12 +30,15 @@ logger = logging.getLogger(__name__)
 DIALOG_SUMMARY_MARKER = "[DIALOG_SUMMARY]"
 STANDARD_CONTEXT_MARKER = "[Контекст:"
 
+# Короткие follow-up (кнопки подсказок): оставляем последний ответ ассистента в payload.
+_SHORT_FOLLOWUP_MAX_CHARS = 96
+
 AskFn = Callable[..., Awaitable[dict[str, Any]]]
 
 
 _ROLES_SKIP_SUMMARY = frozenset({"table_generator"})
 _COMPLIANCE_TAIL_SPLIT = re.compile(
-    r"\n\n\[Системный|\n\n\[Блогер-формат",
+    r"\n\n\[(?:Системный|Блогер-формат|Compliance:|ROUTE LOCK:|Системный хвост)",
     re.IGNORECASE,
 )
 
@@ -52,7 +55,16 @@ def _strip_compliance_tail(text: str) -> str:
 
 
 def _heuristic_standard_context(prior: Sequence[dict[str, Any]]) -> str:
-    """Дешёвая выжимка без LLM: последние user-реплики до текущего запроса."""
+    """Дешёвая выжимка без LLM: последний ответ бота + последние user-реплики."""
+    last_assistant = ""
+    for msg in reversed(prior):
+        if msg.get("role") != "assistant":
+            continue
+        text = _strip_compliance_tail(_text_of(msg))
+        if text:
+            last_assistant = text
+            break
+
     user_bits: list[str] = []
     for msg in prior:
         if msg.get("role") != "user":
@@ -60,19 +72,43 @@ def _heuristic_standard_context(prior: Sequence[dict[str, Any]]) -> str:
         text = _strip_compliance_tail(_text_of(msg))
         if text:
             user_bits.append(text)
-    if not user_bits:
-        for msg in reversed(prior):
-            text = _strip_compliance_tail(_text_of(msg))
-            if text:
-                user_bits.append(text)
-                break
-    raw = " | ".join(user_bits[-2:]) if user_bits else ""
-    raw = re.sub(r"\s+", " ", raw).strip()
+
+    parts: list[str] = []
+    if last_assistant:
+        clip = re.sub(r"\s+", " ", last_assistant).strip()
+        if len(clip) > 140:
+            clip = clip[:137].rstrip() + "…"
+        parts.append(clip)
+    if user_bits:
+        u = re.sub(r"\s+", " ", user_bits[-1]).strip()
+        if len(u) > 80:
+            u = u[:77].rstrip() + "…"
+        parts.append(u)
+    raw = " | ".join(parts)
     if not raw:
         return "предыдущий диалог"
-    if len(raw) > 160:
-        raw = raw[:157].rstrip() + "…"
+    if len(raw) > 200:
+        raw = raw[:197].rstrip() + "…"
     return raw
+
+
+def _is_short_followup_user(user_msg: dict[str, Any]) -> bool:
+    """True для коротких уточнений (Suggested Replies / «Про сроки?»)."""
+    text = _strip_compliance_tail(_text_of(user_msg))
+    if not text:
+        return False
+    return len(text) <= _SHORT_FOLLOWUP_MAX_CHARS
+
+
+def _last_assistant_before(
+    messages: Sequence[dict[str, Any]],
+    *,
+    before_idx: int,
+) -> dict[str, Any] | None:
+    for i in range(before_idx - 1, -1, -1):
+        if messages[i].get("role") == "assistant":
+            return dict(messages[i])
+    return None
 
 
 def format_standard_context_block(summary: str) -> str:
@@ -161,8 +197,9 @@ async def compact_standard_dialog_context(
     """
     Standard: system (+ ультра-короткий [Контекст: …]) + последний user.
 
-    Убирает bias старых assistant-реплик, но сохраняет память для отсылок
-    («как раньше», «измени второй вариант»). Fail-open на эвристику.
+    Для коротких follow-up (кнопки подсказок) дополнительно оставляем
+    последний ответ ассистента — иначе модель не видит тему уточнения.
+    Fail-open на эвристику.
     """
     if not messages:
         return messages
@@ -211,7 +248,13 @@ async def compact_standard_dialog_context(
     else:
         system_msgs = [{"role": "system", "content": context_block}]
 
-    messages[:] = [*system_msgs, last_user]
+    keep_tail: list[dict[str, Any]] = [last_user]
+    if _is_short_followup_user(last_user):
+        last_assistant = _last_assistant_before(messages, before_idx=last_user_idx)
+        if last_assistant is not None and _strip_compliance_tail(_text_of(last_assistant)):
+            keep_tail = [last_assistant, last_user]
+
+    messages[:] = [*system_msgs, *keep_tail]
     metrics.incr("chat.standard_context_compacted")
     return messages
 
