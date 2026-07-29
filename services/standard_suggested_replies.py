@@ -640,7 +640,7 @@ def split_suggested_replies(
 
 
 # ---------------------------------------------------------------------------
-# HintSession API — L1 ``_HINT_SESSIONS`` + L2 SQLite (не трогает legacy ``_CACHE``).
+# HintSession API — L1 ``_HINT_SESSIONS`` + L2 Redis/SQLite (не трогает legacy ``_CACHE``).
 # ---------------------------------------------------------------------------
 def create_hint_session(
     user_id: int,

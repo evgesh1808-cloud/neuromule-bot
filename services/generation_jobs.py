@@ -45,8 +45,9 @@ from services.billing.translator import (
 )
 from services.billing.video_pipeline import VIDEO_SCENARIOS
 from services.photo_share import resolve_photo_share_url
+from services.pollinations_client import generate_flux_schnell_image
 from services.repository import get_user_row
-from services.tariffs import normalize_tariff
+from services.tariffs import TariffName, normalize_tariff
 
 if TYPE_CHECKING:
     from aiogram import Bot
@@ -160,13 +161,28 @@ def _normalize_photo_model_id(model_id: str, model_label: str = "") -> str:
     return aliases.get(raw, raw)
 
 
-async def _generate_photo_result(model_key: str, prompt: str) -> GeminiImageResult | str:
+async def _free_tier_flux_uses_pollinations(user_id: int | None, model_key: str) -> bool:
+    """FREE + Flux Schnell → Pollinations (без Replicate и без API-ключей)."""
+    if model_key != "flux_schnell" or user_id is None:
+        return False
+    row = await get_user_row(user_id)
+    return normalize_tariff(row.tariff) is TariffName.FREE
+
+
+async def _generate_photo_result(
+    model_key: str,
+    prompt: str,
+    *,
+    user_id: int | None = None,
+) -> GeminiImageResult | str:
     """Возвращает GeminiImageResult (url/bytes) или прямой URL строки (Replicate)."""
     try:
         if model_key == "imagen4":
             return await generate_imagen_fast(prompt)
 
         if model_key == "flux_schnell":
+            if await _free_tier_flux_uses_pollinations(user_id, model_key):
+                return await generate_flux_schnell_image(prompt)
             if not replicate_configured():
                 raise ExternalApiError("Replicate", "REPLICATE_API_TOKEN не задан")
             prompt_en = await enhance_video_prompt_for_replicate(app_settings, prompt)
@@ -273,7 +289,11 @@ async def _photo_stub_worker(task: GenTask) -> None:
             len(user_prompt),
         )
         async with chat_action_loop(bot, chat_id, "upload_photo"):
-            raw = await _generate_photo_result(model_key, user_prompt)
+            raw = await _generate_photo_result(
+                model_key,
+                user_prompt,
+                user_id=user_id,
+            )
             photo_url: str | None = None
             photo_bytes: bytes | None = None
             if isinstance(raw, str):
