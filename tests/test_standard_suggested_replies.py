@@ -236,8 +236,10 @@ def test_long_label_stored_full_via_std_reply() -> None:
     from services.standard_suggested_replies import expand_suggested_reply_prompt
 
     prompt = expand_suggested_reply_prompt(long)
-    assert "Продолжая наш текущий разговор" in prompt
+    assert prompt == long
     assert "тхэквондо" in prompt
+    assert "SYSTEM SECURITY" not in prompt
+    assert "опираясь на" not in prompt.lower()
 
 
 def test_chat_hint_still_fits_64_bytes() -> None:

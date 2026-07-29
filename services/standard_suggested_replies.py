@@ -187,14 +187,16 @@ def button_display_text(
 
 
 def expand_suggested_reply_prompt(label: str) -> str:
-    """Кликнутая подсказка → явный follow-up с якорем на текущий диалог."""
+    """Кликнутая подсказка → текст user-сообщения.
+
+    Без мета-инструкций («продолжая разговор / опираясь на ответ») —
+    paid Standard путает их с prompt injection и отвечает SYSTEM SECURITY INFO.
+    Контекст уже в истории диалога; сюда идёт только сам follow-up.
+    """
     q = sanitize_suggested_label(label) or (label or "").strip()
     if not q:
-        return "Продолжи наш разговор: уточни следующий практический шаг."
-    return (
-        "Продолжая наш текущий разговор и опираясь на твой предыдущий ответ, "
-        f"ответь на уточнение: {q}"
-    )
+        return "Что делать дальше по этой теме?"
+    return q
 
 
 def _norm_hint(label: str) -> str:
