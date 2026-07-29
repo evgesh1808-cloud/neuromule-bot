@@ -1377,6 +1377,18 @@ async def handle_neurotext_user_message(
         if result.effective_text_role:
             await state.update_data(text_role=result.effective_text_role)
 
+    if result.outcome is ChatTurnOutcome.CONTEXT_TOO_LARGE:
+        from platforms.image_menu_flow import try_free_photo_from_chat_overflow
+
+        overflow_prompt = (forced_user_text or message.text or "").strip()
+        if await try_free_photo_from_chat_overflow(
+            message,
+            state,
+            prompt=overflow_prompt,
+            user_id=uid,
+        ):
+            return
+
     await _reply_chat_turn_result(
         message,
         result,
