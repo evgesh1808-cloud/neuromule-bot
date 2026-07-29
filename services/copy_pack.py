@@ -5,7 +5,9 @@ from __future__ import annotations
 import re
 
 _COPY_PACK_OPENER_RE = re.compile(
-    r"готово!\s*разные\s*(?:стили|варианты)\s*на\s*выбор",
+    r"готово!\s*разные\s*(?:стили|варианты)\s*на\s*выбор|"
+    r"готово!\s*.{0,40}на\s*выбор|"
+    r"разные\s+варианты\s+на\s+выбор",
     re.IGNORECASE,
 )
 _PRE_BLOCK_RE = re.compile(r"<pre\b[^>]*>.*?</pre>", re.IGNORECASE | re.DOTALL)
@@ -55,20 +57,30 @@ def merge_copy_pack_prefix(prefix: str, content: str) -> str:
     return f"{prefix}{text}"
 
 
+def count_pre_blocks(text: str) -> int:
+    normalized = convert_md_fences_to_pre(text or "")
+    return len(_PRE_BLOCK_RE.findall(normalized))
+
+
 def is_premium_copy_pack_reply(text: str) -> bool:
-    """True, если ответ похож на copy-pack (opener + ≥3 ``<pre>``), без коуч-маркеров."""
+    """True, если ответ — пак вариантов (≥3 ``<pre>``), не коуч-теория."""
     raw = (text or "").strip()
     if not raw:
         return False
     normalized = convert_md_fences_to_pre(raw)
-    if not _COPY_PACK_OPENER_RE.search(normalized):
-        return False
-    if len(_PRE_BLOCK_RE.findall(normalized)) < 3:
+    pre_n = len(_PRE_BLOCK_RE.findall(normalized))
+    if pre_n < 3:
         return False
     head = normalized.split("<pre", 1)[0]
+    # Коуч во вступлении до первого <pre> — не считаем copy-pack.
     if _COACH_MARKERS_RE.search(head):
         return False
     return True
+
+
+def suppress_suggested_replies_for_answer(text: str) -> bool:
+    """Не показывать follow-up кнопки под COPY PACK / паком вариантов."""
+    return is_premium_copy_pack_reply(text)
 
 
 def looks_like_coach_reply(text: str) -> bool:

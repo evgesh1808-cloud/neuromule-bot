@@ -283,9 +283,9 @@ def derive_contextual_free_hints(body: str) -> list[str]:
     """До 3 follow-up по якорям ответа (без второго вызова LLM)."""
     # COPY PACK: заголовки стилей («Трогательное…») — не follow-up.
     try:
-        from services.copy_pack import is_premium_copy_pack_reply
+        from services.copy_pack import suppress_suggested_replies_for_answer
 
-        if is_premium_copy_pack_reply(body or ""):
+        if suppress_suggested_replies_for_answer(body or ""):
             return []
     except Exception:
         pass

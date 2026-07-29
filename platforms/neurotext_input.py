@@ -121,9 +121,9 @@ async def _standard_suggested_reply_markup(user_id: int, result: ChatTurnResult)
             return None
 
         body = getattr(result, "assistant_message", None) or ""
-        from services.copy_pack import is_premium_copy_pack_reply
+        from services.copy_pack import suppress_suggested_replies_for_answer
 
-        if is_premium_copy_pack_reply(body):
+        if suppress_suggested_replies_for_answer(body):
             logger.info("suggested_replies: skipped (copy pack) uid=%s", user_id)
             return None
 

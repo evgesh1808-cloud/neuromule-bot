@@ -28,6 +28,23 @@ def test_is_premium_copy_pack_reply_accepts_valid() -> None:
     assert is_premium_copy_pack_reply(text) is True
 
 
+def test_is_premium_copy_pack_without_classic_opener() -> None:
+    from services.copy_pack import suppress_suggested_replies_for_answer
+
+    text = (
+        "Вот варианты поздравления:\n\n"
+        "🎉 <b>Трогательное</b>\n<pre>\nА\n</pre>\n\n"
+        "🥂 <b>СМС</b>\n<pre>\nБ\n</pre>\n\n"
+        "🚀 <b>Драйв</b>\n<pre>\nВ\n</pre>\n\n"
+        "===КНОПКИ===\n"
+        "Трогательное и душевное\n"
+        "Короткое СМС-поздравление\n"
+        "Драйвовое\n"
+    )
+    assert is_premium_copy_pack_reply(text) is True
+    assert suppress_suggested_replies_for_answer(text) is True
+
+
 def test_is_premium_copy_pack_reply_accepts_legacy_opener() -> None:
     text = (
         "Готово! Разные стили на выбор (нажмите на текст, чтобы скопировать):\n\n"

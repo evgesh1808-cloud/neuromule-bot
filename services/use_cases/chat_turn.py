@@ -716,11 +716,15 @@ async def run_chat_turn(
         suggested_replies: tuple[str, ...] = ()
         content_for_format = content
         if (effective_role or "").strip().lower() == "standard":
-            from services.copy_pack import is_premium_copy_pack_reply
+            from services.copy_pack import suppress_suggested_replies_for_answer
+            from services.standard_suggested_replies import (
+                clean_text_before_marker,
+                split_suggested_replies,
+            )
 
-            if is_premium_copy_pack_reply(content):
+            if suppress_suggested_replies_for_answer(content):
                 # 4 варианта в <pre> — без follow-up кнопок (иначе «Трогательное…»-заглушки).
-                content_for_format = content
+                content_for_format = clean_text_before_marker(content)
                 suggested_replies = ()
             elif plan.tariff is TariffTier.FREE:
                 from services.standard_suggested_replies import prepare_free_standard_reply
@@ -729,8 +733,6 @@ async def run_chat_turn(
                 content_for_format, reply_labels, _kb = prepare_free_standard_reply(content)
                 suggested_replies = tuple(reply_labels)
             else:
-                from services.standard_suggested_replies import split_suggested_replies
-
                 # Pref ON: даже если модель забыла ===КНОПКИ=== — code-side fallback (как FREE).
                 content_for_format, reply_labels = split_suggested_replies(
                     content,
