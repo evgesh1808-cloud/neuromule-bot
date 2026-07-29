@@ -841,6 +841,16 @@ async def handle_neurotext_user_message(
     ``anchor_assistant_text`` — текст сообщения бота, под которым нажали кнопку
     (чтобы follow-up не цеплялся к более новому ответу в истории).
     """
+    if forced_user_text is None and (message.text or "").strip():
+        from platforms.image_menu_flow import (
+            can_intercept_text_as_image_prompt,
+            handle_pending_image_menu_text,
+        )
+
+        if await can_intercept_text_as_image_prompt(message, state):
+            await handle_pending_image_menu_text(message, state)
+            return
+
     is_photo = bool(message.photo) and forced_user_text is None
     is_document = bool(message.document) and forced_user_text is None
 

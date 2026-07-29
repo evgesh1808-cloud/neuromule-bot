@@ -70,7 +70,11 @@ async def send_neurotext_role_menu(message: Message, state: FSMContext | None = 
         from platforms.image_menu_flow import clear_image_model_menu_pending
 
         await clear_image_model_menu_pending(state)
-        await ensure_neurotext_waiting_state(state)
+        current = await state.get_state()
+        if current == UserFlow.waiting_for_image_model_pick.state:
+            await state.set_state(UserFlow.waiting_for_text_prompt)
+        else:
+            await ensure_neurotext_waiting_state(state)
     active = await _active_role_id(state) if state else "standard"
     text = await build_neurotext_intro(message.from_user.id, active)
     text = _with_standard_example(text, active)

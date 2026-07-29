@@ -7,6 +7,7 @@ from aiogram.fsm.state import State, StatesGroup
 
 class UserFlow(StatesGroup):
     waiting_for_text_prompt = State()
+    waiting_for_image_model_pick = State()
     waiting_for_photo = State()
     waiting_for_video = State()
     waiting_for_video_prank_photo = State()

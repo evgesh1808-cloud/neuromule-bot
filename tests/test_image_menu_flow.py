@@ -51,6 +51,18 @@ async def test_no_intercept_for_menu_button_text() -> None:
 
 
 @pytest.mark.asyncio
+async def test_intercept_in_dedicated_image_model_pick_state() -> None:
+    state = AsyncMock()
+    state.get_data = AsyncMock(return_value={})
+    state.get_state = AsyncMock(return_value=UserFlow.waiting_for_image_model_pick.state)
+
+    message = MagicMock()
+    message.text = "длинный промпт для фото " * 50
+
+    assert await can_intercept_text_as_image_prompt(message, state) is True
+
+
+@pytest.mark.asyncio
 async def test_no_intercept_when_already_waiting_for_photo() -> None:
     state = AsyncMock()
     state.get_data = AsyncMock(return_value={IMAGE_MODEL_MENU_PENDING_KEY: True})

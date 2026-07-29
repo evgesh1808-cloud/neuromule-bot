@@ -226,6 +226,13 @@ def _is_admin(user_id: int) -> bool:
     return is_admin_user(user_id)
 
 
+@router.message(UserFlow.waiting_for_image_model_pick, F.text)
+async def image_model_pick_text(message: Message, state: FSMContext) -> None:
+    from platforms.image_menu_flow import handle_pending_image_menu_text
+
+    await handle_pending_image_menu_text(message, state)
+
+
 @router.message(PendingImageMenuTextFilter(), F.text)
 async def image_menu_pending_text(message: Message, state: FSMContext) -> None:
     from platforms.image_menu_flow import handle_pending_image_menu_text

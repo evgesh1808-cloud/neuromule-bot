@@ -59,11 +59,14 @@ async def can_intercept_text_as_image_prompt(message: Message, state: FSMContext
     if text in msg.ALL_REPLY_NAV_BUTTONS:
         return False
 
+    current = await state.get_state()
+    if current == UserFlow.waiting_for_image_model_pick.state:
+        return True
+
     data = await state.get_data()
     if not is_image_model_menu_pending(data):
         return False
 
-    current = await state.get_state()
     if current in _BLOCKED_FSM_STATES:
         return False
 
@@ -80,19 +83,11 @@ async def present_image_model_menu(
     state: FSMContext,
     user_id: int,
 ) -> None:
-    """Показать меню моделей и пометить ожидание выбора (или текста-промпта на FREE)."""
-    from platforms.neurotext_flow import ensure_neurotext_waiting_state
-    from platforms.marketplace_audit_flow import is_marketplace_audit_context
-
+    """Показать меню моделей; следующий текст — промпт (не чат)."""
     row = await get_user_row(user_id)
     tariff = TariffTier.from_db(row.tariff)
     await mark_image_model_menu_pending(state)
-
-    current = await state.get_state()
-    data = await state.get_data()
-    if current is None or current == UserFlow.waiting_for_text_prompt.state:
-        if not is_marketplace_audit_context(current, data):
-            await ensure_neurotext_waiting_state(state)
+    await state.set_state(UserFlow.waiting_for_image_model_pick)
 
     await message.answer(
         msg.get_text_image_models(tariff),
