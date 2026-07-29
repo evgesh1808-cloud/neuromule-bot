@@ -167,9 +167,6 @@ async def text_role_process(message: Message, state: FSMContext) -> None:
     await handle_neurotext_user_message(message, state)
 
 
-@router.callback_query(
-    F.data.startswith(msg.CB_CHAT_HINT_PREFIX) | F.data.startswith(msg.CB_STD_REPLY_PREFIX)
-)
 def _assistant_text_from_callback_message(message: object) -> str:
     """Текст ответа бота, под которым нажали кнопку (якорь темы follow-up)."""
     html = getattr(message, "html_text", None)
@@ -184,6 +181,9 @@ def _assistant_text_from_callback_message(message: object) -> str:
     return ""
 
 
+@router.callback_query(
+    F.data.startswith(msg.CB_CHAT_HINT_PREFIX) | F.data.startswith(msg.CB_STD_REPLY_PREFIX)
+)
 async def cb_standard_suggested_reply(callback: CallbackQuery, state: FSMContext) -> None:
     """Suggested Reply в режиме standard → тот же пайплайн + списание 1⚡/1💎.
 
