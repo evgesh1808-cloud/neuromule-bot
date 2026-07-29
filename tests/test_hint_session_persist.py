@@ -50,7 +50,10 @@ async def test_hint_session_survives_ram_clear_via_sqlite(repo_module) -> None:
     assert "Разминка" in restored.body
     # labels_json → tuple[str, ...]
     assert isinstance(restored.labels, tuple)
-    assert restored.labels == ("Про разминку?", "Про стойки?")
+    assert restored.labels == (
+        "Что мне учесть про разминку?",
+        "Что мне учесть про стойки?",
+    )
     assert hits_after == hits_before + 1
 
     # Hydrate: повторный get уже из RAM (db_hit не должен снова вырасти от get).
