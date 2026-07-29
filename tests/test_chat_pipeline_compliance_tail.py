@@ -119,7 +119,7 @@ def test_prepare_openrouter_uses_chatcom_tail_for_standard() -> None:
     body = payload[1]["content"]
     assert FREE_COMPLIANCE_TAIL_MARKER in body
     assert "===КНОПКИ===" in body
-    assert "follow-up" in body
+    assert "коротких вопроса" in body
     assert "ROUTE LOCK: FREE LACO" in body
     assert "400" in body
     assert "премиум-комплаенс" not in body

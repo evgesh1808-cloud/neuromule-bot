@@ -18,12 +18,15 @@ BUTTONS_MARKER = "===КНОПКИ==="
 # Модель пишет КНОПКИ/кнопки/Кнопки, иногда с пробелами.
 _BUTTONS_MARKER_RE = re.compile(r"===\s*кнопки\s*===", flags=re.IGNORECASE)
 _MAX_LABELS = 3
-_MAX_LABEL_CHARS = 48  # полный текст follow-up в кэше / на клик
+_MAX_LABEL_CHARS = 48  # полный текст follow-up в кэше / на клик (paid std_reply)
 _MAX_BUTTON_DISPLAY_CHARS = 34  # читаемый текст на кнопке (мобильный Telegram)
 _CONTEXT_ID_LEN = 8
 # Telegram Bot API: callback_data 1–64 bytes (UTF-8).
 _TG_CALLBACK_DATA_MAX_BYTES = 64
 _CHAT_HINT_PREFIX_BYTES = len(msg.CB_CHAT_HINT_PREFIX.encode("utf-8"))
+# FREE ``chat_hint:``: кириллица ~2 байта/символ → держим подписи короткими,
+# иначе callback обрезает слово («искрений») и ответ уезжает мимо темы.
+_MAX_FREE_HINT_CHARS = max(12, (_TG_CALLBACK_DATA_MAX_BYTES - _CHAT_HINT_PREFIX_BYTES) // 2)
 
 # FREE: последний резерв, если из текста ответа якоря не извлеклись.
 FREE_FALLBACK_SUGGESTED_REPLIES: tuple[str, ...] = (
@@ -245,11 +248,35 @@ def expand_suggested_reply_prompt(label: str) -> str:
 
     Без мета-инструкций («продолжая разговор / опираясь на ответ») —
     paid Standard путает их с prompt injection и отвечает SYSTEM SECURITY INFO.
-    Контекст уже в истории диалога; сюда идёт только сам follow-up.
+    Короткие шаблонные кнопки раскрываем в явный запрос «только этот пункт».
     """
-    q = sanitize_suggested_label(label) or (label or "").strip()
+    q = polish_hint_label(label) or sanitize_suggested_label(label) or (label or "").strip()
     if not q:
         return "Что делать дальше по этой теме?"
+    core = q.rstrip("?.!…").strip()
+
+    def _topic(raw: str) -> str:
+        return raw.strip(" «»\"'„“").strip()
+
+    patterns: tuple[tuple[str, str], ...] = (
+        (r"(?i)^про\s+(.+)$", "Только про «{t}»: как это сделать на практике?"),
+        (r"(?i)^как\s*:\s*(.+)$", "Как на практике сделать «{t}»?"),
+        (r"(?i)^пример\s*:\s*(.+)$", "Дай конкретный пример для «{t}»."),
+        (r"(?i)^как работает\s+(.+)$", "Только про «{t}»: как это работает на практике?"),
+        (r"(?i)^как применить\s+(.+)$", "Как на практике применить «{t}»?"),
+        (r"(?i)^какие нюансы у\s+(.+)$", "Какие важные нюансы у «{t}»?"),
+        (r"(?i)^какие риски у\s+(.+)$", "Какие риски у «{t}» и как их снизить?"),
+        (r"(?i)^с чего начать с\s+(.+)$", "С чего начать с «{t}»?"),
+        (r"(?i)^риски\s*:\s*(.+)$", "Какие риски у «{t}» и как их снизить?"),
+        (r"(?i)^с чего\s*:\s*(.+)$", "С чего начать с «{t}»?"),
+    )
+    for pattern, template in patterns:
+        m = re.match(pattern, core)
+        if not m:
+            continue
+        topic = _topic(m.group(1))
+        if topic:
+            return template.format(t=topic)
     return q
 
 
@@ -278,18 +305,31 @@ def _plain_answer_text(body: str) -> str:
     return text
 
 
-def _clip_anchor(phrase: str, *, max_words: int = 3, max_chars: int = 22) -> str:
+def _clip_anchor(phrase: str, *, max_words: int = 2, max_chars: int = 18) -> str:
+    """Короткий якорь целиком по словам — без обрезки середины («искрений»)."""
     words = [w for w in re.split(r"\s+", (phrase or "").strip()) if w]
     if not words:
         return ""
-    clipped = " ".join(words[:max_words]).strip(" .,;:!?—–-")
-    if len(clipped) > max_chars:
-        clipped = clipped[: max_chars - 1].rstrip() + "…"
-    return clipped
+    words = words[:max_words]
+    while words:
+        clipped = " ".join(words).strip(" .,;:!?—–-«»\"'")
+        if clipped and len(clipped) <= max_chars:
+            return clipped
+        words = words[:-1]
+    return ""
+
+
+def _list_item_title(item: str) -> str:
+    """«Искренний интерес: Узнайте…» → «Искренний интерес»."""
+    text = sanitize_suggested_label(item)
+    if not text:
+        return ""
+    title = re.split(r"\s*[:—–]\s+", text, maxsplit=1)[0].strip()
+    return title or text
 
 
 def _extract_answer_anchors(body: str, *, limit: int = 5) -> list[str]:
-    """Якоря темы из тела ответа: <b>, пункты списка, значимые слова."""
+    """Якоря темы из тела ответа: <b>, заголовки пунктов списка, значимые слова."""
     raw = body or ""
     anchors: list[str] = []
     seen: set[str] = set()
@@ -307,7 +347,7 @@ def _extract_answer_anchors(body: str, *, limit: int = 5) -> list[str]:
         anchors.append(clip)
 
     for m in re.finditer(r"(?is)<b>(.*?)</b>", raw):
-        _push(m.group(1))
+        _push(_list_item_title(m.group(1)))
         if len(anchors) >= limit:
             return anchors
 
@@ -318,7 +358,7 @@ def _extract_answer_anchors(body: str, *, limit: int = 5) -> list[str]:
             continue
         m = re.match(r"^(?:\d+[.)]|[-•*])\s+(.+)$", line)
         if m:
-            _push(m.group(1))
+            _push(_list_item_title(m.group(1)))
             if len(anchors) >= limit:
                 return anchors
 
@@ -331,6 +371,24 @@ def _extract_answer_anchors(body: str, *, limit: int = 5) -> list[str]:
         if len(anchors) >= limit:
             break
     return anchors
+
+
+def _fit_free_hint_label(label: str) -> str:
+    """Подпись, которая целиком влезает в ``chat_hint:`` без порчи слова."""
+    text = polish_hint_label(label)
+    if not text:
+        return ""
+    if len(text) > _MAX_FREE_HINT_CHARS:
+        text = _clip_anchor(text.rstrip("?.!…"), max_words=4, max_chars=_MAX_FREE_HINT_CHARS - 1)
+        text = polish_hint_label(text)
+    fitted = fit_label_for_chat_hint(text)
+    # fit_label может добавить «…» — для кнопки лучше укоротить по словам без многоточия.
+    if fitted.endswith("…"):
+        base = fitted[:-1].rstrip()
+        shorter = _clip_anchor(base, max_words=3, max_chars=max(8, _MAX_FREE_HINT_CHARS - 2))
+        fitted = polish_hint_label(shorter) or fitted
+        fitted = fit_label_for_chat_hint(fitted)
+    return fitted
 
 
 def derive_contextual_free_hints(body: str) -> list[str]:
@@ -347,12 +405,11 @@ def derive_contextual_free_hints(body: str) -> list[str]:
     if not anchors:
         return []
     out: list[str] = []
+    # Короткие грамматически безопасные шаблоны (влезают в chat_hint).
     templates = (
-        "Как работает {a}?",
-        "Какие нюансы у {a}?",
-        "Как применить {a}?",
-        "Какие риски у {a}?",
-        "С чего начать с {a}?",
+        "Про {a}?",
+        "Как: {a}?",
+        "Пример: {a}?",
     )
     for i, anchor in enumerate(anchors):
         if len(out) >= _MAX_LABELS:
@@ -360,19 +417,19 @@ def derive_contextual_free_hints(body: str) -> list[str]:
         a = sanitize_suggested_label(anchor).rstrip("?.!…")
         if not a:
             continue
-        label = polish_hint_label(templates[i % len(templates)].format(a=a))
+        label = _fit_free_hint_label(templates[i % len(templates)].format(a=a))
         if label and label not in out and not is_generic_hint_label(label):
             out.append(label)
     if len(out) < _MAX_LABELS and anchors:
         a0 = sanitize_suggested_label(anchors[0]).rstrip("?.!…")
         for extra in (
-            f"Пример с {a0}?",
-            f"Частые ошибки с {a0}?",
-            f"Что проверить в {a0}?",
+            f"Пример: {a0}?",
+            f"Риски: {a0}?",
+            f"С чего: {a0}?",
         ):
             if len(out) >= _MAX_LABELS:
                 break
-            fitted = polish_hint_label(extra)
+            fitted = _fit_free_hint_label(extra)
             if fitted and fitted not in out and not is_generic_hint_label(fitted):
                 out.append(fitted)
     return out[:_MAX_LABELS]
@@ -523,7 +580,7 @@ def ensure_free_hint_labels(
     contextual = derive_contextual_free_hints(body or "")
     out: list[str] = []
     for raw in labels or ():
-        fitted = polish_hint_label(str(raw))
+        fitted = _fit_free_hint_label(str(raw))
         if not fitted or fitted in out:
             continue
         # Шаблонные «подробнее» выкидываем, если можем заменить контекстом.
@@ -535,13 +592,13 @@ def ensure_free_hint_labels(
     for fb in contextual:
         if len(out) >= _MAX_LABELS:
             break
-        fitted = polish_hint_label(fb)
+        fitted = _fit_free_hint_label(fb)
         if fitted and fitted not in out:
             out.append(fitted)
     for fb in FREE_FALLBACK_SUGGESTED_REPLIES:
         if len(out) >= _MAX_LABELS:
             break
-        fitted = polish_hint_label(fb)
+        fitted = _fit_free_hint_label(fb)
         if fitted and fitted not in out:
             out.append(fitted)
     i = 0
@@ -583,8 +640,9 @@ def build_free_hint_keyboard(
             ):
                 callback_data = callback_data[:-1]
             label = emergency
-        # На кнопке — короткий текст; в callback — усечённый под 64 байта chat_hint.
-        btn_text = button_display_text(label) or parse_chat_hint_callback(callback_data) or "…"
+        # Текст на кнопке = то, что уйдёт в клик (без «красивого» длинного лейбла).
+        sent = parse_chat_hint_callback(callback_data) or label
+        btn_text = button_display_text(sent) or sent or "…"
         rows.append([InlineKeyboardButton(text=btn_text, callback_data=callback_data)])
     if not rows:
         rows = [
