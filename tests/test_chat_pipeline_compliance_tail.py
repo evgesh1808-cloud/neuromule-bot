@@ -262,7 +262,7 @@ async def test_compact_standard_dialog_injects_context_block() -> None:
     assert STANDARD_CONTEXT_MARKER in payload[0]["content"]
     assert FOLLOWUP_REF_MARKER in payload[0]["content"]
     assert "тхэквондо" in payload[0]["content"].lower()
-    assert "Не копируй справку" in payload[0]["content"]
+    assert "копировать справку" in payload[0]["content"].lower() or "Не копируй" in payload[0]["content"]
     assert payload[1]["role"] == "user"
     assert "измени второй вариант" in payload[1]["content"]
     assert all(m.get("role") != "assistant" for m in payload)
@@ -279,7 +279,8 @@ async def test_compact_uses_anchor_from_old_button_message() -> None:
 
     old_answer = (
         "1. Искренний интерес: узнайте стили танца.\n"
-        "2. Игровая форма: танцуйте дома как игру."
+        "2. Игровая форма: танцуйте дома как игру.\n"
+        "3. Поддержка: хвалите усилия, не критикуйте."
     )
     payload = [
         {"role": "system", "content": "FREE core"},
@@ -301,12 +302,27 @@ async def test_compact_uses_anchor_from_old_button_message() -> None:
     assert payload[0]["role"] == "system"
     assert STANDARD_CONTEXT_MARKER in payload[0]["content"]
     assert FOLLOWUP_REF_MARKER in payload[0]["content"]
+    # В справке — узкий фрагмент про нажатую тему, не весь список.
     assert "игровая форма" in payload[0]["content"].lower()
-    assert "искренний интерес" in payload[0]["content"].lower()
     assert "планирование" not in payload[0]["content"]
+    assert "поддержка" not in payload[0]["content"].lower()
     assert payload[1]["role"] == "user"
     assert "игровая форма" in payload[1]["content"]
     assert all(m.get("role") != "assistant" for m in payload)
+
+
+def test_focus_anchor_picks_matching_bullet() -> None:
+    from services.context_summarize import focus_anchor_for_followup
+
+    old = (
+        "1. Искренний интерес: узнайте стили.\n"
+        "2. Игровая форма: танцуйте дома.\n"
+        "3. Поддержка: хвалите усилия."
+    )
+    focused = focus_anchor_for_followup(old, "Как сделать на практике: «игровая форма»?")
+    assert "игровая форма" in focused.lower()
+    assert "искренний" not in focused.lower()
+    assert "поддержка" not in focused.lower()
 
 
 def test_paid_standard_uses_copy_pack_voice() -> None:

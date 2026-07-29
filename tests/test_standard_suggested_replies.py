@@ -133,21 +133,19 @@ def test_assistant_text_from_callback_message() -> None:
     assert "Старый ответ" in _assistant_text_from_callback_message(_Msg())
 
 
-def test_expand_suggested_reply_keeps_plain_label() -> None:
+def test_expand_suggested_reply_makes_distinct_practical_asks() -> None:
     from services.standard_suggested_replies import expand_suggested_reply_prompt
 
-    out = expand_suggested_reply_prompt("Про искренний интерес?")
-    assert out == "Про искренний интерес?"
-    assert "только" not in out.lower()
-    assert "опираясь" not in out.lower()
-    assert "пункт" not in out.lower()
-
-    out2 = expand_suggested_reply_prompt("Ещё про игровая форма?")
-    assert out2 == "Ещё про игровая форма?"
-
-    out3 = expand_suggested_reply_prompt("Что учесть в мотивация?")
-    assert "мотивация" in out3.lower()
-    assert "SYSTEM SECURITY" not in out3
+    a = expand_suggested_reply_prompt("Про искренний интерес?")
+    b = expand_suggested_reply_prompt("Ещё про игровая форма?")
+    c = expand_suggested_reply_prompt("Что учесть в мотивация?")
+    assert a != b != c
+    assert "искренний интерес" in a.lower()
+    assert "игровая форма" in b.lower()
+    assert "мотивация" in c.lower()
+    assert "только этот пункт" not in a.lower()
+    assert "опираясь" not in a.lower()
+    assert "SYSTEM SECURITY" not in a
 
 
 def test_free_hints_fit_chat_hint_callback() -> None:

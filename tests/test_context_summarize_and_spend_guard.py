@@ -272,7 +272,7 @@ async def test_compact_standard_puts_followup_ref_in_system() -> None:
     assert roles == ["system", "user"]
     assert FOLLOWUP_REF_MARKER in out[0]["content"]
     assert "Тхэквондо развивает" in out[0]["content"]
-    assert "Не копируй справку" in out[0]["content"]
+    assert "копировать справку" in out[0]["content"].lower() or "не копируй" in out[0]["content"].lower()
     assert out[1]["content"].startswith("Про сроки?")
     assert "[Контекст:" in out[0]["content"]
 

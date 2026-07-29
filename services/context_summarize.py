@@ -209,18 +209,80 @@ def _plain_ref_text(text: str) -> str:
     return plain.strip()
 
 
-def format_followup_reference(text: str) -> str:
-    """Справка для кнопки/уточнения: тема есть, копировать ответ нельзя."""
+_HINT_TOPIC_RE = re.compile(
+    r"(?is)^(?:ещё\s+про|еще\s+про|про|что\s+учесть\s+в|нюансы|риски|как\s+сделать\s+на\s+практике|"
+    r"добавь\s+практики\s+по\s+теме|какие\s+нюансы\s+важны\s+для)\s*[:\s«»\"]*(.+?)\s*$"
+)
+
+
+def topic_from_followup(text: str) -> str:
+    """Достаёт тему из подписи кнопки / короткого уточнения."""
+    q = _strip_compliance_tail(text or "").strip().rstrip("?.!…").strip()
+    if not q:
+        return ""
+    m = _HINT_TOPIC_RE.match(q)
+    if m:
+        return m.group(1).strip(" «»\"'„“").strip()
+    # «Как сделать на практике: «X»» уже разобран выше; иначе короткий хвост.
+    return q[:48]
+
+
+def focus_anchor_for_followup(anchor: str, user_text: str) -> str:
+    """Оставляет из прошлого ответа только фрагмент про тему кнопки.
+
+    Иначе free-модель снова пересказывает весь список — «одни и те же сообщения».
+    """
+    plain = _plain_ref_text(_strip_compliance_tail(anchor or ""))
+    if not plain:
+        return ""
+    topic = topic_from_followup(user_text)
+    topic_l = topic.lower().strip()
+    if len(topic_l) < 2:
+        return plain[:700]
+
+    parts = re.split(r"(?=\n\s*(?:\d+[.)]|[-•*])\s+)", "\n" + plain)
+    hits = [p.strip() for p in parts if p.strip() and topic_l in p.lower()]
+    if hits:
+        hits.sort(key=len)
+        return hits[0][:900]
+
+    for chunk in re.split(r"\n{2,}|(?<=[.!?])\s+", plain):
+        piece = chunk.strip()
+        if len(piece) > 20 and topic_l in piece.lower():
+            return piece[:900]
+
+    # Тема не найдена целиком — попробуем первое значимое слово темы.
+    first = re.split(r"\s+", topic_l)[0]
+    if len(first) >= 4:
+        for p in parts:
+            if p.strip() and first in p.lower():
+                return p.strip()[:900]
+    return plain[:500]
+
+
+def format_followup_reference(text: str, *, question: str | None = None) -> str:
+    """Справка для кнопки/уточнения: узкий фрагмент, без копирования всего ответа."""
     body = _plain_ref_text(_strip_compliance_tail(text or ""))
     if not body:
-        body = "предыдущий ответ по теме"
+        body = "фрагмент прошлого ответа по теме"
     if len(body) > _FOLLOWUP_REF_MAX_CHARS:
         body = body[: _FOLLOWUP_REF_MAX_CHARS - 1].rstrip() + "…"
+    q = _strip_compliance_tail(question or "").strip()
+    if len(q) > 80:
+        q = q[:77].rstrip() + "…"
+    head = (
+        f"{FOLLOWUP_REF_MARKER} пользователь нажал уточнение «{q}». "
+        if q
+        else f"{FOLLOWUP_REF_MARKER} "
+    )
     return (
-        f"{FOLLOWUP_REF_MARKER} ниже прошлый ответ по теме. "
-        "На уточнение пользователя дай НОВЫЙ ответ: раскрой только спрошенное "
-        "(2–4 шага или короткий чеклист). "
-        "Не копируй справку и не повторяй весь список целиком.]\n"
+        f"{head}"
+        "Ниже только релевантный фрагмент прошлого ответа. "
+        "Дай НОВЫЙ практический ответ именно на это уточнение (2–4 шага). "
+        "Запрещено: копировать справку, повторять весь старый список, "
+        "присылать тот же текст что раньше. "
+        "В ===КНОПКИ=== — 3 новых коротких вопроса по только что раскрытому, "
+        "не те же самые кнопки.]\n"
         f"{body}"
     )
 
@@ -311,11 +373,16 @@ async def compact_standard_dialog_context(
         if last_assistant is not None:
             ref_source = _strip_compliance_tail(_text_of(last_assistant)).strip()
 
-    # Кнопка / короткое уточнение: справка в system, без assistant-эха.
+    # Кнопка / короткое уточнение: узкая справка в system, без assistant-эха.
     if ref_source and (anchor or short_followup):
-        summary = _clip_context_summary(ref_source, max_chars=120)
+        user_q = _strip_compliance_tail(_text_of(last_user))
+        focused = focus_anchor_for_followup(ref_source, user_q)
+        summary = _clip_context_summary(
+            topic_from_followup(user_q) or focused,
+            max_chars=120,
+        )
         context_block = format_standard_context_block(summary)
-        ref_block = format_followup_reference(ref_source)
+        ref_block = format_followup_reference(focused, question=user_q)
         system_msgs = _inject_system_blocks(system_msgs, context_block, ref_block)
         messages[:] = [*system_msgs, last_user]
         metrics.incr("chat.standard_context_compacted")

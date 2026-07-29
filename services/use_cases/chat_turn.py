@@ -419,6 +419,7 @@ async def run_chat_turn(
                 _copy_pack_mode and looks_like_paid_copy_pack_request(raw_user_text)
             )
             # Paid standard: Copy Pack → 0.75; Type B → ниже, иначе Gemini «угадывает» 4 варианта.
+            # FREE hint-кнопки: чуть выше 0 — иначе одни и те же ответы на разные клики.
             temp = (
                 _BLOGGER_TEMPERATURE
                 if is_blogger_role
@@ -428,6 +429,8 @@ async def run_chat_turn(
                     else (0.55 if _copy_pack_mode else None)
                 )
             )
+            if temp is None and (anchor_assistant_text or "").strip():
+                temp = 0.55
 
             async def _call_or(messages: list, *, temperature: float | None) -> dict:
                 return await ask_ai_messages(

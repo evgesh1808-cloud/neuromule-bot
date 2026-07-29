@@ -246,15 +246,34 @@ def button_display_text(
 def expand_suggested_reply_prompt(label: str) -> str:
     """Кликнутая подсказка → текст user-сообщения.
 
-    Только сам вопрос кнопки. Нельзя добавлять мета-обёртки
-    («только этот пункт», «опираясь на ответ», «продолжая разговор») —
-    free/paid модели принимают их за prompt injection и отвечают
-    SYSTEM SECURITY INFO про «суверенную нейросеть».
-    Контекст темы даёт якорь сообщения бота + история диалога.
+    Без мета-обёрток («только этот пункт», «опираясь на ответ») — security FP.
+    Короткие «Про X?» превращаем в явный практический вопрос, чтобы разные
+    кнопки не сходились в один и тот же ответ модели.
     """
     q = polish_hint_label(label) or sanitize_suggested_label(label) or (label or "").strip()
     if not q:
         return "Что дальше по теме?"
+    core = q.rstrip("?.!…").strip()
+    low = core.lower()
+
+    def _after(*prefixes: str) -> str | None:
+        for prefix in prefixes:
+            if low.startswith(prefix):
+                return core[len(prefix) :].strip(" «»\"'„“").strip()
+        return None
+
+    topic = _after("ещё про ", "еще про ")
+    if topic:
+        return f"Добавь практики по теме «{topic}»"
+    topic = _after("что учесть в ")
+    if topic:
+        return f"Какие нюансы важны для «{topic}»?"
+    topic = _after("нюансы ")
+    if topic:
+        return f"Какие нюансы важны для «{topic}»?"
+    topic = _after("про ")
+    if topic:
+        return f"Как сделать на практике: «{topic}»?"
     return q
 
 
