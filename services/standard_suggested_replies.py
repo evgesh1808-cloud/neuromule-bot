@@ -281,6 +281,14 @@ def _extract_answer_anchors(body: str, *, limit: int = 5) -> list[str]:
 
 def derive_contextual_free_hints(body: str) -> list[str]:
     """До 3 follow-up по якорям ответа (без второго вызова LLM)."""
+    # COPY PACK: заголовки стилей («Трогательное…») — не follow-up.
+    try:
+        from services.copy_pack import is_premium_copy_pack_reply
+
+        if is_premium_copy_pack_reply(body or ""):
+            return []
+    except Exception:
+        pass
     anchors = _extract_answer_anchors(body)
     if not anchors:
         return []

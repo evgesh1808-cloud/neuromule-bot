@@ -84,6 +84,36 @@ def test_split_suggested_replies_free_fallback_when_marker_missing() -> None:
     assert labels != list(FREE_FALLBACK_SUGGESTED_REPLIES)
 
 
+def test_copy_pack_body_yields_no_contextual_hints() -> None:
+    from services.standard_suggested_replies import (
+        derive_contextual_free_hints,
+        ensure_free_hint_labels,
+        split_suggested_replies,
+    )
+
+    body = (
+        "Готово! Разные варианты на выбор (нажмите на текст, чтобы скопировать):\n\n"
+        "🎉 <b>Трогательное и душевное</b>\n"
+        "<pre>\nС днём рождения, мама!\n</pre>\n\n"
+        "🥂 <b>Короткое СМС-поздравление</b>\n"
+        "<pre>\nС ДР!\n</pre>\n\n"
+        "🚀 <b>Драйвовое</b>\n"
+        "<pre>\nУра, праздник!\n</pre>\n\n"
+        "💼 <b>Официальное</b>\n"
+        "<pre>\nПоздравляю с днём рождения.\n</pre>"
+    )
+    assert derive_contextual_free_hints(body) == []
+    # fallback не должен тащить «Трогательное…» из заголовков стилей.
+    _clean, labels = split_suggested_replies(body, fallback_if_missing=True)
+    joined = " ".join(labels).lower()
+    assert "трогательн" not in joined
+    assert "смс-поздравление" not in joined
+    # Если только FREE static — тоже ок, но не copy-pack titles.
+    padded = ensure_free_hint_labels(body=body)
+    joined2 = " ".join(padded).lower()
+    assert "трогательн" not in joined2
+
+
 def test_derive_contextual_hints_from_bold_and_list() -> None:
     from services.standard_suggested_replies import derive_contextual_free_hints
 

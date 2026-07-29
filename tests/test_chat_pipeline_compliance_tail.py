@@ -255,13 +255,15 @@ async def test_compact_standard_dialog_injects_context_block() -> None:
         {"role": "user", "content": "измени второй вариант как раньше"},
     ]
     await compact_standard_dialog_context(payload, ask_fn=None)
-    assert len(payload) == 2
+    # Короткий follow-up: system + последний assistant + user (иначе кнопки теряют тему).
+    assert len(payload) == 3
     assert payload[0]["role"] == "system"
     assert STANDARD_CONTEXT_MARKER in payload[0]["content"]
     assert "тхэквондо" in payload[0]["content"].lower() or "Контекст" in payload[0]["content"]
-    assert payload[1]["role"] == "user"
-    assert "измени второй вариант" in payload[1]["content"]
-    assert "коуч-ответ" not in str(payload)
+    assert payload[1]["role"] == "assistant"
+    assert "коуч-ответ" in payload[1]["content"]
+    assert payload[2]["role"] == "user"
+    assert "измени второй вариант" in payload[2]["content"]
 
 
 def test_paid_standard_uses_copy_pack_voice() -> None:

@@ -335,16 +335,21 @@ async def run_chat_turn(
 
             await compact_standard_dialog_context(payload, ask_fn=_summary_ask)
 
+        from content.chat_prompt import looks_like_paid_copy_pack_request
+
+        want_suggested = (
+            plan.tariff is not TariffTier.FREE
+            and _role_for_prep == "standard"
+            and suggest_replies
+            # COPY PACK (поздравления и т.п.) — без ===КНОПКИ===, иначе заглушки стилей.
+            and not looks_like_paid_copy_pack_request(raw_user_text)
+        )
         prepare_openrouter_chat_messages(
             payload,
             use_premium_prompt=plan.use_premium_prompt,
             text_role=effective_role,
             chatcom_laconic=plan.tariff is TariffTier.FREE,
-            request_suggested_replies=(
-                plan.tariff is not TariffTier.FREE
-                and _role_for_prep == "standard"
-                and suggest_replies
-            ),
+            request_suggested_replies=want_suggested,
         )
 
         def _estimate_payload_tokens(msgs: list) -> int:
@@ -711,7 +716,13 @@ async def run_chat_turn(
         suggested_replies: tuple[str, ...] = ()
         content_for_format = content
         if (effective_role or "").strip().lower() == "standard":
-            if plan.tariff is TariffTier.FREE:
+            from services.copy_pack import is_premium_copy_pack_reply
+
+            if is_premium_copy_pack_reply(content):
+                # 4 варианта в <pre> — без follow-up кнопок (иначе «Трогательное…»-заглушки).
+                content_for_format = content
+                suggested_replies = ()
+            elif plan.tariff is TariffTier.FREE:
                 from services.standard_suggested_replies import prepare_free_standard_reply
 
                 # Железобетон: дописка ===КНОПКИ=== + 3 лейбла + клавиатура (даже если LLM забыла).
@@ -723,7 +734,7 @@ async def run_chat_turn(
                 # Pref ON: даже если модель забыла ===КНОПКИ=== — code-side fallback (как FREE).
                 content_for_format, reply_labels = split_suggested_replies(
                     content,
-                    fallback_if_missing=bool(suggest_replies),
+                    fallback_if_missing=bool(want_suggested),
                 )
                 suggested_replies = tuple(reply_labels)
 

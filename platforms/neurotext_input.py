@@ -120,6 +120,13 @@ async def _standard_suggested_reply_markup(user_id: int, result: ChatTurnResult)
         if role != "standard":
             return None
 
+        body = getattr(result, "assistant_message", None) or ""
+        from services.copy_pack import is_premium_copy_pack_reply
+
+        if is_premium_copy_pack_reply(body):
+            logger.info("suggested_replies: skipped (copy pack) uid=%s", user_id)
+            return None
+
         if not await get_show_suggested_replies(user_id):
             logger.info(
                 "suggested_replies: skipped (pref off) uid=%s labels=%s",
@@ -130,9 +137,7 @@ async def _standard_suggested_reply_markup(user_id: int, result: ChatTurnResult)
         if not labels:
             from services.standard_suggested_replies import ensure_free_hint_labels
 
-            labels = ensure_free_hint_labels(
-                body=getattr(result, "assistant_message", None) or "",
-            )
+            labels = ensure_free_hint_labels(body=body)
             logger.info(
                 "suggested_replies: paid fallback labels uid=%s n=%s",
                 user_id,
