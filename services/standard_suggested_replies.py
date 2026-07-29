@@ -246,37 +246,15 @@ def button_display_text(
 def expand_suggested_reply_prompt(label: str) -> str:
     """Кликнутая подсказка → текст user-сообщения.
 
-    Без мета-инструкций («продолжая разговор / опираясь на ответ») —
-    paid Standard путает их с prompt injection и отвечает SYSTEM SECURITY INFO.
-    Короткие шаблонные кнопки раскрываем в явный запрос «только этот пункт».
+    Только сам вопрос кнопки. Нельзя добавлять мета-обёртки
+    («только этот пункт», «опираясь на ответ», «продолжая разговор») —
+    free/paid модели принимают их за prompt injection и отвечают
+    SYSTEM SECURITY INFO про «суверенную нейросеть».
+    Контекст темы даёт якорь сообщения бота + история диалога.
     """
     q = polish_hint_label(label) or sanitize_suggested_label(label) or (label or "").strip()
     if not q:
-        return "Что делать дальше по этой теме?"
-    core = q.rstrip("?.!…").strip()
-
-    def _topic(raw: str) -> str:
-        return raw.strip(" «»\"'„“").strip()
-
-    patterns: tuple[tuple[str, str], ...] = (
-        (r"(?i)^про\s+(.+)$", "Только про «{t}»: как это сделать на практике?"),
-        (r"(?i)^как\s*:\s*(.+)$", "Как на практике сделать «{t}»?"),
-        (r"(?i)^пример\s*:\s*(.+)$", "Дай конкретный пример для «{t}»."),
-        (r"(?i)^как работает\s+(.+)$", "Только про «{t}»: как это работает на практике?"),
-        (r"(?i)^как применить\s+(.+)$", "Как на практике применить «{t}»?"),
-        (r"(?i)^какие нюансы у\s+(.+)$", "Какие важные нюансы у «{t}»?"),
-        (r"(?i)^какие риски у\s+(.+)$", "Какие риски у «{t}» и как их снизить?"),
-        (r"(?i)^с чего начать с\s+(.+)$", "С чего начать с «{t}»?"),
-        (r"(?i)^риски\s*:\s*(.+)$", "Какие риски у «{t}» и как их снизить?"),
-        (r"(?i)^с чего\s*:\s*(.+)$", "С чего начать с «{t}»?"),
-    )
-    for pattern, template in patterns:
-        m = re.match(pattern, core)
-        if not m:
-            continue
-        topic = _topic(m.group(1))
-        if topic:
-            return template.format(t=topic)
+        return "Что дальше по теме?"
     return q
 
 
@@ -305,17 +283,54 @@ def _plain_answer_text(body: str) -> str:
     return text
 
 
+# Обрубки вроде «наблюдать за» / «начать с» — плохие подписи кнопок.
+_TRAILING_PREPOSITIONS: frozenset[str] = frozenset(
+    {
+        "за",
+        "с",
+        "со",
+        "про",
+        "для",
+        "от",
+        "по",
+        "из",
+        "к",
+        "ко",
+        "у",
+        "о",
+        "об",
+        "обо",
+        "на",
+        "в",
+        "во",
+        "без",
+        "до",
+        "при",
+        "над",
+        "под",
+        "перед",
+        "через",
+        "между",
+    }
+)
+
+
 def _clip_anchor(phrase: str, *, max_words: int = 2, max_chars: int = 18) -> str:
     """Короткий якорь целиком по словам — без обрезки середины («искрений»)."""
     words = [w for w in re.split(r"\s+", (phrase or "").strip()) if w]
     if not words:
         return ""
     words = words[:max_words]
+    # Убрать хвостовой предлог: «наблюдать за» → «наблюдать».
+    while words and words[-1].lower().strip(".,;:!?…") in _TRAILING_PREPOSITIONS:
+        words = words[:-1]
     while words:
         clipped = " ".join(words).strip(" .,;:!?—–-«»\"'")
         if clipped and len(clipped) <= max_chars:
             return clipped
         words = words[:-1]
+        while words and words[-1].lower().strip(".,;:!?…") in _TRAILING_PREPOSITIONS:
+            words = words[:-1]
     return ""
 
 
@@ -405,11 +420,11 @@ def derive_contextual_free_hints(body: str) -> list[str]:
     if not anchors:
         return []
     out: list[str] = []
-    # Короткие грамматически безопасные шаблоны (влезают в chat_hint).
+    # Живые короткие вопросы (без «Как: …» / «Пример: …»).
     templates = (
         "Про {a}?",
-        "Как: {a}?",
-        "Пример: {a}?",
+        "Ещё про {a}?",
+        "Что учесть в {a}?",
     )
     for i, anchor in enumerate(anchors):
         if len(out) >= _MAX_LABELS:
@@ -423,9 +438,9 @@ def derive_contextual_free_hints(body: str) -> list[str]:
     if len(out) < _MAX_LABELS and anchors:
         a0 = sanitize_suggested_label(anchors[0]).rstrip("?.!…")
         for extra in (
-            f"Пример: {a0}?",
-            f"Риски: {a0}?",
-            f"С чего: {a0}?",
+            f"Нюансы {a0}?",
+            f"Про {a0}?",
+            f"Ещё про {a0}?",
         ):
             if len(out) >= _MAX_LABELS:
                 break

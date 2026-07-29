@@ -170,6 +170,20 @@ async def text_role_process(message: Message, state: FSMContext) -> None:
 @router.callback_query(
     F.data.startswith(msg.CB_CHAT_HINT_PREFIX) | F.data.startswith(msg.CB_STD_REPLY_PREFIX)
 )
+def _assistant_text_from_callback_message(message: object) -> str:
+    """Текст ответа бота, под которым нажали кнопку (якорь темы follow-up)."""
+    html = getattr(message, "html_text", None)
+    if isinstance(html, str) and html.strip():
+        return html.strip()
+    text = getattr(message, "text", None)
+    if isinstance(text, str) and text.strip():
+        return text.strip()
+    caption = getattr(message, "caption", None)
+    if isinstance(caption, str) and caption.strip():
+        return caption.strip()
+    return ""
+
+
 async def cb_standard_suggested_reply(callback: CallbackQuery, state: FSMContext) -> None:
     """Suggested Reply в режиме standard → тот же пайплайн + списание 1⚡/1💎.
 
@@ -238,6 +252,9 @@ async def cb_standard_suggested_reply(callback: CallbackQuery, state: FSMContext
 
     await callback.answer()
     follow_up = expand_suggested_reply_prompt(label)
+    # Текст ИМЕННО этого сообщения бота — иначе клик по старой кнопке
+    # цепляется к более новому ответу в истории и уезжает мимо темы.
+    anchor = _assistant_text_from_callback_message(callback.message)
     await state.update_data(text_role="standard", pending_chat_hint=follow_up)
     await ensure_neurotext_waiting_state(state)
     try:
@@ -246,6 +263,7 @@ async def cb_standard_suggested_reply(callback: CallbackQuery, state: FSMContext
             state,
             forced_user_text=follow_up,
             forced_user_id=user_id,
+            anchor_assistant_text=anchor or None,
         )
     except Exception:
         logger.exception(

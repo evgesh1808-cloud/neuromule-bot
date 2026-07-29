@@ -225,6 +225,7 @@ async def run_chat_turn(
     stream_callback: StreamCallback | None = None,
     text_role: str = "standard",
     platform: str = DEFAULT_DIALOG_PLATFORM,
+    anchor_assistant_text: str | None = None,
 ) -> ChatTurnResult:
     """
     Выполняет один «ход» чата с нейросетью (без отправки сообщений в Telegram).
@@ -333,7 +334,11 @@ async def run_chat_turn(
                     **kwargs,
                 )
 
-            await compact_standard_dialog_context(payload, ask_fn=_summary_ask)
+            await compact_standard_dialog_context(
+                payload,
+                ask_fn=_summary_ask,
+                anchor_assistant_text=anchor_assistant_text,
+            )
 
         from content.chat_prompt import looks_like_paid_copy_pack_request
 

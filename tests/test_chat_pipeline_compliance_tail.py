@@ -266,6 +266,45 @@ async def test_compact_standard_dialog_injects_context_block() -> None:
     assert "измени второй вариант" in payload[2]["content"]
 
 
+@pytest.mark.asyncio
+async def test_compact_uses_anchor_from_old_button_message() -> None:
+    """Клик по кнопке старого сообщения не должен брать свежий ответ бота."""
+    from services.context_summarize import (
+        STANDARD_CONTEXT_MARKER,
+        compact_standard_dialog_context,
+    )
+
+    old_answer = (
+        "1. Искренний интерес: узнайте стили танца.\n"
+        "2. Игровая форма: танцуйте дома как игру."
+    )
+    payload = [
+        {"role": "system", "content": "FREE core"},
+        {"role": "user", "content": "Как дочке полюбить танцы"},
+        {"role": "assistant", "content": old_answer},
+        {"role": "user", "content": "Только про искренний интерес?"},
+        {
+            "role": "assistant",
+            "content": "Следующий шаг — анализ и планирование всего списка.",
+        },
+        {"role": "user", "content": "Как на практике сделать «игровая форма»?"},
+    ]
+    await compact_standard_dialog_context(
+        payload,
+        ask_fn=None,
+        anchor_assistant_text=old_answer,
+    )
+    assert len(payload) == 3
+    assert payload[0]["role"] == "system"
+    assert STANDARD_CONTEXT_MARKER in payload[0]["content"]
+    assert "игровая форма" in payload[0]["content"].lower()
+    assert payload[1]["role"] == "assistant"
+    assert payload[1]["content"] == old_answer
+    assert "планирование" not in payload[1]["content"]
+    assert payload[2]["role"] == "user"
+    assert "игровая форма" in payload[2]["content"]
+
+
 def test_paid_standard_uses_copy_pack_voice() -> None:
     from content.chat_prompt import build_custom_role_prompt, get_role_prompt
     from services.billing.types import TariffTier

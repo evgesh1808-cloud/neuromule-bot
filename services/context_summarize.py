@@ -189,16 +189,27 @@ async def _call_standard_context_llm(
     return content
 
 
+def _clip_context_summary(text: str, *, max_chars: int = 200) -> str:
+    clip = re.sub(r"\s+", " ", (text or "").strip())
+    if len(clip) > max_chars:
+        return clip[: max_chars - 1].rstrip() + "…"
+    return clip or "предыдущий диалог"
+
+
 async def compact_standard_dialog_context(
     messages: list[dict[str, Any]],
     *,
     ask_fn: AskFn | None = None,
+    anchor_assistant_text: str | None = None,
 ) -> list[dict[str, Any]]:
     """
     Standard: system (+ ультра-короткий [Контекст: …]) + последний user.
 
     Для коротких follow-up (кнопки подсказок) дополнительно оставляем
     последний ответ ассистента — иначе модель не видит тему уточнения.
+
+    ``anchor_assistant_text`` — текст сообщения, под которым нажали кнопку
+    (даже если в истории уже есть более новый ответ бота).
     Fail-open на эвристику.
     """
     if not messages:
@@ -220,6 +231,37 @@ async def compact_standard_dialog_context(
         for i, m in enumerate(messages)
         if i < last_user_idx and m.get("role") != "system"
     ]
+    anchor = _strip_compliance_tail(anchor_assistant_text or "").strip()
+
+    # Кнопка под старым сообщением: не саммарировать «свежий» хвост диалога.
+    if anchor:
+        summary = _clip_context_summary(anchor)
+        context_block = format_standard_context_block(summary)
+        if system_msgs:
+            sys = system_msgs[-1]
+            content = str(sys.get("content") or "")
+            if STANDARD_CONTEXT_MARKER in content:
+                content = re.sub(
+                    r"\[Контекст:[^\]]*\]",
+                    context_block,
+                    content,
+                    count=1,
+                )
+                sys["content"] = content
+            else:
+                sys["content"] = f"{content.rstrip()}\n\n{context_block}"
+            system_msgs = [*system_msgs[:-1], sys]
+        else:
+            system_msgs = [{"role": "system", "content": context_block}]
+        messages[:] = [
+            *system_msgs,
+            {"role": "assistant", "content": anchor},
+            last_user,
+        ]
+        metrics.incr("chat.standard_context_compacted")
+        metrics.incr("chat.standard_context_anchor")
+        return messages
+
     if not prior:
         messages[:] = [*system_msgs, last_user]
         return messages

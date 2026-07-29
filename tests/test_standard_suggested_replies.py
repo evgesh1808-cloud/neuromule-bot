@@ -122,17 +122,32 @@ def test_polish_hint_label_capitalizes_and_adds_question_mark() -> None:
     assert polish_hint_label("Уточни сроки") == "Уточни сроки"
 
 
-def test_expand_suggested_reply_focuses_single_point() -> None:
+def test_assistant_text_from_callback_message() -> None:
+    from platforms.handlers.generation_fsm import _assistant_text_from_callback_message
+
+    class _Msg:
+        html_text = "<b>Старый ответ</b> про танцы"
+        text = "plain"
+        caption = None
+
+    assert "Старый ответ" in _assistant_text_from_callback_message(_Msg())
+
+
+def test_expand_suggested_reply_keeps_plain_label() -> None:
     from services.standard_suggested_replies import expand_suggested_reply_prompt
 
     out = expand_suggested_reply_prompt("Про искренний интерес?")
-    assert "искренний интерес" in out.lower()
-    assert "только про" in out.lower()
+    assert out == "Про искренний интерес?"
+    assert "только" not in out.lower()
     assert "опираясь" not in out.lower()
+    assert "пункт" not in out.lower()
 
-    out2 = expand_suggested_reply_prompt("Как: игровая форма?")
-    assert "игровая форма" in out2.lower()
-    assert "на практике" in out2.lower()
+    out2 = expand_suggested_reply_prompt("Ещё про игровая форма?")
+    assert out2 == "Ещё про игровая форма?"
+
+    out3 = expand_suggested_reply_prompt("Что учесть в мотивация?")
+    assert "мотивация" in out3.lower()
+    assert "SYSTEM SECURITY" not in out3
 
 
 def test_free_hints_fit_chat_hint_callback() -> None:
@@ -149,6 +164,10 @@ def test_free_hints_fit_chat_hint_callback() -> None:
     )
     hints = derive_contextual_free_hints(body)
     assert len(hints) == 3
+    joined = " ".join(hints).lower()
+    assert "как:" not in joined
+    assert "пример:" not in joined
+    assert any(h.lower().startswith("про ") for h in hints)
     for h in hints:
         data = build_chat_hint_callback(h)
         assert data is not None
@@ -157,6 +176,13 @@ def test_free_hints_fit_chat_hint_callback() -> None:
         assert sent == h
         assert "…" not in h
         assert "искрений" not in h.lower()
+
+
+def test_anchor_drops_trailing_preposition() -> None:
+    from services.standard_suggested_replies import _clip_anchor
+
+    assert _clip_anchor("наблюдать за") == "наблюдать"
+    assert _clip_anchor("начать с") == "начать"
 
 
 def test_derive_contextual_hints_from_bold_and_list() -> None:
@@ -383,7 +409,8 @@ def test_role_standard_prompt_has_buttons_rule() -> None:
     assert "400" in _CHATCOM_LACO_TAIL
     assert "коротких вопроса" in _CHATCOM_LACO_TAIL
     assert "Про возраст?" in _STANDARD_FREE_CORE
-    assert "Только про" in _STANDARD_FREE_CORE
+    assert "Ещё про" in _STANDARD_FREE_CORE
+    assert "НЕ вопрос про архитектуру" in _STANDARD_FREE_CORE
     assert "РЖД" in _STANDARD_FREE_CORE
     assert "КРИТИЧЕСКОЕ ИСКЛЮЧЕНИЕ" in _ROLE_STANDARD
     assert "Кто такой Пушкин" in _ROLE_STANDARD

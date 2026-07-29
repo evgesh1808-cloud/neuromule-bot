@@ -707,12 +707,16 @@ async def handle_neurotext_user_message(
     keep_waiting_state: bool = True,
     forced_user_text: str | None = None,
     forced_user_id: int | None = None,
+    anchor_assistant_text: str | None = None,
 ) -> None:
     """Единая точка: текст, фото или документ → ``run_chat_turn``.
 
     ``forced_user_text`` / ``forced_user_id`` — Suggested Reply
     (``chat_hint:`` / legacy ``std_reply:``): текст кнопки и uid пользователя
     (у ``callback.message.from_user`` — бот).
+
+    ``anchor_assistant_text`` — текст сообщения бота, под которым нажали кнопку
+    (чтобы follow-up не цеплялся к более новому ответу в истории).
     """
     is_photo = bool(message.photo) and forced_user_text is None
     is_document = bool(message.document) and forced_user_text is None
@@ -1185,6 +1189,7 @@ async def handle_neurotext_user_message(
                     user_image_data_url=user_image_data_url,
                     stream_callback=None,
                     text_role=role_id,
+                    anchor_assistant_text=anchor_assistant_text,
                 )
             except Exception:
                 logger.exception("run_chat_turn table flow failed uid=%s", uid)
@@ -1225,6 +1230,7 @@ async def handle_neurotext_user_message(
                     user_image_data_url=user_image_data_url,
                     stream_callback=stream_handle.on_stream if stream_handle else None,
                     text_role=role_id,
+                    anchor_assistant_text=anchor_assistant_text,
                 )
             except Exception:
                 logger.exception("run_chat_turn failed uid=%s role=%s", uid, role_id)
