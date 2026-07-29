@@ -87,15 +87,15 @@ async def answer_free_standard_success(
     """Атомарная отправка FREE Standard: текст + кнопки (HintSession ``btn:``).
 
     Инвариант: Telegram НЕ получает SUCCESS-текст без ``reply_markup``.
-    Паттерн: create_hint_session → send → bind_hint_session_message.
+    Паттерн: create_hint_session_persisted → send → bind_hint_session_message_persisted.
     Legacy ``chat_hint`` — только если session-клавиатура не собралась.
     """
     _ = settings
     from services.standard_suggested_replies import (
-        bind_hint_session_message,
+        bind_hint_session_message_persisted,
         build_free_hint_keyboard,
         build_hint_keyboard,
-        create_hint_session,
+        create_hint_session_persisted,
         ensure_free_hint_labels,
     )
 
@@ -108,7 +108,7 @@ async def answer_free_standard_success(
     try:
         clean = ensure_free_hint_labels(labels, body=body)
         if owner and clean:
-            action_uuid = create_hint_session(
+            action_uuid = await create_hint_session_persisted(
                 owner,
                 body=body,
                 labels=clean,
@@ -128,9 +128,9 @@ async def answer_free_standard_success(
     html = _cap_html(prepare_telegram_html_text(body, max_len=None))
     plain = sanitize_telegram_plain_text(html)
 
-    def _bind(sent: "Message") -> "Message":
+    async def _bind(sent: "Message") -> "Message":
         if action_uuid:
-            bind_hint_session_message(action_uuid, int(sent.message_id))
+            await bind_hint_session_message_persisted(action_uuid, int(sent.message_id))
         return sent
 
     try:
@@ -141,7 +141,7 @@ async def answer_free_standard_success(
             len(kb.inline_keyboard),
             bool(action_uuid),
         )
-        return _bind(sent)
+        return await _bind(sent)
     except TelegramBadRequest:
         logger.warning(
             "free_standard_send: HTML+kb rejected — retry plain+kb",
@@ -156,7 +156,7 @@ async def answer_free_standard_success(
             len(kb.inline_keyboard),
             bool(action_uuid),
         )
-        return _bind(sent)
+        return await _bind(sent)
     except TelegramBadRequest:
         logger.warning(
             "free_standard_send: plain+kb rejected — retry ASCII emergency kb",

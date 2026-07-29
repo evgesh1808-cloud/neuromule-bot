@@ -155,6 +155,32 @@ async def _migrate_blogger_post_drafts(db: aiosqlite.Connection) -> None:
     )
 
 
+async def _migrate_hint_sessions(db: aiosqlite.Connection) -> None:
+    """Stateful Suggested Replies: ``btn:<idx>:<uuid>`` переживает рестарт процесса."""
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS hint_sessions (
+            action_uuid TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            message_id INTEGER,
+            body TEXT NOT NULL,
+            labels_json TEXT NOT NULL,
+            root_user_prompt TEXT NOT NULL DEFAULT '',
+            created_at REAL NOT NULL,
+            expires_at REAL NOT NULL
+        )
+        """
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_hint_sessions_user_created "
+        "ON hint_sessions (user_id, created_at DESC)"
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_hint_sessions_expires "
+        "ON hint_sessions (expires_at)"
+    )
+
+
 async def _migrate_identity_map(db: aiosqlite.Connection) -> None:
     """
     Identity Map: сквозной ``account_id`` отдельно от нативных ID платформ.
@@ -408,6 +434,7 @@ async def init_db(promo_seeds: str = "") -> None:
         await _migrate_identity_map(db)
         await _migrate_rate_limit_hits(db)
         await _migrate_blogger_post_drafts(db)
+        await _migrate_hint_sessions(db)
         await db.execute(
             """
             CREATE TABLE IF NOT EXISTS referrals (
