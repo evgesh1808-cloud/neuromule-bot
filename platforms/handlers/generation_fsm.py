@@ -13,7 +13,7 @@ from pathlib import Path
 from aiogram import F, Router, types
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.filters import Command, StateFilter
+from aiogram.filters import BaseFilter, Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     BufferedInputFile,
@@ -146,6 +146,75 @@ router = Router()
 # Один активный photo/chat turn на user_id — защита от двойного списания при retry Telegram.
 user_locks: dict[int, asyncio.Lock] = {}
 
+
+class PendingImageMenuTextFilter(BaseFilter):
+    """Текст после меню фото без выбора inline-модели — не пускать в чат."""
+
+    async def __call__(self, message: Message, state: FSMContext) -> bool:
+        from platforms.image_menu_flow import can_intercept_text_as_image_prompt
+
+        return await can_intercept_text_as_image_prompt(message, state)
+
+
+async def process_photo_prompt_message(
+    message: Message,
+    state: FSMContext,
+    *,
+    model_id: str,
+    label: str,
+    prompt: str,
+    auto_flux: bool = False,
+) -> None:
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+
+    lock = user_locks.setdefault(user_id, asyncio.Lock())
+    async with lock:
+        await message.bot.send_chat_action(chat_id=chat_id, action="upload_photo")
+        async with chat_action_loop(deps.bot(), chat_id, "upload_photo"):
+            pr = await run_photo_generation_turn(
+                settings,
+                deps.bot(),
+                chat_id,
+                user_id,
+                model_id,
+                label,
+                prompt,
+            )
+
+    if pr.outcome is PhotoGenOutcome.NEED_PROMPT:
+        await message.answer(msg.TXT_CREATE_IMAGE_AFTER_MODEL)
+        return
+    if pr.outcome is PhotoGenOutcome.INSUFFICIENT_BALANCE:
+        await message.answer(
+            msg.TXT_INSUFFICIENT_BALANCE,
+            reply_markup=paycat.shop_packages_keyboard(),
+            parse_mode=ParseMode.HTML,
+        )
+        await state.clear()
+        return
+    if pr.outcome is PhotoGenOutcome.DAILY_LIMIT_EXCEEDED:
+        await message.answer(
+            msg.TXT_PHOTO_DAILY_LIMIT.format(limit=settings.free_daily_photo_limit),
+            reply_markup=invite_limit_keyboard(),
+            parse_mode=ParseMode.HTML,
+        )
+        await state.clear()
+        return
+    if pr.outcome is PhotoGenOutcome.FREE_IMAGE_MODEL_BLOCKED:
+        await message.answer(msg.TXT_FREE_IMAGE_MODEL_BLOCKED, parse_mode=ParseMode.HTML)
+        await state.clear()
+        return
+
+    if auto_flux:
+        await message.answer(msg.TXT_IMAGE_AUTO_FLUX_ACCEPTED)
+    else:
+        await message.answer(msg.TXT_GEN_STATUS_ACCEPTED)
+    if pr.vip_priority:
+        await message.answer(msg.TXT_GEN_STATUS_VIP)
+    await state.clear()
+
+
 is_subscribed = deps.is_subscribed
 is_subscribed_cached = deps.is_subscribed_cached
 check_and_spend = deps.check_and_spend
@@ -155,6 +224,13 @@ channel_sub = deps.channel_sub
 
 def _is_admin(user_id: int) -> bool:
     return is_admin_user(user_id)
+
+
+@router.message(PendingImageMenuTextFilter(), F.text)
+async def image_menu_pending_text(message: Message, state: FSMContext) -> None:
+    from platforms.image_menu_flow import handle_pending_image_menu_text
+
+    await handle_pending_image_menu_text(message, state)
 
 
 @router.message(
@@ -384,53 +460,17 @@ async def wb_audit_wait_for_xlsx_text(message: Message) -> None:
 
 @router.message(UserFlow.waiting_for_photo, F.text)
 async def photo_process(message: Message, state: FSMContext) -> None:
-    user_id = message.from_user.id
-    chat_id = message.chat.id
     data = await state.get_data()
     model_id = data.get("image_model_id", "")
     label = data.get("image_model_label", "модель")
     prompt = (message.text or "").strip()
-
-    lock = user_locks.setdefault(user_id, asyncio.Lock())
-    async with lock:
-        await message.bot.send_chat_action(chat_id=chat_id, action="upload_photo")
-        async with chat_action_loop(deps.bot(), chat_id, "upload_photo"):
-            pr = await run_photo_generation_turn(
-                settings,
-                deps.bot(),
-                chat_id,
-                user_id,
-                model_id,
-                label,
-                prompt,
-            )
-    if pr.outcome is PhotoGenOutcome.NEED_PROMPT:
-        await message.answer(msg.TXT_CREATE_IMAGE_AFTER_MODEL)
-        return
-    if pr.outcome is PhotoGenOutcome.INSUFFICIENT_BALANCE:
-        await message.answer(
-            msg.TXT_INSUFFICIENT_BALANCE,
-            reply_markup=paycat.shop_packages_keyboard(),
-            parse_mode=ParseMode.HTML,
-        )
-        await state.clear()
-        return
-    if pr.outcome is PhotoGenOutcome.DAILY_LIMIT_EXCEEDED:
-        await message.answer(
-            msg.TXT_PHOTO_DAILY_LIMIT.format(limit=settings.free_daily_photo_limit),
-            reply_markup=invite_limit_keyboard(),
-            parse_mode=ParseMode.HTML,
-        )
-        await state.clear()
-        return
-    if pr.outcome is PhotoGenOutcome.FREE_IMAGE_MODEL_BLOCKED:
-        await message.answer(msg.TXT_FREE_IMAGE_MODEL_BLOCKED, parse_mode=ParseMode.HTML)
-        await state.clear()
-        return
-    await message.answer(msg.TXT_GEN_STATUS_ACCEPTED)
-    if pr.vip_priority:
-        await message.answer(msg.TXT_GEN_STATUS_VIP)
-    await state.clear()
+    await process_photo_prompt_message(
+        message,
+        state,
+        model_id=model_id,
+        label=label,
+        prompt=prompt,
+    )
 
 @router.message(UserFlow.waiting_for_photo)
 async def photo_process_need_text(message: Message) -> None:

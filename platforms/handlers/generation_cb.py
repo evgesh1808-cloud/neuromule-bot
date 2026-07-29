@@ -439,22 +439,11 @@ async def neurotext_clear_persistent_memory_vip(callback: CallbackQuery) -> None
         )
 
 @router.callback_query(F.data == msg.CB_CREATE_IMAGE)
-async def create_image_menu(callback: CallbackQuery) -> None:
-    from services.billing.types import TariffTier
-    from services.repository import get_user_row
+async def create_image_menu(callback: CallbackQuery, state: FSMContext) -> None:
+    from platforms.image_menu_flow import present_image_model_menu
 
-    row = await get_user_row(callback.from_user.id)
-    tariff = TariffTier.from_db(row.tariff)
-    text = msg.get_text_image_models(tariff)
-    await callback.message.answer(
-        text,
-        reply_markup=image_model_menu(
-            tariff,
-            photo_daily_count=row.photo_daily_count,
-            photo_daily_date=row.photo_daily_date,
-        ),
-        parse_mode=ParseMode.HTML,
-    )
+    if callback.message:
+        await present_image_model_menu(callback.message, state, callback.from_user.id)
     await callback.answer()
 
 @router.callback_query(F.data == msg.CB_UPSCALE_START)
@@ -480,6 +469,9 @@ async def pick_image_model(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.answer(msg.TXT_UNKNOWN_IMAGE_MODEL, show_alert=True)
         return
     label = next(lbl for lbl, i in msg.IMAGE_MODELS if i == mid)
+    from platforms.image_menu_flow import clear_image_model_menu_pending
+
+    await clear_image_model_menu_pending(state)
     await state.update_data(image_model_id=mid, image_model_label=label)
     await state.set_state(UserFlow.waiting_for_photo)
     await callback.message.answer(msg.TXT_CREATE_IMAGE_AFTER_MODEL)

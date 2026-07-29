@@ -67,6 +67,9 @@ async def neurotext_role_keyboard(user_id: int, active_role_id: str) -> InlineKe
 
 async def send_neurotext_role_menu(message: Message, state: FSMContext | None = None) -> None:
     if state is not None:
+        from platforms.image_menu_flow import clear_image_model_menu_pending
+
+        await clear_image_model_menu_pending(state)
         await ensure_neurotext_waiting_state(state)
     active = await _active_role_id(state) if state else "standard"
     text = await build_neurotext_intro(message.from_user.id, active)

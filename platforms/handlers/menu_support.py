@@ -203,22 +203,10 @@ async def reply_create_neurotext(message: Message, state: FSMContext) -> None:
 
 
 @router.message(F.text == msg.BTN_REPLY_IMAGE)
-async def reply_create_image(message: Message) -> None:
-    from services.billing.types import TariffTier
-    from services.repository import get_user_row
+async def reply_create_image(message: Message, state: FSMContext) -> None:
+    from platforms.image_menu_flow import present_image_model_menu
 
-    row = await get_user_row(message.from_user.id)
-    tariff = TariffTier.from_db(row.tariff)
-    text = msg.get_text_image_models(tariff)
-    await message.answer(
-        text,
-        reply_markup=image_model_menu(
-            tariff,
-            photo_daily_count=row.photo_daily_count,
-            photo_daily_date=row.photo_daily_date,
-        ),
-        parse_mode=ParseMode.HTML,
-    )
+    await present_image_model_menu(message, state, message.from_user.id)
 
 
 @router.message(F.text == msg.BTN_REPLY_ANIMATE)
