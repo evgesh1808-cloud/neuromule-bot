@@ -32,12 +32,16 @@ _MAX_FREE_HINT_CHARS = max(12, (_TG_CALLBACK_DATA_MAX_BYTES - _CHAT_HINT_PREFIX_
 
 # FREE: последний резерв, если из текста ответа якоря не извлеклись.
 FREE_FALLBACK_SUGGESTED_REPLIES: tuple[str, ...] = (
-    "Уточни детали",
-    "Приведи пример",
-    "Какой следующий шаг?",
+    "Что мне уточнить?",
+    "Могу я получить пример?",
+    "Какой шаг мне сделать?",
 )
 # ASCII-резерв, если UTF-8 callback внезапно не влез (не должно случаться).
-_EMERGENCY_ASCII_HINTS: tuple[str, ...] = ("More details", "Give example", "Next step")
+_EMERGENCY_ASCII_HINTS: tuple[str, ...] = (
+    "What should I clarify?",
+    "Can I get an example?",
+    "What is my next step?",
+)
 
 # Шаблонные лейблы — выкидываем, если есть якоря из тела ответа.
 _GENERIC_HINT_NORMS: frozenset[str] = frozenset(
@@ -58,6 +62,12 @@ _GENERIC_HINT_NORMS: frozenset[str] = frozenset(
         "приведи пример?",
         "какой следующий шаг",
         "какой следующий шаг?",
+        "что мне уточнить",
+        "что мне уточнить?",
+        "могу я получить пример",
+        "могу я получить пример?",
+        "какой шаг мне сделать",
+        "какой шаг мне сделать?",
         "ещё",
         "еще",
         "продолжай",
@@ -194,14 +204,44 @@ def sanitize_suggested_label(label: str) -> str:
 
 
 def polish_hint_label(label: str) -> str:
-    """Грамотная короткая подпись кнопки: заглавная, без мусора, вопрос по делу."""
+    """Грамотная короткая подпись кнопки: 1-е лицо, вопрос, без инфинитивов."""
     text = sanitize_suggested_label(label)
     if not text:
         return ""
     # Убрать обрубки вроде «Про …» / «Пример:» без смысла.
-    text = re.sub(r"^(про|пример|риски|шаги|альтернатива)\s*[:—–-]?\s*$", "", text, flags=re.I).strip()
+    text = re.sub(
+        r"^(про|пример|риски|шаги|альтернатива)\s*[:—–-]?\s*$",
+        "",
+        text,
+        flags=re.I,
+    ).strip()
     if not text:
         return ""
+
+    # Лёгкая нормализация к 1-му лицу (без тяжёлой морфологии).
+    low0 = text.lower()
+    rewrite_map = (
+        (r"(?is)^про\s+(.+?)\s*\??$", r"Что мне учесть про \1?"),
+        (r"(?is)^ещё\s+про\s+(.+?)\s*\??$", r"Что ещё мне знать про \1?"),
+        (r"(?is)^еще\s+про\s+(.+?)\s*\??$", r"Что ещё мне знать про \1?"),
+        (r"(?is)^что\s+учесть\s+в\s+(.+?)\s*\??$", r"Что мне учесть в \1?"),
+        (r"(?is)^нюансы\s+(.+?)\s*\??$", r"Какие нюансы мне важны в \1?"),
+        (r"(?is)^как\s+сделать\s+(.+?)\s*\??$", r"Как мне сделать \1?"),
+        (r"(?is)^как\s+применить\s+(.+?)\s*\??$", r"Как мне применить \1?"),
+        (r"(?is)^как\s+проверить\s*\??$", "Как мне это проверить?"),
+        (r"(?is)^какие\s+риски\s+у\s+(.+?)\s*\??$", r"Какие риски мне важны у \1?"),
+        (r"(?is)^какие\s+риски\s*\??$", "Какие риски у меня?"),
+        (r"(?is)^уточни(?:те)?\s+детали\s*\??$", "Что мне уточнить?"),
+        (r"(?is)^приведи(?:те)?\s+пример\s*\??$", "Могу я получить пример?"),
+        (r"(?is)^дай(?:те)?\s+пример\s*\??$", "Могу я получить пример?"),
+        (r"(?is)^расскажи(?:те)?\s+подробнее\s*\??$", "Что мне уточнить?"),
+    )
+    for pattern, repl in rewrite_map:
+        m = re.match(pattern, text)
+        if m:
+            text = m.expand(repl) if "\\" in repl else repl
+            break
+
     for i, ch in enumerate(text):
         if ch.isalpha():
             text = text[:i] + ch.upper() + text[i + 1 :]
@@ -221,6 +261,9 @@ def polish_hint_label(label: str) -> str:
         "сколько ",
         "можно ",
         "нужно ",
+        "могу ",
+        "мне ",
+        "я ",
         "с какого ",
         "с каких ",
     )
@@ -229,6 +272,55 @@ def polish_hint_label(label: str) -> str:
     ):
         text = text.rstrip(".!;:") + "?"
     return text[:_MAX_LABEL_CHARS]
+
+
+def expand_suggested_reply_prompt(label: str) -> str:
+    """Кликнутая подсказка → текст user-сообщения.
+
+    Без мета-обёрток («только этот пункт», «опираясь на ответ») — security FP.
+    Короткие «Про X?» / 1-е лицо превращаем в явный практический вопрос.
+    """
+    q = polish_hint_label(label) or sanitize_suggested_label(label) or (label or "").strip()
+    if not q:
+        return "Что мне сделать дальше?"
+    core = q.rstrip("?.!…").strip()
+    low = core.lower()
+
+    def _after(*prefixes: str) -> str | None:
+        for prefix in prefixes:
+            if low.startswith(prefix):
+                return core[len(prefix) :].strip(" «»\"'„“").strip()
+        return None
+
+    # Уже от 1-го лица — отдаём как есть.
+    if low.startswith(("как мне ", "что мне ", "могу я ", "мне ", "я ")):
+        return q if q.endswith("?") else q + "?"
+
+    topic = _after("что ещё мне знать про ", "что еще мне знать про ")
+    if topic:
+        return f"Что ещё мне важно знать про «{topic}»?"
+    topic = _after("что мне учесть про ")
+    if topic:
+        return f"Что мне учесть про «{topic}» на практике?"
+    topic = _after("что мне учесть в ")
+    if topic:
+        return f"Что мне учесть в «{topic}»?"
+    topic = _after("какие нюансы мне важны в ")
+    if topic:
+        return f"Какие нюансы мне важны в «{topic}»?"
+    topic = _after("ещё про ", "еще про ")
+    if topic:
+        return f"Что ещё мне важно знать про «{topic}»?"
+    topic = _after("что учесть в ")
+    if topic:
+        return f"Что мне учесть в «{topic}»?"
+    topic = _after("нюансы ")
+    if topic:
+        return f"Какие нюансы мне важны в «{topic}»?"
+    topic = _after("про ")
+    if topic:
+        return f"Как мне применить «{topic}» на практике?"
+    return q
 
 
 def fit_label_for_chat_hint(label: str) -> str:
@@ -263,40 +355,6 @@ def button_display_text(
     if len(text) <= max_chars:
         return text
     return text[: max_chars - 1].rstrip(" .,;:—–-") + "…"
-
-
-def expand_suggested_reply_prompt(label: str) -> str:
-    """Кликнутая подсказка → текст user-сообщения.
-
-    Без мета-обёрток («только этот пункт», «опираясь на ответ») — security FP.
-    Короткие «Про X?» превращаем в явный практический вопрос, чтобы разные
-    кнопки не сходились в один и тот же ответ модели.
-    """
-    q = polish_hint_label(label) or sanitize_suggested_label(label) or (label or "").strip()
-    if not q:
-        return "Что дальше по теме?"
-    core = q.rstrip("?.!…").strip()
-    low = core.lower()
-
-    def _after(*prefixes: str) -> str | None:
-        for prefix in prefixes:
-            if low.startswith(prefix):
-                return core[len(prefix) :].strip(" «»\"'„“").strip()
-        return None
-
-    topic = _after("ещё про ", "еще про ")
-    if topic:
-        return f"Добавь практики по теме «{topic}»"
-    topic = _after("что учесть в ")
-    if topic:
-        return f"Какие нюансы важны для «{topic}»?"
-    topic = _after("нюансы ")
-    if topic:
-        return f"Какие нюансы важны для «{topic}»?"
-    topic = _after("про ")
-    if topic:
-        return f"Как сделать на практике: «{topic}»?"
-    return q
 
 
 def _norm_hint(label: str) -> str:
@@ -461,27 +519,35 @@ def derive_contextual_free_hints(body: str) -> list[str]:
     if not anchors:
         return []
     out: list[str] = []
-    # Живые короткие вопросы (без «Как: …» / «Пример: …»).
+    # 1-е лицо + короткий якорь (иначе не влезет в chat_hint).
     templates = (
-        "Про {a}?",
-        "Ещё про {a}?",
-        "Что учесть в {a}?",
+        "Как мне с {a}?",
+        "Что мне в {a}?",
+        "Могу я про {a}?",
     )
     for i, anchor in enumerate(anchors):
         if len(out) >= _MAX_LABELS:
             break
-        a = sanitize_suggested_label(anchor).rstrip("?.!…")
+        a = _clip_anchor(
+            sanitize_suggested_label(anchor).rstrip("?.!…"),
+            max_words=2,
+            max_chars=14,
+        )
         if not a:
             continue
         label = _fit_free_hint_label(templates[i % len(templates)].format(a=a))
         if label and label not in out and not is_generic_hint_label(label):
             out.append(label)
     if len(out) < _MAX_LABELS and anchors:
-        a0 = sanitize_suggested_label(anchors[0]).rstrip("?.!…")
+        a0 = _clip_anchor(
+            sanitize_suggested_label(anchors[0]).rstrip("?.!…"),
+            max_words=2,
+            max_chars=14,
+        )
         for extra in (
-            f"Нюансы {a0}?",
-            f"Про {a0}?",
-            f"Ещё про {a0}?",
+            f"Мне важен {a0}?",
+            f"Как взять {a0}?",
+            f"Что ещё мне про {a0}?",
         ):
             if len(out) >= _MAX_LABELS:
                 break

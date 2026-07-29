@@ -122,9 +122,11 @@ def test_copy_pack_body_yields_no_contextual_hints() -> None:
 def test_polish_hint_label_capitalizes_and_adds_question_mark() -> None:
     from services.standard_suggested_replies import polish_hint_label
 
-    assert polish_hint_label("какие риски у вебхуков") == "Какие риски у вебхуков?"
-    assert polish_hint_label("  как применить polling  ") == "Как применить polling?"
-    assert polish_hint_label("Уточни сроки") == "Уточни сроки"
+    assert polish_hint_label("какие риски у вебхуков") == "Какие риски мне важны у вебхуков?"
+    assert polish_hint_label("  как применить polling  ") == "Как мне применить polling?"
+    assert polish_hint_label("Про возраст?") == "Что мне учесть про возраст?"
+    assert polish_hint_label("Уточни детали") == "Что мне уточнить?"
+    assert polish_hint_label("Как мне выбрать возраст?") == "Как мне выбрать возраст?"
 
 
 def test_assistant_text_from_callback_message() -> None:
@@ -148,6 +150,7 @@ def test_expand_suggested_reply_makes_distinct_practical_asks() -> None:
     assert "искренний интерес" in a.lower()
     assert "игровая форма" in b.lower()
     assert "мотивация" in c.lower()
+    assert "мне" in a.lower() and "мне" in b.lower() and "мне" in c.lower()
     assert "только этот пункт" not in a.lower()
     assert "опираясь" not in a.lower()
     assert "SYSTEM SECURITY" not in a
@@ -170,7 +173,10 @@ def test_free_hints_fit_chat_hint_callback() -> None:
     joined = " ".join(hints).lower()
     assert "как:" not in joined
     assert "пример:" not in joined
-    assert any(h.lower().startswith("про ") for h in hints)
+    assert any(
+        h.lower().startswith(("как мне ", "что мне ", "могу я ", "мне "))
+        for h in hints
+    )
     for h in hints:
         data = build_chat_hint_callback(h)
         assert data is not None
@@ -215,7 +221,7 @@ def test_ensure_replaces_generic_with_contextual() -> None:
     assert len(labels) == 3
     assert all(not x.lower().startswith("расскажи") for x in labels)
     joined = " ".join(labels).lower()
-    assert any(k in joined for k in ("telegram", "вебхук", "polling", "деплой", "бот"))
+    assert any(k in joined for k in ("telegram", "вебхук", "polling", "деплой", "бот", "план", "запуск"))
 
 
 def test_force_append_buttons_marker_when_missing() -> None:
@@ -327,22 +333,24 @@ def test_keyboard_uses_std_reply_with_short_display() -> None:
 
 
 def test_long_label_stored_full_via_std_reply() -> None:
-    # Полный смысл в кэше; на кнопке — короткий display; callback без chat_hint-обрезки.
-    long = "Как применить тхэквондо для новичка?"
-    assert len(long) <= 48
-    cid = remember_suggested_replies(3, [long])
+    # Полный смысл в кэше (после polish 1-го лица); на кнопке — короткий display.
+    raw = "Как применить тхэквондо для новичка?"
+    polished = "Как мне применить тхэквондо для новичка?"
+    assert len(polished) <= 48
+    cid = remember_suggested_replies(3, [raw])
     assert cid
-    kb = build_suggested_replies_keyboard(cid, [long])
+    kb = build_suggested_replies_keyboard(cid, [polished])
     assert kb is not None
     btn = kb.inline_keyboard[0][0]
     assert btn.callback_data.startswith(msg.CB_STD_REPLY_PREFIX)
     assert not btn.callback_data.startswith(msg.CB_CHAT_HINT_PREFIX)
-    assert resolve_suggested_reply(cid, 0, user_id=3) == long
+    assert resolve_suggested_reply(cid, 0, user_id=3) == polished
     assert len(btn.text) <= 34
     from services.standard_suggested_replies import expand_suggested_reply_prompt
 
-    prompt = expand_suggested_reply_prompt(long)
+    prompt = expand_suggested_reply_prompt(raw)
     assert "тхэквондо" in prompt.lower()
+    assert "мне" in prompt.lower()
     assert "SYSTEM SECURITY" not in prompt
     assert "опираясь на" not in prompt.lower()
 
@@ -411,8 +419,9 @@ def test_role_standard_prompt_has_buttons_rule() -> None:
     assert "Compliance: FREE TIER" in _CHATCOM_LACO_TAIL
     assert "400" in _CHATCOM_LACO_TAIL
     assert "коротких вопроса" in _CHATCOM_LACO_TAIL
-    assert "Про возраст?" in _STANDARD_FREE_CORE
-    assert "Ещё про" in _STANDARD_FREE_CORE
+    assert "Как мне выбрать возраст?" in _STANDARD_FREE_CORE
+    assert "Как мне" in _STANDARD_FREE_CORE
+    assert "1-е лицо" in _CHATCOM_LACO_TAIL or "1-го лица" in _CHATCOM_LACO_TAIL
     assert "Не копируй" in _STANDARD_FREE_CORE or "копировать" in _STANDARD_FREE_CORE
     assert "РЖД" in _STANDARD_FREE_CORE
     assert "КРИТИЧЕСКОЕ ИСКЛЮЧЕНИЕ" in _ROLE_STANDARD
