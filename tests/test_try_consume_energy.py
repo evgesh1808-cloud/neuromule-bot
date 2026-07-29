@@ -6,13 +6,15 @@ from __future__ import annotations
 async def test_try_consume_energy_success_and_balance(repo_module):
     uid = 71001
     await repo_module.ensure_user(uid)
+    row_before = await repo_module.get_user_row(uid)
+    start = int(row_before.energy)
     await repo_module.update_balance(uid, "energy", 100)
 
     ok = await repo_module.try_consume_energy(uid, 30)
     assert ok is True
     row = await repo_module.get_user_row(uid)
-    # ensure_user: 30, +100, −30
-    assert row.energy == 100
+    # Стартовый daily grant (сейчас 10 ⚡) +100 −30 — без хардкода стартового баланса.
+    assert row.energy == start + 100 - 30
 
 
 async def test_try_consume_energy_insufficient(repo_module):
