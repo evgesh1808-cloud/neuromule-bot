@@ -41,7 +41,7 @@ def test_split_suggested_replies_extracts_labels() -> None:
     body, labels = split_suggested_replies(raw)
     assert "Короткий ответ" in body
     assert BUTTONS_MARKER not in body
-    assert labels == ["Уточни сроки", "Какой бюджет", "Нужен пример"]
+    assert labels == ["Уточни сроки", "Какой бюджет?", "Нужен пример"]
 
 
 def test_paid_compliance_tail_strips_ban_when_hints_requested() -> None:
@@ -114,6 +114,14 @@ def test_copy_pack_body_yields_no_contextual_hints() -> None:
     assert "трогательн" not in joined2
 
 
+def test_polish_hint_label_capitalizes_and_adds_question_mark() -> None:
+    from services.standard_suggested_replies import polish_hint_label
+
+    assert polish_hint_label("какие риски у вебхуков") == "Какие риски у вебхуков?"
+    assert polish_hint_label("  как применить polling  ") == "Как применить polling?"
+    assert polish_hint_label("Уточни сроки") == "Уточни сроки"
+
+
 def test_derive_contextual_hints_from_bold_and_list() -> None:
     from services.standard_suggested_replies import derive_contextual_free_hints
 
@@ -127,6 +135,8 @@ def test_derive_contextual_hints_from_bold_and_list() -> None:
     assert len(hints) == 3
     joined = " ".join(hints).lower()
     assert "iphone" in joined or "кабель" in joined or "ночь" in joined or "батаре" in joined
+    assert all(h[0].isupper() for h in hints if h and h[0].isalpha())
+    assert any("?" in h for h in hints)
 
 
 def test_ensure_replaces_generic_with_contextual() -> None:
@@ -335,8 +345,8 @@ def test_role_standard_prompt_has_buttons_rule() -> None:
     assert "===КНОПКИ===" in _CHATCOM_LACO_TAIL
     assert "Compliance: FREE TIER" in _CHATCOM_LACO_TAIL
     assert "400" in _CHATCOM_LACO_TAIL
-    assert "follow-up" in _CHATCOM_LACO_TAIL
-    assert "Первый вопрос?" in _STANDARD_FREE_CORE
+    assert "грамотных вопроса" in _CHATCOM_LACO_TAIL
+    assert "С какого возраста?" in _STANDARD_FREE_CORE
     assert "РЖД" in _STANDARD_FREE_CORE
     assert "КРИТИЧЕСКОЕ ИСКЛЮЧЕНИЕ" in _ROLE_STANDARD
     assert "Кто такой Пушкин" in _ROLE_STANDARD

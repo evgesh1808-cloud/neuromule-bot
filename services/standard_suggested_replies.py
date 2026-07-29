@@ -27,9 +27,9 @@ _CHAT_HINT_PREFIX_BYTES = len(msg.CB_CHAT_HINT_PREFIX.encode("utf-8"))
 
 # FREE: последний резерв, если из текста ответа якоря не извлеклись.
 FREE_FALLBACK_SUGGESTED_REPLIES: tuple[str, ...] = (
-    "Расскажи подробнее",
-    "Дай пример",
-    "Что делать дальше?",
+    "Уточни детали",
+    "Приведи пример",
+    "Какой следующий шаг?",
 )
 # ASCII-резерв, если UTF-8 callback внезапно не влез (не должно случаться).
 _EMERGENCY_ASCII_HINTS: tuple[str, ...] = ("More details", "Give example", "Next step")
@@ -47,6 +47,12 @@ _GENERIC_HINT_NORMS: frozenset[str] = frozenset(
         "что дальше?",
         "подробнее",
         "подробнее?",
+        "уточни детали",
+        "уточни детали?",
+        "приведи пример",
+        "приведи пример?",
+        "какой следующий шаг",
+        "какой следующий шаг?",
         "ещё",
         "еще",
         "продолжай",
@@ -55,9 +61,17 @@ _GENERIC_HINT_NORMS: frozenset[str] = frozenset(
         "ок",
         "уточни",
         "пример",
+        "первый вопрос",
         "первый вопрос?",
+        "второй вопрос",
         "второй вопрос?",
+        "третий вопрос",
         "третий вопрос?",
+        "трогательное",
+        "трогательное и душевное",
+        "короткое смс-поздравление",
+        "драйвовое",
+        "официальное",
     }
 )
 
@@ -149,6 +163,46 @@ def sanitize_suggested_label(label: str) -> str:
     text = re.sub(r"\s+", " ", text).strip()
     if len(text) >= 2 and text[0] in "\"'«“„" and text[-1] in "\"'»”":
         text = text[1:-1].strip()
+    text = re.sub(r"^[\d]+[.)]\s*", "", text)
+    text = re.sub(r"^[-•*]+\s*", "", text)
+    return text[:_MAX_LABEL_CHARS]
+
+
+def polish_hint_label(label: str) -> str:
+    """Грамотная короткая подпись кнопки: заглавная, без мусора, вопрос по делу."""
+    text = sanitize_suggested_label(label)
+    if not text:
+        return ""
+    # Убрать обрубки вроде «Про …» / «Пример:» без смысла.
+    text = re.sub(r"^(про|пример|риски|шаги|альтернатива)\s*[:—–-]?\s*$", "", text, flags=re.I).strip()
+    if not text:
+        return ""
+    for i, ch in enumerate(text):
+        if ch.isalpha():
+            text = text[:i] + ch.upper() + text[i + 1 :]
+            break
+    low = text.lower()
+    question_starts = (
+        "как ",
+        "что ",
+        "какие ",
+        "какой ",
+        "какая ",
+        "какое ",
+        "зачем ",
+        "почему ",
+        "где ",
+        "когда ",
+        "сколько ",
+        "можно ",
+        "нужно ",
+        "с какого ",
+        "с каких ",
+    )
+    if not text.endswith(("?", "…")) and (
+        low.startswith(question_starts) or low.startswith("про ")
+    ):
+        text = text.rstrip(".!;:") + "?"
     return text[:_MAX_LABEL_CHARS]
 
 
@@ -293,33 +347,33 @@ def derive_contextual_free_hints(body: str) -> list[str]:
     if not anchors:
         return []
     out: list[str] = []
+    templates = (
+        "Как работает {a}?",
+        "Какие нюансы у {a}?",
+        "Как применить {a}?",
+        "Какие риски у {a}?",
+        "С чего начать с {a}?",
+    )
     for i, anchor in enumerate(anchors):
         if len(out) >= _MAX_LABELS:
             break
-        if len(anchors) >= 3:
-            if i == 0:
-                label = f"Про {anchor}?"
-            elif i == 1:
-                label = f"Пример: {anchor}"
-            else:
-                label = f"Как с {anchor}?"
-        else:
-            templates = (
-                "{a} — подробнее?",
-                "Пример: {a}",
-                "Как с {a}?",
-            )
-            label = templates[i % len(templates)].format(a=anchor)
-        fitted = sanitize_suggested_label(label)
-        if fitted and fitted not in out and not is_generic_hint_label(fitted):
-            out.append(fitted)
+        a = sanitize_suggested_label(anchor).rstrip("?.!…")
+        if not a:
+            continue
+        label = polish_hint_label(templates[i % len(templates)].format(a=a))
+        if label and label not in out and not is_generic_hint_label(label):
+            out.append(label)
     if len(out) < _MAX_LABELS and anchors:
-        a0 = anchors[0]
-        for extra in (f"Риски {a0}?", f"Шаги: {a0}", f"Альтернатива {a0}?"):
+        a0 = sanitize_suggested_label(anchors[0]).rstrip("?.!…")
+        for extra in (
+            f"Пример с {a0}?",
+            f"Частые ошибки с {a0}?",
+            f"Что проверить в {a0}?",
+        ):
             if len(out) >= _MAX_LABELS:
                 break
-            fitted = sanitize_suggested_label(extra)
-            if fitted and fitted not in out:
+            fitted = polish_hint_label(extra)
+            if fitted and fitted not in out and not is_generic_hint_label(fitted):
                 out.append(fitted)
     return out[:_MAX_LABELS]
 
@@ -394,18 +448,9 @@ def split_suggested_replies(
     tail = raw[m.end() :]
     labels: list[str] = []
     for line in tail.splitlines():
-        label = sanitize_suggested_label(line or "")
-        if not label:
-            continue
-        # Убираем маркеры списка / нумерацию
-        label = re.sub(r"^[\d]+[.)]\s*", "", label)
-        label = re.sub(r"^[-•*]\s*", "", label)
-        label = sanitize_suggested_label(label)
-        if not label:
-            continue
         # Полный лейбл в кэш/ответ; усечение под chat_hint — только при сборке FREE callback.
-        fitted = sanitize_suggested_label(label)
-        if fitted:
+        fitted = polish_hint_label(line or "")
+        if fitted and fitted not in labels:
             labels.append(fitted)
         if len(labels) >= _MAX_LABELS:
             break
@@ -422,7 +467,7 @@ def remember_suggested_replies(user_id: int, labels: Sequence[str]) -> str | Non
     """
     clean_list: list[str] = []
     for raw in labels:
-        fitted = sanitize_suggested_label(str(raw))
+        fitted = polish_hint_label(str(raw))
         if fitted and fitted not in clean_list:
             clean_list.append(fitted)
         if len(clean_list) >= _MAX_LABELS:
@@ -478,7 +523,7 @@ def ensure_free_hint_labels(
     contextual = derive_contextual_free_hints(body or "")
     out: list[str] = []
     for raw in labels or ():
-        fitted = sanitize_suggested_label(str(raw))
+        fitted = polish_hint_label(str(raw))
         if not fitted or fitted in out:
             continue
         # Шаблонные «подробнее» выкидываем, если можем заменить контекстом.
@@ -490,13 +535,13 @@ def ensure_free_hint_labels(
     for fb in contextual:
         if len(out) >= _MAX_LABELS:
             break
-        fitted = sanitize_suggested_label(fb)
+        fitted = polish_hint_label(fb)
         if fitted and fitted not in out:
             out.append(fitted)
     for fb in FREE_FALLBACK_SUGGESTED_REPLIES:
         if len(out) >= _MAX_LABELS:
             break
-        fitted = sanitize_suggested_label(fb)
+        fitted = polish_hint_label(fb)
         if fitted and fitted not in out:
             out.append(fitted)
     i = 0
