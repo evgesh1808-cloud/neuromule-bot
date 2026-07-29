@@ -244,6 +244,7 @@ def test_collapse_prior_assistant_keeps_only_system_and_last_user() -> None:
 @pytest.mark.asyncio
 async def test_compact_standard_dialog_injects_context_block() -> None:
     from services.context_summarize import (
+        FOLLOWUP_REF_MARKER,
         STANDARD_CONTEXT_MARKER,
         compact_standard_dialog_context,
     )
@@ -255,21 +256,23 @@ async def test_compact_standard_dialog_injects_context_block() -> None:
         {"role": "user", "content": "измени второй вариант как раньше"},
     ]
     await compact_standard_dialog_context(payload, ask_fn=None)
-    # Короткий follow-up: system + последний assistant + user (иначе кнопки теряют тему).
-    assert len(payload) == 3
+    # Короткий follow-up: system (контекст+справка) + user — без эха assistant.
+    assert len(payload) == 2
     assert payload[0]["role"] == "system"
     assert STANDARD_CONTEXT_MARKER in payload[0]["content"]
-    assert "тхэквондо" in payload[0]["content"].lower() or "Контекст" in payload[0]["content"]
-    assert payload[1]["role"] == "assistant"
-    assert "коуч-ответ" in payload[1]["content"]
-    assert payload[2]["role"] == "user"
-    assert "измени второй вариант" in payload[2]["content"]
+    assert FOLLOWUP_REF_MARKER in payload[0]["content"]
+    assert "тхэквондо" in payload[0]["content"].lower()
+    assert "Не копируй справку" in payload[0]["content"]
+    assert payload[1]["role"] == "user"
+    assert "измени второй вариант" in payload[1]["content"]
+    assert all(m.get("role") != "assistant" for m in payload)
 
 
 @pytest.mark.asyncio
 async def test_compact_uses_anchor_from_old_button_message() -> None:
     """Клик по кнопке старого сообщения не должен брать свежий ответ бота."""
     from services.context_summarize import (
+        FOLLOWUP_REF_MARKER,
         STANDARD_CONTEXT_MARKER,
         compact_standard_dialog_context,
     )
@@ -282,27 +285,28 @@ async def test_compact_uses_anchor_from_old_button_message() -> None:
         {"role": "system", "content": "FREE core"},
         {"role": "user", "content": "Как дочке полюбить танцы"},
         {"role": "assistant", "content": old_answer},
-        {"role": "user", "content": "Только про искренний интерес?"},
+        {"role": "user", "content": "Про искренний интерес?"},
         {
             "role": "assistant",
             "content": "Следующий шаг — анализ и планирование всего списка.",
         },
-        {"role": "user", "content": "Как на практике сделать «игровая форма»?"},
+        {"role": "user", "content": "Про игровая форма?"},
     ]
     await compact_standard_dialog_context(
         payload,
         ask_fn=None,
         anchor_assistant_text=old_answer,
     )
-    assert len(payload) == 3
+    assert len(payload) == 2
     assert payload[0]["role"] == "system"
     assert STANDARD_CONTEXT_MARKER in payload[0]["content"]
+    assert FOLLOWUP_REF_MARKER in payload[0]["content"]
     assert "игровая форма" in payload[0]["content"].lower()
-    assert payload[1]["role"] == "assistant"
-    assert payload[1]["content"] == old_answer
-    assert "планирование" not in payload[1]["content"]
-    assert payload[2]["role"] == "user"
-    assert "игровая форма" in payload[2]["content"]
+    assert "искренний интерес" in payload[0]["content"].lower()
+    assert "планирование" not in payload[0]["content"]
+    assert payload[1]["role"] == "user"
+    assert "игровая форма" in payload[1]["content"]
+    assert all(m.get("role") != "assistant" for m in payload)
 
 
 def test_paid_standard_uses_copy_pack_voice() -> None:

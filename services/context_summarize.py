@@ -29,9 +29,12 @@ logger = logging.getLogger(__name__)
 
 DIALOG_SUMMARY_MARKER = "[DIALOG_SUMMARY]"
 STANDARD_CONTEXT_MARKER = "[Контекст:"
+FOLLOWUP_REF_MARKER = "[Справка:"
 
 # Короткие follow-up (кнопки подсказок): оставляем последний ответ ассистента в payload.
 _SHORT_FOLLOWUP_MAX_CHARS = 96
+# Полный прошлый ответ в role=assistant провоцирует копирование — кладём в system-справку.
+_FOLLOWUP_REF_MAX_CHARS = 1400
 
 AskFn = Callable[..., Awaitable[dict[str, Any]]]
 
@@ -196,6 +199,76 @@ def _clip_context_summary(text: str, *, max_chars: int = 200) -> str:
     return clip or "предыдущий диалог"
 
 
+def _plain_ref_text(text: str) -> str:
+    """HTML → плоский текст для справки (без тегов, компактно)."""
+    plain = re.sub(r"(?is)<br\s*/?>", "\n", text or "")
+    plain = re.sub(r"(?is)</p>", "\n", plain)
+    plain = re.sub(r"<[^>]+>", " ", plain)
+    plain = re.sub(r"[ \t]+", " ", plain)
+    plain = re.sub(r"\n{3,}", "\n\n", plain)
+    return plain.strip()
+
+
+def format_followup_reference(text: str) -> str:
+    """Справка для кнопки/уточнения: тема есть, копировать ответ нельзя."""
+    body = _plain_ref_text(_strip_compliance_tail(text or ""))
+    if not body:
+        body = "предыдущий ответ по теме"
+    if len(body) > _FOLLOWUP_REF_MAX_CHARS:
+        body = body[: _FOLLOWUP_REF_MAX_CHARS - 1].rstrip() + "…"
+    return (
+        f"{FOLLOWUP_REF_MARKER} ниже прошлый ответ по теме. "
+        "На уточнение пользователя дай НОВЫЙ ответ: раскрой только спрошенное "
+        "(2–4 шага или короткий чеклист). "
+        "Не копируй справку и не повторяй весь список целиком.]\n"
+        f"{body}"
+    )
+
+
+def _inject_system_blocks(
+    system_msgs: list[dict[str, Any]],
+    *blocks: str,
+) -> list[dict[str, Any]]:
+    cleaned = [b.strip() for b in blocks if (b or "").strip()]
+    if not cleaned:
+        return system_msgs
+
+    context_block = next(
+        (b for b in cleaned if b.startswith(STANDARD_CONTEXT_MARKER)),
+        None,
+    )
+    other = [b for b in cleaned if b != context_block]
+
+    if not system_msgs:
+        parts = [p for p in (context_block, *other) if p]
+        return [{"role": "system", "content": "\n\n".join(parts)}]
+
+    sys = dict(system_msgs[-1])
+    content = str(sys.get("content") or "")
+    if FOLLOWUP_REF_MARKER in content:
+        content = re.sub(
+            rf"{re.escape(FOLLOWUP_REF_MARKER)}.*?(?=\n\n\[|\Z)",
+            "",
+            content,
+            count=1,
+            flags=re.DOTALL,
+        ).rstrip()
+    if context_block:
+        if STANDARD_CONTEXT_MARKER in content:
+            content = re.sub(
+                r"\[Контекст:[^\]]*\]",
+                context_block,
+                content,
+                count=1,
+            )
+        else:
+            content = f"{content.rstrip()}\n\n{context_block}"
+    if other:
+        content = f"{content.rstrip()}\n\n" + "\n\n".join(other)
+    sys["content"] = content
+    return [*system_msgs[:-1], sys]
+
+
 async def compact_standard_dialog_context(
     messages: list[dict[str, Any]],
     *,
@@ -205,12 +278,10 @@ async def compact_standard_dialog_context(
     """
     Standard: system (+ ультра-короткий [Контекст: …]) + последний user.
 
-    Для коротких follow-up (кнопки подсказок) дополнительно оставляем
-    последний ответ ассистента — иначе модель не видит тему уточнения.
-
-    ``anchor_assistant_text`` — текст сообщения, под которым нажали кнопку
-    (даже если в истории уже есть более новый ответ бота).
-    Fail-open на эвристику.
+    Для коротких follow-up / кнопок прошлый ответ кладём в system-справку
+    (не в role=assistant) — иначе free-модели копируют старое сообщение.
+    ``anchor_assistant_text`` — текст сообщения под кнопкой (даже если в
+    истории уже есть более новый ответ).
     """
     if not messages:
         return messages
@@ -232,34 +303,25 @@ async def compact_standard_dialog_context(
         if i < last_user_idx and m.get("role") != "system"
     ]
     anchor = _strip_compliance_tail(anchor_assistant_text or "").strip()
+    short_followup = _is_short_followup_user(last_user)
 
-    # Кнопка под старым сообщением: не саммарировать «свежий» хвост диалога.
-    if anchor:
-        summary = _clip_context_summary(anchor)
+    ref_source = anchor
+    if not ref_source and short_followup:
+        last_assistant = _last_assistant_before(messages, before_idx=last_user_idx)
+        if last_assistant is not None:
+            ref_source = _strip_compliance_tail(_text_of(last_assistant)).strip()
+
+    # Кнопка / короткое уточнение: справка в system, без assistant-эха.
+    if ref_source and (anchor or short_followup):
+        summary = _clip_context_summary(ref_source, max_chars=120)
         context_block = format_standard_context_block(summary)
-        if system_msgs:
-            sys = system_msgs[-1]
-            content = str(sys.get("content") or "")
-            if STANDARD_CONTEXT_MARKER in content:
-                content = re.sub(
-                    r"\[Контекст:[^\]]*\]",
-                    context_block,
-                    content,
-                    count=1,
-                )
-                sys["content"] = content
-            else:
-                sys["content"] = f"{content.rstrip()}\n\n{context_block}"
-            system_msgs = [*system_msgs[:-1], sys]
-        else:
-            system_msgs = [{"role": "system", "content": context_block}]
-        messages[:] = [
-            *system_msgs,
-            {"role": "assistant", "content": anchor},
-            last_user,
-        ]
+        ref_block = format_followup_reference(ref_source)
+        system_msgs = _inject_system_blocks(system_msgs, context_block, ref_block)
+        messages[:] = [*system_msgs, last_user]
         metrics.incr("chat.standard_context_compacted")
-        metrics.incr("chat.standard_context_anchor")
+        if anchor:
+            metrics.incr("chat.standard_context_anchor")
+        metrics.incr("chat.standard_context_followup_ref")
         return messages
 
     if not prior:
@@ -273,30 +335,9 @@ async def compact_standard_dialog_context(
         summary = _heuristic_standard_context(prior)
 
     context_block = format_standard_context_block(summary)
-    if system_msgs:
-        sys = system_msgs[-1]
-        content = str(sys.get("content") or "")
-        if STANDARD_CONTEXT_MARKER in content:
-            content = re.sub(
-                r"\[Контекст:[^\]]*\]",
-                context_block,
-                content,
-                count=1,
-            )
-            sys["content"] = content
-        else:
-            sys["content"] = f"{content.rstrip()}\n\n{context_block}"
-        system_msgs = [*system_msgs[:-1], sys]
-    else:
-        system_msgs = [{"role": "system", "content": context_block}]
+    system_msgs = _inject_system_blocks(system_msgs, context_block)
 
-    keep_tail: list[dict[str, Any]] = [last_user]
-    if _is_short_followup_user(last_user):
-        last_assistant = _last_assistant_before(messages, before_idx=last_user_idx)
-        if last_assistant is not None and _strip_compliance_tail(_text_of(last_assistant)):
-            keep_tail = [last_assistant, last_user]
-
-    messages[:] = [*system_msgs, *keep_tail]
+    messages[:] = [*system_msgs, last_user]
     metrics.incr("chat.standard_context_compacted")
     return messages
 

@@ -410,7 +410,7 @@ def test_role_standard_prompt_has_buttons_rule() -> None:
     assert "коротких вопроса" in _CHATCOM_LACO_TAIL
     assert "Про возраст?" in _STANDARD_FREE_CORE
     assert "Ещё про" in _STANDARD_FREE_CORE
-    assert "НЕ вопрос про архитектуру" in _STANDARD_FREE_CORE
+    assert "Не копируй" in _STANDARD_FREE_CORE or "копировать" in _STANDARD_FREE_CORE
     assert "РЖД" in _STANDARD_FREE_CORE
     assert "КРИТИЧЕСКОЕ ИСКЛЮЧЕНИЕ" in _ROLE_STANDARD
     assert "Кто такой Пушкин" in _ROLE_STANDARD

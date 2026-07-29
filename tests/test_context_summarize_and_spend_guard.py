@@ -245,8 +245,11 @@ def test_preflight_and_tariff_mapping(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_compact_standard_keeps_last_assistant_for_short_followup() -> None:
-    from services.context_summarize import compact_standard_dialog_context
+async def test_compact_standard_puts_followup_ref_in_system() -> None:
+    from services.context_summarize import (
+        FOLLOWUP_REF_MARKER,
+        compact_standard_dialog_context,
+    )
 
     messages = [
         {"role": "system", "content": "sys"},
@@ -265,11 +268,13 @@ async def test_compact_standard_keeps_last_assistant_for_short_followup() -> Non
     ]
     out = await compact_standard_dialog_context(messages, ask_fn=None)
     roles = [m["role"] for m in out]
-    assert roles == ["system", "assistant", "user"]
-    assert "Тхэквондо развивает" in out[1]["content"]
-    assert out[2]["content"].startswith("Про сроки?")
+    # Справка в system, без эха assistant — иначе free-модель копирует старый ответ.
+    assert roles == ["system", "user"]
+    assert FOLLOWUP_REF_MARKER in out[0]["content"]
+    assert "Тхэквондо развивает" in out[0]["content"]
+    assert "Не копируй справку" in out[0]["content"]
+    assert out[1]["content"].startswith("Про сроки?")
     assert "[Контекст:" in out[0]["content"]
-    assert "тхэквондо" in out[0]["content"].lower() or "Тхэквондо" in out[0]["content"]
 
 
 @pytest.mark.asyncio
