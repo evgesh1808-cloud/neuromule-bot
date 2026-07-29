@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from services.ai_text import _messages_contain_image, ask_ai_messages
+from services.billing.types import TariffTier
 from services.neurotext_media import build_openrouter_user_content
 from services.use_cases.chat_turn import run_chat_turn, ChatTurnOutcome
 from tests.conftest import TEST_ADMIN_IDS
@@ -113,6 +114,7 @@ async def test_run_chat_turn_with_photo_billing_bypass(repo_module, monkeypatch)
         fallback_model_ids=(),
         energy_cost=0,
         crystal_cost=0,
+        tariff=TariffTier.SMART,
     )
     billing_result = SimpleNamespace(
         plan=fake_plan,

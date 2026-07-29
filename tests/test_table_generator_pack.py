@@ -143,6 +143,7 @@ async def test_run_chat_turn_table_returns_raw_json(repo_module, monkeypatch) ->
     from unittest.mock import AsyncMock, patch
 
     from config import Settings
+    from services.billing.types import TariffTier
     from services.dialog_sanitize import compact_table_history_from_json
     from services.table_json import canonicalize_table_json
     from services.use_cases.chat_turn import ChatTurnOutcome, run_chat_turn
@@ -161,6 +162,8 @@ async def test_run_chat_turn_table_returns_raw_json(repo_module, monkeypatch) ->
         use_premium_prompt=True,
         energy_cost=20,
         crystal_cost=0,
+        fallback_model_ids=(),
+        tariff=TariffTier.SMART,
     )
     billing_result = SimpleNamespace(
         plan=fake_plan,

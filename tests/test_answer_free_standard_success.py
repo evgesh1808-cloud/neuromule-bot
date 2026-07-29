@@ -19,17 +19,26 @@ def _bad_request() -> TelegramBadRequest:
 @pytest.mark.asyncio
 async def test_answer_free_standard_success_always_sends_markup() -> None:
     from platforms.telegram_chunks import answer_free_standard_success
+    from services.standard_suggested_replies import (
+        clear_suggested_replies_for_tests,
+        get_hint_session,
+    )
 
+    clear_suggested_replies_for_tests()
     message = MagicMock()
     message.chat.id = 1
+    message.from_user.id = 42
     sent = MagicMock()
+    sent.message_id = 777
     message.answer = AsyncMock(return_value=sent)
 
     out = await answer_free_standard_success(
         message,
         "Короткий ответ про кота.",
         settings,
+        user_id=42,
         labels=["Грустнее?", "Короче?", "Другой стиль?"],
+        root_user_prompt="Напиши про кота",
     )
     assert out is sent
     assert message.answer.await_count == 1
@@ -38,17 +47,30 @@ async def test_answer_free_standard_success_always_sends_markup() -> None:
     kb = kwargs["reply_markup"]
     flat = [b for row in kb.inline_keyboard for b in row]
     assert len(flat) == 3
-    assert all((b.callback_data or "").startswith(msg.CB_CHAT_HINT_PREFIX) for b in flat)
+    assert all((b.callback_data or "").startswith(msg.CB_HINT_BTN_PREFIX) for b in flat)
+    assert all(len(b.callback_data or "") <= 64 for b in flat)
+    # bind после send
+    uuid = (flat[0].callback_data or "").rsplit(":", 1)[-1]
+    session = get_hint_session(uuid, user_id=42)
+    assert session is not None
+    assert session.message_id == 777
+    assert session.root_user_prompt == "Напиши про кота"
+    assert "кота" in session.body.lower() or "кот" in session.body.lower()
+    clear_suggested_replies_for_tests()
 
 
 @pytest.mark.asyncio
 async def test_answer_free_standard_success_never_sends_bare_text() -> None:
     """HTML+kb fails, plain+kb fails → ASCII emergency still WITH markup."""
     from platforms.telegram_chunks import answer_free_standard_success
+    from services.standard_suggested_replies import clear_suggested_replies_for_tests
 
+    clear_suggested_replies_for_tests()
     message = MagicMock()
     message.chat.id = 2
+    message.from_user.id = 9
     sent = MagicMock()
+    sent.message_id = 12
     calls = {"n": 0}
 
     async def _answer(*args, **kwargs):
@@ -65,6 +87,8 @@ async def test_answer_free_standard_success_never_sends_bare_text() -> None:
         message,
         "<b>Стих</b> про кота",
         settings,
+        user_id=9,
+        root_user_prompt="Стих",
     )
     assert out is sent
     assert calls["n"] == 3
@@ -73,6 +97,7 @@ async def test_answer_free_standard_success_never_sends_bare_text() -> None:
         assert call.kwargs.get("reply_markup") is not None
         kb = call.kwargs["reply_markup"]
         assert len(kb.inline_keyboard) == 3
+    clear_suggested_replies_for_tests()
 
 
 @pytest.mark.asyncio

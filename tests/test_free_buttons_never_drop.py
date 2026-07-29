@@ -15,20 +15,26 @@ from services.use_cases.chat_turn import ChatTurnOutcome, ChatTurnResult
 @pytest.mark.asyncio
 async def test_success_reply_keyboard_always_has_free_hints() -> None:
     from platforms.neurotext_input import _success_reply_keyboard
+    from services.standard_suggested_replies import clear_suggested_replies_for_tests
 
+    clear_suggested_replies_for_tests()
     result = ChatTurnResult(
         outcome=ChatTurnOutcome.SUCCESS,
         assistant_message="В Люберцах есть секции футбола для детей.",
         effective_text_role="standard",
         suggested_replies=(),
         tariff=TariffTier.FREE,
+        root_user_prompt="Куда на футбол в Люберцах?",
     )
-    kb, blogger_id = await _success_reply_keyboard(42, result)
+    kb, blogger_id, action_uuid = await _success_reply_keyboard(42, result)
     assert blogger_id is None
+    assert action_uuid
     assert isinstance(kb, InlineKeyboardMarkup)
     flat = [b for row in kb.inline_keyboard for b in row]
     assert len(flat) == 3
-    assert all((b.callback_data or "").startswith(msg.CB_CHAT_HINT_PREFIX) for b in flat)
+    assert all((b.callback_data or "").startswith(msg.CB_HINT_BTN_PREFIX) for b in flat)
+    assert all(len(b.callback_data or "") <= 64 for b in flat)
+    clear_suggested_replies_for_tests()
 
 
 @pytest.mark.asyncio

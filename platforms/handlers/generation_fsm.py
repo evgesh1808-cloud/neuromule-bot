@@ -181,24 +181,55 @@ def _assistant_text_from_callback_message(message: object) -> str:
     return ""
 
 
+def _hint_user_turn(*, root_user_prompt: str, label: str) -> str:
+    """User-turn для модели: корневой вопрос turn + раскрытая подпись кнопки."""
+    from services.standard_suggested_replies import expand_suggested_reply_prompt
+
+    expanded = expand_suggested_reply_prompt(label)
+    root = (root_user_prompt or "").strip()
+    if root:
+        return f"По теме «{root}»: {expanded}"
+    return expanded
+
+
+async def _strip_callback_keyboard(message: object) -> None:
+    """Снимает inline-клавиатуру, чтобы не было повторных кликов во время генерации."""
+    edit = getattr(message, "edit_reply_markup", None)
+    if edit is None:
+        return
+    try:
+        await edit(reply_markup=None)
+    except Exception:
+        logger.debug("suggested_reply: edit_reply_markup failed", exc_info=True)
+
+
 @router.callback_query(
-    F.data.startswith(msg.CB_CHAT_HINT_PREFIX) | F.data.startswith(msg.CB_STD_REPLY_PREFIX)
+    F.data.startswith(msg.CB_HINT_BTN_PREFIX)
+    | F.data.startswith(msg.CB_CHAT_HINT_PREFIX)
+    | F.data.startswith(msg.CB_STD_REPLY_PREFIX)
 )
 async def cb_standard_suggested_reply(callback: CallbackQuery, state: FSMContext) -> None:
-    """Suggested Reply в режиме standard → тот же пайплайн + списание 1⚡/1💎.
+    """Suggested Reply → тот же пайплайн + списание 1⚡/1💎.
 
-    Основной путь: ``chat_hint:<текст>`` (текст в callback, без UUID-сессии).
-    Legacy: ``std_reply:<idx>:<context_id>`` + in-memory кэш / soft-fallback.
+    Основной путь: ``btn:<idx>:<action_uuid>`` + HintSession
+    (body / labels / root_user_prompt в кэше).
+
+    Legacy soft-fallback (кнопки в старых сообщениях чата):
+    ``chat_hint:<текст>``, ``std_reply:<idx>:<context_id>``.
     """
     from platforms.neurotext_flow import ensure_neurotext_waiting_state
     from platforms.neurotext_input import handle_neurotext_user_message
     from services.billing.chat_pipeline import can_afford_role_minimum
     from services.billing.store import load_user_billing
+    from services.context_summarize import focus_anchor_for_followup
     from services.god_mode import billing_bypass
     from services.standard_suggested_replies import (
+        FREE_FALLBACK_SUGGESTED_REPLIES,
         build_standard_zero_balance_keyboard,
         expand_suggested_reply_prompt,
+        get_hint_session,
         parse_chat_hint_callback,
+        parse_hint_btn_callback,
         parse_std_reply_callback,
         resolve_suggested_reply,
         resolve_suggested_reply_latest,
@@ -211,10 +242,46 @@ async def cb_standard_suggested_reply(callback: CallbackQuery, state: FSMContext
     data = callback.data or ""
     user_id = callback.from_user.id
     label: str | None = None
+    anchor: str | None = None
+    follow_up: str | None = None
 
-    if data.startswith(msg.CB_CHAT_HINT_PREFIX):
+    # --- 1) Stateful HintSession: btn:<idx>:<uuid> ---
+    if data.startswith(msg.CB_HINT_BTN_PREFIX):
+        parsed_btn = parse_hint_btn_callback(data)
+        if parsed_btn is None:
+            await callback.answer()
+            return
+        index, action_uuid = parsed_btn
+        session = get_hint_session(action_uuid, user_id=user_id)
+        if session is None:
+            await callback.answer(
+                "Кнопка устарела, отправьте новый запрос",
+                show_alert=True,
+            )
+            return
+        if index < 0 or index >= len(session.labels):
+            await callback.answer(
+                "Кнопка устарела, отправьте новый запрос",
+                show_alert=True,
+            )
+            return
+        label = session.labels[index]
+        focused = focus_anchor_for_followup(session.body, label)
+        follow_up = _hint_user_turn(
+            root_user_prompt=session.root_user_prompt,
+            label=label,
+        )
+        anchor = focused or session.body or None
+
+    # --- 2) Legacy FREE: chat_hint:<текст> ---
+    elif data.startswith(msg.CB_CHAT_HINT_PREFIX):
         label = parse_chat_hint_callback(data)
-    else:
+        if label:
+            follow_up = expand_suggested_reply_prompt(label)
+            anchor = _assistant_text_from_callback_message(callback.message) or None
+
+    # --- 3) Legacy paid: std_reply:<idx>:<context_id> ---
+    elif data.startswith(msg.CB_STD_REPLY_PREFIX):
         parsed = parse_std_reply_callback(data)
         if parsed is None:
             await callback.answer()
@@ -222,22 +289,23 @@ async def cb_standard_suggested_reply(callback: CallbackQuery, state: FSMContext
         index, context_id = parsed
         label = resolve_suggested_reply(context_id, index, user_id=user_id)
         if not label:
-            # Старая кнопка после смены context_id — пробуем последнюю сессию
             label = resolve_suggested_reply_latest(user_id, index)
+        if not label and 0 <= index < len(FREE_FALLBACK_SUGGESTED_REPLIES):
+            # После рестарта кэш пуст — мягкий FREE-фолбэк по индексу.
+            label = FREE_FALLBACK_SUGGESTED_REPLIES[index]
+        if label:
+            follow_up = expand_suggested_reply_prompt(label)
+            anchor = _assistant_text_from_callback_message(callback.message) or None
+    else:
+        await callback.answer()
+        return
 
-    if not label:
-        # Legacy std_reply после рестарта: не «устарела» — подставляем FREE-фолбэк по индексу.
-        from services.standard_suggested_replies import FREE_FALLBACK_SUGGESTED_REPLIES
-
-        if data.startswith(msg.CB_STD_REPLY_PREFIX):
-            parsed = parse_std_reply_callback(data)
-            if parsed is not None:
-                index, _cid = parsed
-                if 0 <= index < len(FREE_FALLBACK_SUGGESTED_REPLIES):
-                    label = FREE_FALLBACK_SUGGESTED_REPLIES[index]
-        if not label:
-            await callback.answer("Кнопка устарела. Задайте вопрос текстом.", show_alert=True)
-            return
+    if not label or not follow_up:
+        await callback.answer(
+            "Кнопка устарела, отправьте новый запрос",
+            show_alert=True,
+        )
+        return
 
     if not billing_bypass(user_id):
         user = await load_user_billing(user_id)
@@ -250,11 +318,10 @@ async def cb_standard_suggested_reply(callback: CallbackQuery, state: FSMContext
             )
             return
 
+    # Telegram-гигиена: сразу гасим «часики», потом снимаем кнопки.
     await callback.answer()
-    follow_up = expand_suggested_reply_prompt(label)
-    # Текст ИМЕННО этого сообщения бота — иначе клик по старой кнопке
-    # цепляется к более новому ответу в истории и уезжает мимо темы.
-    anchor = _assistant_text_from_callback_message(callback.message)
+    await _strip_callback_keyboard(callback.message)
+
     await state.update_data(text_role="standard", pending_chat_hint=follow_up)
     await ensure_neurotext_waiting_state(state)
     try:
@@ -269,7 +336,7 @@ async def cb_standard_suggested_reply(callback: CallbackQuery, state: FSMContext
         logger.exception(
             "cb_standard_suggested_reply failed uid=%s label=%r",
             user_id,
-            label[:80],
+            (label or "")[:80],
         )
         try:
             await callback.message.answer(

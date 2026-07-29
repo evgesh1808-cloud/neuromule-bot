@@ -10,10 +10,15 @@ from content import messages as msg
 from services.standard_suggested_replies import (
     BUTTONS_MARKER,
     FREE_FALLBACK_SUGGESTED_REPLIES,
+    bind_hint_session_message,
     build_chat_hint_callback,
+    build_hint_keyboard,
     build_suggested_replies_keyboard,
     clear_suggested_replies_for_tests,
+    create_hint_session,
+    get_hint_session,
     parse_chat_hint_callback,
+    parse_hint_btn_callback,
     parse_std_reply_callback,
     remember_suggested_replies,
     resolve_suggested_reply,
@@ -500,3 +505,155 @@ async def test_run_chat_turn_strips_buttons_into_suggested_replies() -> None:
     # Pref ON → fallback может дописать 3-й лейбл; первые два — из ответа модели.
     assert result.suggested_replies[:2] == ("Следующий шаг", "Другой вопрос")
     assert len(result.suggested_replies) >= 2
+
+
+@pytest.mark.asyncio
+async def test_run_chat_turn_hint_click_uses_temperature_055() -> None:
+    """Клик по кнопке (есть anchor) → temperature=0.55, без клонов ответов."""
+    from services.billing.types import ChatRoutePlan, CurrencyKind, TextChatBillingResult, TariffTier
+    from services.use_cases.chat_turn import ChatTurnOutcome, run_chat_turn
+
+    ask = AsyncMock(
+        return_value={
+            "content": "Новый практический ответ.",
+            "prompt_tokens": 8,
+            "completion_tokens": 4,
+        }
+    )
+    plan = ChatRoutePlan(
+        model_id="google/gemini-2.5-flash",
+        price_type=CurrencyKind.ENERGY,
+        energy_cost=0,
+        crystal_cost=0,
+        is_expert_role=False,
+        max_tokens=2000,
+        use_premium_prompt=False,
+        fallback_model_ids=(),
+        blocked=False,
+        tariff=TariffTier.FREE,
+        temperature=None,
+    )
+    billing = TextChatBillingResult(
+        effective_role_id="standard",
+        plan=plan,
+        charge_id=None,
+        notice=None,
+    )
+    with (
+        patch("services.use_cases.chat_turn.allow_request", AsyncMock(return_value=True)),
+        patch(
+            "services.use_cases.chat_turn.billing.resolve_and_charge_text_chat",
+            AsyncMock(return_value=billing),
+        ),
+        patch(
+            "services.use_cases.chat_turn.conv.build_openrouter_messages",
+            AsyncMock(
+                return_value=[
+                    {"role": "system", "content": "sys"},
+                    {"role": "user", "content": "По теме «танцы»: Как на практике?"},
+                ]
+            ),
+        ),
+        patch(
+            "services.use_cases.chat_turn.prepare_openrouter_chat_messages",
+            side_effect=lambda msgs, **kw: msgs,
+        ),
+        patch(
+            "services.use_cases.chat_turn.prune_context_messages",
+            side_effect=lambda msgs, **kw: (msgs, True),
+        ),
+        patch("services.use_cases.chat_turn.ask_ai_messages", ask),
+        patch("services.use_cases.chat_turn.commit_assistant_turn_queued", AsyncMock()),
+        patch("services.use_cases.chat_turn.conv.schedule_memory_refresh"),
+        patch("services.use_cases.chat_turn.dialog_append", AsyncMock()),
+        patch(
+            "services.repository.get_show_suggested_replies",
+            AsyncMock(return_value=True),
+        ),
+    ):
+        from config import Settings
+
+        result = await run_chat_turn(
+            Settings(tg_token="t", openrouter_key="k"),
+            1002,
+            "По теме «танцы»: Как на практике?",
+            text_role="standard",
+            anchor_assistant_text="2. Игровая форма: танцуйте дома.",
+        )
+
+    assert result.outcome is ChatTurnOutcome.SUCCESS
+    assert ask.await_count >= 1
+    temps = [
+        c.kwargs.get("temperature")
+        for c in ask.await_args_list
+        if "temperature" in c.kwargs
+    ]
+    assert 0.55 in temps
+
+
+def test_hint_keyboard_callback_data_within_telegram_64() -> None:
+    """Telegram: callback_data ≤ 64 байт UTF-8 (для ASCII btn: — и символов тоже)."""
+    labels = [
+        "Как применить тхэквондо для новичка?",
+        "Дай пример разминки перед спаррингом?",
+        "Какие ошибки типичны на первой тренировке?",
+    ]
+    action_uuid = create_hint_session(
+        55,
+        body="Ответ про тхэквондо.",
+        labels=labels,
+        root_user_prompt="Как начать тхэквондо?",
+    )
+    kb = build_hint_keyboard(action_uuid, labels)
+    assert kb is not None
+    for row in kb.inline_keyboard:
+        for btn in row:
+            data = btn.callback_data or ""
+            assert len(data) <= 64
+            assert len(data.encode("utf-8")) <= 64
+            assert data.startswith(msg.CB_HINT_BTN_PREFIX)
+            parsed = parse_hint_btn_callback(data)
+            assert parsed is not None
+            idx, uid = parsed
+            assert uid == action_uuid
+            assert 0 <= idx < 3
+
+
+def test_hint_session_isolated_from_legacy_cache() -> None:
+    """Legacy ``_CACHE`` / remember_* не должны пересекаться с HintSession."""
+    labels_legacy = ["Старая кнопка A", "Старая кнопка B"]
+    labels_hint = ["Новая кнопка X", "Новая кнопка Y"]
+
+    cid = remember_suggested_replies(42, labels_legacy)
+    assert cid
+    assert resolve_suggested_reply(cid, 0, user_id=42) == "Старая кнопка A"
+    assert resolve_suggested_reply_latest(42, 1) == "Старая кнопка B"
+
+    action_uuid = create_hint_session(
+        42,
+        body="Тело ответа бота.",
+        labels=labels_hint,
+        root_user_prompt="Корневой вопрос пользователя",
+        message_id=None,
+    )
+    bind_hint_session_message(action_uuid, 9001)
+    session = get_hint_session(action_uuid, user_id=42)
+    assert session is not None
+    assert session.message_id == 9001
+    assert session.body == "Тело ответа бота."
+    assert session.root_user_prompt == "Корневой вопрос пользователя"
+    assert "Новая кнопка X" in session.labels
+
+    # HintSession не затёр legacy: старые кнопки всё ещё резолвятся.
+    assert resolve_suggested_reply(cid, 0, user_id=42) == "Старая кнопка A"
+    assert resolve_suggested_reply_latest(42, 0) == "Старая кнопка A"
+
+    # Legacy remember не затирает HintSession (даже если сносит предыдущий context_id).
+    cid2 = remember_suggested_replies(42, ["Ещё legacy"])
+    assert cid2
+    assert get_hint_session(action_uuid, user_id=42) is not None
+    assert resolve_suggested_reply(cid, 0, user_id=42) is None  # prev legacy dropped
+    assert resolve_suggested_reply(cid2, 0, user_id=42) == "Ещё legacy"
+
+    # Чужой user_id не читает чужую HintSession.
+    assert get_hint_session(action_uuid, user_id=99) is None

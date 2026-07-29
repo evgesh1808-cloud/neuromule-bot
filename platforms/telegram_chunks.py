@@ -81,28 +81,67 @@ async def answer_free_standard_success(
     settings: Settings,
     *,
     labels: Sequence[str] | None = None,
+    user_id: int | None = None,
+    root_user_prompt: str = "",
 ) -> "Message":
-    """Атомарная отправка FREE Standard: текст + ровно 3 ``chat_hint`` кнопки.
+    """Атомарная отправка FREE Standard: текст + кнопки (HintSession ``btn:``).
 
     Инвариант: Telegram НЕ получает SUCCESS-текст без ``reply_markup``.
-    Никаких «сначала текст, потом довесим» — только вместе.
+    Паттерн: create_hint_session → send → bind_hint_session_message.
+    Legacy ``chat_hint`` — только если session-клавиатура не собралась.
     """
     _ = settings
-    from services.standard_suggested_replies import build_free_hint_keyboard
+    from services.standard_suggested_replies import (
+        bind_hint_session_message,
+        build_free_hint_keyboard,
+        build_hint_keyboard,
+        create_hint_session,
+        ensure_free_hint_labels,
+    )
 
     body = text or ""
-    kb = build_free_hint_keyboard(labels, body=body)
+    action_uuid: str | None = None
+    kb = None
+    owner = int(user_id) if user_id is not None else (
+        int(message.from_user.id) if message.from_user else 0
+    )
+    try:
+        clean = ensure_free_hint_labels(labels, body=body)
+        if owner and clean:
+            action_uuid = create_hint_session(
+                owner,
+                body=body,
+                labels=clean,
+                root_user_prompt=root_user_prompt or "",
+                message_id=None,
+            )
+            kb = build_hint_keyboard(action_uuid, clean)
+    except Exception:
+        logger.exception("free_standard_send: HintSession keyboard failed")
+        action_uuid = None
+        kb = None
+    if kb is None:
+        # Soft legacy fallback — кнопки всё равно уходят.
+        kb = build_free_hint_keyboard(labels, body=body)
+        action_uuid = None
+
     html = _cap_html(prepare_telegram_html_text(body, max_len=None))
     plain = sanitize_telegram_plain_text(html)
+
+    def _bind(sent: "Message") -> "Message":
+        if action_uuid:
+            bind_hint_session_message(action_uuid, int(sent.message_id))
+        return sent
 
     try:
         sent = await message.answer(html, parse_mode=ParseMode.HTML, reply_markup=kb)
         logger.info(
-            "free_standard_send: ok html+kb chat=%s buttons=%s",
+            "free_standard_send: ok html+kb chat=%s buttons=%s hint=%s",
             message.chat.id,
             len(kb.inline_keyboard),
+            bool(action_uuid),
         )
-        return sent
+        return _bind(sent)
     except TelegramBadRequest:
         logger.warning(
             "free_standard_send: HTML+kb rejected — retry plain+kb",
@@ -112,11 +151,12 @@ async def answer_free_standard_success(
     try:
         sent = await message.answer(plain, reply_markup=kb)
         logger.info(
-            "free_standard_send: ok plain+kb chat=%s buttons=%s",
+            "free_standard_send: ok plain+kb chat=%s buttons=%s hint=%s",
             message.chat.id,
             len(kb.inline_keyboard),
+            bool(action_uuid),
         )
-        return sent
+        return _bind(sent)
     except TelegramBadRequest:
         logger.warning(
             "free_standard_send: plain+kb rejected — retry ASCII emergency kb",
@@ -129,6 +169,7 @@ async def answer_free_standard_success(
         "free_standard_send: used ASCII emergency kb chat=%s",
         message.chat.id,
     )
+    # Emergency chat_hint — без bind HintSession.
     return sent
 
 

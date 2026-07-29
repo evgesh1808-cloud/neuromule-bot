@@ -268,12 +268,12 @@ async def test_compact_standard_puts_followup_ref_in_system() -> None:
     ]
     out = await compact_standard_dialog_context(messages, ask_fn=None)
     roles = [m["role"] for m in out]
-    # Справка в system, без эха assistant — иначе free-модель копирует старый ответ.
-    assert roles == ["system", "user"]
+    assert roles == ["system", "assistant", "user"]
     assert FOLLOWUP_REF_MARKER in out[0]["content"]
-    assert "Тхэквондо развивает" in out[0]["content"]
-    assert "копировать справку" in out[0]["content"].lower() or "не копируй" in out[0]["content"].lower()
-    assert out[1]["content"].startswith("Про сроки?")
+    assert "исходная тема" in out[0]["content"].lower()
+    assert "тхэквондо" in out[0]["content"].lower()
+    assert "Тхэквондо развивает" in out[1]["content"]
+    assert "По теме" in out[2]["content"] or out[2]["content"].startswith("Про сроки?")
     assert "[Контекст:" in out[0]["content"]
 
 

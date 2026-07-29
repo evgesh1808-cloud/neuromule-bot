@@ -161,6 +161,8 @@ class ChatTurnResult:
     tariff: object | None = None
     # Telegram message_id заглушки «⏳ ещё отвечаю» — удалить после SUCCESS.
     busy_notice_message_id: int | None = None
+    # Текст пользователя текущего turn (не из истории) — для HintSession.root_user_prompt.
+    root_user_prompt: str = ""
 
 
 def _apply_user_content_override(
@@ -419,7 +421,7 @@ async def run_chat_turn(
                 _copy_pack_mode and looks_like_paid_copy_pack_request(raw_user_text)
             )
             # Paid standard: Copy Pack → 0.75; Type B → ниже, иначе Gemini «угадывает» 4 варианта.
-            # FREE hint-кнопки: чуть выше 0 — иначе одни и те же ответы на разные клики.
+            # FREE / hint-кнопки (есть anchor_assistant_text): 0.55 — иначе клоны ответов.
             temp = (
                 _BLOGGER_TEMPERATURE
                 if is_blogger_role
@@ -430,7 +432,7 @@ async def run_chat_turn(
                 )
             )
             if temp is None and (anchor_assistant_text or "").strip():
-                temp = 0.55
+                temp = 0.55  # HintSession / legacy button click
 
             async def _call_or(messages: list, *, temperature: float | None) -> dict:
                 return await ask_ai_messages(
@@ -823,4 +825,5 @@ async def run_chat_turn(
             suggested_replies=suggested_replies,
             tariff=plan.tariff,
             busy_notice_message_id=busy_mid,
+            root_user_prompt=(history_text or "").strip(),
         )

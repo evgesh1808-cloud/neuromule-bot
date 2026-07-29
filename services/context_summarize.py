@@ -260,31 +260,85 @@ def focus_anchor_for_followup(anchor: str, user_text: str) -> str:
     return plain[:500]
 
 
-def format_followup_reference(text: str, *, question: str | None = None) -> str:
-    """Справка для кнопки/уточнения: узкий фрагмент, без копирования всего ответа."""
+def _is_hint_or_short_followup_text(text: str) -> bool:
+    """True для клика по кнопке / короткого уточнения (не исходный вопрос темы)."""
+    q = _strip_compliance_tail(text or "").strip()
+    if not q:
+        return True
+    low = q.lower()
+    if low.startswith(
+        (
+            "как сделать на практике",
+            "добавь практики по теме",
+            "какие нюансы важны для",
+            "ещё про ",
+            "еще про ",
+            "что учесть в ",
+            "нюансы ",
+            "по теме «",
+            'по теме "',
+            "по теме \"",
+        )
+    ):
+        return True
+    # Короткие «Про сроки?» / «Про интерес?» — не путать с обычным коротким вопросом.
+    if len(q) <= _SHORT_FOLLOWUP_MAX_CHARS and re.match(
+        r"(?is)^про\s+\S.{0,40}\??$",
+        q,
+    ):
+        return True
+    return False
+
+
+def _find_root_user_question(
+    messages: Sequence[dict[str, Any]],
+    *,
+    before_idx: int,
+) -> str:
+    """Последний «настоящий» вопрос пользователя до цепочки кликов по кнопкам."""
+    for i in range(before_idx - 1, -1, -1):
+        if messages[i].get("role") != "user":
+            continue
+        text = _strip_compliance_tail(_text_of(messages[i])).strip()
+        if not text or _is_hint_or_short_followup_text(text):
+            continue
+        clip = re.sub(r"\s+", " ", text).strip()
+        if len(clip) > 180:
+            clip = clip[:177].rstrip() + "…"
+        return clip
+    return ""
+
+
+def format_followup_reference(
+    text: str,
+    *,
+    question: str | None = None,
+    root_question: str | None = None,
+) -> str:
+    """Краткая инструкция + узкий фрагмент; исходная тема обязательна."""
     body = _plain_ref_text(_strip_compliance_tail(text or ""))
     if not body:
         body = "фрагмент прошлого ответа по теме"
     if len(body) > _FOLLOWUP_REF_MAX_CHARS:
         body = body[: _FOLLOWUP_REF_MAX_CHARS - 1].rstrip() + "…"
     q = _strip_compliance_tail(question or "").strip()
-    if len(q) > 80:
-        q = q[:77].rstrip() + "…"
-    head = (
-        f"{FOLLOWUP_REF_MARKER} пользователь нажал уточнение «{q}». "
-        if q
-        else f"{FOLLOWUP_REF_MARKER} "
+    if len(q) > 100:
+        q = q[:97].rstrip() + "…"
+    root = _strip_compliance_tail(root_question or "").strip()
+    if len(root) > 140:
+        root = root[:137].rstrip() + "…"
+
+    bits: list[str] = []
+    if root:
+        bits.append(f"исходная тема диалога: «{root}».")
+    if q:
+        bits.append(f"сейчас пользователь уточняет: «{q}».")
+    bits.append(
+        "Ответь НОВЫМ практическим текстом только на это уточнение в рамках исходной темы "
+        "(2–4 шага). Не копируй фрагмент ниже, не повторяй весь старый список, "
+        "не уходи на другую тему. В ===КНОПКИ=== — 3 новых коротких вопроса по раскрытому."
     )
-    return (
-        f"{head}"
-        "Ниже только релевантный фрагмент прошлого ответа. "
-        "Дай НОВЫЙ практический ответ именно на это уточнение (2–4 шага). "
-        "Запрещено: копировать справку, повторять весь старый список, "
-        "присылать тот же текст что раньше. "
-        "В ===КНОПКИ=== — 3 новых коротких вопроса по только что раскрытому, "
-        "не те же самые кнопки.]\n"
-        f"{body}"
-    )
+    return f"{FOLLOWUP_REF_MARKER} {' '.join(bits)}]\n{body}"
 
 
 def _inject_system_blocks(
@@ -331,6 +385,12 @@ def _inject_system_blocks(
     return [*system_msgs[:-1], sys]
 
 
+def _user_turn_embeds_root_topic(text: str) -> bool:
+    """True, если user-turn уже несёт root из HintSession (``По теме «…»: …``)."""
+    q = _strip_compliance_tail(text or "").strip().lower()
+    return q.startswith(("по теме «", 'по теме "', "по теме \""))
+
+
 async def compact_standard_dialog_context(
     messages: list[dict[str, Any]],
     *,
@@ -340,10 +400,13 @@ async def compact_standard_dialog_context(
     """
     Standard: system (+ ультра-короткий [Контекст: …]) + последний user.
 
-    Для коротких follow-up / кнопок прошлый ответ кладём в system-справку
-    (не в role=assistant) — иначе free-модели копируют старое сообщение.
-    ``anchor_assistant_text`` — текст сообщения под кнопкой (даже если в
-    истории уже есть более новый ответ).
+    Fast Path (``btn:`` / HintSession): если передан явный ``anchor_assistant_text``
+    (уже точечный срез) и user-turn содержит ``По теме «…»``, упаковываем
+    ``assistant=anchor`` + ``user=turn`` без поиска корня в истории и без
+    повторного ``focus_anchor_for_followup``.
+
+    Legacy follow-up / ``chat_hint`` / ``std_reply``: эвристики + справка в system.
+    Обычный длинный вопрос: ``[Контекст: …]`` + только последний user.
     """
     if not messages:
         return messages
@@ -365,6 +428,20 @@ async def compact_standard_dialog_context(
         if i < last_user_idx and m.get("role") != "system"
     ]
     anchor = _strip_compliance_tail(anchor_assistant_text or "").strip()
+    user_q = _strip_compliance_tail(_text_of(last_user))
+
+    # --- Fast Path: HintSession уже дала focused slice + rooted user-turn ---
+    if anchor and _user_turn_embeds_root_topic(user_q):
+        messages[:] = [
+            *system_msgs,
+            {"role": "assistant", "content": anchor},
+            dict(last_user),
+        ]
+        metrics.incr("chat.standard_context_compacted")
+        metrics.incr("chat.standard_context_anchor")
+        metrics.incr("chat.standard_context_fast_path")
+        return messages
+
     short_followup = _is_short_followup_user(last_user)
 
     ref_source = anchor
@@ -373,18 +450,36 @@ async def compact_standard_dialog_context(
         if last_assistant is not None:
             ref_source = _strip_compliance_tail(_text_of(last_assistant)).strip()
 
-    # Кнопка / короткое уточнение: узкая справка в system, без assistant-эха.
+    # Кнопка / короткое уточнение (legacy): эвристики + справка в system.
     if ref_source and (anchor or short_followup):
-        user_q = _strip_compliance_tail(_text_of(last_user))
         focused = focus_anchor_for_followup(ref_source, user_q)
+        root = _find_root_user_question(messages, before_idx=last_user_idx)
+        topic = topic_from_followup(user_q)
+        summary_bits = [b for b in (root, topic) if b]
         summary = _clip_context_summary(
-            topic_from_followup(user_q) or focused,
-            max_chars=120,
+            " → ".join(summary_bits) if summary_bits else focused,
+            max_chars=140,
         )
         context_block = format_standard_context_block(summary)
-        ref_block = format_followup_reference(focused, question=user_q)
+        ref_block = format_followup_reference(
+            focused,
+            question=user_q,
+            root_question=root,
+        )
         system_msgs = _inject_system_blocks(system_msgs, context_block, ref_block)
-        messages[:] = [*system_msgs, last_user]
+
+        # Явно привязать уточнение к исходной теме (модель иначе «отвечает на старое»).
+        user_for_model = dict(last_user)
+        if root and user_q and root.lower() not in user_q.lower():
+            user_for_model["content"] = f"По теме «{root}»: {user_q}"
+
+        keep_tail: list[dict[str, Any]] = [user_for_model]
+        if focused.strip():
+            keep_tail = [
+                {"role": "assistant", "content": focused.strip()},
+                user_for_model,
+            ]
+        messages[:] = [*system_msgs, *keep_tail]
         metrics.incr("chat.standard_context_compacted")
         if anchor:
             metrics.incr("chat.standard_context_anchor")

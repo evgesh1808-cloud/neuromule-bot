@@ -256,16 +256,16 @@ async def test_compact_standard_dialog_injects_context_block() -> None:
         {"role": "user", "content": "измени второй вариант как раньше"},
     ]
     await compact_standard_dialog_context(payload, ask_fn=None)
-    # Короткий follow-up: system (контекст+справка) + user — без эха assistant.
-    assert len(payload) == 2
+    assert len(payload) == 3
     assert payload[0]["role"] == "system"
     assert STANDARD_CONTEXT_MARKER in payload[0]["content"]
     assert FOLLOWUP_REF_MARKER in payload[0]["content"]
     assert "тхэквондо" in payload[0]["content"].lower()
-    assert "копировать справку" in payload[0]["content"].lower() or "Не копируй" in payload[0]["content"]
-    assert payload[1]["role"] == "user"
-    assert "измени второй вариант" in payload[1]["content"]
-    assert all(m.get("role") != "assistant" for m in payload)
+    assert "исходная тема" in payload[0]["content"].lower()
+    assert payload[1]["role"] == "assistant"
+    assert "тхэквондо" in payload[1]["content"].lower()
+    assert payload[2]["role"] == "user"
+    assert "тхэквондо" in payload[2]["content"].lower() or "измени второй" in payload[2]["content"]
 
 
 @pytest.mark.asyncio
@@ -291,24 +291,26 @@ async def test_compact_uses_anchor_from_old_button_message() -> None:
             "role": "assistant",
             "content": "Следующий шаг — анализ и планирование всего списка.",
         },
-        {"role": "user", "content": "Про игровая форма?"},
+        {"role": "user", "content": "Как сделать на практике: «игровая форма»?"},
     ]
     await compact_standard_dialog_context(
         payload,
         ask_fn=None,
         anchor_assistant_text=old_answer,
     )
-    assert len(payload) == 2
+    assert len(payload) == 3
     assert payload[0]["role"] == "system"
     assert STANDARD_CONTEXT_MARKER in payload[0]["content"]
     assert FOLLOWUP_REF_MARKER in payload[0]["content"]
-    # В справке — узкий фрагмент про нажатую тему, не весь список.
+    assert "дочке полюбить танцы" in payload[0]["content"].lower()
     assert "игровая форма" in payload[0]["content"].lower()
     assert "планирование" not in payload[0]["content"]
-    assert "поддержка" not in payload[0]["content"].lower()
-    assert payload[1]["role"] == "user"
-    assert "игровая форма" in payload[1]["content"]
-    assert all(m.get("role") != "assistant" for m in payload)
+    assert payload[1]["role"] == "assistant"
+    assert "игровая форма" in payload[1]["content"].lower()
+    assert "поддержка" not in payload[1]["content"].lower()
+    assert payload[2]["role"] == "user"
+    assert "дочке полюбить танцы" in payload[2]["content"].lower()
+    assert "игровая форма" in payload[2]["content"].lower()
 
 
 def test_focus_anchor_picks_matching_bullet() -> None:
@@ -323,6 +325,54 @@ def test_focus_anchor_picks_matching_bullet() -> None:
     assert "игровая форма" in focused.lower()
     assert "искренний" not in focused.lower()
     assert "поддержка" not in focused.lower()
+
+
+@pytest.mark.asyncio
+async def test_compact_hint_session_fast_path_packs_anchor_and_user() -> None:
+    """btn: уже дал focused + «По теме» — без поиска корня и без [Справка:]."""
+    from services.context_summarize import (
+        FOLLOWUP_REF_MARKER,
+        STANDARD_CONTEXT_MARKER,
+        compact_standard_dialog_context,
+    )
+
+    focused = "2. Игровая форма: танцуйте дома как игру."
+    user_turn = (
+        "По теме «Как дочке полюбить танцы»: "
+        "Как сделать на практике: «игровая форма»?"
+    )
+    payload = [
+        {"role": "system", "content": "FREE core"},
+        {"role": "user", "content": "Как дочке полюбить танцы"},
+        {
+            "role": "assistant",
+            "content": (
+                "1. Искренний интерес\n"
+                "2. Игровая форма: танцуйте дома как игру.\n"
+                "3. Поддержка"
+            ),
+        },
+        {"role": "user", "content": "Про интерес?"},
+        {
+            "role": "assistant",
+            "content": "NEWER ANSWER — не должен попасть в fast path",
+        },
+        {"role": "user", "content": user_turn},
+    ]
+    await compact_standard_dialog_context(
+        payload,
+        ask_fn=None,
+        anchor_assistant_text=focused,
+    )
+    assert len(payload) == 3
+    assert payload[0]["role"] == "system"
+    assert payload[0]["content"] == "FREE core"
+    assert STANDARD_CONTEXT_MARKER not in payload[0]["content"]
+    assert FOLLOWUP_REF_MARKER not in payload[0]["content"]
+    assert payload[1] == {"role": "assistant", "content": focused}
+    assert payload[2]["role"] == "user"
+    assert payload[2]["content"] == user_turn
+    assert "NEWER ANSWER" not in str(payload)
 
 
 def test_paid_standard_uses_copy_pack_voice() -> None:

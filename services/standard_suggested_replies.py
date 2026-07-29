@@ -6,6 +6,7 @@ import html
 import logging
 import re
 import secrets
+from dataclasses import dataclass, replace
 from typing import Sequence
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -21,6 +22,7 @@ _MAX_LABELS = 3
 _MAX_LABEL_CHARS = 48  # полный текст follow-up в кэше / на клик (paid std_reply)
 _MAX_BUTTON_DISPLAY_CHARS = 34  # читаемый текст на кнопке (мобильный Telegram)
 _CONTEXT_ID_LEN = 8
+_HINT_ACTION_UUID_HEX_LEN = 16  # token_hex(8) → 16 hex; btn:0:<uuid> ≪ 64 байт
 # Telegram Bot API: callback_data 1–64 bytes (UTF-8).
 _TG_CALLBACK_DATA_MAX_BYTES = 64
 _CHAT_HINT_PREFIX_BYTES = len(msg.CB_CHAT_HINT_PREFIX.encode("utf-8"))
@@ -154,9 +156,29 @@ _STOPWORDS_RU: frozenset[str] = frozenset(
     }
 )
 
-# context_id -> (user_id, labels) — только legacy ``std_reply:`` (старые сообщения)
+# ---------------------------------------------------------------------------
+# Legacy ``std_reply:`` cache — НЕ пересекать с HintSession ниже.
+# Старые кнопки в чатах пользователей продолжают резолвиться отсюда.
+# ---------------------------------------------------------------------------
 _CACHE: dict[str, tuple[int, tuple[str, ...]]] = {}
 _BY_USER: dict[int, str] = {}
+
+
+# ---------------------------------------------------------------------------
+# Stateful HintSession (`btn:<index>:<action_uuid>`) — изолирован от legacy.
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class HintSession:
+    """Сессия Suggested Replies, привязанная к конкретному ответу бота."""
+
+    user_id: int
+    message_id: int | None
+    body: str
+    labels: tuple[str, ...]
+    root_user_prompt: str
+
+
+_HINT_SESSIONS: dict[str, HintSession] = {}
 
 
 def sanitize_suggested_label(label: str) -> str:
@@ -551,10 +573,124 @@ def split_suggested_replies(
 
 
 
-def remember_suggested_replies(user_id: int, labels: Sequence[str]) -> str | None:
-    """Кладёт полные подписи в кэш; возвращает ``context_id`` или ``None`` если пусто.
+# ---------------------------------------------------------------------------
+# HintSession API — только ``_HINT_SESSIONS`` (не трогает legacy ``_CACHE``).
+# ---------------------------------------------------------------------------
+def create_hint_session(
+    user_id: int,
+    *,
+    body: str,
+    labels: Sequence[str],
+    root_user_prompt: str,
+    message_id: int | None = None,
+) -> str:
+    """Создаёт изолированную HintSession; возвращает ``action_uuid``.
 
-    Не дописывает FREE-фолбэк — только то, что реально показали на кнопках.
+    Не пишет в legacy ``_CACHE`` / ``_BY_USER``. Старые сессии не удаляет —
+    кнопки под предыдущими сообщениями в чате должны продолжать резолвиться.
+    """
+    clean_list: list[str] = []
+    for raw in labels:
+        fitted = polish_hint_label(str(raw))
+        if fitted and fitted not in clean_list:
+            clean_list.append(fitted)
+        if len(clean_list) >= _MAX_LABELS:
+            break
+    action_uuid = secrets.token_hex(_HINT_ACTION_UUID_HEX_LEN // 2)
+    _HINT_SESSIONS[action_uuid] = HintSession(
+        user_id=int(user_id),
+        message_id=int(message_id) if message_id is not None else None,
+        body=(body or "").strip(),
+        labels=tuple(clean_list),
+        root_user_prompt=(root_user_prompt or "").strip(),
+    )
+    return action_uuid
+
+
+def bind_hint_session_message(action_uuid: str, message_id: int) -> None:
+    """Проставляет ``message_id`` после send. Не трогает legacy ``_CACHE``."""
+    uid = (action_uuid or "").strip()
+    session = _HINT_SESSIONS.get(uid)
+    if session is None:
+        return
+    _HINT_SESSIONS[uid] = replace(session, message_id=int(message_id))
+
+
+def get_hint_session(action_uuid: str, *, user_id: int) -> HintSession | None:
+    """Достаёт HintSession по ``action_uuid`` с проверкой владельца."""
+    uid = (action_uuid or "").strip()
+    session = _HINT_SESSIONS.get(uid)
+    if session is None:
+        return None
+    if int(session.user_id) != int(user_id):
+        return None
+    return session
+
+
+def parse_hint_btn_callback(data: str) -> tuple[int, str] | None:
+    """``btn:<index>:<action_uuid>`` → ``(index, action_uuid)``."""
+    prefix = msg.CB_HINT_BTN_PREFIX
+    raw = (data or "").strip()
+    if not raw.startswith(prefix):
+        return None
+    rest = raw[len(prefix) :]
+    if ":" not in rest:
+        return None
+    idx_s, action_uuid = rest.split(":", 1)
+    action_uuid = action_uuid.strip()
+    if not action_uuid:
+        return None
+    try:
+        index = int(idx_s)
+    except ValueError:
+        return None
+    if index < 0 or index >= _MAX_LABELS:
+        return None
+    return index, action_uuid
+
+
+def build_hint_keyboard(
+    action_uuid: str,
+    labels: Sequence[str],
+) -> InlineKeyboardMarkup | None:
+    """Инлайн-кнопки stateful HintSession: ``btn:<idx>:<action_uuid>``.
+
+    Полный текст follow-up и body лежат в ``_HINT_SESSIONS`` (не в callback).
+    На кнопке — короткий display-текст.
+    """
+    uid = (action_uuid or "").strip()
+    if not uid:
+        return None
+    rows: list[list[InlineKeyboardButton]] = []
+    for i, label in enumerate(labels):
+        full = polish_hint_label(str(label))
+        if not full:
+            continue
+        btn_text = button_display_text(full)
+        if not btn_text:
+            continue
+        callback_data = f"{msg.CB_HINT_BTN_PREFIX}{i}:{uid}"
+        if not callback_data_fits(callback_data):
+            logger.warning(
+                "suggested_replies: btn callback too long uuid=%s",
+                uid,
+            )
+            continue
+        rows.append([InlineKeyboardButton(text=btn_text, callback_data=callback_data)])
+        if len(rows) >= _MAX_LABELS:
+            break
+    if not rows:
+        return None
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+# ---------------------------------------------------------------------------
+# Legacy API — пишет/читает только ``_CACHE`` / ``_BY_USER`` (не HintSession).
+# ---------------------------------------------------------------------------
+def remember_suggested_replies(user_id: int, labels: Sequence[str]) -> str | None:
+    """Legacy: кладёт только labels в ``_CACHE`` (не HintSession).
+
+    Не трогает ``_HINT_SESSIONS``. Не дописывает FREE-фолбэк.
     """
     clean_list: list[str] = []
     for raw in labels:
@@ -587,7 +723,10 @@ def build_chat_hint_callback(label: str) -> str | None:
     data = f"{msg.CB_CHAT_HINT_PREFIX}{text}"
     if callback_data_fits(data):
         return data
-    logger.warning("suggested_replies: chat_hint still too long after fit len=%s", len(data.encode()))
+    logger.warning(
+        "suggested_replies: chat_hint still too long after fit len=%s",
+        len(data.encode()),
+    )
     return None
 
 
@@ -805,6 +944,7 @@ def build_standard_zero_balance_keyboard() -> InlineKeyboardMarkup:
 
 
 def clear_suggested_replies_for_tests() -> None:
-    """Только тесты."""
+    """Только тесты — чистит и legacy, и HintSession."""
     _CACHE.clear()
     _BY_USER.clear()
+    _HINT_SESSIONS.clear()

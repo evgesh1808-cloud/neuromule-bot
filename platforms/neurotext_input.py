@@ -88,11 +88,75 @@ async def _user_is_free(user_id: int, *, tariff_hint: object | None = None) -> b
         return False
 
 
+def _root_user_prompt_from_result(result: ChatTurnResult) -> str:
+    """Исходный текст пользователя текущего turn (не из истории диалога)."""
+    return (getattr(result, "root_user_prompt", None) or "").strip()
+
+
+def _bind_hint_session_after_send(action_uuid: str | None, sent) -> None:
+    """После успешного send проставляет message_id в HintSession."""
+    if not action_uuid or sent is None:
+        return
+    mid = getattr(sent, "message_id", None)
+    if mid is None:
+        return
+    from services.standard_suggested_replies import bind_hint_session_message
+
+    bind_hint_session_message(action_uuid, int(mid))
+
+
+def _hint_session_keyboard(
+    user_id: int,
+    *,
+    body: str,
+    labels: list[str] | tuple[str, ...] | None,
+    root_user_prompt: str,
+    ensure_three: bool = False,
+):
+    """Шаг create → build_hint_keyboard (message_id=None до send).
+
+    Returns:
+        ``(keyboard, action_uuid)`` или ``(None, None)``.
+    """
+    from services.standard_suggested_replies import (
+        build_hint_keyboard,
+        create_hint_session,
+        ensure_free_hint_labels,
+    )
+
+    clean: list[str]
+    if ensure_three:
+        clean = ensure_free_hint_labels(labels, body=body or "")
+    else:
+        clean = [str(x) for x in (labels or ()) if str(x).strip()]
+        if not clean:
+            clean = ensure_free_hint_labels(body=body or "")
+    if not clean:
+        return None, None
+    action_uuid = create_hint_session(
+        user_id,
+        body=body or "",
+        labels=clean,
+        root_user_prompt=root_user_prompt or "",
+        message_id=None,
+    )
+    kb = build_hint_keyboard(action_uuid, clean)
+    if kb is None:
+        return None, None
+    return kb, action_uuid
+
+
 async def _standard_suggested_reply_markup(user_id: int, result: ChatTurnResult):
-    """Suggested Replies для роли standard (модель / FREE code-side fallback)."""
+    """Suggested Replies для роли standard → ``(keyboard, action_uuid|None)``.
+
+    Новый путь: HintSession + ``btn:``. Legacy ``chat_hint`` / ``std_reply`` —
+    только fallback, если session-клавиатура не собралась.
+    """
     try:
         labels = list(getattr(result, "suggested_replies", ()) or ())
         role = (result.effective_text_role or "").strip().lower()
+        body = getattr(result, "assistant_message", None) or ""
+        root = _root_user_prompt_from_result(result)
         from services.repository import get_show_suggested_replies
         from services.standard_suggested_replies import (
             build_free_hint_keyboard,
@@ -106,26 +170,33 @@ async def _standard_suggested_reply_markup(user_id: int, result: ChatTurnResult)
 
         # FREE standard: кнопки всегда — pref/БД/пустые лейблы не имеют значения.
         if is_free and role in ("", "standard"):
-            kb = build_free_hint_keyboard(
-                labels or None,
-                body=getattr(result, "assistant_message", None) or "",
-            )
-            logger.info(
-                "suggested_replies: FREE keyboard ready uid=%s buttons=%s",
+            kb, action_uuid = _hint_session_keyboard(
                 user_id,
-                len(kb.inline_keyboard),
+                body=body,
+                labels=labels or None,
+                root_user_prompt=root,
+                ensure_three=True,
             )
-            return kb
+            if kb is None:
+                # Legacy soft-fallback: старые chat_hint кнопки, без HintSession.
+                kb = build_free_hint_keyboard(labels or None, body=body)
+                action_uuid = None
+            logger.info(
+                "suggested_replies: FREE keyboard ready uid=%s buttons=%s hint=%s",
+                user_id,
+                len(kb.inline_keyboard) if kb else 0,
+                bool(action_uuid),
+            )
+            return kb, action_uuid
 
         if role != "standard":
-            return None
+            return None, None
 
-        body = getattr(result, "assistant_message", None) or ""
         from services.copy_pack import suppress_suggested_replies_for_answer
 
         if suppress_suggested_replies_for_answer(body):
             logger.info("suggested_replies: skipped (copy pack) uid=%s", user_id)
-            return None
+            return None, None
 
         if not await get_show_suggested_replies(user_id):
             logger.info(
@@ -133,7 +204,7 @@ async def _standard_suggested_reply_markup(user_id: int, result: ChatTurnResult)
                 user_id,
                 len(labels),
             )
-            return None
+            return None, None
         if not labels:
             from services.standard_suggested_replies import ensure_free_hint_labels
 
@@ -144,10 +215,21 @@ async def _standard_suggested_reply_markup(user_id: int, result: ChatTurnResult)
                 len(labels),
             )
         if not labels:
-            return None
+            return None, None
 
+        kb, action_uuid = _hint_session_keyboard(
+            user_id,
+            body=body,
+            labels=labels,
+            root_user_prompt=root,
+            ensure_three=False,
+        )
+        if kb is not None:
+            return kb, action_uuid
+
+        # Legacy soft-fallback: std_reply + _CACHE (не HintSession).
         context_id = remember_suggested_replies(user_id, labels) or "x"
-        return build_suggested_replies_keyboard(context_id, labels)
+        return build_suggested_replies_keyboard(context_id, labels), None
     except Exception:
         # Ошибка БД/клавиатуры не должна глушить весь ответ пользователю.
         logger.exception("suggested_replies: markup failed uid=%s", user_id)
@@ -157,12 +239,17 @@ async def _standard_suggested_reply_markup(user_id: int, result: ChatTurnResult)
             if await _user_is_free(
                 user_id, tariff_hint=getattr(result, "tariff", None)
             ):
-                return build_free_hint_keyboard(
-                    body=getattr(result, "assistant_message", None) or "",
+                return (
+                    build_free_hint_keyboard(
+                        body=getattr(result, "assistant_message", None) or "",
+                    ),
+                    None,
                 )
         except Exception:
-            logger.exception("suggested_replies: FREE emergency keyboard failed uid=%s", user_id)
-        return None
+            logger.exception(
+                "suggested_replies: FREE emergency keyboard failed uid=%s", user_id
+            )
+        return None, None
 
 
 async def _free_standard_fallback_keyboard(
@@ -172,7 +259,10 @@ async def _free_standard_fallback_keyboard(
     tariff: object | None = None,
     labels: list[str] | tuple[str, ...] | None = None,
 ):
-    """Клавиатура из 3 кнопок для FREE (в т.ч. при AI_FAILED / если markup=None)."""
+    """Клавиатура из 3 кнопок для FREE (в т.ч. при AI_FAILED / если markup=None).
+
+    Fail-path без полного HintSession: legacy ``chat_hint`` (кнопки всё равно есть).
+    """
     from services.standard_suggested_replies import build_free_hint_keyboard
 
     try:
@@ -185,12 +275,14 @@ async def _free_standard_fallback_keyboard(
             if _tariff_is_free(tariff):
                 return build_free_hint_keyboard(labels, body=body or "")
         except Exception:
-            logger.exception("suggested_replies: FREE emergency keyboard failed uid=%s", user_id)
+            logger.exception(
+                "suggested_replies: FREE emergency keyboard failed uid=%s", user_id
+            )
         return None
 
 
 def _iron_free_hint_keyboard(result: ChatTurnResult):
-    """Синхронный last-resort: FREE SUCCESS без кнопок недопустим."""
+    """Синхронный last-resort: FREE SUCCESS без кнопок недопустим (legacy chat_hint)."""
     from services.standard_suggested_replies import (
         build_free_hint_keyboard,
         prepare_free_standard_reply,
@@ -214,21 +306,27 @@ def _iron_free_hint_keyboard(result: ChatTurnResult):
 
 
 async def _success_reply_keyboard(owner_id: int, result: ChatTurnResult):
-    """Клавиатура под SUCCESS-ответом: blogger → standard hints → FREE iron.
+    """Клавиатура под SUCCESS-ответом: blogger → HintSession → FREE iron.
 
-    Для FREE ``reply_markup`` всегда не ``None`` (принудительно).
+    Returns:
+        ``(reply_kb, blogger_post_id, action_uuid)``.
+        ``action_uuid`` заполнен только для stateful ``btn:`` клавиатуры.
     """
     from services.standard_suggested_replies import prepare_free_standard_reply
 
     blogger_kb = None
     blogger_post_id: str | None = None
+    action_uuid: str | None = None
     if (result.effective_text_role or "") in _BLOGGER_ROLE_IDS:
         blogger_kb, blogger_post_id = await _blogger_reply_markup(
             owner_id,
             result.assistant_message or "",
             blogger_post_raw=result.blogger_post_raw,
         )
-    reply_kb = blogger_kb or await _standard_suggested_reply_markup(owner_id, result)
+    if blogger_kb is not None:
+        return blogger_kb, blogger_post_id, None
+
+    reply_kb, action_uuid = await _standard_suggested_reply_markup(owner_id, result)
     if reply_kb is None:
         reply_kb = await _free_standard_fallback_keyboard(
             owner_id,
@@ -236,8 +334,10 @@ async def _success_reply_keyboard(owner_id: int, result: ChatTurnResult):
             tariff=getattr(result, "tariff", None),
             labels=list(getattr(result, "suggested_replies", ()) or ()) or None,
         )
+        action_uuid = None
     if reply_kb is None:
         reply_kb = _iron_free_hint_keyboard(result)
+        action_uuid = None
 
     # Финальный FORCE: FREE + standard → кнопки любой ценой (БД или tariff на result).
     if reply_kb is None and await _user_is_free(
@@ -253,12 +353,13 @@ async def _success_reply_keyboard(owner_id: int, result: ChatTurnResult):
                 from services.standard_suggested_replies import build_free_hint_keyboard
 
                 reply_kb = build_free_hint_keyboard()
+            action_uuid = None
             logger.warning(
                 "suggested_replies: FORCE free keyboard uid=%s buttons=%s",
                 owner_id,
                 len(reply_kb.inline_keyboard) if reply_kb else 0,
             )
-    return reply_kb, blogger_post_id
+    return reply_kb, blogger_post_id, action_uuid
 
 
 async def _blogger_reply_markup(user_id: int, assistant_message: str, *, blogger_post_raw: str | None = None):
@@ -522,15 +623,18 @@ async def _reply_chat_turn_result(
                     message,
                     result.assistant_message,
                     settings,
+                    user_id=owner_id,
                     labels=list(getattr(result, "suggested_replies", ()) or ())
                     or None,
+                    root_user_prompt=_root_user_prompt_from_result(result),
                 )
             else:
-                reply_kb, blogger_post_id = await _success_reply_keyboard(
+                reply_kb, blogger_post_id, action_uuid = await _success_reply_keyboard(
                     owner_id, result
                 )
 
-                async def _bind_blogger_post(sent_message: Message) -> None:
+                async def _on_finalized(sent_message: Message) -> None:
+                    _bind_hint_session_after_send(action_uuid, sent_message)
                     if not blogger_post_id:
                         return
                     from services import blogger_post_cache
@@ -545,7 +649,9 @@ async def _reply_chat_turn_result(
                 await stream_handle.finalize(
                     result.assistant_message,
                     reply_markup=reply_kb,
-                    on_finalized=_bind_blogger_post if blogger_post_id else None,
+                    on_finalized=_on_finalized
+                    if (action_uuid or blogger_post_id)
+                    else None,
                 )
         elif stream_handle is None:
             if result.table_raw_json:
@@ -594,19 +700,22 @@ async def _reply_chat_turn_result(
                             message,
                             result.assistant_message,
                             settings,
+                            user_id=owner_id,
                             labels=list(getattr(result, "suggested_replies", ()) or ())
                             or None,
+                            root_user_prompt=_root_user_prompt_from_result(result),
                         )
                     else:
-                        reply_kb, _blogger_post_id = await _success_reply_keyboard(
-                            owner_id, result
+                        reply_kb, _blogger_post_id, action_uuid = (
+                            await _success_reply_keyboard(owner_id, result)
                         )
-                        await answer_chat_text(
+                        sent = await answer_chat_text(
                             message,
                             result.assistant_message,
                             settings,
                             reply_markup=reply_kb,
                         )
+                        _bind_hint_session_after_send(action_uuid, sent)
             else:
                 # SUCCESS без текста — не молчим (раньше был silent return).
                 fail_kb = await _free_standard_fallback_keyboard(owner_id)
