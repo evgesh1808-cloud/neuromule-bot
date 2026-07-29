@@ -94,7 +94,7 @@ def _root_user_prompt_from_result(result: ChatTurnResult) -> str:
 
 
 def _bind_hint_session_after_send(action_uuid: str | None, sent) -> None:
-    """После успешного send проставляет message_id в HintSession."""
+    """После успешного send проставляет message_id в HintSession (L1; L2 — async)."""
     if not action_uuid or sent is None:
         return
     mid = getattr(sent, "message_id", None)
@@ -105,7 +105,19 @@ def _bind_hint_session_after_send(action_uuid: str | None, sent) -> None:
     bind_hint_session_message(action_uuid, int(mid))
 
 
-def _hint_session_keyboard(
+async def _bind_hint_session_after_send_persisted(action_uuid: str | None, sent) -> None:
+    """L1 + L2 bind после send."""
+    if not action_uuid or sent is None:
+        return
+    mid = getattr(sent, "message_id", None)
+    if mid is None:
+        return
+    from services.standard_suggested_replies import bind_hint_session_message_persisted
+
+    await bind_hint_session_message_persisted(action_uuid, int(mid))
+
+
+async def _hint_session_keyboard(
     user_id: int,
     *,
     body: str,
@@ -113,14 +125,14 @@ def _hint_session_keyboard(
     root_user_prompt: str,
     ensure_three: bool = False,
 ):
-    """Шаг create → build_hint_keyboard (message_id=None до send).
+    """Шаг create+persist → build_hint_keyboard (message_id=None до send).
 
     Returns:
         ``(keyboard, action_uuid)`` или ``(None, None)``.
     """
     from services.standard_suggested_replies import (
         build_hint_keyboard,
-        create_hint_session,
+        create_hint_session_persisted,
         ensure_free_hint_labels,
     )
 
@@ -133,7 +145,7 @@ def _hint_session_keyboard(
             clean = ensure_free_hint_labels(body=body or "")
     if not clean:
         return None, None
-    action_uuid = create_hint_session(
+    action_uuid = await create_hint_session_persisted(
         user_id,
         body=body or "",
         labels=clean,
@@ -170,7 +182,7 @@ async def _standard_suggested_reply_markup(user_id: int, result: ChatTurnResult)
 
         # FREE standard: кнопки всегда — pref/БД/пустые лейблы не имеют значения.
         if is_free and role in ("", "standard"):
-            kb, action_uuid = _hint_session_keyboard(
+            kb, action_uuid = await _hint_session_keyboard(
                 user_id,
                 body=body,
                 labels=labels or None,
@@ -217,7 +229,7 @@ async def _standard_suggested_reply_markup(user_id: int, result: ChatTurnResult)
         if not labels:
             return None, None
 
-        kb, action_uuid = _hint_session_keyboard(
+        kb, action_uuid = await _hint_session_keyboard(
             user_id,
             body=body,
             labels=labels,
@@ -634,7 +646,9 @@ async def _reply_chat_turn_result(
                 )
 
                 async def _on_finalized(sent_message: Message) -> None:
-                    _bind_hint_session_after_send(action_uuid, sent_message)
+                    await _bind_hint_session_after_send_persisted(
+                        action_uuid, sent_message
+                    )
                     if not blogger_post_id:
                         return
                     from services import blogger_post_cache
@@ -715,7 +729,7 @@ async def _reply_chat_turn_result(
                             settings,
                             reply_markup=reply_kb,
                         )
-                        _bind_hint_session_after_send(action_uuid, sent)
+                        await _bind_hint_session_after_send_persisted(action_uuid, sent)
             else:
                 # SUCCESS без текста — не молчим (раньше был silent return).
                 fail_kb = await _free_standard_fallback_keyboard(owner_id)

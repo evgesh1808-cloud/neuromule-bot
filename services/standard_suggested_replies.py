@@ -574,7 +574,7 @@ def split_suggested_replies(
 
 
 # ---------------------------------------------------------------------------
-# HintSession API — только ``_HINT_SESSIONS`` (не трогает legacy ``_CACHE``).
+# HintSession API — L1 ``_HINT_SESSIONS`` + L2 SQLite (не трогает legacy ``_CACHE``).
 # ---------------------------------------------------------------------------
 def create_hint_session(
     user_id: int,
@@ -584,10 +584,10 @@ def create_hint_session(
     root_user_prompt: str,
     message_id: int | None = None,
 ) -> str:
-    """Создаёт изолированную HintSession; возвращает ``action_uuid``.
+    """L1: создаёт HintSession в RAM; возвращает ``action_uuid``.
 
-    Не пишет в legacy ``_CACHE`` / ``_BY_USER``. Старые сессии не удаляет —
-    кнопки под предыдущими сообщениями в чате должны продолжать резолвиться.
+    Для персистентности после create вызывайте ``await persist_hint_session``.
+    Не пишет в legacy ``_CACHE`` / ``_BY_USER``.
     """
     clean_list: list[str] = []
     for raw in labels:
@@ -607,8 +607,53 @@ def create_hint_session(
     return action_uuid
 
 
+async def persist_hint_session(action_uuid: str) -> None:
+    """L2: пишет текущую RAM-сессию в SQLite (+ lazy GC expired)."""
+    from services import hint_session_store as store
+    from services import metrics
+
+    uid = (action_uuid or "").strip()
+    session = _HINT_SESSIONS.get(uid)
+    if session is None:
+        return
+    try:
+        await store.save_hint_session(
+            action_uuid=uid,
+            user_id=session.user_id,
+            body=session.body,
+            labels=session.labels,
+            root_user_prompt=session.root_user_prompt,
+            message_id=session.message_id,
+        )
+        deleted = await store.clear_expired_hint_sessions()
+        if deleted:
+            metrics.incr("hint_session_gc", value=deleted)
+    except Exception:
+        logger.exception("hint_session: persist failed uuid=%s", uid)
+
+
+async def create_hint_session_persisted(
+    user_id: int,
+    *,
+    body: str,
+    labels: Sequence[str],
+    root_user_prompt: str,
+    message_id: int | None = None,
+) -> str:
+    """L1 create + L2 save (основной путь отправки кнопок)."""
+    action_uuid = create_hint_session(
+        user_id,
+        body=body,
+        labels=labels,
+        root_user_prompt=root_user_prompt,
+        message_id=message_id,
+    )
+    await persist_hint_session(action_uuid)
+    return action_uuid
+
+
 def bind_hint_session_message(action_uuid: str, message_id: int) -> None:
-    """Проставляет ``message_id`` после send. Не трогает legacy ``_CACHE``."""
+    """L1: проставляет ``message_id`` после send. Не трогает legacy ``_CACHE``."""
     uid = (action_uuid or "").strip()
     session = _HINT_SESSIONS.get(uid)
     if session is None:
@@ -616,14 +661,61 @@ def bind_hint_session_message(action_uuid: str, message_id: int) -> None:
     _HINT_SESSIONS[uid] = replace(session, message_id=int(message_id))
 
 
+async def bind_hint_session_message_persisted(action_uuid: str, message_id: int) -> None:
+    """L1 bind + L2 UPDATE message_id."""
+    from services import hint_session_store as store
+
+    bind_hint_session_message(action_uuid, message_id)
+    uid = (action_uuid or "").strip()
+    if not uid:
+        return
+    try:
+        await store.bind_hint_session_message(uid, int(message_id))
+    except Exception:
+        logger.exception("hint_session: bind persist failed uuid=%s", uid)
+
+
 def get_hint_session(action_uuid: str, *, user_id: int) -> HintSession | None:
-    """Достаёт HintSession по ``action_uuid`` с проверкой владельца."""
+    """L1 only: достаёт HintSession из RAM с проверкой владельца."""
     uid = (action_uuid or "").strip()
     session = _HINT_SESSIONS.get(uid)
     if session is None:
         return None
     if int(session.user_id) != int(user_id):
         return None
+    return session
+
+
+async def resolve_hint_session(action_uuid: str, *, user_id: int) -> HintSession | None:
+    """L1 → L2 hydrate: после рестарта поднимает сессию из SQLite в RAM."""
+    from services import hint_session_store as store
+    from services import metrics
+
+    uid = (action_uuid or "").strip()
+    session = get_hint_session(uid, user_id=user_id)
+    if session is not None:
+        metrics.incr("hint_session_ram_hit")
+        return session
+
+    try:
+        row = await store.get_hint_session(uid, user_id=user_id)
+    except Exception:
+        logger.exception("hint_session: db get failed uuid=%s", uid)
+        metrics.incr("hint_session_db_miss")
+        return None
+    if row is None:
+        metrics.incr("hint_session_db_miss")
+        return None
+
+    session = HintSession(
+        user_id=int(row["user_id"]),
+        message_id=row["message_id"],  # type: ignore[arg-type]
+        body=str(row["body"] or ""),
+        labels=tuple(row["labels"]),  # type: ignore[arg-type]
+        root_user_prompt=str(row["root_user_prompt"] or ""),
+    )
+    _HINT_SESSIONS[uid] = session
+    metrics.incr("hint_session_db_hit")
     return session
 
 
@@ -944,7 +1036,15 @@ def build_standard_zero_balance_keyboard() -> InlineKeyboardMarkup:
 
 
 def clear_suggested_replies_for_tests() -> None:
-    """Только тесты — чистит и legacy, и HintSession."""
+    """Только тесты — чистит legacy и HintSession L1 (L2 — отдельно async)."""
     _CACHE.clear()
     _BY_USER.clear()
     _HINT_SESSIONS.clear()
+
+
+async def clear_hint_sessions_persisted_for_tests() -> None:
+    """Только тесты: L1 + L2."""
+    clear_suggested_replies_for_tests()
+    from services import hint_session_store as store
+
+    await store.clear_hint_sessions_for_tests()

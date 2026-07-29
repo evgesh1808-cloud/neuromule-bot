@@ -227,7 +227,7 @@ async def cb_standard_suggested_reply(callback: CallbackQuery, state: FSMContext
         FREE_FALLBACK_SUGGESTED_REPLIES,
         build_standard_zero_balance_keyboard,
         expand_suggested_reply_prompt,
-        get_hint_session,
+        resolve_hint_session,
         parse_chat_hint_callback,
         parse_hint_btn_callback,
         parse_std_reply_callback,
@@ -252,7 +252,7 @@ async def cb_standard_suggested_reply(callback: CallbackQuery, state: FSMContext
             await callback.answer()
             return
         index, action_uuid = parsed_btn
-        session = get_hint_session(action_uuid, user_id=user_id)
+        session = await resolve_hint_session(action_uuid, user_id=user_id)
         if session is None:
             await callback.answer(
                 "Кнопка устарела, отправьте новый запрос",
