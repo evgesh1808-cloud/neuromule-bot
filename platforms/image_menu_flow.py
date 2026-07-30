@@ -17,9 +17,9 @@ if TYPE_CHECKING:
     from aiogram.fsm.context import FSMContext
 
 IMAGE_MODEL_MENU_PENDING_KEY = "image_model_menu_pending"
-FREE_DEFAULT_IMAGE_MODEL_ID = "flux-schnell"
-FREE_DEFAULT_IMAGE_MODEL_LABEL = "Flux Schnell"
-# FREE без меню: длинный текст или маркеры промпта → Flux, не чат.
+FREE_DEFAULT_IMAGE_MODEL_ID = "free_photo"
+FREE_DEFAULT_IMAGE_MODEL_LABEL = "Nano Banana (FREE)"
+# FREE без меню: длинный текст или маркеры промпта → DALL-E 3, не чат.
 FREE_AUTO_IMAGE_INTERCEPT_MIN_LEN = 250
 
 _FREE_AUTO_IMAGE_IDLE_STATES = frozenset(
@@ -144,7 +144,7 @@ async def route_free_text_to_flux_photo(
     *,
     auto_flux: bool = True,
 ) -> None:
-    """FREE → Flux Schnell + ``process_photo_prompt_message``."""
+    """FREE → бесплатное фото дня (каскад провайдеров)."""
     from platforms.handlers.generation_fsm import process_photo_prompt_message
 
     await state.update_data(
@@ -170,7 +170,7 @@ async def try_free_photo_from_chat_overflow(
     prompt: str,
     user_id: int,
 ) -> bool:
-    """Последний шанс: CONTEXT_TOO_LARGE на FREE → попробовать Flux вместо ошибки чата."""
+    """Последний шанс: CONTEXT_TOO_LARGE на FREE → бесплатное фото вместо ошибки чата."""
     from services.billing.free_tier_gates import is_free_user
 
     body = (prompt or "").strip()
@@ -231,8 +231,11 @@ async def present_image_model_menu(
     user_id: int,
 ) -> None:
     """Показать меню моделей; следующий текст — промпт (не чат)."""
+    from services.billing.daily_quotas import get_free_photo_snapshot
+
     row = await get_user_row(user_id)
     tariff = TariffTier.from_db(row.tariff)
+    snap = await get_free_photo_snapshot(user_id)
     await mark_image_model_menu_pending(state)
     await state.set_state(UserFlow.waiting_for_image_model_pick)
 
@@ -240,8 +243,8 @@ async def present_image_model_menu(
         msg.get_text_image_models(tariff),
         reply_markup=image_model_menu(
             tariff,
-            photo_daily_count=row.photo_daily_count,
-            photo_daily_date=row.photo_daily_date,
+            free_photo_used=snap.used,
+            free_photo_day=snap.day,
         ),
         parse_mode=ParseMode.HTML,
     )
@@ -259,3 +262,31 @@ async def handle_pending_image_menu_text(message: Message, state: FSMContext) ->
         return
 
     await message.answer(msg.TXT_IMAGE_PICK_MODEL_FIRST, parse_mode=ParseMode.HTML)
+
+
+async def handle_free_photo_with_reference(
+    message: Message,
+    state: FSMContext,
+    *,
+    prompt: str,
+    file_id: str,
+) -> None:
+    """Image-to-image: фото + подпись/промпт на FREE."""
+    from platforms.handlers.generation_fsm import process_photo_prompt_message
+    from services.billing.image_pipeline import free_tier_image_model
+
+    model_id = free_tier_image_model()
+    await state.update_data(
+        image_model_id=model_id,
+        image_model_label=FREE_DEFAULT_IMAGE_MODEL_LABEL,
+    )
+    await state.set_state(UserFlow.waiting_for_photo)
+    await process_photo_prompt_message(
+        message,
+        state,
+        model_id=model_id,
+        label=FREE_DEFAULT_IMAGE_MODEL_LABEL,
+        prompt=prompt,
+        telegram_file_id=file_id,
+        auto_flux=True,
+    )

@@ -299,7 +299,7 @@ async def _post_chat_completion(
             try:
                 from services.billing.chat_pipeline import get_openrouter_key_rotator
 
-                get_openrouter_key_rotator(settings).mark_rate_limited()
+                get_openrouter_key_rotator(settings).rotate(reason="429")
             except Exception:
                 logger.debug("openrouter key rotate on 429 skipped", exc_info=True)
         logger.warning(
@@ -423,7 +423,7 @@ async def _post_chat_completion_stream(
                     try:
                         from services.billing.chat_pipeline import get_openrouter_key_rotator
 
-                        get_openrouter_key_rotator(settings).mark_rate_limited()
+                        get_openrouter_key_rotator(settings).rotate(reason="429")
                     except Exception:
                         logger.debug("openrouter key rotate on stream 429 skipped", exc_info=True)
                 body = (await resp.aread())[:800]

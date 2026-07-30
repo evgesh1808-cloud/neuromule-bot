@@ -1,9 +1,11 @@
-"""Генерация изображений через Gemini API (Imagen 4, Nano Banana) — httpx + GEMINI_API_KEY."""
+"""Генерация изображений через Gemini API (Imagen 4, Nano Banana) — httpx + GEMINI_API_KEY[/_2]."""
 
 from __future__ import annotations
 
 import base64
+import itertools
 import logging
+import threading
 from dataclasses import dataclass
 
 import httpx
@@ -14,6 +16,10 @@ from services.hd_logic import _configure_genai
 logger = logging.getLogger(__name__)
 
 _GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
+
+_KEY_CYCLE = None
+_KEY_LOCK = threading.Lock()
+_LAST_KEY = ""
 
 
 @dataclass(frozen=True)
@@ -27,12 +33,46 @@ class GeminiImageResult:
         return bool(self.url or self.data)
 
 
-def _api_key() -> str:
+def collect_gemini_api_keys() -> list[str]:
+    """Пул: GEMINI_API_KEY, затем GEMINI_API_KEY_2 (без дублей)."""
+    keys: list[str] = []
+    for raw in (
+        getattr(settings, "gemini_api_key", None),
+        getattr(settings, "gemini_api_key_2", None),
+    ):
+        k = (raw or "").strip()
+        if k and k not in keys:
+            keys.append(k)
+    return keys
+
+
+def reset_gemini_key_rotator_for_tests() -> None:
+    global _KEY_CYCLE, _LAST_KEY
+    with _KEY_LOCK:
+        _KEY_CYCLE = None
+        _LAST_KEY = ""
+
+
+def _next_gemini_key() -> str:
+    """Round-robin по пулу ключей."""
+    global _KEY_CYCLE, _LAST_KEY
+    keys = collect_gemini_api_keys()
+    if not keys:
+        raise RuntimeError("Задайте GEMINI_API_KEY (и опционально GEMINI_API_KEY_2) в .env.")
+    with _KEY_LOCK:
+        if _KEY_CYCLE is None:
+            _KEY_CYCLE = itertools.cycle(keys)
+            if len(keys) > 1:
+                logger.info("Gemini key pool: %s keys (round-robin)", len(keys))
+        _LAST_KEY = next(_KEY_CYCLE)
+        return _LAST_KEY
+
+
+def _api_key(*, prefer: str | None = None) -> str:
     _configure_genai()
-    key = (settings.gemini_api_key or "").strip()
-    if not key:
-        raise RuntimeError("Задайте GEMINI_API_KEY в .env.")
-    return key
+    if prefer and prefer.strip():
+        return prefer.strip()
+    return _next_gemini_key()
 
 
 def _extract_inline_image_bytes(payload: dict) -> bytes | None:
@@ -67,8 +107,14 @@ def _extract_generate_images_url(payload: dict) -> str | None:
     return None
 
 
-async def _post_json(path: str, body: dict, *, timeout: float = 120.0) -> dict:
-    key = _api_key()
+async def _post_json(
+    path: str,
+    body: dict,
+    *,
+    timeout: float = 120.0,
+    api_key: str | None = None,
+) -> dict:
+    key = _api_key(prefer=api_key)
     url = f"{_GEMINI_API_BASE}/{path}"
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
@@ -85,10 +131,49 @@ async def _post_json(path: str, body: dict, *, timeout: float = 120.0) -> dict:
         raise RuntimeError(f"Gemini image API error: {exc}") from exc
 
 
+async def _post_json_with_key_failover(path: str, body: dict, *, timeout: float = 120.0) -> dict:
+    """Пробует все ключи пула; при 429/403 — следующий ключ."""
+    keys = collect_gemini_api_keys()
+    if not keys:
+        raise RuntimeError("Задайте GEMINI_API_KEY (и опционально GEMINI_API_KEY_2) в .env.")
+
+    last_exc: BaseException | None = None
+    # Стартуем с RR-ключа, затем остальные.
+    start = _next_gemini_key()
+    ordered = [start] + [k for k in keys if k != start]
+
+    for i, key in enumerate(ordered):
+        try:
+            return await _post_json(path, body, timeout=timeout, api_key=key)
+        except httpx.HTTPStatusError as exc:
+            last_exc = exc
+            code = exc.response.status_code if exc.response is not None else 0
+            if code in (429, 403) and i + 1 < len(ordered):
+                logger.warning(
+                    "Gemini key ...%s HTTP %s — failover to next key",
+                    key[-6:],
+                    code,
+                )
+                continue
+            raise RuntimeError(f"Gemini image API error: {exc}") from exc
+        except RuntimeError as exc:
+            last_exc = exc
+            msg = str(exc).lower()
+            if ("429" in msg or "403" in msg or "resource_exhausted" in msg) and i + 1 < len(
+                ordered
+            ):
+                logger.warning("Gemini key failover after: %s", exc)
+                continue
+            raise
+    if last_exc:
+        raise RuntimeError(f"Gemini image API error: {last_exc}") from last_exc
+    raise RuntimeError("Gemini image API: no keys")
+
+
 async def generate_imagen_fast(prompt: str) -> GeminiImageResult:
     """Imagen 4 Fast (бесплатный контур Imagen 4 в AI Studio)."""
     model = "imagen-4.0-fast-generate-001"
-    payload = await _post_json(
+    payload = await _post_json_with_key_failover(
         f"models/{model}:generateImages",
         {"prompt": prompt, "config": {"numberOfImages": 1}},
     )
@@ -103,11 +188,38 @@ async def generate_imagen_fast(prompt: str) -> GeminiImageResult:
 
 async def generate_gemini_image_model(prompt: str, model: str) -> GeminiImageResult:
     """Gemini image-preview модели (Nano Banana 2 / Pro)."""
+    return await generate_gemini_image_with_reference(prompt, model)
+
+
+async def generate_gemini_image_with_reference(
+    prompt: str,
+    model: str,
+    *,
+    reference_image_bytes: bytes | None = None,
+    reference_mime: str = "image/jpeg",
+    api_key: str | None = None,
+) -> GeminiImageResult:
+    """Text-to-image или image-to-image через Gemini generateContent."""
+    parts: list[dict] = [{"text": (prompt or "").strip()}]
+    if reference_image_bytes:
+        parts.insert(
+            0,
+            {
+                "inlineData": {
+                    "mimeType": reference_mime or "image/jpeg",
+                    "data": base64.b64encode(reference_image_bytes).decode("ascii"),
+                }
+            },
+        )
     body = {
-        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "contents": [{"role": "user", "parts": parts}],
         "generationConfig": {"responseModalities": ["IMAGE"]},
     }
-    payload = await _post_json(f"models/{model}:generateContent", body)
+    path = f"models/{model}:generateContent"
+    if api_key and api_key.strip():
+        payload = await _post_json(path, body, api_key=api_key.strip())
+    else:
+        payload = await _post_json_with_key_failover(path, body)
     data = _extract_inline_image_bytes(payload)
     if data:
         return GeminiImageResult(data=data)

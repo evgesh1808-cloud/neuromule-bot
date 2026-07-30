@@ -138,17 +138,21 @@ def create_menu() -> InlineKeyboardMarkup:
 
 
 def _imagen_free_slots_left(
-    photo_daily_count: int,
-    photo_daily_date: str | None,
+    free_photo_used: int,
+    free_photo_day: str | None,
 ) -> int:
-    today = date.today().isoformat()
-    count = int(photo_daily_count or 0) if photo_daily_date == today else 0
+    from services.billing.daily_quotas import quota_day
+
+    today = quota_day()
+    count = int(free_photo_used or 0) if free_photo_day == today else 0
     return max(0, settings.free_daily_photo_limit - count)
 
 
 def image_model_menu(
     tariff,
     *,
+    free_photo_used: int = 0,
+    free_photo_day: str | None = None,
     photo_daily_count: int = 0,
     photo_daily_date: str | None = None,
 ) -> InlineKeyboardMarkup:
@@ -161,18 +165,24 @@ def image_model_menu(
     back = InlineKeyboardButton(text="⬅️ Назад", callback_data=msg.CB_BACK_CREATE)
 
     if tariff is TariffTier.FREE:
-        left = _imagen_free_slots_left(photo_daily_count, photo_daily_date)
-        from services.billing.pricing import FREE_PRO_IMAGE_COST
+        left = _imagen_free_slots_left(
+            free_photo_used,
+            free_photo_day or (photo_daily_date if photo_daily_count else None),
+        )
+        from services.billing.image_pipeline import free_tier_image_model, free_tier_overlimit_crystal_cost
 
-        flux_label = (
-            f"⚡ Flux Schnell (Осталось: {left})"
+        free_model = free_tier_image_model()
+        over_cost = free_tier_overlimit_crystal_cost(free_model)
+        # Личный слот исчерпан → докупка за 💎. Глобальный cap в UI не показываем.
+        free_label = (
+            "🍌 Nano Banana FREE (1 в день)"
             if left > 0
-            else f"⚡ Flux Schnell ({FREE_PRO_IMAGE_COST} 💎)"
+            else f"🍌 Nano Banana ({over_cost} 💎)"
         )
         rows = [
-            [InlineKeyboardButton(text=flux_label, callback_data=f"{prefix}flux-schnell")],
+            [InlineKeyboardButton(text=free_label, callback_data=f"{prefix}{free_model}")],
+            [InlineKeyboardButton(text="🔒 Flux Schnell (Premium)", callback_data=f"{prefix}flux-schnell")],
             [InlineKeyboardButton(text="🔒 Imagen 4 (Premium)", callback_data=f"{prefix}imagen4")],
-            [InlineKeyboardButton(text="🔒 DALL-E 3 (Premium)", callback_data=f"{prefix}gpt_image2")],
             [InlineKeyboardButton(text="🔒 Nano Banana 2 (Premium)", callback_data=f"{prefix}nano_banana2")],
             [InlineKeyboardButton(text="🔒 Nano Banana Pro (Premium)", callback_data=f"{prefix}nano_banana_pro")],
             [back],

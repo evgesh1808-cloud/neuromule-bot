@@ -73,6 +73,9 @@ def _isolate_settings_for_tests() -> Iterator[None]:
         ("admin_ids", list(TEST_ADMIN_IDS)),
         ("is_webapp_enabled", False),
         ("webapp_shop_url", None),
+        ("free_image_model", "free_photo"),
+        ("global_free_image_daily_cap", 1500),
+        ("free_daily_photo_limit", 1),
     )
     originals: dict[str, object] = {}
     for name, override in fields_overrides:

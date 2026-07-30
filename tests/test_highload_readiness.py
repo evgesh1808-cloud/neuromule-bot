@@ -22,6 +22,25 @@ def test_openrouter_key_rotator_round_robin() -> None:
     assert [rot.next_key() for _ in range(6)] == ["k1", "k2", "k3", "k1", "k2", "k3"]
 
 
+def test_openrouter_key_rotator_rotate_on_429() -> None:
+    rot = OpenRouterKeyRotator(["k1", "k2"])
+    assert rot.next_key() == "k1"
+    assert rot.rotate("k1", reason="429") == "k2"
+    assert rot.peek_last() == "k2"
+
+
+def test_collect_openrouter_keys_includes_key_2() -> None:
+    from services.billing.chat_pipeline import _collect_openrouter_keys
+
+    s = Settings(
+        tg_token="t",
+        openrouter_key="primary",
+        openrouter_key_2="second",
+        openrouter_keys=["extra"],
+    )
+    assert _collect_openrouter_keys(s) == ["primary", "second", "extra"]
+
+
 def test_resolve_openrouter_api_key_uses_pool() -> None:
     reset_openrouter_key_rotator()
     s = Settings(

@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 
 class OpenRouterKeyRotator:
-    """Round-robin пул OpenRouter API keys (снижает 429 на FREE-каскаде)."""
+    """Round-robin пул OpenRouter API keys (снижает 429/402 на FREE-каскаде)."""
 
     def __init__(self, keys: Sequence[str]) -> None:
         clean = [str(k).strip() for k in keys if str(k).strip()]
@@ -66,15 +66,20 @@ class OpenRouterKeyRotator:
     def peek_last(self) -> str:
         return self._last
 
-    def mark_rate_limited(self, key: str | None = None) -> str:
-        """После 429 — сразу берём следующий ключ пула."""
+    def rotate(self, key: str | None = None, *, reason: str = "429") -> str:
+        """После 429/402 — сразу следующий ключ пула (аналог Gemini failover)."""
         mid = (key or self._last or "").strip()
         if mid and self.size > 1:
             logger.warning(
-                "openrouter key rotator: 429 on key=...%s — rotating",
+                "openrouter key rotator: %s on key=...%s — rotate()",
+                reason,
                 mid[-6:],
             )
         return self.next_key()
+
+    def mark_rate_limited(self, key: str | None = None) -> str:
+        """Alias ``rotate()`` для совместимости со старыми call-sites."""
+        return self.rotate(key, reason="429")
 
 
 _KEY_ROTATOR: OpenRouterKeyRotator | None = None
@@ -82,15 +87,20 @@ _KEY_ROTATOR_LOCK = threading.Lock()
 
 
 def _collect_openrouter_keys(cfg: Settings | None = None) -> list[str]:
+    """Пул: OPENROUTER_API_KEY, OPENROUTER_API_KEY_2, затем OPENROUTER_API_KEYS."""
     s = cfg or settings
     keys: list[str] = []
+    for raw in (
+        getattr(s, "openrouter_key", None),
+        getattr(s, "openrouter_key_2", None),
+    ):
+        k = str(raw or "").strip()
+        if k and k not in keys:
+            keys.append(k)
     for item in getattr(s, "openrouter_keys", None) or ():
         k = str(item).strip()
         if k and k not in keys:
             keys.append(k)
-    primary = str(getattr(s, "openrouter_key", "") or "").strip()
-    if primary and primary not in keys:
-        keys.insert(0, primary)
     return keys
 
 

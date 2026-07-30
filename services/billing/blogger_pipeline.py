@@ -2,16 +2,24 @@
 
 from __future__ import annotations
 
-from datetime import date
-
 from services.billing import store
-from services.billing.image_pipeline import build_image_spend_plan, spend_image_resource
-from services.billing.pricing import FREE_IMAGEN_DAILY_LIMIT
+from services.billing.image_pipeline import (
+    build_image_spend_plan,
+    free_tier_image_model,
+    spend_image_resource,
+)
 from services.billing.pricing_constants import BLOGGER_ADAPT_COST
 from services.billing.types import SpendFeature, SpendResult, TariffTier
 from services.god_mode import billing_bypass
 
 BLOGGER_COVER_IMAGE_MODEL = "flux_schnell"
+
+
+def _cover_model_for_tariff(tariff: TariffTier) -> str:
+    """FREE — общий free_photo слот; платные тарифы — Flux Schnell."""
+    if tariff is TariffTier.FREE:
+        return free_tier_image_model()
+    return BLOGGER_COVER_IMAGE_MODEL
 
 
 async def _total_crystals(user_id: int) -> int:
@@ -26,22 +34,21 @@ async def can_afford_blogger_adapt(user_id: int) -> bool:
 
 
 async def can_afford_blogger_cover(user_id: int) -> bool:
-    """Обложка блогера — те же лимиты и цены, что Flux Schnell в фото-меню."""
+    """Обложка блогера: FREE — free_photo (1/день), платные — Flux Schnell."""
     if billing_bypass(user_id):
         return True
     user = await store.load_user_billing(user_id)
+    model = _cover_model_for_tariff(user.current_tariff)
     plan = build_image_spend_plan(
         user.current_tariff,
-        BLOGGER_COVER_IMAGE_MODEL,
+        model,
         daily_count=user.photo_daily_count,
         daily_date=user.photo_daily_date,
     )
     if plan.blocked:
         return False
     if plan.use_free_daily_slot:
-        today = date.today().isoformat()
-        count = user.photo_daily_count if user.photo_daily_date == today else 0
-        return count < FREE_IMAGEN_DAILY_LIMIT
+        return True
     if plan.crystals_only:
         return user.crystals >= plan.crystal_cost
     if user.total_energy >= plan.energy_cost:
@@ -66,5 +73,7 @@ async def spend_blogger_adapt(user_id: int) -> SpendResult:
 
 
 async def spend_blogger_cover(user_id: int) -> SpendResult:
-    """AI-обложка: Flux Schnell; FREE — до 3 бесплатных слотов/день (общий счётчик фото)."""
-    return await spend_image_resource(user_id, BLOGGER_COVER_IMAGE_MODEL)
+    """AI-обложка: FREE — free_photo (общая квота), платные — Flux Schnell."""
+    user = await store.load_user_billing(user_id)
+    model = _cover_model_for_tariff(user.current_tariff)
+    return await spend_image_resource(user_id, model)

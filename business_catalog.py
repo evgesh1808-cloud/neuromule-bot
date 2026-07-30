@@ -216,6 +216,7 @@ IMAGE_MODEL_ALIASES: dict[str, str] = {
     "flux_schnell": "flux_schnell",
     "gpt_image2": "gpt_image2",
     "dalle_3": "gpt_image2",
+    "free_photo": "free_photo",
     "nano_banana2": "nano_banana2",
     "nano_banana_pro": "nano_banana_pro",
 }

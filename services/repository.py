@@ -437,6 +437,32 @@ async def init_db(promo_seeds: str = "") -> None:
         await _migrate_hint_sessions(db)
         await db.execute(
             """
+            CREATE TABLE IF NOT EXISTS user_daily_quotas (
+                user_id     INTEGER NOT NULL,
+                quota_key   TEXT    NOT NULL,
+                quota_date  TEXT    NOT NULL,
+                used_count  INTEGER NOT NULL DEFAULT 0,
+                updated_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (user_id, quota_key, quota_date)
+            )
+            """
+        )
+        await db.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_udq_user_key_date
+            ON user_daily_quotas (user_id, quota_key, quota_date DESC)
+            """
+        )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS bot_runtime_kv (
+                key   TEXT PRIMARY KEY,
+                value INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+        await db.execute(
+            """
             CREATE TABLE IF NOT EXISTS referrals (
                 invited_id INTEGER PRIMARY KEY,
                 inviter_id INTEGER NOT NULL,
@@ -1220,15 +1246,9 @@ update_user_last_advice_message_id = update_user_last_advice_id
 
 
 async def rollback_daily_photo_slot(user_id: int) -> None:
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            """
-            UPDATE users SET photo_daily_count = CASE WHEN photo_daily_count > 0 THEN photo_daily_count - 1 ELSE 0 END
-            WHERE id = ?
-            """,
-            (user_id,),
-        )
-        await db.commit()
+    from services.billing.daily_quotas import refund_free_photo_quota
+
+    await refund_free_photo_quota(user_id)
 
 
 async def set_user_tariff(user_id: int, tariff: str) -> None:

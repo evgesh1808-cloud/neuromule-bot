@@ -59,7 +59,7 @@ async def test_can_afford_blogger_cover_free_slot_exhausted_without_crystals() -
     today = date.today().isoformat()
     with patch(
         "services.billing.blogger_pipeline.store.load_user_billing",
-        AsyncMock(return_value=_billing_user(crystals=0, photo_daily_count=3, photo_daily_date=today)),
+        AsyncMock(return_value=_billing_user(crystals=0, photo_daily_count=1, photo_daily_date=today)),
     ):
         assert await can_afford_blogger_cover(1) is False
 
@@ -69,7 +69,7 @@ async def test_can_afford_blogger_cover_free_overlimit_with_crystals() -> None:
     today = date.today().isoformat()
     with patch(
         "services.billing.blogger_pipeline.store.load_user_billing",
-        AsyncMock(return_value=_billing_user(crystals=3, photo_daily_count=3, photo_daily_date=today)),
+        AsyncMock(return_value=_billing_user(crystals=3, photo_daily_count=1, photo_daily_date=today)),
     ):
         assert await can_afford_blogger_cover(1) is True
 
@@ -88,6 +88,9 @@ async def test_can_afford_blogger_adapt_with_zero_balance() -> None:
 async def test_spend_blogger_cover_delegates_to_image_pipeline() -> None:
     charge = ChargeBreakdown(charge_id="c1", crystals=0)
     with patch(
+        "services.billing.blogger_pipeline.store.load_user_billing",
+        AsyncMock(return_value=_billing_user(tariff=TariffTier.SMART)),
+    ), patch(
         "services.billing.blogger_pipeline.spend_image_resource",
         AsyncMock(return_value=type("Spend", (), {"ok": True, "charge": charge, "error": ""})()),
     ) as mock_spend:

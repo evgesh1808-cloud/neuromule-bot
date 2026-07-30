@@ -6,7 +6,11 @@ from datetime import date
 
 import pytest
 
-from services.billing.image_pipeline import build_image_spend_plan, normalize_image_model
+from services.billing.image_pipeline import (
+    FREE_PHOTO_MODEL_KEY,
+    build_image_spend_plan,
+    normalize_image_model,
+)
 from services.billing.pricing import SHOP_PACKS
 from services.billing.shop import normalize_pack_name
 from services.billing.types import TariffTier
@@ -31,21 +35,29 @@ def test_free_imagen_blocked() -> None:
     assert plan.use_free_daily_slot is False
 
 
-def test_free_flux_uses_free_slot_under_daily_limit() -> None:
-    plan = build_image_spend_plan(TariffTier.FREE, "flux_schnell", daily_count=0, daily_date=None)
+def test_free_photo_uses_free_slot_under_daily_limit() -> None:
+    today = date.today().isoformat()
+    plan = build_image_spend_plan(
+        TariffTier.FREE,
+        FREE_PHOTO_MODEL_KEY,
+        daily_count=0,
+        daily_date=today,
+    )
     assert plan.use_free_daily_slot is True
     assert plan.crystal_cost == 0
     assert plan.blocked is False
 
 
-def test_free_flux_overlimit_charges_pro_image_cost() -> None:
-    from services.billing.pricing import FREE_PRO_IMAGE_COST
-
+def test_free_photo_overlimit_charges_crystals() -> None:
     today = date.today().isoformat()
-    plan = build_image_spend_plan(TariffTier.FREE, "flux_schnell", daily_count=1, daily_date=today)
+    plan = build_image_spend_plan(
+        TariffTier.FREE,
+        FREE_PHOTO_MODEL_KEY,
+        daily_count=1,
+        daily_date=today,
+    )
     assert plan.use_free_daily_slot is False
     assert plan.crystals_only is True
-    assert plan.crystal_cost == FREE_PRO_IMAGE_COST
     assert plan.blocked is False
 
 
@@ -77,6 +89,7 @@ def test_video_route_ultra_priority() -> None:
 def test_image_model_aliases() -> None:
     assert normalize_image_model("flux-schnell") == "flux_schnell"
     assert normalize_image_model("imagen4") == "imagen4"
+    assert normalize_image_model("free_photo") == "free_photo"
 
 
 @pytest.mark.asyncio
@@ -101,6 +114,26 @@ async def test_atomic_spend_and_refund_chat(repo_module) -> None:
     assert await refund_charge(charge.charge_id)
     row2 = await repo_module.get_user_row(uid)
     assert row2.energy == 10
+
+
+@pytest.mark.asyncio
+async def test_atomic_consume_free_photo_no_energy(repo_module) -> None:
+    from services.billing.store import atomic_consume_free_photo, refund_charge
+
+    uid = 88101
+    await repo_module.ensure_user(uid)
+    row_before = await repo_module.get_user_row(uid)
+    energy_before = row_before.energy
+
+    charge = await atomic_consume_free_photo(uid)
+    assert charge is not None
+    assert charge.used_photo_free_slot is True
+    assert charge.energy_free == 0
+
+    row_after = await repo_module.get_user_row(uid)
+    assert row_after.energy == energy_before
+
+    assert await refund_charge(charge.charge_id)
 
 
 @pytest.mark.asyncio

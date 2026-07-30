@@ -185,20 +185,21 @@ def _hd_block(has_pro: bool, hd_type: str | None, hd_birth_data: str | None) -> 
 
 
 def _blogger_constructor_block(snapshot: BloggerResourcesSnapshot) -> str:
+    from services.billing.image_pipeline import free_tier_overlimit_crystal_cost
     from services.billing.pricing_constants import (
         BLOGGER_ADAPT_COST,
         FREE_DAILY_IMAGEN_LIMIT,
-        FREE_PRO_IMAGE_COST,
     )
 
+    over_cost = free_tier_overlimit_crystal_cost("gpt_image2")
     return (
         "📱 <b>Конструктор «Блогер»</b>\n"
         f"• <b>Тариф:</b> <code>{snapshot.tariff.value}</code>\n"
         f"• <b>Энергия:</b> <code>{snapshot.energy}</code> / {snapshot.energy_max} ⚡\n"
         f"• <b>Алмазы:</b> <code>{snapshot.diamonds}</code> 💎\n"
         f"• <b>Адаптация поста:</b> {BLOGGER_ADAPT_COST} 💎 за площадку\n"
-        f"• <b>AI-обложка:</b> Flux Schnell — как в меню «🎨 Фото» "
-        f"(FREE: {FREE_DAILY_IMAGEN_LIMIT} фото/день бесплатно, далее {FREE_PRO_IMAGE_COST} 💎)"
+        f"• <b>AI-обложка:</b> Flux Schnell на платных; на FREE — DALL-E 3 "
+        f"({FREE_DAILY_IMAGEN_LIMIT}/день бесплатно в «🎨 Фото», далее {over_cost} 💎)"
     )
 
 
@@ -263,6 +264,13 @@ async def build_user_profile_html(settings: Settings, user_id: int) -> str:
     energy = int(billing_user.total_energy)
 
     photo_limit = settings.free_daily_photo_limit
+    if tariff is TariffTier.FREE:
+        from services.billing.daily_quotas import get_free_photo_snapshot
+
+        photo_snap = await get_free_photo_snapshot(user_id)
+        photos_left = photo_snap.remaining
+    else:
+        photos_left = 0
     energy_max = (
         catalog.daily_free_energy if tariff is TariffTier.FREE else max(1, energy or settings.mini_energy)
     )
@@ -279,7 +287,7 @@ async def build_user_profile_html(settings: Settings, user_id: int) -> str:
     parts.append(_tariff_block(tariff, row.subscription_ends_at))
     parts.append(_energy_block(energy, catalog.daily_free_energy if tariff is TariffTier.FREE else energy_max))
     if tariff is TariffTier.FREE:
-        parts.append(_photos_block_free(_free_photos_left(row, photo_limit), photo_limit))
+        parts.append(_photos_block_free(photos_left, photo_limit))
     else:
         max_sub_pack = _tariff_pack_crystals(tariff)
         parts.append(_photos_block_paid(sub, max_sub_pack))

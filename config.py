@@ -236,13 +236,17 @@ class Settings(BaseSettings):
     ] = "https://t.me/NeuroMule_bot"
     shop_payment_title: Annotated[str, _nonempty_str("NeuroMule")] = "NeuroMule"
     openrouter_key: str = Field(default="", alias="OPENROUTER_API_KEY")
-    # Пул ключей через запятую (round-robin). Если пусто — используется OPENROUTER_API_KEY.
+    # Второй ключ OpenRouter (round-robin / failover при 429/402 на FREE).
+    openrouter_key_2: str = Field(default="", alias="OPENROUTER_API_KEY_2")
+    # Пул ключей через запятую (round-robin). Дополняет KEY / KEY_2.
     openrouter_keys: Annotated[list[str], _coerce_str_list([])] = Field(
         default_factory=list,
         validation_alias=AliasChoices("OPENROUTER_API_KEYS", "openrouter_keys"),
     )
     openrouter_chat_url: str = "https://openrouter.ai/api/v1/chat/completions"
     gemini_api_key: str = Field(default="", alias="GEMINI_API_KEY")
+    # Второй ключ Google AI Studio Free Tier (failover / round-robin для Nano Banana).
+    gemini_api_key_2: str = Field(default="", alias="GEMINI_API_KEY_2")
     replicate_api_token: str = Field(default="", alias="REPLICATE_API_TOKEN")
     replicate_video_model: Annotated[str, _nonempty_str("luma/ray-flash")] = "luma/ray-flash"
     replicate_animate_model: Annotated[str, _nonempty_str("luma/ray-flash")] = "luma/ray-flash"
@@ -511,7 +515,40 @@ class Settings(BaseSettings):
         str,
         _openrouter_model_id(_DEFAULT_GEMINI_FLASH),
     ] = _DEFAULT_GEMINI_FLASH
-    free_image_model: Annotated[str, _nonempty_str("flux_schnell")] = "flux_schnell"
+    free_image_model: Annotated[str, _nonempty_str("free_photo")] = "free_photo"
+    # Скрытый суточный предохранитель FREE Nano Banana на весь бот (.env).
+    global_free_image_daily_cap: Annotated[int, _coerce_int(1500)] = Field(
+        default=1500,
+        validation_alias=AliasChoices("GLOBAL_FREE_IMAGE_DAILY_CAP", "global_free_image_daily_cap"),
+    )
+    quota_timezone: Annotated[str, _nonempty_str("Europe/Moscow")] = Field(
+        default="Europe/Moscow",
+        validation_alias=AliasChoices("QUOTA_TIMEZONE", "quota_timezone"),
+    )
+    # Nano Banana FREE: строгий RR по 4 ключам (2×Gemini + 2×OpenRouter).
+    free_image_openrouter_model: Annotated[
+        str,
+        _nonempty_str("google/gemini-2.5-flash-image-preview:free"),
+    ] = "google/gemini-2.5-flash-image-preview:free"
+    free_image_gemini_model: Annotated[
+        str,
+        _nonempty_str("gemini-2.5-flash-image-preview"),
+    ] = "gemini-2.5-flash-image-preview"
+    free_image_semaphore_limit: Annotated[int, _coerce_int(1)] = Field(
+        default=1,
+        validation_alias=AliasChoices("FREE_IMAGE_SEMAPHORE_LIMIT", "free_image_semaphore_limit"),
+    )
+    free_image_key_pause_sec: Annotated[float, _coerce_float(2.0)] = Field(
+        default=2.0,
+        validation_alias=AliasChoices("FREE_IMAGE_KEY_PAUSE_SEC", "free_image_key_pause_sec"),
+    )
+    free_image_cascade_timeout_sec: Annotated[float, _coerce_float(120.0)] = Field(
+        default=120.0,
+        validation_alias=AliasChoices(
+            "FREE_IMAGE_CASCADE_TIMEOUT_SEC",
+            "free_image_cascade_timeout_sec",
+        ),
+    )
     free_daily_text_limit: Annotated[int, _coerce_int(10)] = 10
 
     # --- Магазин: пакеты (дефолты = утверждённая сетка 2026) ---

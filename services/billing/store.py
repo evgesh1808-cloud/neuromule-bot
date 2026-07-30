@@ -9,7 +9,7 @@ import aiosqlite
 
 from services.billing.crystals_balance import migrate_crystal_split_columns
 from services.billing.pricing import DAILY_FREE_ENERGY
-from services.billing.types import ChargeBreakdown, TariffTier, UserBillingState
+from services.billing.types import ChargeBreakdown, SpendFeature, TariffTier, UserBillingState
 from services import repository
 from services.god_mode import god_mode_charge, is_god_mode_charge, billing_bypass
 from services.repository import ensure_user
@@ -191,6 +191,9 @@ async def init_billing_schema() -> None:
     async with aiosqlite.connect(_db_path()) as db:
         await _migrate_billing_columns(db)
         await _ensure_balance_packages_schema(db)
+        from services.billing.daily_quotas import ensure_quota_schema
+
+        await ensure_quota_schema(db)
         await migrate_crystal_split_columns(db)
         await db.commit()
 
@@ -306,6 +309,9 @@ async def load_user_billing(user_id: int) -> UserBillingState:
     sub_cr = int(row[4] or 0)
     buy_cr = int(row[5] or 0)
     crystals_total = sub_cr + buy_cr if (row[4] is not None or row[5] is not None) else int(row[6] or 0)
+    from services.billing.daily_quotas import get_free_photo_snapshot, quota_day
+
+    photo_snap = await get_free_photo_snapshot(wallet_id, day=quota_day())
     return UserBillingState(
         user_id=int(row[0]),
         current_tariff=TariffTier.from_db(row[1]),
@@ -315,8 +321,8 @@ async def load_user_billing(user_id: int) -> UserBillingState:
         last_energy_reset=row[7],
         invited_by_id=int(row[8]) if row[8] is not None else None,
         first_purchase_done=bool(row[9]),
-        photo_daily_date=row[10],
-        photo_daily_count=int(row[11] or 0),
+        photo_daily_date=photo_snap.day if photo_snap.used else None,
+        photo_daily_count=photo_snap.used,
     )
 
 
@@ -446,6 +452,45 @@ async def mark_first_purchase_done(user_id: int) -> int | None:
         )
         await db.commit()
         return inviter
+
+
+async def atomic_consume_free_photo(user_id: int) -> ChargeBreakdown | None:
+    """Резервирует FREE-слот (user_daily_quotas + global cap). ⚡/💎 не трогаем."""
+    if billing_bypass(user_id):
+        return god_mode_charge()
+    from services.billing.daily_quotas import try_consume_free_photo_quota
+
+    wallet_id = await _resolve_wallet_id(user_id)
+    quota_date = await try_consume_free_photo_quota(wallet_id)
+    if not quota_date:
+        return None
+    charge_id = uuid.uuid4().hex[:16]
+    async with aiosqlite.connect(_db_path()) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            await db.execute(
+                """
+                INSERT INTO billing_charges
+                    (charge_id, user_id, feature, energy_free, energy_paid, crystals,
+                     photo_slot, status, created_at)
+                VALUES (?, ?, ?, 0, 0, 0, 1, 'charged', ?)
+                """,
+                (charge_id, wallet_id, SpendFeature.IMAGE.value, quota_date),
+            )
+            await db.commit()
+        except Exception:
+            await db.execute("ROLLBACK")
+            from services.billing.daily_quotas import refund_free_photo_quota
+
+            await refund_free_photo_quota(wallet_id, quota_date=quota_date)
+            raise
+    return ChargeBreakdown(
+        charge_id=charge_id,
+        energy_free=0,
+        energy_paid=0,
+        crystals=0,
+        used_photo_free_slot=True,
+    )
 
 
 async def atomic_spend(
@@ -659,7 +704,7 @@ async def refund_charge(charge_id: str) -> bool:
         await db.execute("BEGIN IMMEDIATE")
         async with db.execute(
             """
-            SELECT user_id, energy_free, energy_paid, crystals, photo_slot, status
+            SELECT user_id, energy_free, energy_paid, crystals, photo_slot, status, created_at
             FROM billing_charges WHERE charge_id = ?
             """,
             (charge_id,),
@@ -668,7 +713,7 @@ async def refund_charge(charge_id: str) -> bool:
         if not row or row[5] != "charged":
             await db.execute("ROLLBACK")
             return False
-        uid, ef, ep, cr, slot, _ = row
+        uid, ef, ep, cr, slot, _, quota_date = row
         async with db.execute(
             "SELECT COALESCE(energy_free, energy, 0), COALESCE(energy_paid, 0) FROM users WHERE id = ?",
             (uid,),
@@ -699,13 +744,16 @@ async def refund_charge(charge_id: str) -> bool:
             (uid,),
         )
         if slot:
-            await db.execute(
-                """
-                UPDATE users SET photo_daily_count = CASE
-                    WHEN photo_daily_count > 0 THEN photo_daily_count - 1 ELSE 0
-                END WHERE id = ?
-                """,
-                (uid,),
+            from services.billing.daily_quotas import (
+                ensure_quota_schema,
+                refund_free_photo_quota_on_connection,
+            )
+
+            await ensure_quota_schema(db)
+            await refund_free_photo_quota_on_connection(
+                db,
+                int(uid),
+                quota_date=str(quota_date or "") or None,
             )
         cur = await db.execute(
             """

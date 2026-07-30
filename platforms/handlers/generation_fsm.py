@@ -164,6 +164,7 @@ async def process_photo_prompt_message(
     label: str,
     prompt: str,
     auto_flux: bool = False,
+    telegram_file_id: str | None = None,
 ) -> None:
     user_id = message.from_user.id
     chat_id = message.chat.id
@@ -180,10 +181,19 @@ async def process_photo_prompt_message(
                 model_id,
                 label,
                 prompt,
+                telegram_file_id=telegram_file_id,
             )
 
     if pr.outcome is PhotoGenOutcome.NEED_PROMPT:
         await message.answer(msg.TXT_CREATE_IMAGE_AFTER_MODEL)
+        return
+    if pr.outcome is PhotoGenOutcome.GLOBAL_FREE_IMAGE_CAP:
+        await message.answer(
+            msg.TXT_FREE_IMAGE_GLOBAL_CAP,
+            reply_markup=paycat.shop_packages_keyboard(),
+            parse_mode=ParseMode.HTML,
+        )
+        await state.clear()
         return
     if pr.outcome is PhotoGenOutcome.INSUFFICIENT_BALANCE:
         await message.answer(
@@ -463,6 +473,23 @@ async def marketplace_audit_file_process(message: Message, state: FSMContext) ->
 @router.message(WBAuditingStates.wait_for_xlsx, F.text)
 async def wb_audit_wait_for_xlsx_text(message: Message) -> None:
     await message.answer(msg.TXT_AUDIT_WB_WAIT_FOR_FILE, parse_mode=ParseMode.HTML)
+
+
+@router.message(UserFlow.waiting_for_photo, F.photo)
+async def photo_process_with_image(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    model_id = data.get("image_model_id", "")
+    label = data.get("image_model_label", "модель")
+    prompt = (message.caption or "").strip() or "Улучши и доработай это фото по стилю референса"
+    file_id = message.photo[-1].file_id
+    await process_photo_prompt_message(
+        message,
+        state,
+        model_id=model_id,
+        label=label,
+        prompt=prompt,
+        telegram_file_id=file_id,
+    )
 
 
 @router.message(UserFlow.waiting_for_photo, F.text)

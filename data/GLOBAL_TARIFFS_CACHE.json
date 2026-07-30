@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-07-13T17:41:07.837001+00:00",
+  "updated_at": "2026-07-30T16:31:25.294165+00:00",
   "source": "https://common-api.wildberries.ru",
   "build": "cfo-v12-tariffs-cache",
   "default_return_base_rub": 50.0,
@@ -374,6 +374,15 @@
       "storage_base_rub": 0.15,
       "storage_liter_rub": 0.15
     },
+    "красный бор": {
+      "warehouse_name": "Красный Бор",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 101.2,
+      "delivery_liter_rub": 30.8,
+      "storage_base_rub": 0.15,
+      "storage_liter_rub": 0.15
+    },
     "шушары: питание": {
       "warehouse_name": "Шушары: Питание",
       "return_base_rub": 0.0,
@@ -571,6 +580,24 @@
       "delivery_liter_rub": 14.0,
       "storage_base_rub": 0.07,
       "storage_liter_rub": 0.07
+    },
+    "омск: питание": {
+      "warehouse_name": "Омск: Питание",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 92.0,
+      "delivery_liter_rub": 28.0,
+      "storage_base_rub": 0.14,
+      "storage_liter_rub": 0.14
+    },
+    "ск омск": {
+      "warehouse_name": "СК Омск",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 92.0,
+      "delivery_liter_rub": 28.0,
+      "storage_base_rub": 0.14,
+      "storage_liter_rub": 0.14
     },
     "новосибирск": {
       "warehouse_name": "Новосибирск",
@@ -1103,6 +1130,15 @@
       "storage_base_rub": 0.0,
       "storage_liter_rub": 0.0
     },
+    "уткина заводь сгт": {
+      "warehouse_name": "Уткина Заводь СГТ",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
     "санкт-петербург шушары": {
       "warehouse_name": "Санкт-Петербург Шушары",
       "return_base_rub": 0.0,
@@ -1177,15 +1213,6 @@
     },
     "сц архангельск": {
       "warehouse_name": "СЦ Архангельск",
-      "return_base_rub": 0.0,
-      "return_liter_rub": 0.0,
-      "delivery_base_rub": 0.0,
-      "delivery_liter_rub": 0.0,
-      "storage_base_rub": 0.0,
-      "storage_liter_rub": 0.0
-    },
-    "красный бор": {
-      "warehouse_name": "Красный Бор",
       "return_base_rub": 0.0,
       "return_liter_rub": 0.0,
       "delivery_base_rub": 0.0,

@@ -30,6 +30,7 @@ def test_cost_defaults_match_pricelist(monkeypatch) -> None:
         openrouter_key="y",
         gemini_api_key="z",
         cost_image_pro=3,
+        _env_file=None,
     )
     assert s.cost_hd == 70
     assert s.cost_image_pro == 3
@@ -37,7 +38,7 @@ def test_cost_defaults_match_pricelist(monkeypatch) -> None:
     assert s.cost_video == 20
     assert s.cost_music == 15
     assert s.referral_bonus_energy == 5
-    assert s.free_image_model == "flux_schnell"
+    assert s.free_image_model == "free_photo"
 
 
 def test_dynamic_cta_tuesday_uses_env_video_cost(monkeypatch) -> None:

@@ -35,7 +35,8 @@ def _make_bot(log: _SentLog) -> SimpleNamespace:
     async def send_photo(*args, **kwargs):
         log.photo_calls.append({"args": args, "kwargs": kwargs})
         return SimpleNamespace(
-            photo=[SimpleNamespace(file_id="tg_photo_xxs"), SimpleNamespace(file_id="tg_photo_xl")]
+            message_id=101,
+            photo=[SimpleNamespace(file_id="tg_photo_xxs"), SimpleNamespace(file_id="tg_photo_xl")],
         )
 
     async def send_video(*args, **kwargs):
@@ -49,11 +50,16 @@ def _make_bot(log: _SentLog) -> SimpleNamespace:
     async def send_message(*args, **kwargs):
         return SimpleNamespace()
 
+    async def edit_message_reply_markup(*args, **kwargs):
+        log.photo_calls.append({"edit_markup": True, "args": args, "kwargs": kwargs})
+        return True
+
     return SimpleNamespace(
         send_photo=send_photo,
         send_video=send_video,
         send_audio=send_audio,
         send_message=send_message,
+        edit_message_reply_markup=edit_message_reply_markup,
     )
 
 
@@ -139,6 +145,18 @@ async def test_photo_worker_caches_share_media(monkeypatch) -> None:
     forward_btns = [b for b in gallery_row if b.switch_inline_query]
     assert len(forward_btns) == 1
     assert forward_btns[0].text == msg.TXT_GALLERY_FORWARD_FRIEND_BTN
+
+    edits = [c for c in log.photo_calls if c.get("edit_markup")]
+    assert edits, "download button must be attached via edit_message_reply_markup"
+    edited_kb = edits[0]["kwargs"]["reply_markup"]
+    dl_btns = [
+        b
+        for row in edited_kb.inline_keyboard
+        for b in row
+        if b.text == msg.BTN_DOWNLOAD_UNCOMPRESSED
+    ]
+    assert len(dl_btns) == 1
+    assert dl_btns[0].callback_data.startswith(msg.CB_DL_FILE_PREFIX)
 
 
 @pytest.mark.asyncio

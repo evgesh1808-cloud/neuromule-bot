@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramNetworkError
 from aiogram.types import BufferedInputFile, InputFile, URLInputFile
 
 from config import settings
@@ -24,6 +25,7 @@ from content.inline_keyboards import (
 from content.video_menu import result_video_keyboard_pro
 from platforms.telegram_chat_action import chat_action_loop
 from services import last_music_request, last_share_media
+from services.photo_dl_callback import build_dl_file_callback
 from services.gemini_image_client import (
     GeminiImageResult,
     generate_gemini_image_model,
@@ -45,6 +47,8 @@ from services.billing.translator import (
 )
 from services.billing.video_pipeline import VIDEO_SCENARIOS
 from services.photo_share import resolve_photo_share_url
+from services.billing.image_pipeline import FREE_PHOTO_MODEL_KEY, free_tier_image_model
+from services.free_image_cascade import FreeImageCascadeExhausted, generate_free_tier_image
 from services.pollinations_client import generate_flux_schnell_image
 from services.repository import get_user_row
 from services.tariffs import TariffName, normalize_tariff
@@ -161,6 +165,44 @@ def _normalize_photo_model_id(model_id: str, model_label: str = "") -> str:
     return aliases.get(raw, raw)
 
 
+async def _load_telegram_photo_bytes(bot: "Bot", file_id: str) -> tuple[bytes, str]:
+    """Скачивает фото из Telegram для image-to-image."""
+    from io import BytesIO
+
+    file = await bot.get_file(file_id)
+    if not file.file_path:
+        raise ExternalApiError("Telegram", "file_path отсутствует")
+    buf = BytesIO()
+    await bot.download_file(file.file_path, buf)
+    data = buf.getvalue()
+    if not data:
+        raise ExternalApiError("Telegram", "пустой файл фото")
+    path = file.file_path.lower()
+    mime = "image/jpeg"
+    if path.endswith(".png"):
+        mime = "image/png"
+    elif path.endswith(".webp"):
+        mime = "image/webp"
+    return data, mime
+
+
+async def _generate_free_tier_photo(
+    prompt: str,
+    *,
+    bot: "Bot",
+    file_id: str | None,
+) -> GeminiImageResult:
+    ref_bytes: bytes | None = None
+    ref_mime = "image/jpeg"
+    if file_id:
+        ref_bytes, ref_mime = await _load_telegram_photo_bytes(bot, file_id)
+    return await generate_free_tier_image(
+        prompt,
+        reference_image_bytes=ref_bytes,
+        reference_mime=ref_mime,
+    )
+
+
 async def _free_tier_flux_uses_pollinations(user_id: int | None, model_key: str) -> bool:
     """FREE + Flux Schnell → Pollinations (без Replicate и без API-ключей)."""
     if model_key != "flux_schnell" or user_id is None:
@@ -199,6 +241,9 @@ async def _generate_photo_result(
                 raise ExternalApiError("Replicate", "Flux Schnell: пустой URL")
             return url
 
+        if model_key == "free_photo":
+            raise ExternalApiError("FreePhoto", "free_photo requires task worker context")
+
         if model_key == "gpt_image2":
             if not replicate_configured():
                 raise ExternalApiError("Replicate", "REPLICATE_API_TOKEN не задан")
@@ -232,17 +277,25 @@ async def _send_generated_photo(
 ) -> None:
     bot, chat_id = task.bot, task.chat_id
     display = task.model_label or task.image_model_id or "модель"
-    caption = (
-        f"🎨 **Ваше изображение успешно сгенерировано!**\n"
-        f"🤖 Модель: {display}\n"
-        f"💎 Стоимость: {task.charged_crystals} 💎"
-    )
+    if task.used_daily_slot:
+        caption = (
+            f"🎨 **Бесплатное фото дня готово!**\n"
+            f"🤖 Модель: {display}\n"
+            f"💎 Стоимость: 0 💎"
+        )
+    else:
+        caption = (
+            f"🎨 **Ваше изображение успешно сгенерировано!**\n"
+            f"🤖 Модель: {display}\n"
+            f"💎 Стоимость: {task.charged_crystals} 💎"
+        )
     row = await get_user_row(task.user_id)
     photo_share_url = resolve_photo_share_url(
         normalize_tariff(row.tariff),
         task.prompt or "",
         task.user_id,
     )
+    # Сначала превью без кнопки скачивания — file_id появится только после send_photo.
     markup = result_photo_keyboard(task_id=task.task_id, photo_share_url=photo_share_url)
     if photo_url:
         sent = await bot.send_photo(
@@ -268,6 +321,31 @@ async def _send_generated_photo(
     tg_file_id = sent.photo[-1].file_id if sent.photo else None
     _remember_share(task, file_id=tg_file_id, media_url=photo_url)
 
+    # «Скачать без сжатия»: переиспользуем Telegram file_id (бесплатно / мгновенно).
+    if tg_file_id:
+        try:
+            dl_cb = build_dl_file_callback(
+                file_id=tg_file_id,
+                task_id=task.task_id,
+                user_id=task.user_id,
+            )
+            markup_with_dl = result_photo_keyboard(
+                task_id=task.task_id,
+                photo_share_url=photo_share_url,
+                download_callback=dl_cb,
+            )
+            await bot.edit_message_reply_markup(
+                chat_id=chat_id,
+                message_id=sent.message_id,
+                reply_markup=markup_with_dl,
+            )
+        except (TelegramBadRequest, TelegramForbiddenError, TelegramNetworkError) as exc:
+            logger.warning(
+                "photo download button attach failed task=%s: %s",
+                task.task_id,
+                exc,
+            )
+
 
 async def _photo_stub_worker(task: GenTask) -> None:
     task.status = "processing"
@@ -281,19 +359,28 @@ async def _photo_stub_worker(task: GenTask) -> None:
 
     try:
         logger.info(
-            "photo job %s user_id=%s model_id=%s model_key=%s prompt_len=%s",
+            "photo job %s user_id=%s model_id=%s model_key=%s prompt_len=%s file_id=%s free_slot=%s",
             task.task_id,
             user_id,
             task.image_model_id,
             model_key,
             len(user_prompt),
+            bool(task.file_id),
+            task.used_daily_slot,
         )
         async with chat_action_loop(bot, chat_id, "upload_photo"):
-            raw = await _generate_photo_result(
-                model_key,
-                user_prompt,
-                user_id=user_id,
-            )
+            if task.used_daily_slot or model_key == FREE_PHOTO_MODEL_KEY:
+                raw = await _generate_free_tier_photo(
+                    user_prompt,
+                    bot=bot,
+                    file_id=task.file_id,
+                )
+            else:
+                raw = await _generate_photo_result(
+                    model_key,
+                    user_prompt,
+                    user_id=user_id,
+                )
             photo_url: str | None = None
             photo_bytes: bytes | None = None
             if isinstance(raw, str):
@@ -303,11 +390,28 @@ async def _photo_stub_worker(task: GenTask) -> None:
                 photo_bytes = raw.data
             await _send_generated_photo(task, photo_url=photo_url, photo_bytes=photo_bytes)
         task.status = "completed"
-    except Exception as exc:
-        logger.exception("photo job failed task_id=%s model_key=%s", task.task_id, model_key)
+    except FreeImageCascadeExhausted as exc:
+        logger.error(
+            "photo cascade exhausted task_id=%s user_id=%s: %s",
+            task.task_id,
+            user_id,
+            exc,
+        )
         await fail_generation_task(
             task,
-            user_message=msg.TXT_GEN_JOB_FAILED,
+            user_message=msg.TXT_FREE_IMAGE_CASCADE_FAILED,
+            log_msg=f"photo cascade exhausted: {exc}",
+        )
+    except Exception as exc:
+        logger.exception("photo job failed task_id=%s model_key=%s", task.task_id, model_key)
+        fail_msg = (
+            msg.TXT_FREE_IMAGE_CASCADE_FAILED
+            if task.used_daily_slot
+            else msg.TXT_GEN_JOB_FAILED
+        )
+        await fail_generation_task(
+            task,
+            user_message=fail_msg,
             log_msg=f"photo: {exc}",
         )
 
@@ -642,6 +746,7 @@ def fire_photo_job(
     charged_crystals: int,
     priority: int = 2,
     billing_charge_id: str = "",
+    telegram_file_id: str | None = None,
 ) -> None:
     _enqueue(
         priority,
@@ -652,6 +757,7 @@ def fire_photo_job(
             user_id=user_id,
             task_type="photo",
             prompt=user_prompt,
+            file_id=telegram_file_id,
             image_model_id=image_model_id,
             model_label=model_label,
             used_daily_slot=used_daily_slot,
