@@ -36,6 +36,14 @@ DEFAULT_GEMINI_NANO_BANANA = "gemini-2.5-flash-image-preview"
 # До 1 основной + 3 смещения внутри пула при 429/403/402.
 _FAILOVER_SHIFTS = 3
 _POST_REQUEST_PAUSE_SEC = 2.0
+_ERR_CLIP = 200
+
+
+def _clip_err(text: object, *, limit: int = _ERR_CLIP) -> str:
+    raw = str(text or "").replace("\x00", " ").strip() or "unknown"
+    if len(raw) <= limit:
+        return raw
+    return raw[: max(1, limit - 3)].rstrip() + "..."
 
 ProviderType = Literal["gemini", "openrouter"]
 
@@ -408,7 +416,7 @@ async def generate_free_tier_image(
                     )
                     return result
                 except ExternalApiError as exc:
-                    last_err = str(exc)
+                    last_err = _clip_err(exc)
                     metrics.incr(
                         "free_image.cascade.fail",
                         labels={"provider": slot["type"], "reason": "error"},
@@ -420,7 +428,7 @@ async def generate_free_tier_image(
                         logger.warning(
                             "Nano Banana failover %s → next (%s)",
                             label,
-                            exc,
+                            last_err,
                         )
                         continue
                     break
@@ -435,8 +443,10 @@ async def generate_free_tier_image(
             await asyncio.sleep(max(0.0, pause))
 
     metrics.incr("free_image.cascade.exhausted")
+    safe_reason = _clip_err(last_err)
+    logger.error("Полная ошибка каскада: %s", last_err)
     logger.error(
         "Каскад бесплатной генерации полностью истощен. Причина: %s",
-        last_err,
+        safe_reason,
     )
-    raise FreeImageCascadeExhausted("NanoBananaCascade", last_err)
+    raise FreeImageCascadeExhausted("NanoBananaCascade", safe_reason)

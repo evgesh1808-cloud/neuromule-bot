@@ -16,13 +16,34 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Telegram Bot API: лимит текста сообщения 4096; держим запас + не светим stack/body.
+_TG_SAFE_ERR_CHARS = 200
+_TG_MAX_MESSAGE_CHARS = 3900
+
+
+def clip_error_text(exc: object, *, limit: int = _TG_SAFE_ERR_CHARS) -> str:
+    """Короткий фрагмент ошибки для UI / безопасных логов (без тела HTTP/base64)."""
+    raw = str(exc or "").replace("\x00", " ").strip() or "unknown"
+    if len(raw) <= limit:
+        return raw
+    return raw[: max(1, limit - 3)].rstrip() + "..."
+
+
+def clip_telegram_text(text: str, *, limit: int = _TG_MAX_MESSAGE_CHARS) -> str:
+    raw = (text or "").strip()
+    if len(raw) <= limit:
+        return raw
+    return raw[: max(1, limit - 3)].rstrip() + "..."
+
 
 class ExternalApiError(Exception):
     """Ошибка провайдера (OpenRouter, Replicate, Gemini, Suno) после списания ресурсов."""
 
     def __init__(self, provider: str, message: str = "") -> None:
         self.provider = provider
-        super().__init__(message or provider)
+        # Сразу режем: иначе last_err/exc раздувают Telegram sendMessage.
+        safe = clip_error_text(message or provider)
+        super().__init__(safe)
 
 
 async def refund_generation_task(task: GenTask) -> None:
@@ -48,13 +69,24 @@ async def refund_generation_task(task: GenTask) -> None:
 async def notify_user_safe(bot: Bot, chat_id: int, text: str) -> None:
     from aiogram.enums import ParseMode
 
+    safe = clip_telegram_text(text)
     try:
-        await bot.send_message(chat_id, text, parse_mode=ParseMode.HTML)
+        await bot.send_message(chat_id, safe, parse_mode=ParseMode.HTML)
     except Exception:
         try:
-            await bot.send_message(chat_id, text)
+            # Без HTML и ещё короче — защита от «message is too long» / parse entities.
+            await bot.send_message(chat_id, clip_telegram_text(safe, limit=3500))
         except Exception:
             logger.debug("notify_user_safe failed chat_id=%s", chat_id, exc_info=True)
+
+
+def _reset_failed_task(task: GenTask) -> None:
+    """Сброс полей задачи после fail — без повтора упавшего payload при ретраях."""
+    task.status = "failed"
+    task.prompt = None
+    task.file_id = None
+    task.music_lyrics = None
+    task.music_continue_clip_id = None
 
 
 async def fail_generation_task(
@@ -62,12 +94,22 @@ async def fail_generation_task(
     *,
     user_message: str,
     log_msg: str = "",
+    exc: BaseException | None = None,
 ) -> None:
-    """Пометить задачу failed, вернуть ресурсы, уведомить пользователя."""
-    task.status = "failed"
+    """Пометить задачу failed, вернуть ресурсы, уведомить пользователя (короткий текст)."""
+    _reset_failed_task(task)
+    if exc is not None:
+        logger.error("Полная ошибка: %s", exc, exc_info=True)
     if log_msg:
-        logger.error("%s task_id=%s user_id=%s", log_msg, task.task_id, task.user_id)
+        logger.error(
+            "%s task_id=%s user_id=%s detail=%s",
+            clip_error_text(log_msg, limit=500),
+            task.task_id,
+            task.user_id,
+            clip_error_text(exc) if exc is not None else "",
+        )
     await refund_generation_task(task)
+    # В Telegram — только заглушка / короткий user_message, никогда полный exc/last_err.
     await notify_user_safe(task.bot, task.chat_id, user_message)
 
 
@@ -76,4 +118,4 @@ def wrap_http_error(provider: str, exc: BaseException) -> ExternalApiError:
         return ExternalApiError(provider, f"{provider}: timeout")
     if isinstance(exc, httpx.HTTPStatusError):
         return ExternalApiError(provider, f"{provider}: HTTP {exc.response.status_code}")
-    return ExternalApiError(provider, str(exc))
+    return ExternalApiError(provider, clip_error_text(exc))

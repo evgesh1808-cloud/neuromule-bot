@@ -395,19 +395,23 @@ async def _photo_stub_worker(task: GenTask) -> None:
             await _send_generated_photo(task, photo_url=photo_url, photo_bytes=photo_bytes)
         task.status = "completed"
     except FreeImageCascadeExhausted as exc:
+        # Полный текст — только в консоль; в Telegram — короткая заглушка.
+        logger.error("Полная ошибка: %s", exc)
         logger.error(
             "Каскад бесплатной генерации полностью истощен для пользователя %s. "
             "Причина: %s",
             user_id,
-            exc,
+            str(exc)[:200],
         )
         await fail_generation_task(
             task,
             user_message=msg.TXT_FREE_IMAGE_CASCADE_FAILED,
-            log_msg=f"photo cascade exhausted: {exc}",
+            log_msg="photo cascade exhausted",
+            exc=exc,
         )
     except Exception as exc:
         logger.exception("photo job failed task_id=%s model_key=%s", task.task_id, model_key)
+        logger.error("Полная ошибка: %s", exc)
         fail_msg = (
             msg.TXT_FREE_IMAGE_CASCADE_FAILED
             if task.used_daily_slot
@@ -416,7 +420,8 @@ async def _photo_stub_worker(task: GenTask) -> None:
         await fail_generation_task(
             task,
             user_message=fail_msg,
-            log_msg=f"photo: {exc}",
+            log_msg="photo job failed",
+            exc=exc,
         )
 
 
@@ -493,7 +498,8 @@ async def _video_stub_worker(task: GenTask) -> None:
         await fail_generation_task(
             task,
             user_message=msg.TXT_VIDEO_REPLICATE_FAILED,
-            log_msg=f"video: {exc}",
+            log_msg="video job failed",
+            exc=exc,
         )
 
 
@@ -630,7 +636,8 @@ async def _music_stub_worker(task: GenTask) -> None:
         await fail_generation_task(
             task,
             user_message=msg.TXT_MUSIC_SUNO_FAILED,
-            log_msg=f"music: {exc}",
+            log_msg="music job failed",
+            exc=exc,
         )
 
 
@@ -704,7 +711,8 @@ async def _animate_stub_worker(task: GenTask) -> None:
         await fail_generation_task(
             task,
             user_message=msg.TXT_ANIMATE_REPLICATE_FAILED,
-            log_msg=f"animate: {exc}",
+            log_msg="animate job failed",
+            exc=exc,
         )
 
 
