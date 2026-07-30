@@ -525,15 +525,15 @@ class Settings(BaseSettings):
         default="Europe/Moscow",
         validation_alias=AliasChoices("QUOTA_TIMEZONE", "quota_timezone"),
     )
-    # Nano Banana FREE: строгий RR по 4 ключам (2×Gemini + 2×OpenRouter).
+    # Nano Banana FREE: Imagen (Google) + :free image model (OpenRouter).
     free_image_openrouter_model: Annotated[
         str,
-        _nonempty_str("google/gemini-2.5-flash-image-preview:free"),
-    ] = "google/gemini-2.5-flash-image-preview:free"
+        _nonempty_str("bytedance/hyper-flux-8step:free"),
+    ] = "bytedance/hyper-flux-8step:free"
     free_image_gemini_model: Annotated[
         str,
-        _nonempty_str("gemini-2.5-flash-image-preview"),
-    ] = "gemini-2.5-flash-image-preview"
+        _nonempty_str("imagen-3.0-generate-002"),
+    ] = "imagen-3.0-generate-002"
     free_image_semaphore_limit: Annotated[int, _coerce_int(1)] = Field(
         default=1,
         validation_alias=AliasChoices("FREE_IMAGE_SEMAPHORE_LIMIT", "free_image_semaphore_limit"),

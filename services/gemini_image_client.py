@@ -248,22 +248,40 @@ async def _post_json_with_key_failover(path: str, body: dict, *, timeout: float 
 
 async def generate_imagen_fast(prompt: str) -> GeminiImageResult:
     """Imagen 4 Fast (бесплатный контур Imagen 4 в AI Studio)."""
-    model = "imagen-4.0-fast-generate-001"
-    payload = await _post_json_with_key_failover(
-        f"models/{model}:generateImages",
-        {"prompt": _coerce_prompt_text(prompt), "config": {"numberOfImages": 1}},
-    )
+    return await generate_imagen_model(prompt, "imagen-4.0-fast-generate-001")
+
+
+async def generate_imagen_model(
+    prompt: str,
+    model: str,
+    *,
+    api_key: str | None = None,
+) -> GeminiImageResult:
+    """Text-to-image через Imagen ``:generateImages`` (без reference image)."""
+    mid = (model or "").strip() or "imagen-3.0-generate-002"
+    body = {
+        "prompt": _coerce_prompt_text(prompt),
+        "config": {"numberOfImages": 1},
+    }
+    path = f"models/{mid}:generateImages"
+    if api_key and api_key.strip():
+        payload = await _post_json(path, body, api_key=api_key.strip())
+    else:
+        payload = await _post_json_with_key_failover(path, body)
     url = _extract_generate_images_url(payload)
     if url:
         return GeminiImageResult(url=url)
     data = _extract_generate_images_bytes(payload)
     if data:
         return GeminiImageResult(data=data)
-    raise RuntimeError("Imagen API returned no image")
+    raise RuntimeError(f"Imagen model {mid} returned no image")
 
 
 async def generate_gemini_image_model(prompt: str, model: str) -> GeminiImageResult:
-    """Gemini image-preview модели (Nano Banana 2 / Pro)."""
+    """Gemini image-preview модели (Nano Banana 2 / Pro) или Imagen text-to-image."""
+    mid = (model or "").strip().lower()
+    if mid.startswith("imagen-") or mid.startswith("imagen."):
+        return await generate_imagen_model(prompt, model)
     return await generate_gemini_image_with_reference(prompt, model)
 
 

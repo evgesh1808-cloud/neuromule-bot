@@ -58,6 +58,21 @@ def test_build_free_image_providers_order(monkeypatch: pytest.MonkeyPatch) -> No
     assert [s["key"] for s in slots] == ["g1", "g2", "o1", "o2"]
 
 
+def test_providers_for_request_skips_gemini_on_i2i() -> None:
+    from services.free_image_cascade import _providers_for_request
+
+    pool = [
+        {"type": "gemini", "key": "g1"},
+        {"type": "gemini", "key": "g2"},
+        {"type": "openrouter", "key": "o1"},
+        {"type": "openrouter", "key": "o2"},
+    ]
+    assert _providers_for_request(pool, has_reference=False) == pool
+    only_or = _providers_for_request(pool, has_reference=True)
+    assert [p["type"] for p in only_or] == ["openrouter", "openrouter"]
+    assert [p["key"] for p in only_or] == ["o1", "o2"]
+
+
 def test_build_free_image_providers_skips_empty() -> None:
     from config import settings
 

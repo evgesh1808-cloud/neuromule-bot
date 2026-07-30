@@ -30,8 +30,8 @@ logger = logging.getLogger(__name__)
 _FREE_IMAGE_SEM: asyncio.Semaphore | None = None
 _B64_URL_RE = re.compile(r"data:image/[^;]+;base64,([A-Za-z0-9+/=]+)")
 
-DEFAULT_OPENROUTER_NANO_BANANA = "google/gemini-2.5-flash-image-preview:free"
-DEFAULT_GEMINI_NANO_BANANA = "gemini-2.5-flash-image-preview"
+DEFAULT_OPENROUTER_NANO_BANANA = "bytedance/hyper-flux-8step:free"
+DEFAULT_GEMINI_NANO_BANANA = "imagen-3.0-generate-002"
 
 # До 1 основной + 3 смещения внутри пула при 429/403/402.
 _FAILOVER_SHIFTS = 3
@@ -244,6 +244,30 @@ def _build_user_content(
     ]
 
 
+def _openrouter_modalities(model: str) -> list[str]:
+    """Flux/SD — обычно только image; Gemini-подобные — image+text."""
+    m = (model or "").lower()
+    if any(
+        x in m
+        for x in (
+            "flux",
+            "stable-diffusion",
+            "sdxl",
+            "hyper-flux",
+            "imagen",
+            "dreamshaper",
+            "playground",
+        )
+    ):
+        return ["image"]
+    return ["image", "text"]
+
+
+def _is_imagen_model(model: str) -> bool:
+    m = (model or "").strip().lower()
+    return m.startswith("imagen-") or m.startswith("imagen.")
+
+
 async def _call_openrouter(
     prompt: str,
     *,
@@ -264,7 +288,7 @@ async def _call_openrouter(
     body: dict[str, Any] = {
         "model": model,
         "messages": [{"role": "user", "content": content}],
-        "modalities": ["image", "text"],
+        "modalities": _openrouter_modalities(model),
         "provider": {
             "allow_fallbacks": False,
             "require_parameters": True,
@@ -320,15 +344,32 @@ async def _call_gemini(
     model = (
         settings.free_image_gemini_model or DEFAULT_GEMINI_NANO_BANANA
     ).strip() or DEFAULT_GEMINI_NANO_BANANA
+
+    # Imagen — только text-to-image; reference сюда не должен попадать.
+    if reference_image_bytes:
+        raise ExternalApiError(
+            provider,
+            "imagen/google slot skipped for image-to-image (use OpenRouter)",
+        )
+
     try:
         async with asyncio.timeout(timeout):
-            result = await generate_gemini_image_with_reference(
-                prompt,
-                model,
-                reference_image_bytes=reference_image_bytes,
-                reference_mime=reference_mime,
-                api_key=api_key,
-            )
+            if _is_imagen_model(model):
+                from services.gemini_image_client import generate_imagen_model
+
+                result = await generate_imagen_model(
+                    prompt,
+                    model,
+                    api_key=api_key,
+                )
+            else:
+                result = await generate_gemini_image_with_reference(
+                    prompt,
+                    model,
+                    reference_image_bytes=None,
+                    reference_mime=reference_mime,
+                    api_key=api_key,
+                )
     except TimeoutError as exc:
         raise ExternalApiError(provider, "timeout") from exc
     except RuntimeError as exc:
@@ -365,6 +406,18 @@ async def _invoke_slot(
     )
 
 
+def _providers_for_request(
+    providers: list[ProviderSlot],
+    *,
+    has_reference: bool,
+) -> list[ProviderSlot]:
+    """Image-to-image → только OpenRouter (Imagen не принимает reference)."""
+    if not has_reference:
+        return providers
+    or_only = [p for p in providers if p["type"] == "openrouter"]
+    return or_only
+
+
 async def generate_free_tier_image(
     prompt: str,
     *,
@@ -374,14 +427,30 @@ async def generate_free_tier_image(
     """
     Nano Banana FREE: строгий RR по пулу ключей + Semaphore(1) + pause 2s.
 
+    Text-to-image: Imagen (Google) + OpenRouter :free image model.
+    Image-to-image: только OpenRouter (Imagen reference не поддерживает).
+
     Raises:
         FreeImageCascadeExhausted: пул пуст или все попытки (1+3) провалились.
     """
-    providers = build_free_image_providers()
+    all_providers = build_free_image_providers()
+    has_ref = bool(reference_image_bytes)
+    providers = _providers_for_request(all_providers, has_reference=has_ref)
     if not providers:
+        if has_ref and all_providers:
+            raise FreeImageCascadeExhausted(
+                "NanoBananaCascade",
+                "image-to-image needs OPENROUTER_API_KEY[_2] (Imagen has no reference input)",
+            )
         raise FreeImageCascadeExhausted(
             "NanoBananaCascade",
             "no API keys: set GEMINI_API_KEY[_2] and/or OPENROUTER_API_KEY[_2]",
+        )
+
+    if has_ref:
+        logger.info(
+            "Nano Banana i2i: skip Google/Imagen, OpenRouter-only pool=%s",
+            len(providers),
         )
 
     timeout = float(settings.free_image_cascade_timeout_sec or 120.0)
@@ -397,11 +466,12 @@ async def generate_free_tier_image(
                 label = f"{slot['type']}:...{slot['key'][-6:]}"
                 try:
                     logger.info(
-                        "Nano Banana RR idx=%s shift=%s slot=%s pool=%s",
+                        "Nano Banana RR idx=%s shift=%s slot=%s pool=%s ref=%s",
                         idx,
                         shift,
                         label,
                         n,
+                        has_ref,
                     )
                     result = await _invoke_slot(
                         slot,
