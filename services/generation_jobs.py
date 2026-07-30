@@ -192,12 +192,16 @@ async def _generate_free_tier_photo(
     bot: "Bot",
     file_id: str | None,
 ) -> GeminiImageResult:
+    # Жёстко: промпт только str; байты фото — отдельным аргументом каскада.
+    if isinstance(prompt, (bytes, bytearray, memoryview)):
+        raise ExternalApiError("FreePhoto", "prompt must be str, not image bytes")
+    text = str(prompt or "").strip() or "Улучши это фото"
     ref_bytes: bytes | None = None
     ref_mime = "image/jpeg"
     if file_id:
         ref_bytes, ref_mime = await _load_telegram_photo_bytes(bot, file_id)
     return await generate_free_tier_image(
-        prompt,
+        text,
         reference_image_bytes=ref_bytes,
         reference_mime=ref_mime,
     )
@@ -392,8 +396,8 @@ async def _photo_stub_worker(task: GenTask) -> None:
         task.status = "completed"
     except FreeImageCascadeExhausted as exc:
         logger.error(
-            "photo cascade exhausted task_id=%s user_id=%s: %s",
-            task.task_id,
+            "Каскад бесплатной генерации полностью истощен для пользователя %s. "
+            "Причина: %s",
             user_id,
             exc,
         )

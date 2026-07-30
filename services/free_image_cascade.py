@@ -186,13 +186,47 @@ def _build_user_content(
     reference_image_bytes: bytes | None,
     reference_mime: str,
 ) -> list[dict[str, Any]] | str:
+    """OpenRouter chat content: текст отдельно, картинка — data-URL (base64)."""
+    if isinstance(prompt, (bytes, bytearray, memoryview)):
+        raise ExternalApiError(
+            "NanoBanana",
+            "prompt must be str, got binary (use reference_image_bytes)",
+        )
     text = (prompt or "").strip()
     if not text:
         raise ExternalApiError("NanoBanana", "пустой промпт")
+    if len(text) > 8_000:
+        raise ExternalApiError(
+            "NanoBanana",
+            f"prompt suspiciously long ({len(text)} chars); refusing binary/text mix",
+        )
     if not reference_image_bytes:
         return text
-    b64 = base64.b64encode(reference_image_bytes).decode("ascii")
-    mime = reference_mime or "image/jpeg"
+
+    if isinstance(reference_image_bytes, memoryview):
+        raw = reference_image_bytes.tobytes()
+    elif isinstance(reference_image_bytes, (bytes, bytearray)):
+        raw = bytes(reference_image_bytes)
+    else:
+        raise ExternalApiError(
+            "NanoBanana",
+            f"reference_image_bytes must be bytes, got {type(reference_image_bytes).__name__}",
+        )
+    if not raw:
+        raise ExternalApiError("NanoBanana", "пустой reference image")
+    # ~4MB raw → ~5.3MB base64; выше — типичный 400 у провайдера.
+    if len(raw) > 4 * 1024 * 1024:
+        raise ExternalApiError(
+            "NanoBanana",
+            f"reference image too large ({len(raw)} bytes)",
+        )
+
+    b64 = base64.b64encode(raw).decode("ascii")
+    mime = (reference_mime or "image/jpeg").strip() or "image/jpeg"
+    if mime in ("jpg", "jpeg", "image/jpg"):
+        mime = "image/jpeg"
+    elif mime == "png":
+        mime = "image/png"
     return [
         {"type": "text", "text": text},
         {
@@ -401,5 +435,8 @@ async def generate_free_tier_image(
             await asyncio.sleep(max(0.0, pause))
 
     metrics.incr("free_image.cascade.exhausted")
-    logger.error("Nano Banana cascade exhausted: %s", last_err)
+    logger.error(
+        "Каскад бесплатной генерации полностью истощен. Причина: %s",
+        last_err,
+    )
     raise FreeImageCascadeExhausted("NanoBananaCascade", last_err)

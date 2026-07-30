@@ -16,6 +16,8 @@ from services.hd_logic import _configure_genai
 logger = logging.getLogger(__name__)
 
 _GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
+# Лимит сырых байт референса (до base64): защита от 400 / «message too long».
+_MAX_REFERENCE_IMAGE_BYTES = 4 * 1024 * 1024
 
 _KEY_CYCLE = None
 _KEY_LOCK = threading.Lock()
@@ -73,6 +75,80 @@ def _api_key(*, prefer: str | None = None) -> str:
     if prefer and prefer.strip():
         return prefer.strip()
     return _next_gemini_key()
+
+
+def _coerce_prompt_text(prompt: object) -> str:
+    """Промпт — только текст. Байты/BufferedInputFile в строку не склеиваем."""
+    if isinstance(prompt, (bytes, bytearray, memoryview)):
+        raise RuntimeError(
+            "Gemini prompt must be str, got binary image bytes "
+            "(pass image via reference_image_bytes / inline_data)"
+        )
+    text = str(prompt or "").strip()
+    if not text:
+        raise RuntimeError("Gemini prompt is empty")
+    return text
+
+
+def _normalize_reference_mime(mime: str | None) -> str:
+    raw = (mime or "image/jpeg").strip().lower() or "image/jpeg"
+    if raw in ("image/jpg", "jpg", "jpeg"):
+        return "image/jpeg"
+    if raw in ("png", "image/png"):
+        return "image/png"
+    if raw in ("webp", "image/webp"):
+        return "image/webp"
+    if raw.startswith("image/"):
+        return raw
+    return "image/jpeg"
+
+
+def _encode_reference_image_b64(reference_image_bytes: object) -> str:
+    if isinstance(reference_image_bytes, memoryview):
+        raw = reference_image_bytes.tobytes()
+    elif isinstance(reference_image_bytes, (bytes, bytearray)):
+        raw = bytes(reference_image_bytes)
+    else:
+        raise RuntimeError(
+            "reference_image_bytes must be bytes, got "
+            f"{type(reference_image_bytes).__name__}"
+        )
+    if not raw:
+        raise RuntimeError("reference_image_bytes is empty")
+    if len(raw) > _MAX_REFERENCE_IMAGE_BYTES:
+        raise RuntimeError(
+            f"reference image too large ({len(raw)} bytes); "
+            f"max {_MAX_REFERENCE_IMAGE_BYTES}"
+        )
+    return base64.b64encode(raw).decode("ascii")
+
+
+def build_gemini_generate_content_body(
+    prompt: object,
+    *,
+    reference_image_bytes: bytes | None = None,
+    reference_mime: str = "image/jpeg",
+) -> dict:
+    """Официальный multimodal payload для ``generateContent``.
+
+    Текст — ``{"text": ...}``; картинка — ``inline_data.mime_type`` + base64 ``data``.
+    Сырые байты в text-поле никогда не попадают.
+    """
+    text = _coerce_prompt_text(prompt)
+    parts: list[dict] = [{"text": text}]
+    if reference_image_bytes is not None:
+        parts.append(
+            {
+                "inline_data": {
+                    "mime_type": _normalize_reference_mime(reference_mime),
+                    "data": _encode_reference_image_b64(reference_image_bytes),
+                }
+            }
+        )
+    return {
+        "contents": [{"role": "user", "parts": parts}],
+        "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]},
+    }
 
 
 def _extract_inline_image_bytes(payload: dict) -> bytes | None:
@@ -175,7 +251,7 @@ async def generate_imagen_fast(prompt: str) -> GeminiImageResult:
     model = "imagen-4.0-fast-generate-001"
     payload = await _post_json_with_key_failover(
         f"models/{model}:generateImages",
-        {"prompt": prompt, "config": {"numberOfImages": 1}},
+        {"prompt": _coerce_prompt_text(prompt), "config": {"numberOfImages": 1}},
     )
     url = _extract_generate_images_url(payload)
     if url:
@@ -199,22 +275,19 @@ async def generate_gemini_image_with_reference(
     reference_mime: str = "image/jpeg",
     api_key: str | None = None,
 ) -> GeminiImageResult:
-    """Text-to-image или image-to-image через Gemini generateContent."""
-    parts: list[dict] = [{"text": (prompt or "").strip()}]
-    if reference_image_bytes:
-        parts.insert(
-            0,
-            {
-                "inlineData": {
-                    "mimeType": reference_mime or "image/jpeg",
-                    "data": base64.b64encode(reference_image_bytes).decode("ascii"),
-                }
-            },
+    """Text-to-image или image-to-image через Gemini ``generateContent``."""
+    body = build_gemini_generate_content_body(
+        prompt,
+        reference_image_bytes=reference_image_bytes,
+        reference_mime=reference_mime,
+    )
+    # Защита: в text-части не должно оказаться бинарного мусора.
+    text_part = body["contents"][0]["parts"][0].get("text") or ""
+    if len(text_part) > 8_000:
+        raise RuntimeError(
+            f"Gemini text prompt suspiciously long ({len(text_part)} chars); "
+            "refusing possible binary/text mix"
         )
-    body = {
-        "contents": [{"role": "user", "parts": parts}],
-        "generationConfig": {"responseModalities": ["IMAGE"]},
-    }
     path = f"models/{model}:generateContent"
     if api_key and api_key.strip():
         payload = await _post_json(path, body, api_key=api_key.strip())
