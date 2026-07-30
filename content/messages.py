@@ -427,6 +427,7 @@ TXT_NEUROTEXT_CLEAR_BTN = "🔔 Новый диалог"
 TXT_NEUROTEXT_CLEAR_DONE = "🧹 <b>Контекст очищен.</b> Можно стартовать новую тему."
 
 IMAGE_MODELS: tuple[tuple[str, str], ...] = (
+    ("Nano Banana FREE", "free_photo"),
     ("Imagen 4", "imagen4"),
     ("Flux Schnell", "flux-schnell"),
     ("DALL-E 3", "gpt_image2"),
@@ -595,7 +596,7 @@ TXT_FREE_CREATE_BLOCKED = (
 )
 TXT_FREE_IMAGE_MODEL_BLOCKED = (
     "❌ <b>На тарифе FREE</b> в разделе «🖼 Изображение» доступен только "
-    "<b>DALL-E 3</b>: <b>1</b> качественное фото в день бесплатно, далее — 5 💎. "
+    "<b>🍌 Nano Banana FREE</b>: <b>1</b> фото в день бесплатно, далее — за 💎. "
     "Flux Schnell, Imagen 4 и другие модели — на тарифах MINI / SMART / ULTRA."
 )
 

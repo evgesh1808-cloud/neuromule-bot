@@ -179,12 +179,20 @@ def image_model_menu(
             if left > 0
             else f"🍌 Nano Banana ({over_cost} 💎)"
         )
+        # Premium-lock: не дублируем callback той же модели, что уже в FREE-слоте.
+        locked: list[tuple[str, str]] = [
+            ("🔒 Flux Schnell (Premium)", "flux-schnell"),
+            ("🔒 Imagen 4 (Premium)", "imagen4"),
+            ("🔒 Nano Banana 2 (Premium)", "nano_banana2"),
+            ("🔒 Nano Banana Pro (Premium)", "nano_banana_pro"),
+        ]
         rows = [
             [InlineKeyboardButton(text=free_label, callback_data=f"{prefix}{free_model}")],
-            [InlineKeyboardButton(text="🔒 Flux Schnell (Premium)", callback_data=f"{prefix}flux-schnell")],
-            [InlineKeyboardButton(text="🔒 Imagen 4 (Premium)", callback_data=f"{prefix}imagen4")],
-            [InlineKeyboardButton(text="🔒 Nano Banana 2 (Premium)", callback_data=f"{prefix}nano_banana2")],
-            [InlineKeyboardButton(text="🔒 Nano Banana Pro (Premium)", callback_data=f"{prefix}nano_banana_pro")],
+            *[
+                [InlineKeyboardButton(text=label, callback_data=f"{prefix}{mid}")]
+                for label, mid in locked
+                if mid != free_model
+            ],
             [back],
         ]
     else:

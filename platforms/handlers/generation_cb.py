@@ -455,20 +455,25 @@ async def upscale_start_callback(callback: CallbackQuery, state: FSMContext) -> 
 @router.callback_query(F.data.startswith(msg.CB_IMG_PREFIX))
 async def pick_image_model(callback: CallbackQuery, state: FSMContext) -> None:
     from services.billing.free_tier_gates import free_allows_image_model, is_free_user
+    from services.billing.image_pipeline import free_tier_image_model
 
     mid = callback.data[len(msg.CB_IMG_PREFIX) :]
     if await is_free_user(callback.from_user.id) and not free_allows_image_model(mid):
-        await callback.answer("Доступно только Imagen 4 и Flux", show_alert=True)
+        await callback.answer("На FREE доступен только Nano Banana", show_alert=True)
         if callback.message:
             await callback.message.answer(
                 msg.TXT_FREE_IMAGE_MODEL_BLOCKED,
                 parse_mode=ParseMode.HTML,
             )
         return
-    if mid not in msg.IMAGE_MODEL_IDS:
+    # free_photo + любая модель из меню / канонический FREE-слот.
+    allowed_ids = msg.IMAGE_MODEL_IDS | {free_tier_image_model()}
+    if mid not in allowed_ids:
         await callback.answer(msg.TXT_UNKNOWN_IMAGE_MODEL, show_alert=True)
         return
-    label = next(lbl for lbl, i in msg.IMAGE_MODELS if i == mid)
+    label = next((lbl for lbl, i in msg.IMAGE_MODELS if i == mid), None)
+    if not label:
+        label = "Nano Banana FREE" if mid == free_tier_image_model() else mid
     from platforms.image_menu_flow import clear_image_model_menu_pending
 
     await clear_image_model_menu_pending(state)

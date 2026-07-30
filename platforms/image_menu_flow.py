@@ -17,10 +17,15 @@ if TYPE_CHECKING:
     from aiogram.fsm.context import FSMContext
 
 IMAGE_MODEL_MENU_PENDING_KEY = "image_model_menu_pending"
-FREE_DEFAULT_IMAGE_MODEL_ID = "free_photo"
 FREE_DEFAULT_IMAGE_MODEL_LABEL = "Nano Banana (FREE)"
-# FREE без меню: длинный текст или маркеры промпта → DALL-E 3, не чат.
+# FREE без меню: длинный текст или маркеры промпта → Nano Banana FREE, не чат.
 FREE_AUTO_IMAGE_INTERCEPT_MIN_LEN = 250
+
+
+def _free_default_image_model_id() -> str:
+    from services.billing.image_pipeline import free_tier_image_model
+
+    return free_tier_image_model()
 
 _FREE_AUTO_IMAGE_IDLE_STATES = frozenset(
     {
@@ -147,8 +152,9 @@ async def route_free_text_to_flux_photo(
     """FREE → бесплатное фото дня (каскад провайдеров)."""
     from platforms.handlers.generation_fsm import process_photo_prompt_message
 
+    model_id = _free_default_image_model_id()
     await state.update_data(
-        image_model_id=FREE_DEFAULT_IMAGE_MODEL_ID,
+        image_model_id=model_id,
         image_model_label=FREE_DEFAULT_IMAGE_MODEL_LABEL,
     )
     await state.set_state(UserFlow.waiting_for_photo)
@@ -156,7 +162,7 @@ async def route_free_text_to_flux_photo(
     await process_photo_prompt_message(
         message,
         state,
-        model_id=FREE_DEFAULT_IMAGE_MODEL_ID,
+        model_id=model_id,
         label=FREE_DEFAULT_IMAGE_MODEL_LABEL,
         prompt=prompt,
         auto_flux=auto_flux,
