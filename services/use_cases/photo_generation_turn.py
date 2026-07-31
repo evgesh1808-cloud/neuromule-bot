@@ -2,6 +2,7 @@
 Use-case: приём промпта для генерации изображения после выбора модели.
 
 FREE-слот: только user_daily_quotas (⚡ не списывается).
+Постановка в очередь — на call-site после отправки status_msg (см. generation_fsm).
 """
 
 from __future__ import annotations
@@ -13,7 +14,6 @@ from typing import TYPE_CHECKING
 from config import Settings
 from services.billing import billing
 from services.billing.image_pipeline import FREE_PHOTO_MODEL_KEY, free_tier_image_model
-from services.generation_jobs import fire_photo_job
 
 if TYPE_CHECKING:
     from aiogram import Bot
@@ -29,11 +29,26 @@ class PhotoGenOutcome(str, Enum):
 
 
 @dataclass(frozen=True)
+class PhotoEnqueueSpec:
+    """Данные для ``fire_photo_job`` после отправки status_msg."""
+
+    image_model_id: str
+    model_label: str
+    prompt: str
+    used_daily_slot: bool
+    charged_crystals: int
+    priority: int
+    billing_charge_id: str
+    telegram_file_id: str | None = None
+
+
+@dataclass(frozen=True)
 class PhotoGenResult:
     """Результат ``run_photo_generation_turn``."""
 
     outcome: PhotoGenOutcome
     vip_priority: bool = False
+    enqueue: PhotoEnqueueSpec | None = None
 
 
 async def run_photo_generation_turn(
@@ -47,6 +62,8 @@ async def run_photo_generation_turn(
     *,
     telegram_file_id: str | None = None,
 ) -> PhotoGenResult:
+    # bot/chat_id/settings — контракт call-site; списание через billing store.
+    _ = (settings, bot, chat_id)
     if not prompt and not telegram_file_id:
         return PhotoGenResult(outcome=PhotoGenOutcome.NEED_PROMPT)
 
@@ -71,17 +88,17 @@ async def run_photo_generation_turn(
     priority = queue_priority_for_tariff(tariff)
 
     effective_model = model_id if model_id else FREE_PHOTO_MODEL_KEY
-    fire_photo_job(
-        bot,
-        chat_id,
-        user_id,
-        effective_model,
-        image_model_label or "Flux FREE",
-        prompt or "Улучши это фото",
-        charge.used_photo_free_slot,
-        charge.crystals,
-        priority=priority,
-        billing_charge_id=charge.charge_id,
-        telegram_file_id=telegram_file_id,
+    return PhotoGenResult(
+        outcome=PhotoGenOutcome.SUCCESS,
+        vip_priority=(tariff is TariffName.ULTRA),
+        enqueue=PhotoEnqueueSpec(
+            image_model_id=effective_model,
+            model_label=image_model_label or "Flux FREE",
+            prompt=prompt or "Улучши это фото",
+            used_daily_slot=charge.used_photo_free_slot,
+            charged_crystals=charge.crystals,
+            priority=priority,
+            billing_charge_id=charge.charge_id,
+            telegram_file_id=telegram_file_id,
+        ),
     )
-    return PhotoGenResult(outcome=PhotoGenOutcome.SUCCESS, vip_priority=(tariff is TariffName.ULTRA))

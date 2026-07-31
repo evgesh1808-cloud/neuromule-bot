@@ -386,7 +386,7 @@ async def test_failed_photo_worker_does_not_cache(monkeypatch) -> None:
     async def _boom(model_key: str, prompt: str, *, user_id=None):
         raise RuntimeError("OpenRouter down")
 
-    async def _fake_fail(task, *, user_message: str, log_msg: str):
+    async def _fake_fail(task, *, user_message: str, log_msg: str = "", exc=None):
         task.status = "failed"
 
     monkeypatch.setattr(generation_jobs, "_generate_photo_result", _boom)

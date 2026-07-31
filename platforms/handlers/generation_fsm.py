@@ -128,6 +128,7 @@ from services.use_cases.cabinet_turn import build_cabinet_view
 from services.use_cases.payment_invoice_turn import InvoiceBuildOutcome, build_payment_invoice_draft
 from services.use_cases.payment_shop_turn import build_tariffs_entry_text
 from services.use_cases.payment_turn import PaymentApplyOutcome, run_successful_payment_apply
+from services.generation_jobs import fire_photo_job
 from services.use_cases.photo_generation_turn import PhotoGenOutcome, run_photo_generation_turn
 from services.use_cases.promo_turn import PromoOutcome, run_promo_redeem
 from services.use_cases.start_turn import StartFlowOutcome, run_start_turn
@@ -216,10 +217,23 @@ async def process_photo_prompt_message(
         await state.clear()
         return
 
-    if auto_flux:
-        await message.answer(msg.TXT_IMAGE_AUTO_FLUX_ACCEPTED)
-    else:
-        await message.answer(msg.TXT_GEN_STATUS_ACCEPTED)
+    status_msg = await message.answer(msg.TXT_GEN_STATUS_ACCEPTED)
+    eq = pr.enqueue
+    if eq is not None:
+        fire_photo_job(
+            deps.bot(),
+            chat_id,
+            user_id,
+            eq.image_model_id,
+            eq.model_label,
+            eq.prompt,
+            eq.used_daily_slot,
+            eq.charged_crystals,
+            priority=eq.priority,
+            billing_charge_id=eq.billing_charge_id,
+            telegram_file_id=eq.telegram_file_id,
+            status_message_id=status_msg.message_id,
+        )
     if pr.vip_priority:
         await message.answer(msg.TXT_GEN_STATUS_VIP)
     await state.clear()

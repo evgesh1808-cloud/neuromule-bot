@@ -89,6 +89,41 @@ def _reset_failed_task(task: GenTask) -> None:
     task.music_continue_clip_id = None
 
 
+async def _edit_status_message(task: GenTask, text: str) -> bool:
+    """Заменить status_msg («Мул ушёл…») на текст ошибки. True если edit успешен."""
+    msg_id = getattr(task, "status_message_id", None)
+    if msg_id is None:
+        return False
+    from aiogram.enums import ParseMode
+    from aiogram.exceptions import (
+        TelegramBadRequest,
+        TelegramForbiddenError,
+        TelegramNetworkError,
+        TelegramRetryAfter,
+    )
+
+    safe = clip_telegram_text(text)
+    try:
+        await task.bot.edit_message_text(
+            chat_id=task.chat_id,
+            message_id=int(msg_id),
+            text=safe,
+            parse_mode=ParseMode.HTML,
+        )
+        return True
+    except TelegramRetryAfter as exc:
+        logger.warning(
+            "status edit retry_after=%s task=%s",
+            getattr(exc, "retry_after", "?"),
+            task.task_id,
+        )
+    except (TelegramBadRequest, TelegramForbiddenError, TelegramNetworkError) as exc:
+        logger.warning("status edit failed task=%s: %s", task.task_id, exc)
+    except Exception:
+        logger.error("status edit unexpected task=%s", task.task_id, exc_info=True)
+    return False
+
+
 async def fail_generation_task(
     task: GenTask,
     *,
@@ -97,7 +132,10 @@ async def fail_generation_task(
     exc: BaseException | None = None,
 ) -> None:
     """Пометить задачу failed, вернуть ресурсы, уведомить пользователя (короткий текст)."""
+    status_message_id = getattr(task, "status_message_id", None)
     _reset_failed_task(task)
+    # Не теряем id статуса: нужен для edit после reset.
+    task.status_message_id = status_message_id
     if exc is not None:
         logger.error("Полная ошибка: %s", exc, exc_info=True)
     if log_msg:
@@ -109,7 +147,9 @@ async def fail_generation_task(
             clip_error_text(exc) if exc is not None else "",
         )
     await refund_generation_task(task)
-    # В Telegram — только заглушка / короткий user_message, никогда полный exc/last_err.
+    # Предпочитаем edit «мула»; иначе — новое сообщение.
+    if await _edit_status_message(task, user_message):
+        return
     await notify_user_safe(task.bot, task.chat_id, user_message)
 
 

@@ -24,7 +24,7 @@ POLLINATIONS_FLUX_MODEL = "flux"
 DEFAULT_IMAGE_SIZE = 1024
 # URL-лимит + разумный потолок промпта для FREE.
 MAX_PROMPT_CHARS = 1500
-POLLINATIONS_TIMEOUT_SEC = 90.0
+POLLINATIONS_TIMEOUT_SEC = 180.0
 
 
 def build_pollinations_flux_url(

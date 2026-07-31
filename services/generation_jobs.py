@@ -66,6 +66,8 @@ TaskStatus = Literal["pending", "processing", "completed", "failed"]
 # конечного клипа рендерится 1-3 минуты). Дальше — таймаут и автоматический
 # refund списанных Кристаллов через ``fail_generation_task``.
 EXTERNAL_API_TIMEOUT_SEC: int = 180
+# Flux FREE: Pollinations + cascade — не держим status_msg дольше 3 минут.
+FREE_PHOTO_HARD_TIMEOUT_SEC: int = 180
 
 
 @dataclass
@@ -86,6 +88,7 @@ class GenTask:
     used_daily_slot: bool = False
     charged_crystals: int = 0
     billing_charge_id: str = ""
+    status_message_id: int | None = None
     music_lyrics: str | None = None
     music_instrumental: bool = False
     music_continue_clip_id: str | None = None
@@ -186,19 +189,42 @@ async def _load_telegram_photo_bytes(bot: "Bot", file_id: str) -> tuple[bytes, s
     return data, mime
 
 
+async def _safe_delete_status_message(task: GenTask) -> None:
+    """Убрать status_msg после успешной доставки фото."""
+    msg_id = task.status_message_id
+    if msg_id is None:
+        return
+    try:
+        await task.bot.delete_message(chat_id=task.chat_id, message_id=int(msg_id))
+    except (TelegramBadRequest, TelegramForbiddenError, TelegramNetworkError) as exc:
+        logger.debug("status delete skipped task=%s: %s", task.task_id, exc)
+    except Exception:
+        logger.warning("status delete unexpected task=%s", task.task_id, exc_info=True)
+    finally:
+        task.status_message_id = None
+
+
 async def _generate_free_tier_photo(
     prompt: str,
     *,
     bot: "Bot",
     file_id: str | None,
 ) -> GeminiImageResult:
-    # Жёстко: промпт только str; байты фото — отдельным аргументом каскада.
+    """Flux FREE: Pollinations (t2i) → fallback RR-каскад. Timeout — снаружи воркера."""
     if isinstance(prompt, (bytes, bytearray, memoryview)):
         raise ExternalApiError("FreePhoto", "prompt must be str, not image bytes")
     text = str(prompt or "").strip() or "Улучши это фото"
+
+    if not file_id:
+        try:
+            return await generate_flux_schnell_image(text)
+        except ExternalApiError as exc:
+            logger.warning("Pollinations Flux FREE failed, cascade fallback: %s", exc)
+
     ref_bytes: bytes | None = None
     ref_mime = "image/jpeg"
     if file_id:
+        logger.info("Flux FREE i2i: skip Pollinations reference, OpenRouter cascade")
         ref_bytes, ref_mime = await _load_telegram_photo_bytes(bot, file_id)
     return await generate_free_tier_image(
         text,
@@ -368,6 +394,7 @@ async def _photo_stub_worker(task: GenTask) -> None:
         return
 
     model_key = _normalize_photo_model_id(task.image_model_id, task.model_label)
+    is_free = task.used_daily_slot or model_key == FREE_PHOTO_MODEL_KEY
 
     try:
         logger.info(
@@ -381,18 +408,32 @@ async def _photo_stub_worker(task: GenTask) -> None:
             task.used_daily_slot,
         )
         async with chat_action_loop(bot, chat_id, "upload_photo"):
-            if task.used_daily_slot or model_key == FREE_PHOTO_MODEL_KEY:
-                raw = await _generate_free_tier_photo(
-                    user_prompt,
-                    bot=bot,
-                    file_id=task.file_id,
+            try:
+                if is_free:
+                    async with asyncio.timeout(FREE_PHOTO_HARD_TIMEOUT_SEC):
+                        raw = await _generate_free_tier_photo(
+                            user_prompt,
+                            bot=bot,
+                            file_id=task.file_id,
+                        )
+                else:
+                    raw = await _generate_photo_result(
+                        model_key,
+                        user_prompt,
+                        user_id=user_id,
+                    )
+            except TimeoutError as err:
+                logger.error(
+                    "Критический сбой бесплатного каскада. Мул завис. Ошибка: %s",
+                    err,
                 )
-            else:
-                raw = await _generate_photo_result(
-                    model_key,
-                    user_prompt,
-                    user_id=user_id,
+                await fail_generation_task(
+                    task,
+                    user_message=msg.TXT_FREE_IMAGE_CASCADE_FAILED,
+                    log_msg="photo free hard timeout",
+                    exc=err,
                 )
+                return
             photo_url: str | None = None
             photo_bytes: bytes | None = None
             if isinstance(raw, str):
@@ -400,16 +441,13 @@ async def _photo_stub_worker(task: GenTask) -> None:
             elif isinstance(raw, GeminiImageResult):
                 photo_url = raw.url
                 photo_bytes = raw.data
+            await _safe_delete_status_message(task)
             await _send_generated_photo(task, photo_url=photo_url, photo_bytes=photo_bytes)
         task.status = "completed"
     except FreeImageCascadeExhausted as exc:
-        # Полный текст — только в консоль; в Telegram — короткая заглушка.
-        logger.error("Полная ошибка: %s", exc)
         logger.error(
-            "Каскад бесплатной генерации полностью истощен для пользователя %s. "
-            "Причина: %s",
-            user_id,
-            str(exc)[:200],
+            "Критический сбой бесплатного каскада. Мул завис. Ошибка: %s",
+            exc,
         )
         await fail_generation_task(
             task,
@@ -419,10 +457,13 @@ async def _photo_stub_worker(task: GenTask) -> None:
         )
     except Exception as exc:
         logger.exception("photo job failed task_id=%s model_key=%s", task.task_id, model_key)
-        logger.error("Полная ошибка: %s", exc)
+        logger.error(
+            "Критический сбой бесплатного каскада. Мул завис. Ошибка: %s",
+            exc,
+        )
         fail_msg = (
             msg.TXT_FREE_IMAGE_CASCADE_FAILED
-            if task.used_daily_slot
+            if is_free
             else msg.TXT_GEN_JOB_FAILED
         )
         await fail_generation_task(
@@ -431,6 +472,9 @@ async def _photo_stub_worker(task: GenTask) -> None:
             log_msg="photo job failed",
             exc=exc,
         )
+    finally:
+        # status_msg остаётся на ошибке (отредактирован) или уже удалён на успехе.
+        pass
 
 
 async def _video_stub_worker(task: GenTask) -> None:
@@ -767,6 +811,7 @@ def fire_photo_job(
     priority: int = 2,
     billing_charge_id: str = "",
     telegram_file_id: str | None = None,
+    status_message_id: int | None = None,
 ) -> None:
     _enqueue(
         priority,
@@ -783,6 +828,7 @@ def fire_photo_job(
             used_daily_slot=used_daily_slot,
             charged_crystals=charged_crystals,
             billing_charge_id=billing_charge_id,
+            status_message_id=status_message_id,
         ),
     )
 

@@ -542,8 +542,8 @@ class Settings(BaseSettings):
         default=2.0,
         validation_alias=AliasChoices("FREE_IMAGE_KEY_PAUSE_SEC", "free_image_key_pause_sec"),
     )
-    free_image_cascade_timeout_sec: Annotated[float, _coerce_float(120.0)] = Field(
-        default=120.0,
+    free_image_cascade_timeout_sec: Annotated[float, _coerce_float(90.0)] = Field(
+        default=90.0,
         validation_alias=AliasChoices(
             "FREE_IMAGE_CASCADE_TIMEOUT_SEC",
             "free_image_cascade_timeout_sec",

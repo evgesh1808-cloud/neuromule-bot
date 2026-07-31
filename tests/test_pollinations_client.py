@@ -61,6 +61,29 @@ async def test_free_tier_flux_routes_to_pollinations(monkeypatch: pytest.MonkeyP
 
 
 @pytest.mark.asyncio
+async def test_free_photo_prefers_pollinations(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+
+    async def _fake_pollinations(prompt: str) -> GeminiImageResult:
+        calls.append(prompt)
+        return GeminiImageResult(data=b"flux-free")
+
+    async def _fake_cascade(*_a, **_k):
+        raise AssertionError("cascade must not run when Pollinations succeeds")
+
+    monkeypatch.setattr(generation_jobs, "generate_flux_schnell_image", _fake_pollinations)
+    monkeypatch.setattr(generation_jobs, "generate_free_tier_image", _fake_cascade)
+
+    result = await generation_jobs._generate_free_tier_photo(
+        "a cat",
+        bot=object(),  # type: ignore[arg-type]
+        file_id=None,
+    )
+    assert result.data == b"flux-free"
+    assert calls == ["a cat"]
+
+
+@pytest.mark.asyncio
 async def test_paid_tier_flux_still_uses_replicate(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _fake_pollinations(_prompt: str) -> GeminiImageResult:
         raise AssertionError("Pollinations must not be called for paid flux")

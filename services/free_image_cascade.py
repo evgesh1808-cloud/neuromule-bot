@@ -453,64 +453,74 @@ async def generate_free_tier_image(
             len(providers),
         )
 
-    timeout = float(settings.free_image_cascade_timeout_sec or 120.0)
+    timeout = min(float(settings.free_image_cascade_timeout_sec or 90.0), 90.0)
     n = len(providers)
     max_attempts = min(n, 1 + _FAILOVER_SHIFTS)
     last_err = "unknown"
 
-    async with _semaphore():
-        try:
-            for shift in range(max_attempts):
-                idx = await _peek_provider_index(n)
-                slot = providers[idx]
-                label = f"{slot['type']}:...{slot['key'][-6:]}"
+    try:
+        async with _semaphore():
+            async with asyncio.timeout(180.0):
                 try:
-                    logger.info(
-                        "Nano Banana RR idx=%s shift=%s slot=%s pool=%s ref=%s",
-                        idx,
-                        shift,
-                        label,
-                        n,
-                        has_ref,
-                    )
-                    result = await _invoke_slot(
-                        slot,
-                        prompt,
-                        reference_image_bytes=reference_image_bytes,
-                        reference_mime=reference_mime,
-                        timeout=timeout,
-                    )
-                    metrics.incr(
-                        "free_image.rr",
-                        labels={"type": slot["type"], "shift": str(shift)},
-                    )
-                    return result
-                except ExternalApiError as exc:
-                    last_err = _clip_err(exc)
-                    metrics.incr(
-                        "free_image.cascade.fail",
-                        labels={"provider": slot["type"], "reason": "error"},
-                    )
-                    if isinstance(exc, OpenRouterPaidBlockedError):
-                        break
-                    # Failover только на 429/403/402 — до 3 смещений внутри пула.
-                    if _is_rate_limit_error(exc) and shift + 1 < max_attempts:
-                        logger.warning(
-                            "Nano Banana failover %s → next (%s)",
-                            label,
-                            last_err,
-                        )
-                        continue
-                    break
+                    for shift in range(max_attempts):
+                        idx = await _peek_provider_index(n)
+                        slot = providers[idx]
+                        label = f"{slot['type']}:...{slot['key'][-6:]}"
+                        try:
+                            logger.info(
+                                "Nano Banana RR idx=%s shift=%s slot=%s pool=%s ref=%s",
+                                idx,
+                                shift,
+                                label,
+                                n,
+                                has_ref,
+                            )
+                            result = await _invoke_slot(
+                                slot,
+                                prompt,
+                                reference_image_bytes=reference_image_bytes,
+                                reference_mime=reference_mime,
+                                timeout=timeout,
+                            )
+                            metrics.incr(
+                                "free_image.rr",
+                                labels={"type": slot["type"], "shift": str(shift)},
+                            )
+                            return result
+                        except ExternalApiError as exc:
+                            last_err = _clip_err(exc)
+                            metrics.incr(
+                                "free_image.cascade.fail",
+                                labels={"provider": slot["type"], "reason": "error"},
+                            )
+                            if isinstance(exc, OpenRouterPaidBlockedError):
+                                break
+                            if _is_rate_limit_error(exc) and shift + 1 < max_attempts:
+                                logger.warning(
+                                    "Nano Banana failover %s → next (%s)",
+                                    label,
+                                    last_err,
+                                )
+                                continue
+                            break
+                        finally:
+                            await _advance_provider_index()
                 finally:
-                    await _advance_provider_index()
-        finally:
-            # Безопасная пауза: при 4 ключах → ~8с между вызовами одного ключа.
-            pause = float(
-                getattr(settings, "free_image_key_pause_sec", _POST_REQUEST_PAUSE_SEC)
-                or _POST_REQUEST_PAUSE_SEC
-            )
-            await asyncio.sleep(max(0.0, pause))
+                    pause = float(
+                        getattr(settings, "free_image_key_pause_sec", _POST_REQUEST_PAUSE_SEC)
+                        or _POST_REQUEST_PAUSE_SEC
+                    )
+                    await asyncio.sleep(max(0.0, pause))
+    except TimeoutError as err:
+        metrics.incr("free_image.cascade.exhausted")
+        logger.error(
+            "Критический сбой бесплатного каскада. Мул завис. Ошибка: %s",
+            err,
+        )
+        raise FreeImageCascadeExhausted(
+            "NanoBananaCascade",
+            "hard timeout 180s",
+        ) from err
 
     metrics.incr("free_image.cascade.exhausted")
     safe_reason = _clip_err(last_err)
