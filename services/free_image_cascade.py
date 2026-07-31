@@ -388,6 +388,41 @@ async def _try_openrouter_spare_wheel(
     raise ExternalApiError("OpenRouter", f"spare wheel exhausted: {last_err}")
 
 
+async def _try_gemini_spare_wheel(
+    prompt: str,
+    *,
+    reference_mime: str,
+    timeout: float,
+) -> GeminiImageResult:
+    """Запас после Pollinations: Google Imagen по GEMINI_API_KEY[_2] (только t2i)."""
+    gemini_slots = [p for p in build_free_image_providers() if p["type"] == "gemini"]
+    if not gemini_slots:
+        raise ExternalApiError("Gemini", "spare wheel needs GEMINI_API_KEY[_2]")
+    last_err: object = "unknown"
+    for slot in gemini_slots:
+        label = f"gemini:...{slot['key'][-6:]}"
+        try:
+            logger.info("Flux FREE Gemini spare → %s", label)
+            result = await _call_gemini(
+                prompt,
+                api_key=slot["key"],
+                reference_image_bytes=None,
+                reference_mime=reference_mime,
+                timeout=timeout,
+            )
+            metrics.incr("free_image.spare_wheel.ok", labels={"provider": "gemini"})
+            return result
+        except ExternalApiError as exc:
+            last_err = _clip_err(exc)
+            metrics.incr(
+                "free_image.spare_wheel.fail",
+                labels={"provider": "gemini"},
+            )
+            logger.warning("Flux FREE Gemini spare %s failed: %s", label, last_err)
+            continue
+    raise ExternalApiError("Gemini", f"gemini spare exhausted: {last_err}")
+
+
 async def _call_gemini(
     prompt: str,
     *,
@@ -483,11 +518,12 @@ async def generate_free_tier_image(
     """
     Flux FREE — неубиваемый путь:
 
-    1. Pollinations Flux (t2i, без ключа);
-    2. OpenRouter ``black-forest-labs/flux-1-schnell:free`` (spare wheel, allow_fallbacks=False);
-    3. RR по пулу Gemini/OpenRouter как последний рубеж.
+    1. Pollinations Flux (legacy без ключа / gen с POLLINATIONS_API_KEY);
+    2. Gemini Imagen spare (GEMINI_API_KEY[_2], только t2i);
+    3. OpenRouter ``flux-1-schnell:free`` (allow_fallbacks=False);
+    4. RR по пулу Gemini/OpenRouter как последний рубеж.
 
-    Image-to-image: Pollinations пропускается → сразу spare wheel / OR-слоты.
+    Image-to-image: Pollinations/Gemini пропускаются → OR spare / OR RR.
 
     Raises:
         FreeImageCascadeExhausted: все линии недоступны.
@@ -512,11 +548,25 @@ async def generate_free_tier_image(
                             labels={"provider": "pollinations", "reason": "error"},
                         )
                         logger.warning(
-                            "Pollinations failed, OpenRouter spare wheel: %s",
+                            "Pollinations failed, Gemini spare: %s",
                             last_err,
                         )
 
-                # ── 2. Spare wheel: OpenRouter flux-1-schnell:free ──────────
+                    # ── 2. Gemini Imagen spare (t2i) ────────────────────────
+                    try:
+                        return await _try_gemini_spare_wheel(
+                            text,
+                            reference_mime=reference_mime,
+                            timeout=timeout,
+                        )
+                    except ExternalApiError as exc:
+                        last_err = _clip_err(exc)
+                        logger.warning(
+                            "Gemini spare exhausted, OpenRouter spare: %s",
+                            last_err,
+                        )
+
+                # ── 3. OpenRouter flux-1-schnell:free ───────────────────────
                 try:
                     return await _try_openrouter_spare_wheel(
                         text,
@@ -526,15 +576,15 @@ async def generate_free_tier_image(
                     )
                 except OpenRouterPaidBlockedError as exc:
                     last_err = _clip_err(exc)
-                    logger.error("Flux FREE spare wheel paid-block: %s", last_err)
+                    logger.error("Flux FREE OR spare paid-block: %s", last_err)
                 except ExternalApiError as exc:
                     last_err = _clip_err(exc)
                     logger.warning(
-                        "OpenRouter spare wheel exhausted, RR cascade: %s",
+                        "OpenRouter spare exhausted, RR cascade: %s",
                         last_err,
                     )
 
-                # ── 3. RR last resort (Gemini + OR keys) ────────────────────
+                # ── 4. RR last resort (Gemini + OR keys) ────────────────────
                 all_providers = build_free_image_providers()
                 providers = _providers_for_request(all_providers, has_reference=has_ref)
                 if not providers:

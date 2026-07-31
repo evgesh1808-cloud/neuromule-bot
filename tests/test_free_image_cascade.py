@@ -165,9 +165,13 @@ async def test_pollinations_fail_uses_openrouter_spare(monkeypatch: pytest.Monke
         assert "allow" or True
         return GeminiImageResult(data=b"from-spare")
 
+    async def _boom_gemini(*_a, **_k):
+        raise ExternalApiError("Gemini", "skip in test")
+
     async def _boom_rr(*_a, **_k):
         raise AssertionError("RR must not run when spare succeeds")
 
+    monkeypatch.setattr("services.free_image_cascade._try_gemini_spare_wheel", _boom_gemini)
     monkeypatch.setattr("services.free_image_cascade._call_openrouter", _fake_or)
     monkeypatch.setattr("services.free_image_cascade._invoke_slot", _boom_rr)
 
@@ -249,6 +253,7 @@ async def test_cascade_exhausted_when_all_slots_fail(monkeypatch: pytest.MonkeyP
     async def _fail(*_a, **_k):
         raise ExternalApiError("Test", "HTTP 429")
 
+    monkeypatch.setattr("services.free_image_cascade._try_gemini_spare_wheel", _fail)
     monkeypatch.setattr("services.free_image_cascade._try_openrouter_spare_wheel", _fail)
     monkeypatch.setattr("services.free_image_cascade._invoke_slot", _fail)
 
@@ -285,6 +290,7 @@ async def test_round_robin_advances_index(monkeypatch: pytest.MonkeyPatch) -> No
         seen.append(slot["key"])
         return GeminiImageResult(data=b"ok")
 
+    monkeypatch.setattr("services.free_image_cascade._try_gemini_spare_wheel", _spare_fail)
     monkeypatch.setattr("services.free_image_cascade._try_openrouter_spare_wheel", _spare_fail)
     monkeypatch.setattr("services.free_image_cascade._invoke_slot", _ok)
 
@@ -328,6 +334,7 @@ async def test_failover_on_429_shifts_within_pool(monkeypatch: pytest.MonkeyPatc
             raise ExternalApiError("Gemini", "HTTP 429")
         return GeminiImageResult(data=b"ok")
 
+    monkeypatch.setattr("services.free_image_cascade._try_gemini_spare_wheel", _spare_fail)
     monkeypatch.setattr("services.free_image_cascade._try_openrouter_spare_wheel", _spare_fail)
     monkeypatch.setattr("services.free_image_cascade._invoke_slot", _flaky)
 

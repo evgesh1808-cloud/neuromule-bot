@@ -13,14 +13,19 @@ from services import generation_jobs
 
 
 def test_build_pollinations_flux_url_encodes_prompt() -> None:
-    url = build_pollinations_flux_url("кот в космосе")
-    assert url.startswith("https://gen.pollinations.ai/image/")
+    url = build_pollinations_flux_url("кот в космосе", api_key="")
+    assert url.startswith("https://image.pollinations.ai/prompt/")
     assert "model=flux" in url
     assert "width=1024" in url
     assert "height=1024" in url
     assert "nologo=true" in url
-    # Промпт URL-encoded в path.
-    assert unquote(url.split("/image/", 1)[1].split("?", 1)[0])
+    assert unquote(url.split("/prompt/", 1)[1].split("?", 1)[0])
+
+
+def test_build_pollinations_flux_url_uses_gen_when_key() -> None:
+    url = build_pollinations_flux_url("cat", api_key="sk_test")
+    assert url.startswith("https://gen.pollinations.ai/image/")
+    assert "key=sk_test" in url
 
 
 def test_build_pollinations_flux_url_rejects_empty() -> None:

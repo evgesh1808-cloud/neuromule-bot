@@ -525,7 +525,7 @@ class Settings(BaseSettings):
         default="Europe/Moscow",
         validation_alias=AliasChoices("QUOTA_TIMEZONE", "quota_timezone"),
     )
-    # Nano Banana FREE: Imagen (Google) + :free image model (OpenRouter).
+    # Nano Banana FREE / Flux FREE: Imagen (Google) + :free image model (OpenRouter).
     free_image_openrouter_model: Annotated[
         str,
         _nonempty_str("black-forest-labs/flux-1-schnell:free"),
@@ -534,6 +534,11 @@ class Settings(BaseSettings):
         str,
         _nonempty_str("imagen-3.0-generate-002"),
     ] = "imagen-3.0-generate-002"
+    # Pollinations: без ключа — legacy image.pollinations.ai; с ключом — gen + Bearer.
+    pollinations_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("POLLINATIONS_API_KEY", "pollinations_api_key"),
+    )
     free_image_semaphore_limit: Annotated[int, _coerce_int(1)] = Field(
         default=1,
         validation_alias=AliasChoices("FREE_IMAGE_SEMAPHORE_LIMIT", "free_image_semaphore_limit"),
