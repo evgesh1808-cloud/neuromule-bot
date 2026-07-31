@@ -282,17 +282,25 @@ async def _send_generated_photo(
     bot, chat_id = task.bot, task.chat_id
     display = task.model_label or task.image_model_id or "модель"
     if task.used_daily_slot:
+        # Остаток дневных попыток — только в Профиле, не в caption.
         caption = (
             f"🎨 **Бесплатное фото дня готово!**\n"
             f"🤖 Модель: {display}\n"
             f"💎 Стоимость: 0 💎"
         )
+        if task.file_id:
+            caption = f"{caption}\n\n{msg.TXT_FREE_I2I_PREMIUM_TIP}"
     else:
         caption = (
             f"🎨 **Ваше изображение успешно сгенерировано!**\n"
             f"🤖 Модель: {display}\n"
             f"💎 Стоимость: {task.charged_crystals} 💎"
         )
+        if task.file_id and (
+            task.image_model_id == FREE_PHOTO_MODEL_KEY
+            or (task.model_label or "").strip() == "Flux FREE"
+        ):
+            caption = f"{caption}\n\n{msg.TXT_FREE_I2I_PREMIUM_TIP}"
     row = await get_user_row(task.user_id)
     photo_share_url = resolve_photo_share_url(
         normalize_tariff(row.tariff),

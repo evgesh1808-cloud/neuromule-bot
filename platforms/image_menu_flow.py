@@ -17,8 +17,8 @@ if TYPE_CHECKING:
     from aiogram.fsm.context import FSMContext
 
 IMAGE_MODEL_MENU_PENDING_KEY = "image_model_menu_pending"
-FREE_DEFAULT_IMAGE_MODEL_LABEL = "Nano Banana (FREE)"
-# FREE без меню: длинный текст или маркеры промпта → Nano Banana FREE, не чат.
+FREE_DEFAULT_IMAGE_MODEL_LABEL = "Flux FREE"
+# FREE без меню: длинный текст или маркеры промпта → Flux FREE, не чат.
 FREE_AUTO_IMAGE_INTERCEPT_MIN_LEN = 250
 
 

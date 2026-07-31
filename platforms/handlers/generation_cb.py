@@ -473,7 +473,7 @@ async def pick_image_model(callback: CallbackQuery, state: FSMContext) -> None:
         return
     label = next((lbl for lbl, i in msg.IMAGE_MODELS if i == mid), None)
     if not label:
-        label = "Nano Banana FREE" if mid == free_tier_image_model() else mid
+        label = "Flux FREE" if mid == free_tier_image_model() else mid
     from platforms.image_menu_flow import clear_image_model_menu_pending
 
     await clear_image_model_menu_pending(state)

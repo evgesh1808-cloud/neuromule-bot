@@ -412,7 +412,7 @@ class Settings(BaseSettings):
         _nonempty_str("Подождите 1–3 минуты — генерация занимает время."),
     ] = "Подождите 1–3 минуты — генерация занимает время."
     promo_seeds: Annotated[str, _nonempty_str("")] = ""
-    free_daily_photo_limit: Annotated[int, _coerce_int(1)] = 1
+    free_daily_photo_limit: Annotated[int, _coerce_int(3)] = 3
     free_daily_chat_limit: Annotated[int, _coerce_int(10)] = 10
     energy_low_threshold: Annotated[int, _coerce_int(50)] = 50
     cost_animate_video_suggest: Annotated[int, _coerce_int(20)] = 20

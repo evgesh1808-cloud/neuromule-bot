@@ -175,9 +175,9 @@ def image_model_menu(
         over_cost = free_tier_overlimit_crystal_cost(free_model)
         # Личный слот исчерпан → докупка за 💎. Глобальный cap в UI не показываем.
         free_label = (
-            "🍌 Nano Banana FREE (1 в день)"
+            "⚡️ Flux FREE (3 в день)"
             if left > 0
-            else f"🍌 Nano Banana ({over_cost} 💎)"
+            else f"⚡️ Flux FREE ({over_cost} 💎)"
         )
         # Premium-lock: не дублируем callback той же модели, что уже в FREE-слоте.
         locked: list[tuple[str, str]] = [

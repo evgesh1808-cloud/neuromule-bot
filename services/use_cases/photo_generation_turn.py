@@ -76,7 +76,7 @@ async def run_photo_generation_turn(
         chat_id,
         user_id,
         effective_model,
-        image_model_label or "Nano Banana (FREE)",
+        image_model_label or "Flux FREE",
         prompt or "Улучши это фото",
         charge.used_photo_free_slot,
         charge.crystals,

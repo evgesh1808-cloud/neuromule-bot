@@ -427,7 +427,7 @@ TXT_NEUROTEXT_CLEAR_BTN = "🔔 Новый диалог"
 TXT_NEUROTEXT_CLEAR_DONE = "🧹 <b>Контекст очищен.</b> Можно стартовать новую тему."
 
 IMAGE_MODELS: tuple[tuple[str, str], ...] = (
-    ("Nano Banana FREE", "free_photo"),
+    ("Flux FREE", "free_photo"),
     ("Imagen 4", "imagen4"),
     ("Flux Schnell", "flux-schnell"),
     ("DALL-E 3", "gpt_image2"),
@@ -450,7 +450,7 @@ def get_text_image_models(tariff) -> str:
     )
     if tariff is TariffTier.FREE:
         return base_text + (
-            "🍌 <b>Nano Banana FREE</b> — 1 фото в день (без ⚡)\n"
+            "⚡️ <b>Flux FREE</b> — 3 фото в день (без ⚡)\n"
             "🔒 <b>Flux Schnell</b> — <i>Доступно на тарифах Premium</i>\n"
             "🔒 <b>Imagen 4</b> — <i>Доступно на тарифах Premium</i>\n"
             "🔒 <b>Nano Banana 2</b> — <i>Доступно на тарифах Premium</i>\n"
@@ -596,8 +596,13 @@ TXT_FREE_CREATE_BLOCKED = (
 )
 TXT_FREE_IMAGE_MODEL_BLOCKED = (
     "❌ <b>На тарифе FREE</b> в разделе «🖼 Изображение» доступен только "
-    "<b>🍌 Nano Banana FREE</b>: <b>1</b> фото в день бесплатно, далее — за 💎. "
+    "<b>⚡️ Flux FREE</b>: <b>3</b> фото в день бесплатно, далее — за 💎. "
     "Flux Schnell, Imagen 4 и другие модели — на тарифах MINI / SMART / ULTRA."
+)
+
+TXT_FREE_I2I_PREMIUM_TIP = (
+    "💡 Чтобы нейросеть использовала именно ваше лицо или предмет с фотографии, "
+    "перейдите в Premium за кристаллы 💎"
 )
 
 TXT_INSUFFICIENT_BALANCE = (
