@@ -1,10 +1,9 @@
-"""FREE Nano Banana: строгий Round-Robin по 4 API-ключам.
+"""Flux FREE: Pollinations → OpenRouter spare wheel → RR по API-ключам.
 
-Порядок слотов (непустые только):
-  1. GEMINI_API_KEY
-  2. GEMINI_API_KEY_2
-  3. OPENROUTER_API_KEY  (модель …:free, allow_fallbacks=false)
-  4. OPENROUTER_API_KEY_2
+Путь t2i:
+  1. Pollinations Flux (без ключа)
+  2. OpenRouter ``black-forest-labs/flux-1-schnell:free`` (allow_fallbacks=false)
+  3. RR: GEMINI_API_KEY → GEMINI_API_KEY_2 → OPENROUTER_API_KEY → OPENROUTER_API_KEY_2
 
 ``Semaphore(1)`` + ``asyncio.sleep(2)`` → ~8с между повторными вызовами одного ключа
 при полном пуле из 4.
@@ -24,13 +23,16 @@ from config import settings
 from services import metrics
 from services.api_resilience import ExternalApiError
 from services.gemini_image_client import GeminiImageResult, generate_gemini_image_with_reference
+from services.pollinations_client import generate_flux_schnell_image
 
 logger = logging.getLogger(__name__)
 
 _FREE_IMAGE_SEM: asyncio.Semaphore | None = None
 _B64_URL_RE = re.compile(r"data:image/[^;]+;base64,([A-Za-z0-9+/=]+)")
 
-DEFAULT_OPENROUTER_NANO_BANANA = "bytedance/hyper-flux-8step:free"
+DEFAULT_OPENROUTER_FLUX_FREE = "black-forest-labs/flux-1-schnell:free"
+# Alias для старых импортов/доков.
+DEFAULT_OPENROUTER_NANO_BANANA = DEFAULT_OPENROUTER_FLUX_FREE
 DEFAULT_GEMINI_NANO_BANANA = "imagen-3.0-generate-002"
 
 # До 1 основной + 3 смещения внутри пула при 429/403/402.
@@ -275,10 +277,11 @@ async def _call_openrouter(
     reference_image_bytes: bytes | None,
     reference_mime: str,
     timeout: float,
+    model: str | None = None,
 ) -> GeminiImageResult:
     provider = "OpenRouter"
     model = ensure_openrouter_free_model(
-        settings.free_image_openrouter_model or DEFAULT_OPENROUTER_NANO_BANANA
+        (model or settings.free_image_openrouter_model or DEFAULT_OPENROUTER_FLUX_FREE).strip()
     )
     content = _build_user_content(
         prompt,
@@ -298,7 +301,7 @@ async def _call_openrouter(
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
         "HTTP-Referer": "https://neuromule.bot",
-        "X-Title": "NeuroMule Nano Banana FREE",
+        "X-Title": "NeuroMule Flux FREE",
     }
     url = (settings.openrouter_chat_url or "https://openrouter.ai/api/v1/chat/completions").strip()
 
@@ -330,6 +333,59 @@ async def _call_openrouter(
         metrics.incr("free_image.cascade.ok", labels={"provider": provider})
         return GeminiImageResult(data=data)
     raise ExternalApiError(provider, "no image in response")
+
+
+async def _try_pollinations_flux(prompt: str) -> GeminiImageResult:
+    """Основная линия Flux FREE — Pollinations (без API-ключа)."""
+    result = await generate_flux_schnell_image(prompt)
+    metrics.incr("free_image.cascade.ok", labels={"provider": "pollinations"})
+    return result
+
+
+async def _try_openrouter_spare_wheel(
+    prompt: str,
+    *,
+    reference_image_bytes: bytes | None,
+    reference_mime: str,
+    timeout: float,
+) -> GeminiImageResult:
+    """Запасное колесо: OpenRouter black-forest-labs/flux-1-schnell:free, allow_fallbacks=False."""
+    or_slots = [p for p in build_free_image_providers() if p["type"] == "openrouter"]
+    if not or_slots:
+        raise ExternalApiError(
+            "OpenRouter",
+            "spare wheel needs OPENROUTER_API_KEY[_2]",
+        )
+    last_err: object = "unknown"
+    for slot in or_slots:
+        label = f"openrouter:...{slot['key'][-6:]}"
+        try:
+            logger.info(
+                "Flux FREE spare wheel → %s model=%s",
+                label,
+                DEFAULT_OPENROUTER_FLUX_FREE,
+            )
+            result = await _call_openrouter(
+                prompt,
+                api_key=slot["key"],
+                reference_image_bytes=reference_image_bytes,
+                reference_mime=reference_mime,
+                timeout=timeout,
+                model=DEFAULT_OPENROUTER_FLUX_FREE,
+            )
+            metrics.incr("free_image.spare_wheel.ok", labels={"provider": "openrouter"})
+            return result
+        except OpenRouterPaidBlockedError:
+            raise
+        except ExternalApiError as exc:
+            last_err = _clip_err(exc)
+            metrics.incr(
+                "free_image.spare_wheel.fail",
+                labels={"provider": "openrouter"},
+            )
+            logger.warning("Flux FREE spare wheel %s failed: %s", label, last_err)
+            continue
+    raise ExternalApiError("OpenRouter", f"spare wheel exhausted: {last_err}")
 
 
 async def _call_gemini(
@@ -425,42 +481,78 @@ async def generate_free_tier_image(
     reference_mime: str = "image/jpeg",
 ) -> GeminiImageResult:
     """
-    Nano Banana FREE: строгий RR по пулу ключей + Semaphore(1) + pause 2s.
+    Flux FREE — неубиваемый путь:
 
-    Text-to-image: Imagen (Google) + OpenRouter :free image model.
-    Image-to-image: только OpenRouter (Imagen reference не поддерживает).
+    1. Pollinations Flux (t2i, без ключа);
+    2. OpenRouter ``black-forest-labs/flux-1-schnell:free`` (spare wheel, allow_fallbacks=False);
+    3. RR по пулу Gemini/OpenRouter как последний рубеж.
+
+    Image-to-image: Pollinations пропускается → сразу spare wheel / OR-слоты.
 
     Raises:
-        FreeImageCascadeExhausted: пул пуст или все попытки (1+3) провалились.
+        FreeImageCascadeExhausted: все линии недоступны.
     """
-    all_providers = build_free_image_providers()
+    text = str(prompt or "").strip() or "Улучши это фото"
     has_ref = bool(reference_image_bytes)
-    providers = _providers_for_request(all_providers, has_reference=has_ref)
-    if not providers:
-        if has_ref and all_providers:
-            raise FreeImageCascadeExhausted(
-                "NanoBananaCascade",
-                "image-to-image needs OPENROUTER_API_KEY[_2] (Imagen has no reference input)",
-            )
-        raise FreeImageCascadeExhausted(
-            "NanoBananaCascade",
-            "no API keys: set GEMINI_API_KEY[_2] and/or OPENROUTER_API_KEY[_2]",
-        )
-
-    if has_ref:
-        logger.info(
-            "Nano Banana i2i: skip Google/Imagen, OpenRouter-only pool=%s",
-            len(providers),
-        )
-
     timeout = min(float(settings.free_image_cascade_timeout_sec or 90.0), 90.0)
-    n = len(providers)
-    max_attempts = min(n, 1 + _FAILOVER_SHIFTS)
     last_err = "unknown"
 
     try:
         async with _semaphore():
             async with asyncio.timeout(180.0):
+                # ── 1. Pollinations (только text-to-image) ──────────────────
+                if not has_ref:
+                    try:
+                        logger.info("Flux FREE primary → Pollinations")
+                        return await _try_pollinations_flux(text)
+                    except (ExternalApiError, TimeoutError) as exc:
+                        last_err = _clip_err(exc)
+                        metrics.incr(
+                            "free_image.cascade.fail",
+                            labels={"provider": "pollinations", "reason": "error"},
+                        )
+                        logger.warning(
+                            "Pollinations failed, OpenRouter spare wheel: %s",
+                            last_err,
+                        )
+
+                # ── 2. Spare wheel: OpenRouter flux-1-schnell:free ──────────
+                try:
+                    return await _try_openrouter_spare_wheel(
+                        text,
+                        reference_image_bytes=reference_image_bytes,
+                        reference_mime=reference_mime,
+                        timeout=timeout,
+                    )
+                except OpenRouterPaidBlockedError as exc:
+                    last_err = _clip_err(exc)
+                    logger.error("Flux FREE spare wheel paid-block: %s", last_err)
+                except ExternalApiError as exc:
+                    last_err = _clip_err(exc)
+                    logger.warning(
+                        "OpenRouter spare wheel exhausted, RR cascade: %s",
+                        last_err,
+                    )
+
+                # ── 3. RR last resort (Gemini + OR keys) ────────────────────
+                all_providers = build_free_image_providers()
+                providers = _providers_for_request(all_providers, has_reference=has_ref)
+                if not providers:
+                    raise FreeImageCascadeExhausted(
+                        "FluxFreeCascade",
+                        last_err
+                        if last_err != "unknown"
+                        else "no API keys for spare wheel / RR",
+                    )
+
+                if has_ref:
+                    logger.info(
+                        "Flux FREE i2i RR: OpenRouter-only pool=%s",
+                        len(providers),
+                    )
+
+                n = len(providers)
+                max_attempts = min(n, 1 + _FAILOVER_SHIFTS)
                 try:
                     for shift in range(max_attempts):
                         idx = await _peek_provider_index(n)
@@ -468,7 +560,7 @@ async def generate_free_tier_image(
                         label = f"{slot['type']}:...{slot['key'][-6:]}"
                         try:
                             logger.info(
-                                "Nano Banana RR idx=%s shift=%s slot=%s pool=%s ref=%s",
+                                "Flux FREE RR idx=%s shift=%s slot=%s pool=%s ref=%s",
                                 idx,
                                 shift,
                                 label,
@@ -477,7 +569,7 @@ async def generate_free_tier_image(
                             )
                             result = await _invoke_slot(
                                 slot,
-                                prompt,
+                                text,
                                 reference_image_bytes=reference_image_bytes,
                                 reference_mime=reference_mime,
                                 timeout=timeout,
@@ -497,7 +589,7 @@ async def generate_free_tier_image(
                                 break
                             if _is_rate_limit_error(exc) and shift + 1 < max_attempts:
                                 logger.warning(
-                                    "Nano Banana failover %s → next (%s)",
+                                    "Flux FREE failover %s → next (%s)",
                                     label,
                                     last_err,
                                 )
@@ -518,7 +610,7 @@ async def generate_free_tier_image(
             err,
         )
         raise FreeImageCascadeExhausted(
-            "NanoBananaCascade",
+            "FluxFreeCascade",
             "hard timeout 180s",
         ) from err
 
@@ -529,4 +621,4 @@ async def generate_free_tier_image(
         "Каскад бесплатной генерации полностью истощен. Причина: %s",
         safe_reason,
     )
-    raise FreeImageCascadeExhausted("NanoBananaCascade", safe_reason)
+    raise FreeImageCascadeExhausted("FluxFreeCascade", safe_reason)

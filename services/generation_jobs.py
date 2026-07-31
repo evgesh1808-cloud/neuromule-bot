@@ -210,21 +210,14 @@ async def _generate_free_tier_photo(
     bot: "Bot",
     file_id: str | None,
 ) -> GeminiImageResult:
-    """Flux FREE: Pollinations (t2i) → fallback RR-каскад. Timeout — снаружи воркера."""
+    """Flux FREE: каскад Pollinations → OpenRouter spare → RR (таймаут снаружи)."""
     if isinstance(prompt, (bytes, bytearray, memoryview)):
         raise ExternalApiError("FreePhoto", "prompt must be str, not image bytes")
     text = str(prompt or "").strip() or "Улучши это фото"
-
-    if not file_id:
-        try:
-            return await generate_flux_schnell_image(text)
-        except ExternalApiError as exc:
-            logger.warning("Pollinations Flux FREE failed, cascade fallback: %s", exc)
-
     ref_bytes: bytes | None = None
     ref_mime = "image/jpeg"
     if file_id:
-        logger.info("Flux FREE i2i: skip Pollinations reference, OpenRouter cascade")
+        logger.info("Flux FREE i2i: Pollinations skip, spare wheel / OR cascade")
         ref_bytes, ref_mime = await _load_telegram_photo_bytes(bot, file_id)
     return await generate_free_tier_image(
         text,

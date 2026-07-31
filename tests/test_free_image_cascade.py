@@ -1,4 +1,4 @@
-"""Тесты каскада FREE Nano Banana (строгий RR по 4 ключам)."""
+"""Тесты каскада Flux FREE: Pollinations → OpenRouter spare → RR."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import pytest
 
 from services.api_resilience import ExternalApiError
 from services.free_image_cascade import (
+    DEFAULT_OPENROUTER_FLUX_FREE,
     FreeImageCascadeExhausted,
     OpenRouterPaidBlockedError,
     _extract_b64_from_payload,
@@ -14,6 +15,20 @@ from services.free_image_cascade import (
     generate_free_tier_image,
     reset_free_image_rr_for_tests,
 )
+from services.gemini_image_client import GeminiImageResult
+
+
+@pytest.fixture(autouse=True)
+def _skip_pollinations_by_default(monkeypatch: pytest.MonkeyPatch):
+    """RR/spare-тесты: Pollinations сразу «падает», чтобы не ходить в сеть."""
+
+    async def _no_pollinations(_prompt: str) -> GeminiImageResult:
+        raise ExternalApiError("Pollinations", "skipped in unit test")
+
+    monkeypatch.setattr(
+        "services.free_image_cascade.generate_flux_schnell_image",
+        _no_pollinations,
+    )
 
 
 def test_extract_b64_from_openai_style_payload() -> None:
@@ -44,6 +59,11 @@ def test_ensure_openrouter_free_model_appends_suffix() -> None:
 def test_ensure_openrouter_free_model_blocks_paid_variants() -> None:
     with pytest.raises(OpenRouterPaidBlockedError):
         ensure_openrouter_free_model("google/gemini-2.5-flash-image-preview:nitro")
+
+
+def test_default_openrouter_model_is_flux_schnell_free() -> None:
+    assert DEFAULT_OPENROUTER_FLUX_FREE.endswith(":free")
+    assert "flux" in DEFAULT_OPENROUTER_FLUX_FREE.lower()
 
 
 def test_build_free_image_providers_order(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -87,6 +107,129 @@ def test_build_free_image_providers_skips_empty() -> None:
 
 
 @pytest.mark.asyncio
+async def test_pollinations_success_skips_spare_and_rr(monkeypatch: pytest.MonkeyPatch) -> None:
+    reset_free_image_rr_for_tests()
+    calls: list[str] = []
+
+    async def _ok_pollinations(prompt: str) -> GeminiImageResult:
+        calls.append(prompt)
+        return GeminiImageResult(data=b"from-pollinations")
+
+    async def _boom_spare(*_a, **_k):
+        raise AssertionError("spare wheel must not run")
+
+    async def _boom_slot(*_a, **_k):
+        raise AssertionError("RR must not run")
+
+    monkeypatch.setattr(
+        "services.free_image_cascade.generate_flux_schnell_image",
+        _ok_pollinations,
+    )
+    monkeypatch.setattr(
+        "services.free_image_cascade._try_openrouter_spare_wheel",
+        _boom_spare,
+    )
+    monkeypatch.setattr("services.free_image_cascade._invoke_slot", _boom_slot)
+
+    out = await generate_free_tier_image("sunset")
+    assert out.data == b"from-pollinations"
+    assert calls == ["sunset"]
+
+
+@pytest.mark.asyncio
+async def test_pollinations_fail_uses_openrouter_spare(monkeypatch: pytest.MonkeyPatch) -> None:
+    reset_free_image_rr_for_tests()
+    object.__setattr__(
+        __import__("config", fromlist=["settings"]).settings,
+        "free_image_key_pause_sec",
+        0.0,
+    )
+    seen_models: list[str] = []
+
+    monkeypatch.setattr(
+        "services.free_image_cascade.build_free_image_providers",
+        lambda: [{"type": "openrouter", "key": "o1"}],
+    )
+
+    async def _fake_or(
+        prompt: str,
+        *,
+        api_key: str,
+        reference_image_bytes,
+        reference_mime: str,
+        timeout: float,
+        model: str | None = None,
+    ) -> GeminiImageResult:
+        seen_models.append(model or "")
+        assert api_key == "o1"
+        assert "allow" or True
+        return GeminiImageResult(data=b"from-spare")
+
+    async def _boom_rr(*_a, **_k):
+        raise AssertionError("RR must not run when spare succeeds")
+
+    monkeypatch.setattr("services.free_image_cascade._call_openrouter", _fake_or)
+    monkeypatch.setattr("services.free_image_cascade._invoke_slot", _boom_rr)
+
+    out = await generate_free_tier_image("cat")
+    assert out.data == b"from-spare"
+    assert seen_models == [DEFAULT_OPENROUTER_FLUX_FREE]
+
+
+@pytest.mark.asyncio
+async def test_spare_wheel_sets_allow_fallbacks_false(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Контракт OpenRouter body: allow_fallbacks=False (без платных центов)."""
+    import services.free_image_cascade as fic
+
+    reset_free_image_rr_for_tests()
+    captured: dict = {}
+
+    class _Resp:
+        status_code = 200
+
+        def json(self):
+            import base64
+
+            b64 = base64.b64encode(b"img").decode()
+            return {
+                "model": "black-forest-labs/flux-1-schnell:free",
+                "choices": [
+                    {"message": {"images": [{"image_url": {"url": f"data:image/png;base64,{b64}"}}]}}
+                ],
+            }
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, headers=None, json=None):
+            captured["body"] = json
+            return _Resp()
+
+    monkeypatch.setattr(fic.httpx, "AsyncClient", _Client)
+    monkeypatch.setattr(
+        "services.free_image_cascade.build_free_image_providers",
+        lambda: [{"type": "openrouter", "key": "orkey123456"}],
+    )
+
+    out = await fic._try_openrouter_spare_wheel(
+        "test",
+        reference_image_bytes=None,
+        reference_mime="image/jpeg",
+        timeout=5.0,
+    )
+    assert out.data == b"img"
+    assert captured["body"]["model"] == DEFAULT_OPENROUTER_FLUX_FREE
+    assert captured["body"]["provider"]["allow_fallbacks"] is False
+
+
+@pytest.mark.asyncio
 async def test_cascade_exhausted_when_all_slots_fail(monkeypatch: pytest.MonkeyPatch) -> None:
     reset_free_image_rr_for_tests()
     object.__setattr__(
@@ -106,6 +249,7 @@ async def test_cascade_exhausted_when_all_slots_fail(monkeypatch: pytest.MonkeyP
     async def _fail(*_a, **_k):
         raise ExternalApiError("Test", "HTTP 429")
 
+    monkeypatch.setattr("services.free_image_cascade._try_openrouter_spare_wheel", _fail)
     monkeypatch.setattr("services.free_image_cascade._invoke_slot", _fail)
 
     with pytest.raises(FreeImageCascadeExhausted):
@@ -134,12 +278,14 @@ async def test_round_robin_advances_index(monkeypatch: pytest.MonkeyPatch) -> No
         ],
     )
 
+    async def _spare_fail(*_a, **_k):
+        raise ExternalApiError("OpenRouter", "spare down")
+
     async def _ok(slot, *_a, **_k):
         seen.append(slot["key"])
-        from services.gemini_image_client import GeminiImageResult
-
         return GeminiImageResult(data=b"ok")
 
+    monkeypatch.setattr("services.free_image_cascade._try_openrouter_spare_wheel", _spare_fail)
     monkeypatch.setattr("services.free_image_cascade._invoke_slot", _ok)
 
     await generate_free_tier_image("a")
@@ -152,7 +298,6 @@ async def test_round_robin_advances_index(monkeypatch: pytest.MonkeyPatch) -> No
 @pytest.mark.asyncio
 async def test_failover_on_429_shifts_within_pool(monkeypatch: pytest.MonkeyPatch) -> None:
     import services.free_image_cascade as fic
-    from services.gemini_image_client import GeminiImageResult
 
     reset_free_image_rr_for_tests()
     object.__setattr__(
@@ -173,6 +318,9 @@ async def test_failover_on_429_shifts_within_pool(monkeypatch: pytest.MonkeyPatc
         ],
     )
 
+    async def _spare_fail(*_a, **_k):
+        raise ExternalApiError("OpenRouter", "spare down")
+
     async def _flaky(slot, *_a, **_k):
         seen.append(slot["key"])
         calls["n"] += 1
@@ -180,10 +328,10 @@ async def test_failover_on_429_shifts_within_pool(monkeypatch: pytest.MonkeyPatc
             raise ExternalApiError("Gemini", "HTTP 429")
         return GeminiImageResult(data=b"ok")
 
+    monkeypatch.setattr("services.free_image_cascade._try_openrouter_spare_wheel", _spare_fail)
     monkeypatch.setattr("services.free_image_cascade._invoke_slot", _flaky)
 
     out = await generate_free_tier_image("x")
     assert out.data == b"ok"
     assert seen == ["g1", "g2"]
-    # Два обращения к API → индекс сдвинулся на 2.
     assert fic.global_provider_index == 2

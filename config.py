@@ -528,8 +528,8 @@ class Settings(BaseSettings):
     # Nano Banana FREE: Imagen (Google) + :free image model (OpenRouter).
     free_image_openrouter_model: Annotated[
         str,
-        _nonempty_str("bytedance/hyper-flux-8step:free"),
-    ] = "bytedance/hyper-flux-8step:free"
+        _nonempty_str("black-forest-labs/flux-1-schnell:free"),
+    ] = "black-forest-labs/flux-1-schnell:free"
     free_image_gemini_model: Annotated[
         str,
         _nonempty_str("imagen-3.0-generate-002"),
