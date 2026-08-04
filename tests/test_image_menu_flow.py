@@ -134,8 +134,61 @@ async def test_paid_user_no_auto_intercept_without_menu(monkeypatch: pytest.Monk
 
 
 @pytest.mark.asyncio
-async def test_present_image_menu_sent_even_if_fsm_fails() -> None:
+async def test_present_image_menu_preselects_flux_free_for_free_tier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from platforms.image_menu_flow import present_image_model_menu
+
+    class _Row:
+        tariff = "free"
+
+    monkeypatch.setattr(
+        "platforms.image_menu_flow.get_user_row",
+        AsyncMock(return_value=_Row()),
+    )
+    monkeypatch.setattr(
+        "services.billing.daily_quotas.get_free_photo_snapshot",
+        AsyncMock(return_value=MagicMock(used=0, day="2026-08-04")),
+    )
+    monkeypatch.setattr(
+        "services.billing.daily_quotas.quota_day",
+        lambda: "2026-08-04",
+    )
+
+    message = MagicMock()
+    message.answer = AsyncMock()
+    state = AsyncMock()
+
+    await present_image_model_menu(message, state, user_id=42)
+
+    state.set_state.assert_awaited_once_with(UserFlow.waiting_for_photo.state)
+    state.update_data.assert_awaited()
+    kwargs = state.update_data.await_args.kwargs
+    assert kwargs.get("image_model_id") == "free_photo"
+    assert kwargs.get("image_model_label") == "Flux FREE"
+
+
+@pytest.mark.asyncio
+async def test_present_image_menu_sent_even_if_fsm_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from platforms.image_menu_flow import present_image_model_menu
+
+    class _Row:
+        tariff = "free"
+
+    monkeypatch.setattr(
+        "platforms.image_menu_flow.get_user_row",
+        AsyncMock(return_value=_Row()),
+    )
+    monkeypatch.setattr(
+        "services.billing.daily_quotas.get_free_photo_snapshot",
+        AsyncMock(return_value=MagicMock(used=0, day="2026-08-04")),
+    )
+    monkeypatch.setattr(
+        "services.billing.daily_quotas.quota_day",
+        lambda: "2026-08-04",
+    )
 
     message = MagicMock()
     message.answer = AsyncMock()
@@ -150,9 +203,27 @@ async def test_present_image_menu_sent_even_if_fsm_fails() -> None:
 
 
 @pytest.mark.asyncio
-async def test_present_image_menu_fallback_on_send_failure() -> None:
+async def test_present_image_menu_fallback_on_send_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from aiogram.exceptions import TelegramBadRequest
     from platforms.image_menu_flow import present_image_model_menu
+
+    class _Row:
+        tariff = "free"
+
+    monkeypatch.setattr(
+        "platforms.image_menu_flow.get_user_row",
+        AsyncMock(return_value=_Row()),
+    )
+    monkeypatch.setattr(
+        "services.billing.daily_quotas.get_free_photo_snapshot",
+        AsyncMock(return_value=MagicMock(used=0, day="2026-08-04")),
+    )
+    monkeypatch.setattr(
+        "services.billing.daily_quotas.quota_day",
+        lambda: "2026-08-04",
+    )
 
     message = MagicMock()
     message.answer = AsyncMock(

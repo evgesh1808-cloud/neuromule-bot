@@ -315,9 +315,19 @@ async def present_image_model_menu(
             logger.debug("present_image_model_menu fallback answer failed", exc_info=True)
         return
 
+    from services.billing.image_pipeline import free_tier_image_model
+
+    preselect_free = tariff is TariffTier.FREE
     try:
         await mark_image_model_menu_pending(state)
-        await state.set_state(UserFlow.waiting_for_image_model_pick)
+        if preselect_free:
+            await state.update_data(
+                image_model_id=free_tier_image_model(),
+                image_model_label=FREE_DEFAULT_IMAGE_MODEL_LABEL,
+            )
+            await state.set_state(UserFlow.waiting_for_photo)
+        else:
+            await state.set_state(UserFlow.waiting_for_image_model_pick)
     except Exception:
         # Меню уже в чате — FSM/Redis не должен блокировать UX.
         logger.warning(
