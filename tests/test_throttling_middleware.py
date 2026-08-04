@@ -62,8 +62,10 @@ def _patch_aiogram_types(monkeypatch: pytest.MonkeyPatch):
 def _reset_state():
     """Чистим внутренний словарь cooldown'ов перед каждым тестом."""
     throttle_mod._LAST_CALL_AT.clear()
+    throttle_mod._PHOTO_FLOW_UNTIL.clear()
     yield
     throttle_mod._LAST_CALL_AT.clear()
+    throttle_mod._PHOTO_FLOW_UNTIL.clear()
 
 
 async def _noop_handler(event: Any, data: dict[str, Any]) -> str:
@@ -177,4 +179,28 @@ async def test_reset_throttle_clears_cooldown() -> None:
     await mw(_noop_handler, cb, {})
     reset_throttle(99)
     cb2 = _StubCallback(uid=99)
+    assert await mw(_noop_handler, cb2, {}) == "executed"
+
+
+@pytest.mark.asyncio
+async def test_photo_flow_bypasses_cooldown_after_chat() -> None:
+    from platforms.telegram_throttling import mark_photo_flow
+
+    mw = ThrottlingMiddleware(cooldown=2.0)
+    chat = _StubMessage(uid=42, text="привет")
+    prompt = _StubMessage(uid=42, text="кот на луне")
+
+    assert await mw(_noop_handler, chat, {}) == "executed"
+    mark_photo_flow(42)
+    assert await mw(_noop_handler, prompt, {}) == "executed"
+
+
+@pytest.mark.asyncio
+async def test_create_image_callback_is_never_throttled() -> None:
+    from content import messages as msg
+
+    mw = ThrottlingMiddleware(cooldown=2.0)
+    cb1 = _StubCallback(uid=42, data=msg.CB_CREATE_IMAGE)
+    cb2 = _StubCallback(uid=42, data=f"{msg.CB_IMG_PREFIX}free_photo")
+    assert await mw(_noop_handler, cb1, {}) == "executed"
     assert await mw(_noop_handler, cb2, {}) == "executed"

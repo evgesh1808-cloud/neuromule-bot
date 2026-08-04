@@ -456,14 +456,13 @@ async def upscale_start_callback(callback: CallbackQuery, state: FSMContext) -> 
 @router.callback_query(F.data.startswith(msg.CB_IMG_PREFIX))
 async def pick_image_model(callback: CallbackQuery, state: FSMContext) -> None:
     from platforms.image_menu_flow import clear_image_model_menu_pending
+    from platforms.telegram_throttling import mark_photo_flow
     from services.billing.free_tier_gates import free_allows_image_model, is_free_user
     from services.billing.image_pipeline import free_tier_image_model, normalize_image_model
 
-    # Сразу гасим «часики» — FSM/SQLite не должны блокировать inline-кнопку.
-    await callback.answer()
-
     user = callback.from_user
     if user is None:
+        await callback.answer()
         return
 
     raw_mid = (callback.data or "")[len(msg.CB_IMG_PREFIX) :].strip()
@@ -484,12 +483,16 @@ async def pick_image_model(callback: CallbackQuery, state: FSMContext) -> None:
             )
         return
 
+    await callback.answer()
+
     label = next(
         (lbl for lbl, i in msg.IMAGE_MODELS if normalize_image_model(i) == mid),
         None,
     )
     if not label:
         label = "Flux FREE" if mid == free_tier_image_model() else raw_mid
+
+    mark_photo_flow(user.id)
 
     try:
         await clear_image_model_menu_pending(state)

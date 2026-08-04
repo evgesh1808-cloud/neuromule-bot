@@ -49,8 +49,10 @@ def _patch_aiogram_types(mocker: MockerFixture):
 @pytest.fixture(autouse=True)
 def _reset_state():
     throttle_mod._LAST_CALL_AT.clear()
+    throttle_mod._PHOTO_FLOW_UNTIL.clear()
     yield
     throttle_mod._LAST_CALL_AT.clear()
+    throttle_mod._PHOTO_FLOW_UNTIL.clear()
 
 
 async def _ok_handler(event: Any, data: dict[str, Any]) -> str:

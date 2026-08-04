@@ -90,6 +90,15 @@ async def mark_image_model_menu_pending(state: FSMContext) -> None:
     await state.update_data(**{IMAGE_MODEL_MENU_PENDING_KEY: True})
 
 
+def _mark_photo_flow_for_message(message: Message) -> None:
+    user = message.from_user
+    if user is None:
+        return
+    from platforms.telegram_throttling import mark_photo_flow
+
+    mark_photo_flow(user.id)
+
+
 async def clear_image_model_menu_pending(state: FSMContext) -> None:
     await state.update_data(**{IMAGE_MODEL_MENU_PENDING_KEY: False})
 
@@ -155,6 +164,7 @@ async def route_free_text_to_flux_photo(
     """FREE → бесплатное фото дня (каскад провайдеров)."""
     from platforms.handlers.generation_fsm import process_photo_prompt_message
 
+    _mark_photo_flow_for_message(message)
     model_id = _free_default_image_model_id()
     await state.update_data(
         image_model_id=model_id,
@@ -256,7 +266,7 @@ async def present_image_model_menu(
     from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramNetworkError
     from services.billing.daily_quotas import get_free_photo_snapshot, quota_day
 
-    # Маркер FSM до SQLite/Telegram — иначе промпт сразу после «Изображение» ловит throttle/чат.
+    # Маркер FSM + in-memory photo-flow до SQLite/Telegram.
     try:
         await mark_image_model_menu_pending(state)
         await state.set_state(UserFlow.waiting_for_image_model_pick)
@@ -266,6 +276,9 @@ async def present_image_model_menu(
             user_id,
             exc_info=True,
         )
+    from platforms.telegram_throttling import mark_photo_flow
+
+    mark_photo_flow(user_id)
 
     tariff = TariffTier.FREE
     snap_used = 0
@@ -375,6 +388,7 @@ async def handle_pending_image_menu_text(message: Message, state: FSMContext) ->
     if model_id:
         from platforms.handlers.generation_fsm import process_photo_prompt_message
 
+        _mark_photo_flow_for_message(message)
         label = str(data.get("image_model_label") or FREE_DEFAULT_IMAGE_MODEL_LABEL).strip()
         await clear_image_model_menu_pending(state)
         await state.set_state(UserFlow.waiting_for_photo)

@@ -17,13 +17,10 @@
 * В лог пишется `INFO` с user_id и фактом срабатывания — нужно для
   мониторинга накрутчиков и тюнинга порогов.
 
-Тонкости:
-* Пул `_LAST_CALL_AT` живёт в памяти процесса. После рестарта чист —
-  это приемлемо, потому что cooldown короткий (2 секунды по умолчанию).
-* Список «whitelisted» callback-данных (без троттлинга) выводит из-под
-  фильтра низкорисковые действия: открытие меню, отказ от шеринга,
-  принятие TOS — там нет финансовых операций, юзера нельзя «спамить
-  спугнуть».
+Photo-flow bypass:
+* ``ThrottlingMiddleware`` — outer_middleware: ``FSMContext`` ещё не в
+  ``data``, поэтому проверка FSM здесь бесполезна. Для меню «Изображение»
+  / Flux FREE используем in-memory ``mark_photo_flow(user_id)``.
 """
 
 from __future__ import annotations
@@ -43,14 +40,12 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_COOLDOWN_SEC: Final = 2.0
+PHOTO_FLOW_BYPASS_SEC: Final = 120.0
 DEFAULT_ALERT_TEXT: Final = (
     "⏳ Не спеши! NeuroMule обрабатывает твой прошлый запрос."
 )
 
 # Дешёвые / safe-операции — не троттлим, чтобы не раздражать UX.
-# ``CB_CHECK_SUBSCRIPTION`` — кнопка «✅ Принять условия и Запустить»
-# в новой TOS-заслонке (start_onboarding); пропускаем без cooldown,
-# чтобы flow «принятие оферты ⇒ главное меню» был мгновенным.
 WHITELISTED_CALLBACK_DATA: Final[frozenset[str]] = frozenset(
     {
         msg.CB_ACCEPT_LEGAL_TOS,
@@ -64,8 +59,10 @@ WHITELISTED_CALLBACK_DATA: Final[frozenset[str]] = frozenset(
     }
 )
 
-# Per-user последний tick (UNIX seconds).
+# Per-user последний tick (monotonic seconds).
 _LAST_CALL_AT: dict[int, float] = {}
+# In-memory photo-flow bypass (outer middleware не видит FSM).
+_PHOTO_FLOW_UNTIL: dict[int, float] = {}
 
 
 def _user_id_of(event: TelegramObject) -> int | None:
@@ -73,6 +70,27 @@ def _user_id_of(event: TelegramObject) -> int | None:
     if user is None:
         return None
     return int(getattr(user, "id", 0)) or None
+
+
+def mark_photo_flow(user_id: int, *, ttl_sec: float = PHOTO_FLOW_BYPASS_SEC) -> None:
+    """Разрешить photo-промпты без cooldown (меню / Flux FREE / waiting_for_photo)."""
+    uid = int(user_id)
+    _PHOTO_FLOW_UNTIL[uid] = time.monotonic() + float(ttl_sec)
+    reset_throttle(uid)
+
+
+def clear_photo_flow(user_id: int) -> None:
+    _PHOTO_FLOW_UNTIL.pop(int(user_id), None)
+
+
+def is_photo_flow_active(user_id: int) -> bool:
+    until = _PHOTO_FLOW_UNTIL.get(int(user_id))
+    if until is None:
+        return False
+    if time.monotonic() > until:
+        _PHOTO_FLOW_UNTIL.pop(int(user_id), None)
+        return False
+    return True
 
 
 def _is_table_chart_callback(event: TelegramObject) -> bool:
@@ -125,13 +143,10 @@ def _is_whitelisted_callback(event: TelegramObject) -> bool:
     data = (event.data or "").strip()
     if data in WHITELISTED_CALLBACK_DATA:
         return True
-    # Меню фото / выбор Flux FREE — без cooldown, иначе «часики» и тишина после промпта.
     if data == msg.CB_CREATE_IMAGE or data.startswith(msg.CB_IMG_PREFIX):
         return True
-    # Выбор роли / лайфстайл-подменю — иначе Lifestyle→Блогер за 2с ловит throttle.
     if data.startswith(msg.CB_SET_ROLE_PREFIX) or data.startswith(msg.CB_TEXT_ROLE_PREFIX):
         return True
-    # Suggested Replies FREE/MINI — не режем: иначе клик сразу после ответа «молчит».
     if data.startswith(msg.CB_CHAT_HINT_PREFIX) or data.startswith(msg.CB_STD_REPLY_PREFIX):
         return True
     if data in (
@@ -142,8 +157,6 @@ def _is_whitelisted_callback(event: TelegramObject) -> bool:
         return True
     if data.startswith(msg.CB_AUDIT_PLATFORM_PREFIX):
         return True
-    # Префиксы админ-модерации / TOS-навигации тоже выводим из-под
-    # троттлинга (это редкие события, не атакующая поверхность).
     for prefix in (
         msg.CB_REVIEW_APPROVE_PREFIX,
         msg.CB_REVIEW_REJECT_PREFIX,
@@ -152,36 +165,6 @@ def _is_whitelisted_callback(event: TelegramObject) -> bool:
     ):
         if data.startswith(prefix):
             return True
-    return False
-
-
-async def _is_photo_flow_message(
-    event: TelegramObject,
-    data: dict[str, Any],
-) -> bool:
-    """Промпт для Flux FREE не режем cooldown после «Изображение» / inline-модели."""
-    if not isinstance(event, Message):
-        return False
-    fsm = data.get("state")
-    if fsm is None:
-        return False
-    try:
-        from platforms.image_menu_flow import IMAGE_MODEL_MENU_PENDING_KEY
-        from platforms.telegram_states import UserFlow
-
-        current = await fsm.get_state()
-        if current in (
-            UserFlow.waiting_for_photo.state,
-            UserFlow.waiting_for_image_model_pick.state,
-        ):
-            return True
-        fsm_data = await fsm.get_data()
-        if fsm_data.get(IMAGE_MODEL_MENU_PENDING_KEY):
-            return True
-        if fsm_data.get("image_model_id"):
-            return True
-    except Exception:
-        logger.debug("throttle: photo-flow FSM check failed", exc_info=True)
     return False
 
 
@@ -197,14 +180,14 @@ class ThrottlingMiddleware(BaseMiddleware):
         event: TelegramObject,
         data: dict[str, Any],
     ) -> Any:
-        # Пропускаем системные апдейты (PreCheckoutQuery, ChosenInlineResult и т.д.).
         if not isinstance(event, (Message, CallbackQuery)):
             return await handler(event, data)
 
         if _is_whitelisted_callback(event):
             return await handler(event, data)
 
-        if isinstance(event, Message) and await _is_photo_flow_message(event, data):
+        user_id = _user_id_of(event)
+        if user_id is not None and isinstance(event, Message) and is_photo_flow_active(user_id):
             return await handler(event, data)
 
         if _is_image_menu_reply_button(event):
@@ -213,7 +196,6 @@ class ThrottlingMiddleware(BaseMiddleware):
         if _is_document_message(event):
             return await handler(event, data)
 
-        user_id = _user_id_of(event)
         if user_id is None:
             return await handler(event, data)
 
@@ -229,7 +211,6 @@ class ThrottlingMiddleware(BaseMiddleware):
                 self.cooldown,
             )
             if isinstance(event, CallbackQuery):
-                # Гасим анимацию часиков и показываем мягкую плашку.
                 try:
                     await event.answer(DEFAULT_ALERT_TEXT, show_alert=False)
                 except Exception:
@@ -246,7 +227,7 @@ class ThrottlingMiddleware(BaseMiddleware):
 
 
 def reset_throttle(user_id: int) -> None:
-    """Тестовый/админский helper: сбросить cooldown конкретного юзера."""
+    """Сбросить cooldown конкретного юзера (тесты / photo-flow entry)."""
 
     _LAST_CALL_AT.pop(int(user_id), None)
 
@@ -254,7 +235,11 @@ def reset_throttle(user_id: int) -> None:
 __all__ = (
     "DEFAULT_COOLDOWN_SEC",
     "DEFAULT_ALERT_TEXT",
+    "PHOTO_FLOW_BYPASS_SEC",
     "WHITELISTED_CALLBACK_DATA",
     "ThrottlingMiddleware",
+    "clear_photo_flow",
+    "is_photo_flow_active",
+    "mark_photo_flow",
     "reset_throttle",
 )

@@ -190,6 +190,10 @@ async def process_photo_prompt_message(
     chat_id = message.chat.id
     body = (prompt or "").strip()
 
+    from platforms.telegram_throttling import clear_photo_flow, mark_photo_flow
+
+    mark_photo_flow(user_id)
+
     if not body and not telegram_file_id:
         await message.answer(msg.TXT_CREATE_IMAGE_AFTER_MODEL)
         return
@@ -225,6 +229,7 @@ async def process_photo_prompt_message(
             msg.TXT_FREE_IMAGE_CASCADE_FAILED,
         )
         await state.clear()
+        clear_photo_flow(user_id)
         return
 
     if pr.outcome is PhotoGenOutcome.NEED_PROMPT:
@@ -241,6 +246,7 @@ async def process_photo_prompt_message(
             msg.TXT_FREE_IMAGE_GLOBAL_CAP,
         )
         await state.clear()
+        clear_photo_flow(user_id)
         return
     if pr.outcome is PhotoGenOutcome.INSUFFICIENT_BALANCE:
         if status_msg is not None:
@@ -254,6 +260,7 @@ async def process_photo_prompt_message(
             parse_mode=ParseMode.HTML,
         )
         await state.clear()
+        clear_photo_flow(user_id)
         return
     if pr.outcome is PhotoGenOutcome.DAILY_LIMIT_EXCEEDED:
         if status_msg is not None:
@@ -267,6 +274,7 @@ async def process_photo_prompt_message(
             parse_mode=ParseMode.HTML,
         )
         await state.clear()
+        clear_photo_flow(user_id)
         return
     if pr.outcome is PhotoGenOutcome.FREE_IMAGE_MODEL_BLOCKED:
         await _edit_or_answer_photo_status(
@@ -275,6 +283,7 @@ async def process_photo_prompt_message(
             msg.TXT_FREE_IMAGE_MODEL_BLOCKED,
         )
         await state.clear()
+        clear_photo_flow(user_id)
         return
 
     eq = pr.enqueue
@@ -285,6 +294,7 @@ async def process_photo_prompt_message(
             msg.TXT_GEN_JOB_FAILED,
         )
         await state.clear()
+        clear_photo_flow(user_id)
         return
 
     fire_photo_job(
@@ -303,7 +313,11 @@ async def process_photo_prompt_message(
     )
     if pr.vip_priority:
         await message.answer(msg.TXT_GEN_STATUS_VIP)
-    await state.clear()
+    from platforms.image_menu_flow import clear_image_model_menu_pending
+
+    await clear_image_model_menu_pending(state)
+    await state.set_state(UserFlow.waiting_for_photo)
+    mark_photo_flow(user_id)
 
 
 is_subscribed = deps.is_subscribed
