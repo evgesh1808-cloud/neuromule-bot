@@ -157,6 +157,21 @@ class PendingImageMenuTextFilter(BaseFilter):
         return await can_intercept_text_as_image_prompt(message, state)
 
 
+async def _edit_or_answer_photo_status(
+    message: Message,
+    status_msg: Message | None,
+    text: str,
+) -> None:
+    """Редактирует «Мула в облаках» или шлёт новое сообщение."""
+    if status_msg is not None:
+        try:
+            await status_msg.edit_text(text, parse_mode=ParseMode.HTML)
+            return
+        except TelegramBadRequest:
+            logger.debug("photo status edit failed, sending new message", exc_info=True)
+    await message.answer(text, parse_mode=ParseMode.HTML)
+
+
 async def process_photo_prompt_message(
     message: Message,
     state: FSMContext,
@@ -167,36 +182,72 @@ async def process_photo_prompt_message(
     auto_flux: bool = False,
     telegram_file_id: str | None = None,
 ) -> None:
-    user_id = message.from_user.id
+    _ = auto_flux
+    user = message.from_user
+    if user is None:
+        return
+    user_id = user.id
     chat_id = message.chat.id
+    body = (prompt or "").strip()
 
-    lock = user_locks.setdefault(user_id, asyncio.Lock())
-    async with lock:
-        await message.bot.send_chat_action(chat_id=chat_id, action="upload_photo")
-        async with chat_action_loop(deps.bot(), chat_id, "upload_photo"):
-            pr = await run_photo_generation_turn(
-                settings,
-                deps.bot(),
-                chat_id,
-                user_id,
-                model_id,
-                label,
-                prompt,
-                telegram_file_id=telegram_file_id,
-            )
-
-    if pr.outcome is PhotoGenOutcome.NEED_PROMPT:
+    if not body and not telegram_file_id:
         await message.answer(msg.TXT_CREATE_IMAGE_AFTER_MODEL)
         return
-    if pr.outcome is PhotoGenOutcome.GLOBAL_FREE_IMAGE_CAP:
-        await message.answer(
-            msg.TXT_FREE_IMAGE_GLOBAL_CAP,
-            reply_markup=paycat.shop_packages_keyboard(),
+
+    status_msg: Message | None = None
+    try:
+        status_msg = await message.answer(
+            msg.TXT_GEN_STATUS_ACCEPTED,
             parse_mode=ParseMode.HTML,
+        )
+    except Exception:
+        logger.exception("photo prompt: failed to send status uid=%s", user_id)
+
+    try:
+        lock = user_locks.setdefault(user_id, asyncio.Lock())
+        async with lock:
+            async with chat_action_loop(deps.bot(), chat_id, "upload_photo"):
+                pr = await run_photo_generation_turn(
+                    settings,
+                    deps.bot(),
+                    chat_id,
+                    user_id,
+                    model_id,
+                    label,
+                    body or prompt,
+                    telegram_file_id=telegram_file_id,
+                )
+    except Exception:
+        logger.exception("photo prompt: billing/enqueue failed uid=%s", user_id)
+        await _edit_or_answer_photo_status(
+            message,
+            status_msg,
+            msg.TXT_FREE_IMAGE_CASCADE_FAILED,
+        )
+        await state.clear()
+        return
+
+    if pr.outcome is PhotoGenOutcome.NEED_PROMPT:
+        await _edit_or_answer_photo_status(
+            message,
+            status_msg,
+            msg.TXT_CREATE_IMAGE_AFTER_MODEL,
+        )
+        return
+    if pr.outcome is PhotoGenOutcome.GLOBAL_FREE_IMAGE_CAP:
+        await _edit_or_answer_photo_status(
+            message,
+            status_msg,
+            msg.TXT_FREE_IMAGE_GLOBAL_CAP,
         )
         await state.clear()
         return
     if pr.outcome is PhotoGenOutcome.INSUFFICIENT_BALANCE:
+        if status_msg is not None:
+            try:
+                await status_msg.delete()
+            except TelegramBadRequest:
+                pass
         await message.answer(
             msg.TXT_INSUFFICIENT_BALANCE,
             reply_markup=paycat.shop_packages_keyboard(),
@@ -205,6 +256,11 @@ async def process_photo_prompt_message(
         await state.clear()
         return
     if pr.outcome is PhotoGenOutcome.DAILY_LIMIT_EXCEEDED:
+        if status_msg is not None:
+            try:
+                await status_msg.delete()
+            except TelegramBadRequest:
+                pass
         await message.answer(
             msg.TXT_PHOTO_DAILY_LIMIT.format(limit=settings.free_daily_photo_limit),
             reply_markup=invite_limit_keyboard(),
@@ -213,27 +269,38 @@ async def process_photo_prompt_message(
         await state.clear()
         return
     if pr.outcome is PhotoGenOutcome.FREE_IMAGE_MODEL_BLOCKED:
-        await message.answer(msg.TXT_FREE_IMAGE_MODEL_BLOCKED, parse_mode=ParseMode.HTML)
+        await _edit_or_answer_photo_status(
+            message,
+            status_msg,
+            msg.TXT_FREE_IMAGE_MODEL_BLOCKED,
+        )
         await state.clear()
         return
 
-    status_msg = await message.answer(msg.TXT_GEN_STATUS_ACCEPTED)
     eq = pr.enqueue
-    if eq is not None:
-        fire_photo_job(
-            deps.bot(),
-            chat_id,
-            user_id,
-            eq.image_model_id,
-            eq.model_label,
-            eq.prompt,
-            eq.used_daily_slot,
-            eq.charged_crystals,
-            priority=eq.priority,
-            billing_charge_id=eq.billing_charge_id,
-            telegram_file_id=eq.telegram_file_id,
-            status_message_id=status_msg.message_id,
+    if eq is None:
+        await _edit_or_answer_photo_status(
+            message,
+            status_msg,
+            msg.TXT_GEN_JOB_FAILED,
         )
+        await state.clear()
+        return
+
+    fire_photo_job(
+        deps.bot(),
+        chat_id,
+        user_id,
+        eq.image_model_id,
+        eq.model_label,
+        eq.prompt,
+        eq.used_daily_slot,
+        eq.charged_crystals,
+        priority=eq.priority,
+        billing_charge_id=eq.billing_charge_id,
+        telegram_file_id=eq.telegram_file_id,
+        status_message_id=status_msg.message_id if status_msg is not None else None,
+    )
     if pr.vip_priority:
         await message.answer(msg.TXT_GEN_STATUS_VIP)
     await state.clear()

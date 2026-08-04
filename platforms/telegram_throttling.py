@@ -117,6 +117,9 @@ def _is_whitelisted_callback(event: TelegramObject) -> bool:
     data = (event.data or "").strip()
     if data in WHITELISTED_CALLBACK_DATA:
         return True
+    # Меню фото / выбор Flux FREE — без cooldown, иначе «часики» и тишина после промпта.
+    if data == msg.CB_CREATE_IMAGE or data.startswith(msg.CB_IMG_PREFIX):
+        return True
     # Выбор роли / лайфстайл-подменю — иначе Lifestyle→Блогер за 2с ловит throttle.
     if data.startswith(msg.CB_SET_ROLE_PREFIX) or data.startswith(msg.CB_TEXT_ROLE_PREFIX):
         return True
@@ -144,6 +147,36 @@ def _is_whitelisted_callback(event: TelegramObject) -> bool:
     return False
 
 
+async def _is_photo_flow_message(
+    event: TelegramObject,
+    data: dict[str, Any],
+) -> bool:
+    """Промпт для Flux FREE не режем cooldown после «Изображение» / inline-модели."""
+    if not isinstance(event, Message):
+        return False
+    fsm = data.get("state")
+    if fsm is None:
+        return False
+    try:
+        from platforms.image_menu_flow import IMAGE_MODEL_MENU_PENDING_KEY
+        from platforms.telegram_states import UserFlow
+
+        current = await fsm.get_state()
+        if current in (
+            UserFlow.waiting_for_photo.state,
+            UserFlow.waiting_for_image_model_pick.state,
+        ):
+            return True
+        fsm_data = await fsm.get_data()
+        if fsm_data.get(IMAGE_MODEL_MENU_PENDING_KEY):
+            return True
+        if fsm_data.get("image_model_id"):
+            return True
+    except Exception:
+        logger.debug("throttle: photo-flow FSM check failed", exc_info=True)
+    return False
+
+
 class ThrottlingMiddleware(BaseMiddleware):
     """aiogram 3 middleware: 1 событие в ``cooldown`` секунд на user_id."""
 
@@ -161,6 +194,9 @@ class ThrottlingMiddleware(BaseMiddleware):
             return await handler(event, data)
 
         if _is_whitelisted_callback(event):
+            return await handler(event, data)
+
+        if isinstance(event, Message) and await _is_photo_flow_message(event, data):
             return await handler(event, data)
 
         if _is_document_message(event):
