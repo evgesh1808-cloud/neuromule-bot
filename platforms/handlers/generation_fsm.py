@@ -182,6 +182,9 @@ async def process_photo_prompt_message(
     auto_flux: bool = False,
     telegram_file_id: str | None = None,
 ) -> None:
+    from platforms.image_menu_flow import normalize_image_prompt_text
+    from platforms.telegram_throttling import clear_photo_flow, mark_photo_flow
+
     _ = auto_flux
     user = message.from_user
     if user is None:
@@ -189,8 +192,6 @@ async def process_photo_prompt_message(
     user_id = user.id
     chat_id = message.chat.id
     body = normalize_image_prompt_text(prompt or "")
-
-    from platforms.telegram_throttling import clear_photo_flow, mark_photo_flow
 
     mark_photo_flow(user_id)
 
