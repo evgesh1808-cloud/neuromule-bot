@@ -183,15 +183,18 @@ async def test_reset_throttle_clears_cooldown() -> None:
 
 
 @pytest.mark.asyncio
-async def test_photo_flow_bypasses_cooldown_after_chat() -> None:
-    from platforms.telegram_throttling import mark_photo_flow
-
+async def test_photo_prompt_heuristic_bypasses_cooldown_after_chat() -> None:
     mw = ThrottlingMiddleware(cooldown=2.0)
     chat = _StubMessage(uid=42, text="привет")
-    prompt = _StubMessage(uid=42, text="кот на луне")
+    prompt = _StubMessage(
+        uid=42,
+        text=(
+            "Генерация логотипа студии (Формат 1:1):A powerful esports gaming logo, "
+            "1:1, cyberpunk, masterpiece, 8k"
+        ),
+    )
 
     assert await mw(_noop_handler, chat, {}) == "executed"
-    mark_photo_flow(42)
     assert await mw(_noop_handler, prompt, {}) == "executed"
 
 

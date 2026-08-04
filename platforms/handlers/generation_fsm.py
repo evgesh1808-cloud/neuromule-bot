@@ -188,7 +188,7 @@ async def process_photo_prompt_message(
         return
     user_id = user.id
     chat_id = message.chat.id
-    body = (prompt or "").strip()
+    body = normalize_image_prompt_text(prompt or "")
 
     from platforms.telegram_throttling import clear_photo_flow, mark_photo_flow
 

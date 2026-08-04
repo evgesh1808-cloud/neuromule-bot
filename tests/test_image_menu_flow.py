@@ -11,6 +11,9 @@ from platforms.image_menu_flow import (
     FREE_AUTO_IMAGE_INTERCEPT_MIN_LEN,
     can_intercept_text_as_image_prompt,
     is_image_model_menu_pending,
+    looks_like_studio_image_request,
+    message_looks_like_photo_prompt,
+    normalize_image_prompt_text,
     text_looks_like_image_prompt,
 )
 from platforms.telegram_states import UserFlow
@@ -95,6 +98,34 @@ async def test_intercept_when_model_selected_but_state_lost() -> None:
     message.text = "кот на луне в стиле аниме"
 
     assert await can_intercept_text_as_image_prompt(message, state) is True
+
+
+@pytest.mark.asyncio
+async def test_studio_logo_prompt_is_intercepted() -> None:
+    state = AsyncMock()
+    state.get_data = AsyncMock(return_value={"text_role": "standard"})
+    state.get_state = AsyncMock(return_value=UserFlow.waiting_for_text_prompt.state)
+
+    prompt = (
+        'Генерация логотипа студии (Формат 1:1):A powerful esports gaming logo for "MULENDEEVA GAMES" '
+        "studio. 1:1 aspect, cyberpunk, masterpiece, 8k resolution"
+    )
+    message = MagicMock()
+    message.from_user.id = 42
+    message.text = prompt
+
+    assert await can_intercept_text_as_image_prompt(message, state) is True
+
+
+def test_normalize_studio_logo_prompt_prefix() -> None:
+    raw = "Генерация логотипа студии (Формат 1:1):A powerful esports logo"
+    assert normalize_image_prompt_text(raw) == "A powerful esports logo"
+    assert looks_like_studio_image_request(raw) is True
+
+
+def test_message_looks_like_photo_prompt_studio() -> None:
+    raw = "Генерация логотипа студии (Формат 1:1):logo prompt"
+    assert message_looks_like_photo_prompt(raw) is True
 
 
 def test_is_image_model_menu_pending() -> None:

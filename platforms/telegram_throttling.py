@@ -187,6 +187,15 @@ class ThrottlingMiddleware(BaseMiddleware):
             return await handler(event, data)
 
         user_id = _user_id_of(event)
+        if user_id is not None and isinstance(event, Message):
+            text = (getattr(event, "text", None) or "").strip()
+            if text:
+                from platforms.image_menu_flow import message_looks_like_photo_prompt
+
+                if message_looks_like_photo_prompt(text):
+                    mark_photo_flow(user_id)
+                    return await handler(event, data)
+
         if user_id is not None and isinstance(event, Message) and is_photo_flow_active(user_id):
             return await handler(event, data)
 

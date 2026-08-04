@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING
 
 from aiogram.enums import ParseMode
@@ -23,6 +24,12 @@ IMAGE_MODEL_MENU_PENDING_KEY = "image_model_menu_pending"
 FREE_DEFAULT_IMAGE_MODEL_LABEL = "Flux FREE"
 # FREE без меню: длинный текст или маркеры промпта → Flux FREE, не чат.
 FREE_AUTO_IMAGE_INTERCEPT_MIN_LEN = 250
+
+# WebApp Studio: «Генерация логотипа студии (Формат 1:1):<prompt>»
+_STUDIO_PROMPT_PREFIX_RE = re.compile(
+    r"^Генерация\s+.+?\(\s*Формат\s+[0-9]+\s*:\s*[0-9]+\s*\)\s*:?\s*",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def _free_default_image_model_id() -> str:
@@ -66,7 +73,46 @@ _IMAGE_PROMPT_MARKERS = (
     "soft light",
     "cinematic",
     "кинемат",
+    "logo",
+    "логотип",
+    "esports",
+    "gaming",
+    "3d render",
+    "masterpiece",
+    "8k",
+    "cyberpunk",
+    "emblem",
 )
+
+
+def normalize_image_prompt_text(text: str) -> str:
+    """Убирает префикс WebApp Studio и лишние пробелы."""
+    body = (text or "").strip()
+    if not body:
+        return ""
+    stripped = _STUDIO_PROMPT_PREFIX_RE.sub("", body, count=1).strip()
+    return stripped or body
+
+
+def looks_like_studio_image_request(text: str) -> bool:
+    """Промпт из Mini App Studio (логотип / обложка / формат кадра)."""
+    body = (text or "").strip()
+    if not body:
+        return False
+    if _STUDIO_PROMPT_PREFIX_RE.match(body):
+        return True
+    low = body[:160].lower()
+    return "генерация" in low and "формат" in low and ":" in body[:160]
+
+
+def message_looks_like_photo_prompt(text: str) -> bool:
+    """Синхронная эвристика для outer throttle (FSM там недоступен)."""
+    body = (text or "").strip()
+    if not body or body.startswith("/"):
+        return False
+    if looks_like_studio_image_request(body):
+        return True
+    return text_looks_like_image_prompt(body)
 
 # Состояния, где текст — не «промпт для фото из меню».
 _BLOCKED_FSM_STATES = frozenset(
@@ -222,6 +268,15 @@ async def can_intercept_text_as_image_prompt(message: Message, state: FSMContext
         return False
 
     current = await state.get_state()
+
+    if looks_like_studio_image_request(text) and current in (
+        None,
+        UserFlow.waiting_for_text_prompt.state,
+        UserFlow.waiting_for_image_model_pick.state,
+        UserFlow.waiting_for_photo.state,
+    ):
+        return True
+
     if current == UserFlow.waiting_for_image_model_pick.state:
         return True
 
@@ -376,11 +431,16 @@ async def handle_pending_image_menu_text(message: Message, state: FSMContext) ->
     from services.billing.free_tier_gates import is_free_user
 
     user_id = message.from_user.id
-    prompt = (message.text or "").strip()
-    if is_image_reply_button_text(prompt):
+    raw_text = (message.text or "").strip()
+    if is_image_reply_button_text(raw_text):
         await present_image_model_menu(message, state, user_id)
         return
-    if is_reply_nav_button_text(prompt):
+    if is_reply_nav_button_text(raw_text):
+        return
+
+    prompt = normalize_image_prompt_text(raw_text)
+    if not prompt:
+        await message.answer(msg.TXT_CREATE_IMAGE_AFTER_MODEL)
         return
 
     data = await state.get_data()
