@@ -1,12 +1,16 @@
-"""Flux FREE: Pollinations → OpenRouter spare wheel → RR по API-ключам.
+"""Flux FREE: Pollinations → Gemini spare → (опц.) OpenRouter :free → RR по API-ключам.
 
 Путь t2i:
-  1. Pollinations Flux (без ключа)
-  2. OpenRouter ``black-forest-labs/flux-1-schnell:free`` (allow_fallbacks=false)
-  3. RR: GEMINI_API_KEY → GEMINI_API_KEY_2 → OPENROUTER_API_KEY → OPENROUTER_API_KEY_2
+  1. Pollinations Flux (без ключа, вне глобального sem)
+  2. Gemini Imagen / Flash (GEMINI_API_KEY[_2])
+  3. OpenRouter ``*:free`` только если модель не снята с каталога
+  4. RR: GEMINI → OPENROUTER (если включён)
 
-``Semaphore(1)`` + ``asyncio.sleep(2)`` → ~8с между повторными вызовами одного ключа
-при полном пуле из 4.
+i2i:
+  1. Gemini Flash Image (reference)
+  2. OpenRouter :free (если включён)
+
+``Semaphore`` только на ключевые API; Pollinations не блокирует всю очередь.
 """
 
 from __future__ import annotations
@@ -31,9 +35,19 @@ _FREE_IMAGE_SEM: asyncio.Semaphore | None = None
 _B64_URL_RE = re.compile(r"data:image/[^;]+;base64,([A-Za-z0-9+/=]+)")
 
 DEFAULT_OPENROUTER_FLUX_FREE = "black-forest-labs/flux-1-schnell:free"
-# Alias для старых импортов/доков.
-DEFAULT_OPENROUTER_NANO_BANANA = DEFAULT_OPENROUTER_FLUX_FREE
+# Сняты с OpenRouter — не вызываем (404 / no image output).
+DEPRECATED_OPENROUTER_FREE_IMAGE_MODELS = frozenset(
+    {
+        DEFAULT_OPENROUTER_FLUX_FREE,
+        "black-forest-labs/flux-1-schnell",
+    }
+)
 DEFAULT_GEMINI_NANO_BANANA = "imagen-3.0-generate-002"
+DEFAULT_GEMINI_I2I_MODEL = "gemini-2.5-flash-image"
+_GEMINI_T2I_FALLBACK_MODELS = (
+    "imagen-4.0-fast-generate-001",
+    DEFAULT_GEMINI_NANO_BANANA,
+)
 
 # До 1 основной + 3 смещения внутри пула при 429/403/402.
 _FAILOVER_SHIFTS = 3
@@ -117,10 +131,15 @@ def ensure_openrouter_free_model(model: str) -> str:
     """Жёстко требует суффикс ``:free``."""
     raw = (model or "").strip()
     if not raw:
-        return DEFAULT_OPENROUTER_NANO_BANANA
+        return DEFAULT_OPENROUTER_FLUX_FREE
     base = raw.split(":", 1)[0].strip()
     if not base:
-        return DEFAULT_OPENROUTER_NANO_BANANA
+        return DEFAULT_OPENROUTER_FLUX_FREE
+    if raw in DEPRECATED_OPENROUTER_FREE_IMAGE_MODELS:
+        raise OpenRouterPaidBlockedError(
+            "OpenRouter",
+            f"deprecated free image model: {raw}",
+        )
     if ":" in raw and not raw.endswith(":free"):
         raise OpenRouterPaidBlockedError(
             "OpenRouter",
@@ -129,6 +148,32 @@ def ensure_openrouter_free_model(model: str) -> str:
     if not raw.endswith(":free"):
         return f"{base}:free"
     return raw
+
+
+def openrouter_free_image_enabled() -> bool:
+    """OpenRouter :free image-модели на каталоге почти не осталось — включаем только явно."""
+    model = (getattr(settings, "free_image_openrouter_model", None) or "").strip()
+    if not model or model in DEPRECATED_OPENROUTER_FREE_IMAGE_MODELS:
+        return False
+    return model.endswith(":free")
+
+
+def _gemini_i2i_model() -> str:
+    return (
+        getattr(settings, "free_image_gemini_i2i_model", None)
+        or DEFAULT_GEMINI_I2I_MODEL
+    ).strip() or DEFAULT_GEMINI_I2I_MODEL
+
+
+def _gemini_t2i_models() -> list[str]:
+    primary = (
+        getattr(settings, "free_image_gemini_model", None) or DEFAULT_GEMINI_NANO_BANANA
+    ).strip() or DEFAULT_GEMINI_NANO_BANANA
+    out: list[str] = []
+    for mid in (primary, *_GEMINI_T2I_FALLBACK_MODELS):
+        if mid and mid not in out:
+            out.append(mid)
+    return out
 
 
 def _is_rate_limit_error(exc: BaseException) -> bool:
@@ -349,7 +394,15 @@ async def _try_openrouter_spare_wheel(
     reference_mime: str,
     timeout: float,
 ) -> GeminiImageResult:
-    """Запасное колесо: OpenRouter black-forest-labs/flux-1-schnell:free, allow_fallbacks=False."""
+    """Запасное колесо OpenRouter — только если ``openrouter_free_image_enabled()``."""
+    if not openrouter_free_image_enabled():
+        raise ExternalApiError(
+            "OpenRouter",
+            "free image model disabled (no :free image models on catalog)",
+        )
+    or_model = ensure_openrouter_free_model(
+        (settings.free_image_openrouter_model or DEFAULT_OPENROUTER_FLUX_FREE).strip()
+    )
     or_slots = [p for p in build_free_image_providers() if p["type"] == "openrouter"]
     if not or_slots:
         raise ExternalApiError(
@@ -363,7 +416,7 @@ async def _try_openrouter_spare_wheel(
             logger.info(
                 "Flux FREE spare wheel → %s model=%s",
                 label,
-                DEFAULT_OPENROUTER_FLUX_FREE,
+                or_model,
             )
             result = await _call_openrouter(
                 prompt,
@@ -371,7 +424,7 @@ async def _try_openrouter_spare_wheel(
                 reference_image_bytes=reference_image_bytes,
                 reference_mime=reference_mime,
                 timeout=timeout,
-                model=DEFAULT_OPENROUTER_FLUX_FREE,
+                model=or_model,
             )
             metrics.incr("free_image.spare_wheel.ok", labels={"provider": "openrouter"})
             return result
@@ -394,33 +447,79 @@ async def _try_gemini_spare_wheel(
     reference_mime: str,
     timeout: float,
 ) -> GeminiImageResult:
-    """Запас после Pollinations: Google Imagen по GEMINI_API_KEY[_2] (только t2i)."""
+    """Запас после Pollinations: Google Imagen / Flash (t2i)."""
     gemini_slots = [p for p in build_free_image_providers() if p["type"] == "gemini"]
     if not gemini_slots:
         raise ExternalApiError("Gemini", "spare wheel needs GEMINI_API_KEY[_2]")
+    models = _gemini_t2i_models()
+    last_err: object = "unknown"
+    for slot in gemini_slots:
+        label = f"gemini:...{slot['key'][-6:]}"
+        for model in models:
+            try:
+                logger.info("Flux FREE Gemini spare → %s model=%s", label, model)
+                result = await _call_gemini(
+                    prompt,
+                    api_key=slot["key"],
+                    reference_image_bytes=None,
+                    reference_mime=reference_mime,
+                    timeout=timeout,
+                    model=model,
+                )
+                metrics.incr("free_image.spare_wheel.ok", labels={"provider": "gemini"})
+                return result
+            except ExternalApiError as exc:
+                last_err = _clip_err(exc)
+                metrics.incr(
+                    "free_image.spare_wheel.fail",
+                    labels={"provider": "gemini"},
+                )
+                logger.warning(
+                    "Flux FREE Gemini spare %s model=%s failed: %s",
+                    label,
+                    model,
+                    last_err,
+                )
+                continue
+    raise ExternalApiError("Gemini", f"gemini spare exhausted: {last_err}")
+
+
+async def _try_gemini_i2i_spare_wheel(
+    prompt: str,
+    *,
+    reference_image_bytes: bytes,
+    reference_mime: str,
+    timeout: float,
+) -> GeminiImageResult:
+    """i2i: Gemini Flash Image с reference (Imagen reference не принимает)."""
+    gemini_slots = [p for p in build_free_image_providers() if p["type"] == "gemini"]
+    if not gemini_slots:
+        raise ExternalApiError("Gemini", "i2i spare needs GEMINI_API_KEY[_2]")
+    model = _gemini_i2i_model()
     last_err: object = "unknown"
     for slot in gemini_slots:
         label = f"gemini:...{slot['key'][-6:]}"
         try:
-            logger.info("Flux FREE Gemini spare → %s", label)
+            logger.info("Flux FREE Gemini i2i → %s model=%s", label, model)
             result = await _call_gemini(
                 prompt,
                 api_key=slot["key"],
-                reference_image_bytes=None,
+                reference_image_bytes=reference_image_bytes,
                 reference_mime=reference_mime,
                 timeout=timeout,
+                model=model,
             )
-            metrics.incr("free_image.spare_wheel.ok", labels={"provider": "gemini"})
+            metrics.incr("free_image.spare_wheel.ok", labels={"provider": "gemini_i2i"})
             return result
         except ExternalApiError as exc:
             last_err = _clip_err(exc)
             metrics.incr(
                 "free_image.spare_wheel.fail",
-                labels={"provider": "gemini"},
+                labels={"provider": "gemini_i2i"},
             )
-            logger.warning("Flux FREE Gemini spare %s failed: %s", label, last_err)
+            logger.warning("Flux FREE Gemini i2i %s failed: %s", label, last_err)
             continue
-    raise ExternalApiError("Gemini", f"gemini spare exhausted: {last_err}")
+    raise ExternalApiError("Gemini", f"gemini i2i spare exhausted: {last_err}")
 
 
 async def _call_gemini(
@@ -430,34 +529,34 @@ async def _call_gemini(
     reference_image_bytes: bytes | None,
     reference_mime: str,
     timeout: float,
+    model: str | None = None,
 ) -> GeminiImageResult:
     provider = "Gemini"
-    model = (
-        settings.free_image_gemini_model or DEFAULT_GEMINI_NANO_BANANA
-    ).strip() or DEFAULT_GEMINI_NANO_BANANA
+    mid = (model or settings.free_image_gemini_model or DEFAULT_GEMINI_NANO_BANANA).strip()
+    if not mid:
+        mid = DEFAULT_GEMINI_NANO_BANANA
 
-    # Imagen — только text-to-image; reference сюда не должен попадать.
-    if reference_image_bytes:
+    if reference_image_bytes and _is_imagen_model(mid):
         raise ExternalApiError(
             provider,
-            "imagen/google slot skipped for image-to-image (use OpenRouter)",
+            "imagen model skipped for image-to-image",
         )
 
     try:
         async with asyncio.timeout(timeout):
-            if _is_imagen_model(model):
+            if _is_imagen_model(mid):
                 from services.gemini_image_client import generate_imagen_model
 
                 result = await generate_imagen_model(
                     prompt,
-                    model,
+                    mid,
                     api_key=api_key,
                 )
             else:
                 result = await generate_gemini_image_with_reference(
                     prompt,
-                    model,
-                    reference_image_bytes=None,
+                    mid,
+                    reference_image_bytes=reference_image_bytes,
                     reference_mime=reference_mime,
                     api_key=api_key,
                 )
@@ -481,13 +580,17 @@ async def _invoke_slot(
     timeout: float,
 ) -> GeminiImageResult:
     if slot["type"] == "gemini":
+        model = _gemini_i2i_model() if reference_image_bytes else None
         return await _call_gemini(
             prompt,
             api_key=slot["key"],
             reference_image_bytes=reference_image_bytes,
             reference_mime=reference_mime,
             timeout=timeout,
+            model=model,
         )
+    if not openrouter_free_image_enabled():
+        raise ExternalApiError("OpenRouter", "free image model disabled")
     return await _call_openrouter(
         prompt,
         api_key=slot["key"],
@@ -502,11 +605,28 @@ def _providers_for_request(
     *,
     has_reference: bool,
 ) -> list[ProviderSlot]:
-    """Image-to-image → только OpenRouter (Imagen не принимает reference)."""
-    if not has_reference:
+    """i2i → Gemini Flash + (опц.) OpenRouter; t2i → весь пул без OR если выключен."""
+    if has_reference:
+        out = [p for p in providers if p["type"] == "gemini"]
+        if openrouter_free_image_enabled():
+            out.extend(p for p in providers if p["type"] == "openrouter")
+        return out
+    if openrouter_free_image_enabled():
         return providers
-    or_only = [p for p in providers if p["type"] == "openrouter"]
-    return or_only
+    return [p for p in providers if p["type"] == "gemini"]
+
+
+async def _run_keyed_api_step(coro):
+    """Семафор только на платные/ключевые API — Pollinations не ждёт в очереди."""
+    async with _semaphore():
+        try:
+            return await coro
+        finally:
+            pause = float(
+                getattr(settings, "free_image_key_pause_sec", _POST_REQUEST_PAUSE_SEC)
+                or _POST_REQUEST_PAUSE_SEC
+            )
+            await asyncio.sleep(max(0.0, pause))
 
 
 async def generate_free_tier_image(
@@ -518,12 +638,10 @@ async def generate_free_tier_image(
     """
     Flux FREE — неубиваемый путь:
 
-    1. Pollinations Flux (legacy без ключа / gen с POLLINATIONS_API_KEY);
-    2. Gemini Imagen spare (GEMINI_API_KEY[_2], только t2i);
-    3. OpenRouter ``flux-1-schnell:free`` (allow_fallbacks=False);
-    4. RR по пулу Gemini/OpenRouter как последний рубеж.
-
-    Image-to-image: Pollinations/Gemini пропускаются → OR spare / OR RR.
+    1. Pollinations Flux (legacy / gen, без глобального sem);
+    2. Gemini Imagen/Flash spare (t2i) или Gemini Flash i2i (reference);
+    3. OpenRouter ``*:free`` — только если модель явно включена и не deprecated;
+    4. RR по пулу ключей как последний рубеж.
 
     Raises:
         FreeImageCascadeExhausted: все линии недоступны.
@@ -534,125 +652,135 @@ async def generate_free_tier_image(
     last_err = "unknown"
 
     try:
-        async with _semaphore():
-            async with asyncio.timeout(180.0):
-                # ── 1. Pollinations (только text-to-image) ──────────────────
-                if not has_ref:
-                    try:
-                        logger.info("Flux FREE primary → Pollinations")
-                        return await _try_pollinations_flux(text)
-                    except (ExternalApiError, TimeoutError) as exc:
-                        last_err = _clip_err(exc)
-                        metrics.incr(
-                            "free_image.cascade.fail",
-                            labels={"provider": "pollinations", "reason": "error"},
-                        )
-                        logger.warning(
-                            "Pollinations failed, Gemini spare: %s",
-                            last_err,
-                        )
+        async with asyncio.timeout(180.0):
+            # ── 1. Pollinations (только text-to-image, вне sem) ─────────────
+            if not has_ref:
+                try:
+                    logger.info("Flux FREE primary → Pollinations")
+                    return await _try_pollinations_flux(text)
+                except (ExternalApiError, TimeoutError) as exc:
+                    last_err = _clip_err(exc)
+                    metrics.incr(
+                        "free_image.cascade.fail",
+                        labels={"provider": "pollinations", "reason": "error"},
+                    )
+                    logger.warning(
+                        "Pollinations failed, Gemini spare: %s",
+                        last_err,
+                    )
 
-                    # ── 2. Gemini Imagen spare (t2i) ────────────────────────
-                    try:
-                        return await _try_gemini_spare_wheel(
+                # ── 2. Gemini Imagen/Flash spare (t2i) ─────────────────────
+                try:
+                    return await _run_keyed_api_step(
+                        _try_gemini_spare_wheel(
                             text,
                             reference_mime=reference_mime,
                             timeout=timeout,
                         )
-                    except ExternalApiError as exc:
-                        last_err = _clip_err(exc)
-                        logger.warning(
-                            "Gemini spare exhausted, OpenRouter spare: %s",
-                            last_err,
-                        )
+                    )
+                except ExternalApiError as exc:
+                    last_err = _clip_err(exc)
+                    logger.warning("Gemini t2i spare failed: %s", last_err)
 
-                # ── 3. OpenRouter flux-1-schnell:free ───────────────────────
+            # ── 2b. Gemini i2i spare ───────────────────────────────────────
+            if has_ref and reference_image_bytes is not None:
                 try:
-                    return await _try_openrouter_spare_wheel(
-                        text,
-                        reference_image_bytes=reference_image_bytes,
-                        reference_mime=reference_mime,
-                        timeout=timeout,
+                    return await _run_keyed_api_step(
+                        _try_gemini_i2i_spare_wheel(
+                            text,
+                            reference_image_bytes=reference_image_bytes,
+                            reference_mime=reference_mime,
+                            timeout=timeout,
+                        )
+                    )
+                except ExternalApiError as exc:
+                    last_err = _clip_err(exc)
+                    logger.warning("Gemini i2i spare failed: %s", last_err)
+
+            # ── 3. OpenRouter :free (если включён) ─────────────────────────
+            if openrouter_free_image_enabled():
+                try:
+                    return await _run_keyed_api_step(
+                        _try_openrouter_spare_wheel(
+                            text,
+                            reference_image_bytes=reference_image_bytes,
+                            reference_mime=reference_mime,
+                            timeout=timeout,
+                        )
                     )
                 except OpenRouterPaidBlockedError as exc:
                     last_err = _clip_err(exc)
                     logger.error("Flux FREE OR spare paid-block: %s", last_err)
                 except ExternalApiError as exc:
                     last_err = _clip_err(exc)
-                    logger.warning(
-                        "OpenRouter spare exhausted, RR cascade: %s",
-                        last_err,
-                    )
+                    logger.warning("OpenRouter spare exhausted, RR cascade: %s", last_err)
+            else:
+                logger.info("Flux FREE: OpenRouter spare skipped (no enabled :free image model)")
 
-                # ── 4. RR last resort (Gemini + OR keys) ────────────────────
-                all_providers = build_free_image_providers()
-                providers = _providers_for_request(all_providers, has_reference=has_ref)
-                if not providers:
-                    raise FreeImageCascadeExhausted(
-                        "FluxFreeCascade",
-                        last_err
-                        if last_err != "unknown"
-                        else "no API keys for spare wheel / RR",
-                    )
+            # ── 4. RR last resort ───────────────────────────────────────────
+            all_providers = build_free_image_providers()
+            providers = _providers_for_request(all_providers, has_reference=has_ref)
+            if not providers:
+                raise FreeImageCascadeExhausted(
+                    "FluxFreeCascade",
+                    last_err
+                    if last_err != "unknown"
+                    else "no API keys for spare wheel / RR",
+                )
 
-                if has_ref:
-                    logger.info(
-                        "Flux FREE i2i RR: OpenRouter-only pool=%s",
-                        len(providers),
-                    )
+            n = len(providers)
+            max_attempts = min(n, 1 + _FAILOVER_SHIFTS)
 
-                n = len(providers)
-                max_attempts = min(n, 1 + _FAILOVER_SHIFTS)
-                try:
-                    for shift in range(max_attempts):
-                        idx = await _peek_provider_index(n)
-                        slot = providers[idx]
-                        label = f"{slot['type']}:...{slot['key'][-6:]}"
-                        try:
-                            logger.info(
-                                "Flux FREE RR idx=%s shift=%s slot=%s pool=%s ref=%s",
-                                idx,
-                                shift,
-                                label,
-                                n,
-                                has_ref,
-                            )
-                            result = await _invoke_slot(
-                                slot,
-                                text,
-                                reference_image_bytes=reference_image_bytes,
-                                reference_mime=reference_mime,
-                                timeout=timeout,
-                            )
-                            metrics.incr(
-                                "free_image.rr",
-                                labels={"type": slot["type"], "shift": str(shift)},
-                            )
-                            return result
-                        except ExternalApiError as exc:
-                            last_err = _clip_err(exc)
-                            metrics.incr(
-                                "free_image.cascade.fail",
-                                labels={"provider": slot["type"], "reason": "error"},
-                            )
-                            if isinstance(exc, OpenRouterPaidBlockedError):
-                                break
-                            if _is_rate_limit_error(exc) and shift + 1 < max_attempts:
-                                logger.warning(
-                                    "Flux FREE failover %s → next (%s)",
-                                    label,
-                                    last_err,
-                                )
-                                continue
+            async def _rr_attempt() -> GeminiImageResult:
+                nonlocal last_err
+                for shift in range(max_attempts):
+                    idx = await _peek_provider_index(n)
+                    slot = providers[idx]
+                    label = f"{slot['type']}:...{slot['key'][-6:]}"
+                    try:
+                        logger.info(
+                            "Flux FREE RR idx=%s shift=%s slot=%s pool=%s ref=%s",
+                            idx,
+                            shift,
+                            label,
+                            n,
+                            has_ref,
+                        )
+                        result = await _invoke_slot(
+                            slot,
+                            text,
+                            reference_image_bytes=reference_image_bytes,
+                            reference_mime=reference_mime,
+                            timeout=timeout,
+                        )
+                        metrics.incr(
+                            "free_image.rr",
+                            labels={"type": slot["type"], "shift": str(shift)},
+                        )
+                        return result
+                    except ExternalApiError as exc:
+                        last_err = _clip_err(exc)
+                        metrics.incr(
+                            "free_image.cascade.fail",
+                            labels={"provider": slot["type"], "reason": "error"},
+                        )
+                        if isinstance(exc, OpenRouterPaidBlockedError):
                             break
-                        finally:
-                            await _advance_provider_index()
-                finally:
-                    pause = float(
-                        getattr(settings, "free_image_key_pause_sec", _POST_REQUEST_PAUSE_SEC)
-                        or _POST_REQUEST_PAUSE_SEC
-                    )
-                    await asyncio.sleep(max(0.0, pause))
+                        if _is_rate_limit_error(exc) and shift + 1 < max_attempts:
+                            logger.warning(
+                                "Flux FREE failover %s → next (%s)",
+                                label,
+                                last_err,
+                            )
+                            continue
+                        break
+                    finally:
+                        await _advance_provider_index()
+                raise FreeImageCascadeExhausted("FluxFreeCascade", last_err)
+
+            return await _run_keyed_api_step(_rr_attempt())
+    except FreeImageCascadeExhausted:
+        raise
     except TimeoutError as err:
         metrics.incr("free_image.cascade.exhausted")
         logger.error(
@@ -665,10 +793,4 @@ async def generate_free_tier_image(
         ) from err
 
     metrics.incr("free_image.cascade.exhausted")
-    safe_reason = _clip_err(last_err)
-    logger.error("Полная ошибка каскада: %s", last_err)
-    logger.error(
-        "Каскад бесплатной генерации полностью истощен. Причина: %s",
-        safe_reason,
-    )
-    raise FreeImageCascadeExhausted("FluxFreeCascade", safe_reason)
+    raise FreeImageCascadeExhausted("FluxFreeCascade", _clip_err(last_err))

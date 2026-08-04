@@ -78,7 +78,7 @@ def test_build_free_image_providers_order(monkeypatch: pytest.MonkeyPatch) -> No
     assert [s["key"] for s in slots] == ["g1", "g2", "o1", "o2"]
 
 
-def test_providers_for_request_skips_gemini_on_i2i() -> None:
+def test_providers_for_request_includes_gemini_on_i2i() -> None:
     from services.free_image_cascade import _providers_for_request
 
     pool = [
@@ -87,10 +87,33 @@ def test_providers_for_request_skips_gemini_on_i2i() -> None:
         {"type": "openrouter", "key": "o1"},
         {"type": "openrouter", "key": "o2"},
     ]
-    assert _providers_for_request(pool, has_reference=False) == pool
-    only_or = _providers_for_request(pool, has_reference=True)
-    assert [p["type"] for p in only_or] == ["openrouter", "openrouter"]
-    assert [p["key"] for p in only_or] == ["o1", "o2"]
+    assert _providers_for_request(pool, has_reference=False) == [
+        {"type": "gemini", "key": "g1"},
+        {"type": "gemini", "key": "g2"},
+    ]
+    i2i = _providers_for_request(pool, has_reference=True)
+    assert [p["type"] for p in i2i] == ["gemini", "gemini"]
+    assert [p["key"] for p in i2i] == ["g1", "g2"]
+
+
+def test_deprecated_openrouter_free_model_disabled() -> None:
+    from config import settings
+    from services.free_image_cascade import openrouter_free_image_enabled
+
+    object.__setattr__(
+        settings,
+        "free_image_openrouter_model",
+        "black-forest-labs/flux-1-schnell:free",
+    )
+    assert openrouter_free_image_enabled() is False
+
+
+def test_openrouter_free_model_enabled_when_set() -> None:
+    from config import settings
+    from services.free_image_cascade import openrouter_free_image_enabled
+
+    object.__setattr__(settings, "free_image_openrouter_model", "vendor/model:free")
+    assert openrouter_free_image_enabled() is True
 
 
 def test_build_free_image_providers_skips_empty() -> None:
@@ -139,11 +162,14 @@ async def test_pollinations_success_skips_spare_and_rr(monkeypatch: pytest.Monke
 @pytest.mark.asyncio
 async def test_pollinations_fail_uses_openrouter_spare(monkeypatch: pytest.MonkeyPatch) -> None:
     reset_free_image_rr_for_tests()
+    from config import settings
+
     object.__setattr__(
-        __import__("config", fromlist=["settings"]).settings,
+        settings,
         "free_image_key_pause_sec",
         0.0,
     )
+    object.__setattr__(settings, "free_image_openrouter_model", "vendor/test-model:free")
     seen_models: list[str] = []
 
     monkeypatch.setattr(
@@ -177,7 +203,7 @@ async def test_pollinations_fail_uses_openrouter_spare(monkeypatch: pytest.Monke
 
     out = await generate_free_tier_image("cat")
     assert out.data == b"from-spare"
-    assert seen_models == [DEFAULT_OPENROUTER_FLUX_FREE]
+    assert seen_models == ["vendor/test-model:free"]
 
 
 @pytest.mark.asyncio
@@ -186,6 +212,9 @@ async def test_spare_wheel_sets_allow_fallbacks_false(monkeypatch: pytest.Monkey
     import services.free_image_cascade as fic
 
     reset_free_image_rr_for_tests()
+    from config import settings
+
+    object.__setattr__(settings, "free_image_openrouter_model", "vendor/test-model:free")
     captured: dict = {}
 
     class _Resp:
@@ -229,7 +258,7 @@ async def test_spare_wheel_sets_allow_fallbacks_false(monkeypatch: pytest.Monkey
         timeout=5.0,
     )
     assert out.data == b"img"
-    assert captured["body"]["model"] == DEFAULT_OPENROUTER_FLUX_FREE
+    assert captured["body"]["model"] == "vendor/test-model:free"
     assert captured["body"]["provider"]["allow_fallbacks"] is False
 
 
@@ -266,8 +295,11 @@ async def test_round_robin_advances_index(monkeypatch: pytest.MonkeyPatch) -> No
     import services.free_image_cascade as fic
 
     reset_free_image_rr_for_tests()
+    from config import settings
+
+    object.__setattr__(settings, "free_image_openrouter_model", "")
     object.__setattr__(
-        __import__("config", fromlist=["settings"]).settings,
+        settings,
         "free_image_key_pause_sec",
         0.0,
     )
@@ -297,7 +329,7 @@ async def test_round_robin_advances_index(monkeypatch: pytest.MonkeyPatch) -> No
     await generate_free_tier_image("a")
     await generate_free_tier_image("b")
     await generate_free_tier_image("c")
-    assert seen == ["g1", "g2", "o1"]
+    assert seen == ["g1", "g2", "g1"]
     assert fic.global_provider_index == 3
 
 

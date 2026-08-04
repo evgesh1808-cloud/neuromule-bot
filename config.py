@@ -528,19 +528,23 @@ class Settings(BaseSettings):
     # Nano Banana FREE / Flux FREE: Imagen (Google) + :free image model (OpenRouter).
     free_image_openrouter_model: Annotated[
         str,
-        _nonempty_str("black-forest-labs/flux-1-schnell:free"),
-    ] = "black-forest-labs/flux-1-schnell:free"
+        _nonempty_str(""),
+    ] = ""
     free_image_gemini_model: Annotated[
         str,
         _nonempty_str("imagen-3.0-generate-002"),
     ] = "imagen-3.0-generate-002"
+    free_image_gemini_i2i_model: Annotated[
+        str,
+        _nonempty_str("gemini-2.5-flash-image"),
+    ] = "gemini-2.5-flash-image"
     # Pollinations: без ключа — legacy image.pollinations.ai; с ключом — gen + Bearer.
     pollinations_api_key: str = Field(
         default="",
         validation_alias=AliasChoices("POLLINATIONS_API_KEY", "pollinations_api_key"),
     )
-    free_image_semaphore_limit: Annotated[int, _coerce_int(1)] = Field(
-        default=1,
+    free_image_semaphore_limit: Annotated[int, _coerce_int(3)] = Field(
+        default=3,
         validation_alias=AliasChoices("FREE_IMAGE_SEMAPHORE_LIMIT", "free_image_semaphore_limit"),
     )
     free_image_key_pause_sec: Annotated[float, _coerce_float(2.0)] = Field(

@@ -28,7 +28,43 @@ POLLINATIONS_IMAGE_BASE_GEN = "https://gen.pollinations.ai/image"
 POLLINATIONS_FLUX_MODEL = "flux"
 DEFAULT_IMAGE_SIZE = 1024
 MAX_PROMPT_CHARS = 1500
-POLLINATIONS_TIMEOUT_SEC = 180.0
+POLLINATIONS_TIMEOUT_SEC = 90.0
+POLLINATIONS_MAX_ATTEMPTS = 2
+POLLINATIONS_RETRY_DELAY_SEC = 2.0
+
+_IMAGE_MAGIC_PREFIXES = (
+    b"\xff\xd8\xff",  # JPEG
+    b"\x89PNG\r\n\x1a\n",
+    b"RIFF",  # WebP (RIFF....WEBP)
+)
+
+
+def _is_valid_image_bytes(data: bytes) -> bool:
+    if len(data) < 12:
+        return False
+    if data.startswith(_IMAGE_MAGIC_PREFIXES[:2]):
+        return True
+    if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        return True
+    return False
+
+
+def _pollinations_error_retryable(exc: ExternalApiError) -> bool:
+    msg = str(exc).lower()
+    return any(
+        x in msg
+        for x in (
+            "timeout",
+            "http 5",
+            "http 429",
+            "http 502",
+            "http 503",
+            "http 504",
+            "empty",
+            "invalid image",
+            "response too large",
+        )
+    )
 
 
 def _pollinations_api_key() -> str:
@@ -67,6 +103,28 @@ async def generate_flux_schnell_image(prompt: str) -> GeminiImageResult:
 
     Возвращает ``GeminiImageResult(data=...)`` — байты для ``send_photo``.
     """
+    last_exc: ExternalApiError | None = None
+    for attempt in range(1, POLLINATIONS_MAX_ATTEMPTS + 1):
+        try:
+            return await _generate_flux_schnell_image_once(prompt)
+        except ExternalApiError as exc:
+            last_exc = exc
+            if attempt < POLLINATIONS_MAX_ATTEMPTS and _pollinations_error_retryable(exc):
+                logger.warning(
+                    "pollinations flux retry %s/%s: %s",
+                    attempt,
+                    POLLINATIONS_MAX_ATTEMPTS,
+                    exc,
+                )
+                await asyncio.sleep(POLLINATIONS_RETRY_DELAY_SEC)
+                continue
+            raise
+    if last_exc is not None:
+        raise last_exc
+    raise ExternalApiError("Pollinations", "Flux: empty result")
+
+
+async def _generate_flux_schnell_image_once(prompt: str) -> GeminiImageResult:
     key = _pollinations_api_key()
     url = build_pollinations_flux_url(prompt, api_key=key or None)
     headers: dict[str, str] = {
@@ -135,6 +193,11 @@ async def generate_flux_schnell_image(prompt: str) -> GeminiImageResult:
     if not data:
         metrics.incr("pollinations.image.failed", labels={"reason": "empty"})
         raise ExternalApiError("Pollinations", "Flux: пустой ответ")
+    if not _is_valid_image_bytes(data):
+        metrics.incr("pollinations.image.failed", labels={"reason": "invalid_image"})
+        snippet = data[:120].decode("utf-8", errors="replace")
+        logger.warning("pollinations flux non-image body: %s", snippet)
+        raise ExternalApiError("Pollinations", "Flux: invalid image bytes")
 
     metrics.incr("pollinations.image.ok")
     metrics.observe("pollinations.image.bytes", len(data))
