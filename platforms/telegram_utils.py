@@ -90,9 +90,49 @@ async def notify_admins_about_payment(
             )
 
 
+def normalize_reply_button_text(text: str | None) -> str:
+    """Сравнивать Reply-кнопки без VS16 (U+FE0F): Telegram/клиенты шлют оба варианта."""
+    return (text or "").replace("\ufe0f", "").strip()
+
+
 def _reply_menu_button_texts() -> frozenset[str]:
-    """Все подписи Reply-кнопок навигации (для фильтров чата и отмены FSM)."""
-    return frozenset({*msg.ALL_REPLY_NAV_BUTTONS, msg.ADMIN_MAIN_MENU_BUTTON})
+    """Все подписи Reply-кнопок навигации (для фильтров чата и отмены FSM).
+
+    Включает варианты с/без variation selector, чтобы «🖼» и «🖼️» не уходили в чат.
+    """
+    base = {msg.ADMIN_MAIN_MENU_BUTTON, *msg.ALL_REPLY_NAV_BUTTONS}
+    # CREATE_MENU_GRID может отличаться emoji-формой от BTN_REPLY_*.
+    for label, _cb in msg.CREATE_MENU_GRID:
+        base.add(label)
+    expanded: set[str] = set()
+    for label in base:
+        expanded.add(label)
+        expanded.add(normalize_reply_button_text(label))
+        # Если в константе без FE0F — добавим типичный «цветной» вариант после emoji.
+        if label and "\ufe0f" not in label and ord(label[0]) > 0x1F000:
+            expanded.add(label[0] + "\ufe0f" + label[1:])
+    return frozenset(expanded)
+
+
+def is_reply_nav_button_text(text: str | None) -> bool:
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    if raw in _reply_menu_button_texts():
+        return True
+    norm = normalize_reply_button_text(raw)
+    return any(normalize_reply_button_text(x) == norm for x in _reply_menu_button_texts())
+
+
+def is_image_reply_button_text(text: str | None) -> bool:
+    return normalize_reply_button_text(text) == normalize_reply_button_text(msg.BTN_REPLY_IMAGE)
+
+
+class ImageReplyButtonFilter(BaseFilter):
+    """Reply/inline-подпись «Изображение» с учётом FE0F."""
+
+    async def __call__(self, message: Message) -> bool:
+        return is_image_reply_button_text(message.text)
 
 
 async def _reply_video_gen_result(

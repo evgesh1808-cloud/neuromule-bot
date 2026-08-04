@@ -59,6 +59,7 @@ from platforms.telegram_keyboards import (
 from platforms.telegram_states import AdminStates, FeedbackStates, UserFlow
 from platforms.telegram_utils import (
     HelpInstructionWordFilter,
+    ImageReplyButtonFilter,
     _extract_ticket_user_id,
     _reply_menu_button_texts,
     _reply_video_gen_result,
@@ -202,7 +203,7 @@ async def reply_create_neurotext(message: Message, state: FSMContext) -> None:
     await send_neurotext_role_menu(message, state)
 
 
-@router.message(F.text == msg.BTN_REPLY_IMAGE)
+@router.message(ImageReplyButtonFilter())
 async def reply_create_image(message: Message, state: FSMContext) -> None:
     from platforms.image_menu_flow import present_image_model_menu
 

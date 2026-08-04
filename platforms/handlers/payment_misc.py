@@ -398,7 +398,9 @@ async def chat_handler(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
     if not has_neurotext_message_input(message):
         return
-    if text in _reply_menu_button_texts() and not is_reply_to_bot_message(message):
+    from platforms.telegram_utils import is_reply_nav_button_text
+
+    if is_reply_nav_button_text(text) and not is_reply_to_bot_message(message):
         return
 
     from platforms.neurotext_input import handle_neurotext_user_message

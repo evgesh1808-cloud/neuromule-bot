@@ -841,6 +841,22 @@ async def handle_neurotext_user_message(
     ``anchor_assistant_text`` — текст сообщения бота, под которым нажали кнопку
     (чтобы follow-up не цеплялся к более новому ответу в истории).
     """
+    # Nav Reply-кнопки никогда не должны уходить в OpenRouter «typing».
+    if forced_user_text is None and (message.text or "").strip():
+        from platforms.telegram_utils import (
+            is_image_reply_button_text,
+            is_reply_nav_button_text,
+        )
+
+        raw_nav = (message.text or "").strip()
+        if is_image_reply_button_text(raw_nav):
+            from platforms.image_menu_flow import present_image_model_menu
+
+            await present_image_model_menu(message, state, message.from_user.id)
+            return
+        if is_reply_nav_button_text(raw_nav):
+            return
+
     if forced_user_text is None and (message.text or "").strip():
         from platforms.image_menu_flow import (
             can_intercept_text_as_image_prompt,

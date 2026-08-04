@@ -483,11 +483,11 @@ CB_HD_REPORT_OPEN = "hd_report_open"
 #   ряд 3: Музыка | Дизайн Человека
 CREATE_MENU_GRID = (
     (BTN_REPLY_NEUROTEXT, CB_CREATE_TEXT),
-    ("🖼️ Изображение", CB_CREATE_IMAGE),
-    ("✨ Оживить фото", CB_CREATE_ANIMATE),
-    ("🎬 Видео", CB_CREATE_VIDEO),
-    ("🎸 Музыка", CB_CREATE_MUSIC),
-    ("🧬 Дизайн Человека", CB_HD_SECTION),
+    (BTN_REPLY_IMAGE, CB_CREATE_IMAGE),
+    (BTN_REPLY_ANIMATE, CB_CREATE_ANIMATE),
+    (BTN_REPLY_VIDEO, CB_CREATE_VIDEO),
+    (BTN_REPLY_MUSIC, CB_CREATE_MUSIC),
+    (BTN_REPLY_HD, CB_HD_SECTION),
 )
 CREATE_MENU_BACK_ROW = ("⬅️ Назад в главное меню", CB_BACK_MAIN)
 # Совместимость: полный кортеж для тестов и старых импортов (последняя строка — только «Назад» в create_menu).

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from aiogram.enums import ParseMode
@@ -15,6 +16,8 @@ from services.repository import get_user_row
 
 if TYPE_CHECKING:
     from aiogram.fsm.context import FSMContext
+
+logger = logging.getLogger(__name__)
 
 IMAGE_MODEL_MENU_PENDING_KEY = "image_model_menu_pending"
 FREE_DEFAULT_IMAGE_MODEL_LABEL = "Flux FREE"
@@ -203,6 +206,10 @@ async def can_intercept_text_as_image_prompt(message: Message, state: FSMContext
         return False
     if text in msg.ALL_REPLY_NAV_BUTTONS:
         return False
+    from platforms.telegram_utils import is_reply_nav_button_text
+
+    if is_reply_nav_button_text(text):
+        return False
 
     current = await state.get_state()
     if current == UserFlow.waiting_for_image_model_pick.state:
@@ -239,29 +246,44 @@ async def present_image_model_menu(
     """Показать меню моделей; следующий текст — промпт (не чат)."""
     from services.billing.daily_quotas import get_free_photo_snapshot
 
-    row = await get_user_row(user_id)
-    tariff = TariffTier.from_db(row.tariff)
-    snap = await get_free_photo_snapshot(user_id)
-    await mark_image_model_menu_pending(state)
-    await state.set_state(UserFlow.waiting_for_image_model_pick)
+    try:
+        row = await get_user_row(user_id)
+        tariff = TariffTier.from_db(row.tariff)
+        snap = await get_free_photo_snapshot(user_id)
+        await mark_image_model_menu_pending(state)
+        await state.set_state(UserFlow.waiting_for_image_model_pick)
 
-    await message.answer(
-        msg.get_text_image_models(tariff),
-        reply_markup=image_model_menu(
-            tariff,
-            free_photo_used=snap.used,
-            free_photo_day=snap.day,
-        ),
-        parse_mode=ParseMode.HTML,
-    )
+        await message.answer(
+            msg.get_text_image_models(tariff),
+            reply_markup=image_model_menu(
+                tariff,
+                free_photo_used=snap.used,
+                free_photo_day=snap.day,
+            ),
+            parse_mode=ParseMode.HTML,
+        )
+    except Exception:
+        logger.exception("present_image_model_menu failed uid=%s", user_id)
+        try:
+            await message.answer(
+                "Не удалось открыть меню изображений. Попробуйте ещё раз через пару секунд.",
+            )
+        except Exception:
+            logger.debug("present_image_model_menu fallback answer failed", exc_info=True)
 
 
 async def handle_pending_image_menu_text(message: Message, state: FSMContext) -> None:
-    """Текст после меню фото без выбора модели: FREE → Flux Schnell, иначе — подсказка."""
+    """Текст после меню фото без выбора модели: FREE → Flux FREE, иначе — подсказка."""
+    from platforms.telegram_utils import is_image_reply_button_text, is_reply_nav_button_text
     from services.billing.free_tier_gates import is_free_user
 
     user_id = message.from_user.id
     prompt = (message.text or "").strip()
+    if is_image_reply_button_text(prompt):
+        await present_image_model_menu(message, state, user_id)
+        return
+    if is_reply_nav_button_text(prompt):
+        return
 
     if await is_free_user(user_id):
         await route_free_text_to_flux_photo(message, state, prompt)

@@ -442,9 +442,10 @@ async def neurotext_clear_persistent_memory_vip(callback: CallbackQuery) -> None
 async def create_image_menu(callback: CallbackQuery, state: FSMContext) -> None:
     from platforms.image_menu_flow import present_image_model_menu
 
+    # Сразу гасим «часики» на кнопке — меню моделей может ждать SQLite/FSM.
+    await callback.answer()
     if callback.message:
         await present_image_model_menu(callback.message, state, callback.from_user.id)
-    await callback.answer()
 
 @router.callback_query(F.data == msg.CB_UPSCALE_START)
 async def upscale_start_callback(callback: CallbackQuery, state: FSMContext) -> None:
@@ -459,7 +460,7 @@ async def pick_image_model(callback: CallbackQuery, state: FSMContext) -> None:
 
     mid = callback.data[len(msg.CB_IMG_PREFIX) :]
     if await is_free_user(callback.from_user.id) and not free_allows_image_model(mid):
-        await callback.answer("На FREE доступен только Nano Banana", show_alert=True)
+        await callback.answer("На FREE доступен только Flux FREE", show_alert=True)
         if callback.message:
             await callback.message.answer(
                 msg.TXT_FREE_IMAGE_MODEL_BLOCKED,
