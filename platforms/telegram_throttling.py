@@ -87,6 +87,14 @@ def _is_document_message(event: TelegramObject) -> bool:
     return isinstance(event, Message) and bool(getattr(event, "document", None))
 
 
+def _is_image_menu_reply_button(event: TelegramObject) -> bool:
+    if not isinstance(event, Message):
+        return False
+    from platforms.telegram_utils import is_image_reply_button_text
+
+    return is_image_reply_button_text(getattr(event, "text", None))
+
+
 def _is_blogger_callback(event: TelegramObject) -> bool:
     if not isinstance(event, CallbackQuery):
         return False
@@ -197,6 +205,9 @@ class ThrottlingMiddleware(BaseMiddleware):
             return await handler(event, data)
 
         if isinstance(event, Message) and await _is_photo_flow_message(event, data):
+            return await handler(event, data)
+
+        if _is_image_menu_reply_button(event):
             return await handler(event, data)
 
         if _is_document_message(event):

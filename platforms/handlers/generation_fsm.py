@@ -331,6 +331,43 @@ async def image_menu_pending_text(message: Message, state: FSMContext) -> None:
     await handle_pending_image_menu_text(message, state)
 
 
+@router.message(UserFlow.waiting_for_photo, F.photo)
+async def photo_process_with_image(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    model_id = data.get("image_model_id", "")
+    label = data.get("image_model_label", "модель")
+    prompt = (message.caption or "").strip() or "Улучши и доработай это фото по стилю референса"
+    file_id = message.photo[-1].file_id
+    await process_photo_prompt_message(
+        message,
+        state,
+        model_id=model_id,
+        label=label,
+        prompt=prompt,
+        telegram_file_id=file_id,
+    )
+
+
+@router.message(UserFlow.waiting_for_photo, F.text)
+async def photo_process(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    model_id = data.get("image_model_id", "")
+    label = data.get("image_model_label", "модель")
+    prompt = (message.text or "").strip()
+    await process_photo_prompt_message(
+        message,
+        state,
+        model_id=model_id,
+        label=label,
+        prompt=prompt,
+    )
+
+
+@router.message(UserFlow.waiting_for_photo)
+async def photo_process_need_text(message: Message) -> None:
+    await message.answer(msg.TXT_CREATE_IMAGE_AFTER_MODEL)
+
+
 @router.message(
     UserFlow.waiting_for_text_prompt,
     F.text | F.photo | F.document | REPLY_TO_BOT_FILTER,
@@ -555,41 +592,6 @@ async def marketplace_audit_file_process(message: Message, state: FSMContext) ->
 async def wb_audit_wait_for_xlsx_text(message: Message) -> None:
     await message.answer(msg.TXT_AUDIT_WB_WAIT_FOR_FILE, parse_mode=ParseMode.HTML)
 
-
-@router.message(UserFlow.waiting_for_photo, F.photo)
-async def photo_process_with_image(message: Message, state: FSMContext) -> None:
-    data = await state.get_data()
-    model_id = data.get("image_model_id", "")
-    label = data.get("image_model_label", "модель")
-    prompt = (message.caption or "").strip() or "Улучши и доработай это фото по стилю референса"
-    file_id = message.photo[-1].file_id
-    await process_photo_prompt_message(
-        message,
-        state,
-        model_id=model_id,
-        label=label,
-        prompt=prompt,
-        telegram_file_id=file_id,
-    )
-
-
-@router.message(UserFlow.waiting_for_photo, F.text)
-async def photo_process(message: Message, state: FSMContext) -> None:
-    data = await state.get_data()
-    model_id = data.get("image_model_id", "")
-    label = data.get("image_model_label", "модель")
-    prompt = (message.text or "").strip()
-    await process_photo_prompt_message(
-        message,
-        state,
-        model_id=model_id,
-        label=label,
-        prompt=prompt,
-    )
-
-@router.message(UserFlow.waiting_for_photo)
-async def photo_process_need_text(message: Message) -> None:
-    await message.answer(msg.TXT_CREATE_IMAGE_AFTER_MODEL)
 
 @router.message(UserFlow.waiting_for_video, F.text)
 async def video_process(message: Message, state: FSMContext) -> None:

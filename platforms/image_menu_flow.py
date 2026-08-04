@@ -215,6 +215,16 @@ async def can_intercept_text_as_image_prompt(message: Message, state: FSMContext
     if current == UserFlow.waiting_for_image_model_pick.state:
         return True
 
+    data = await state.get_data()
+    model_id = str(data.get("image_model_id") or "").strip()
+    # Модель уже выбрана (Flux FREE / inline), но FSM state мог не сохраниться в Redis.
+    if model_id and current in (
+        None,
+        UserFlow.waiting_for_photo.state,
+        UserFlow.waiting_for_image_model_pick.state,
+    ):
+        return True
+
     if await _free_tier_should_auto_intercept_image(
         message,
         state,
@@ -223,7 +233,6 @@ async def can_intercept_text_as_image_prompt(message: Message, state: FSMContext
     ):
         return True
 
-    data = await state.get_data()
     if not is_image_model_menu_pending(data):
         return False
 
@@ -246,6 +255,17 @@ async def present_image_model_menu(
     """Показать меню моделей; следующий текст — промпт (не чат)."""
     from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramNetworkError
     from services.billing.daily_quotas import get_free_photo_snapshot, quota_day
+
+    # Маркер FSM до SQLite/Telegram — иначе промпт сразу после «Изображение» ловит throttle/чат.
+    try:
+        await mark_image_model_menu_pending(state)
+        await state.set_state(UserFlow.waiting_for_image_model_pick)
+    except Exception:
+        logger.warning(
+            "present_image_model_menu: early FSM not saved uid=%s",
+            user_id,
+            exc_info=True,
+        )
 
     tariff = TariffTier.FREE
     snap_used = 0
@@ -348,6 +368,23 @@ async def handle_pending_image_menu_text(message: Message, state: FSMContext) ->
         await present_image_model_menu(message, state, user_id)
         return
     if is_reply_nav_button_text(prompt):
+        return
+
+    data = await state.get_data()
+    model_id = str(data.get("image_model_id") or "").strip()
+    if model_id:
+        from platforms.handlers.generation_fsm import process_photo_prompt_message
+
+        label = str(data.get("image_model_label") or FREE_DEFAULT_IMAGE_MODEL_LABEL).strip()
+        await clear_image_model_menu_pending(state)
+        await state.set_state(UserFlow.waiting_for_photo)
+        await process_photo_prompt_message(
+            message,
+            state,
+            model_id=model_id,
+            label=label,
+            prompt=prompt,
+        )
         return
 
     if await is_free_user(user_id):

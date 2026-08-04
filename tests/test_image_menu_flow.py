@@ -79,6 +79,24 @@ async def test_no_intercept_when_already_waiting_for_photo() -> None:
     assert await can_intercept_text_as_image_prompt(message, state) is False
 
 
+@pytest.mark.asyncio
+async def test_intercept_when_model_selected_but_state_lost() -> None:
+    state = AsyncMock()
+    state.get_data = AsyncMock(
+        return_value={
+            "image_model_id": "free_photo",
+            "image_model_label": "Flux FREE",
+        }
+    )
+    state.get_state = AsyncMock(return_value=None)
+
+    message = MagicMock()
+    message.from_user.id = 42
+    message.text = "кот на луне в стиле аниме"
+
+    assert await can_intercept_text_as_image_prompt(message, state) is True
+
+
 def test_is_image_model_menu_pending() -> None:
     assert is_image_model_menu_pending({IMAGE_MODEL_MENU_PENDING_KEY: True}) is True
     assert is_image_model_menu_pending({}) is False
@@ -161,7 +179,7 @@ async def test_present_image_menu_preselects_flux_free_for_free_tier(
 
     await present_image_model_menu(message, state, user_id=42)
 
-    state.set_state.assert_awaited_once_with(UserFlow.waiting_for_photo.state)
+    assert state.set_state.await_args_list[-1].args[0] == UserFlow.waiting_for_photo.state
     state.update_data.assert_awaited()
     kwargs = state.update_data.await_args.kwargs
     assert kwargs.get("image_model_id") == "free_photo"

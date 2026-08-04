@@ -403,6 +403,15 @@ async def chat_handler(message: Message, state: FSMContext) -> None:
     if is_reply_nav_button_text(text) and not is_reply_to_bot_message(message):
         return
 
+    from platforms.image_menu_flow import (
+        can_intercept_text_as_image_prompt,
+        handle_pending_image_menu_text,
+    )
+
+    if await can_intercept_text_as_image_prompt(message, state):
+        await handle_pending_image_menu_text(message, state)
+        return
+
     from platforms.neurotext_input import handle_neurotext_user_message
 
     await handle_neurotext_user_message(message, state)
