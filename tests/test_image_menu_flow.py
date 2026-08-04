@@ -131,3 +131,43 @@ async def test_paid_user_no_auto_intercept_without_menu(monkeypatch: pytest.Monk
     message.text = "x" * 500
 
     assert await can_intercept_text_as_image_prompt(message, state) is False
+
+
+@pytest.mark.asyncio
+async def test_present_image_menu_sent_even_if_fsm_fails() -> None:
+    from platforms.image_menu_flow import present_image_model_menu
+
+    message = MagicMock()
+    message.answer = AsyncMock()
+    state = AsyncMock()
+    state.set_state = AsyncMock(side_effect=RuntimeError("redis down"))
+    state.update_data = AsyncMock()
+
+    await present_image_model_menu(message, state, user_id=999_001)
+
+    assert message.answer.await_count == 1
+    assert message.answer.await_args.kwargs.get("reply_markup") is not None
+
+
+@pytest.mark.asyncio
+async def test_present_image_menu_fallback_on_send_failure() -> None:
+    from aiogram.exceptions import TelegramBadRequest
+    from platforms.image_menu_flow import present_image_model_menu
+
+    message = MagicMock()
+    message.answer = AsyncMock(
+        side_effect=[
+            TelegramBadRequest(method=None, message="bad html"),
+            TelegramBadRequest(method=None, message="bad plain"),
+            None,
+        ]
+    )
+    state = AsyncMock()
+    state.set_state = AsyncMock()
+    state.update_data = AsyncMock()
+
+    await present_image_model_menu(message, state, user_id=999_002)
+
+    assert message.answer.await_count == 3
+    last_text = message.answer.await_args.args[0]
+    assert "Не удалось открыть меню" in last_text

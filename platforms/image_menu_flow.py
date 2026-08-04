@@ -244,32 +244,87 @@ async def present_image_model_menu(
     user_id: int,
 ) -> None:
     """Показать меню моделей; следующий текст — промпт (не чат)."""
-    from services.billing.daily_quotas import get_free_photo_snapshot
+    from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramNetworkError
+    from services.billing.daily_quotas import get_free_photo_snapshot, quota_day
+
+    tariff = TariffTier.FREE
+    snap_used = 0
+    snap_day: str | None = quota_day()
 
     try:
         row = await get_user_row(user_id)
         tariff = TariffTier.from_db(row.tariff)
-        snap = await get_free_photo_snapshot(user_id)
-        await mark_image_model_menu_pending(state)
-        await state.set_state(UserFlow.waiting_for_image_model_pick)
+    except Exception:
+        logger.exception("present_image_model_menu: get_user_row failed uid=%s", user_id)
 
-        await message.answer(
-            msg.get_text_image_models(tariff),
-            reply_markup=image_model_menu(
-                tariff,
-                free_photo_used=snap.used,
-                free_photo_day=snap.day,
-            ),
-            parse_mode=ParseMode.HTML,
+    try:
+        snap = await get_free_photo_snapshot(user_id)
+        snap_used, snap_day = snap.used, snap.day
+    except Exception:
+        logger.exception("present_image_model_menu: quota snapshot failed uid=%s", user_id)
+
+    menu_text = msg.get_text_image_models(tariff)
+    try:
+        markup = image_model_menu(
+            tariff,
+            free_photo_used=snap_used,
+            free_photo_day=snap_day,
         )
     except Exception:
-        logger.exception("present_image_model_menu failed uid=%s", user_id)
+        logger.exception("present_image_model_menu: keyboard build failed uid=%s", user_id)
         try:
-            await message.answer(
-                "Не удалось открыть меню изображений. Попробуйте ещё раз через пару секунд.",
-            )
+            await message.answer(msg.TXT_IMAGE_MENU_OPEN_FAILED)
         except Exception:
             logger.debug("present_image_model_menu fallback answer failed", exc_info=True)
+        return
+
+    sent = False
+    try:
+        await message.answer(
+            menu_text,
+            reply_markup=markup,
+            parse_mode=ParseMode.HTML,
+        )
+        sent = True
+    except TelegramBadRequest as exc:
+        logger.warning(
+            "present_image_model_menu HTML answer failed uid=%s: %s",
+            user_id,
+            exc,
+        )
+        try:
+            await message.answer(menu_text, reply_markup=markup)
+            sent = True
+        except (TelegramBadRequest, TelegramForbiddenError, TelegramNetworkError) as exc2:
+            logger.error(
+                "present_image_model_menu plain answer failed uid=%s: %s",
+                user_id,
+                exc2,
+            )
+        except Exception:
+            logger.exception("present_image_model_menu plain answer unexpected uid=%s", user_id)
+    except (TelegramForbiddenError, TelegramNetworkError) as exc:
+        logger.error("present_image_model_menu send failed uid=%s: %s", user_id, exc)
+    except Exception:
+        logger.exception("present_image_model_menu send unexpected uid=%s", user_id)
+
+    if not sent:
+        try:
+            await message.answer(msg.TXT_IMAGE_MENU_OPEN_FAILED)
+        except Exception:
+            logger.debug("present_image_model_menu fallback answer failed", exc_info=True)
+        return
+
+    try:
+        await mark_image_model_menu_pending(state)
+        await state.set_state(UserFlow.waiting_for_image_model_pick)
+    except Exception:
+        # Меню уже в чате — FSM/Redis не должен блокировать UX.
+        logger.warning(
+            "present_image_model_menu: FSM state not saved uid=%s (menu was sent)",
+            user_id,
+            exc_info=True,
+        )
 
 
 async def handle_pending_image_menu_text(message: Message, state: FSMContext) -> None:
