@@ -15,7 +15,6 @@ from enum import Enum
 from io import BytesIO
 from typing import TYPE_CHECKING, Any
 
-import httpx
 from aiogram.types import Message
 
 from config import Settings
@@ -23,6 +22,11 @@ from services import blogger_post_cache
 from services.blogger_image_prompt import sanitize_blogger_image_prompt_for_imagen
 from services.blogger_post_cache import BloggerPostDraft
 from services.gemini_image_client import GeminiImageResult
+from services.openrouter_images import (
+    DEFAULT_OPENROUTER_IMAGES_TIMEOUT_SEC,
+    generate_openrouter_image,
+    openrouter_input_reference,
+)
 
 if TYPE_CHECKING:
     from aiogram import Bot
@@ -32,9 +36,8 @@ logger = logging.getLogger(__name__)
 
 # Актуальный флагман BFL на OpenRouter Images (input_references 0–8).
 OPENROUTER_COVER_MODEL_ID = "black-forest-labs/flux.2-pro"
-OPENROUTER_IMAGES_URL = "https://openrouter.ai/api/v1/images"
 BLOGGER_COVER_ASPECT_RATIO = "16:9"
-OPENROUTER_COVER_TIMEOUT_SEC = 180.0
+OPENROUTER_COVER_TIMEOUT_SEC = DEFAULT_OPENROUTER_IMAGES_TIMEOUT_SEC
 MAX_COVER_REFERENCE_BYTES = 8 * 1024 * 1024
 COVER_WORKER_RATE_LIMIT_SEC = 2.0
 COVER_TYPING_INTERVAL_SEC = 4.0
@@ -171,10 +174,6 @@ def _cover_prompt_for_integration(
     return f"{prompt}{suffix}"
 
 
-def _openrouter_input_reference(data_url: str) -> dict[str, Any]:
-    return {"type": "image_url", "image_url": {"url": data_url}}
-
-
 async def _telegram_file_id_to_data_url(bot: Any, file_id: str) -> str:
     """Bot API download → ``data:image/...;base64,...`` для OpenRouter."""
     fid = (file_id or "").strip()
@@ -201,38 +200,6 @@ async def _telegram_file_id_to_data_url(bot: Any, file_id: str) -> str:
     return f"data:{mime};base64,{encoded}"
 
 
-def _parse_openrouter_image_payload(payload: dict[str, Any]) -> GeminiImageResult:
-    """``data[0].url`` / ``data[0].b64_json`` (и плоский ``data.url``) → результат."""
-    data = payload.get("data")
-    if isinstance(data, dict):
-        item = data
-    elif isinstance(data, list) and data:
-        item = data[0]
-        if not isinstance(item, dict):
-            raise RuntimeError("OpenRouter images: data[0] is not an object")
-    else:
-        raise RuntimeError("OpenRouter images: empty data")
-
-    final_url = item.get("url")
-    if isinstance(final_url, str) and final_url.strip():
-        return GeminiImageResult(url=final_url.strip())
-
-    b64_raw = item.get("b64_json")
-    if isinstance(b64_raw, str) and b64_raw.strip():
-        raw = b64_raw.strip()
-        if raw.startswith("data:") and "," in raw:
-            raw = raw.split(",", 1)[1]
-        try:
-            image_bytes = base64.b64decode(raw, validate=False)
-        except Exception as exc:
-            raise RuntimeError("OpenRouter images: invalid b64_json") from exc
-        if not image_bytes:
-            raise RuntimeError("OpenRouter images: empty b64_json")
-        return GeminiImageResult(data=image_bytes)
-
-    raise RuntimeError("OpenRouter images: neither url nor b64_json")
-
-
 async def generate_blogger_cover_image(
     settings: Settings,
     cleaned_prompt: str,
@@ -243,63 +210,34 @@ async def generate_blogger_cover_image(
     bot: Any | None = None,
 ) -> GeminiImageResult:
     """Синхронный вызов OpenRouter Images (используется воркером очереди)."""
-    from services.openrouter_http import get_openrouter_http_client
-
-    api_key = (settings.openrouter_key or "").strip()
-    if not api_key:
-        raise RuntimeError("OPENROUTER_API_KEY is not configured")
-
     prompt = _cover_prompt_for_integration(cleaned_prompt, integration)
     if not prompt:
         raise RuntimeError("OpenRouter images: empty prompt")
 
-    body: dict[str, Any] = {
-        "model": OPENROUTER_COVER_MODEL_ID,
-        "aspect_ratio": BLOGGER_COVER_ASPECT_RATIO,
-        "prompt": prompt,
-    }
-
-    ref = (source_base64_url or "").strip() or None
-    if (
-        not ref
-        and photo_file_id
-        and bot is not None
-        and integration is not CoverIntegrationType.NONE
-    ):
-        ref = await _telegram_file_id_to_data_url(bot, photo_file_id)
-
+    input_references: list[dict[str, Any]] | None = None
     if integration is not CoverIntegrationType.NONE:
+        ref = (source_base64_url or "").strip() or None
+        if (
+            not ref
+            and photo_file_id
+            and bot is not None
+        ):
+            ref = await _telegram_file_id_to_data_url(bot, photo_file_id)
         if not ref:
             raise RuntimeError(
                 f"blogger cover {integration.value}: reference photo is required"
             )
-        # ContentPartImage: data-URL внутри image_url.url (строка в массиве тоже
-        # принимается частью провайдеров, объектный формат — канон OpenRouter).
-        body["input_references"] = [_openrouter_input_reference(ref)]
-
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
+        input_references = [openrouter_input_reference(ref)]
 
     try:
-        client = await get_openrouter_http_client(settings)
-        async with asyncio.timeout(OPENROUTER_COVER_TIMEOUT_SEC):
-            response = await client.post(
-                OPENROUTER_IMAGES_URL,
-                headers=headers,
-                json=body,
-                timeout=httpx.Timeout(OPENROUTER_COVER_TIMEOUT_SEC, connect=30.0),
-            )
-        if response.status_code >= 400:
-            raise RuntimeError(
-                f"OpenRouter images HTTP {response.status_code}: "
-                f"{(response.text or '')[:200]}"
-            )
-        payload = response.json()
-        if not isinstance(payload, dict):
-            raise RuntimeError("OpenRouter images: response is not a JSON object")
-        return _parse_openrouter_image_payload(payload)
+        return await generate_openrouter_image(
+            settings,
+            model=OPENROUTER_COVER_MODEL_ID,
+            prompt=prompt,
+            aspect_ratio=BLOGGER_COVER_ASPECT_RATIO,
+            input_references=input_references,
+            timeout_sec=OPENROUTER_COVER_TIMEOUT_SEC,
+        )
     except Exception:
         logger.exception(
             "blogger cover OpenRouter failed model=%s integration=%s",

@@ -172,32 +172,8 @@ async def _free_tier_should_auto_intercept_image(
     text: str,
     current: str | None,
 ) -> bool:
-    """FREE: длинный/«картиночный» текст в idle/нейротекст → фото, не run_chat_turn."""
-    from services.billing.free_tier_gates import is_free_user
-
-    user_id = message.from_user.id if message.from_user else 0
-    if not user_id:
-        return False
-    if current not in _FREE_AUTO_IMAGE_IDLE_STATES:
-        return False
-    if current in _BLOCKED_FSM_STATES:
-        return False
-    if len(text) < FREE_AUTO_IMAGE_INTERCEPT_MIN_LEN and not text_looks_like_image_prompt(text):
-        return False
-    if not await is_free_user(user_id):
-        return False
-
-    data = await state.get_data()
-    role = str(data.get("text_role") or "standard").strip().lower()
-    if role not in ("standard", ""):
-        return False
-
-    from platforms.marketplace_audit_flow import is_marketplace_audit_context
-
-    if is_marketplace_audit_context(current, data):
-        return False
-
-    return True
+    """FREE: авто-перехват текста в фото отключён (раздел только на платных тарифах)."""
+    return False
 
 
 async def route_free_text_to_flux_photo(
@@ -235,23 +211,8 @@ async def try_free_photo_from_chat_overflow(
     prompt: str,
     user_id: int,
 ) -> bool:
-    """Последний шанс: CONTEXT_TOO_LARGE на FREE → бесплатное фото вместо ошибки чата."""
-    from services.billing.free_tier_gates import is_free_user
-
-    body = (prompt or "").strip()
-    if not body or not await is_free_user(user_id):
-        return False
-
-    data = await state.get_data()
-    role = str(data.get("text_role") or "standard").strip().lower()
-    if role not in ("standard", ""):
-        return False
-
-    if len(body) < FREE_AUTO_IMAGE_INTERCEPT_MIN_LEN and not text_looks_like_image_prompt(body):
-        return False
-
-    await route_free_text_to_flux_photo(message, state, body)
-    return True
+    """FREE: бесплатное фото из чата отключено."""
+    return False
 
 
 async def can_intercept_text_as_image_prompt(message: Message, state: FSMContext) -> bool:
@@ -319,7 +280,13 @@ async def present_image_model_menu(
 ) -> None:
     """Показать меню моделей; следующий текст — промпт (не чат)."""
     from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramNetworkError
+    from platforms.telegram_utils import send_free_create_blocked
     from services.billing.daily_quotas import get_free_photo_snapshot, quota_day
+    from services.billing.free_tier_gates import is_free_user
+
+    if await is_free_user(user_id):
+        await send_free_create_blocked(message)
+        return
 
     # Маркер FSM + in-memory photo-flow до SQLite/Telegram.
     try:
@@ -462,7 +429,9 @@ async def handle_pending_image_menu_text(message: Message, state: FSMContext) ->
         return
 
     if await is_free_user(user_id):
-        await route_free_text_to_flux_photo(message, state, prompt)
+        from platforms.telegram_utils import send_free_create_blocked
+
+        await send_free_create_blocked(message)
         return
 
     await message.answer(msg.TXT_IMAGE_PICK_MODEL_FIRST, parse_mode=ParseMode.HTML)
@@ -475,22 +444,7 @@ async def handle_free_photo_with_reference(
     prompt: str,
     file_id: str,
 ) -> None:
-    """Image-to-image: фото + подпись/промпт на FREE."""
-    from platforms.handlers.generation_fsm import process_photo_prompt_message
-    from services.billing.image_pipeline import free_tier_image_model
+    """Image-to-image на FREE отключён."""
+    from platforms.telegram_utils import send_free_create_blocked
 
-    model_id = free_tier_image_model()
-    await state.update_data(
-        image_model_id=model_id,
-        image_model_label=FREE_DEFAULT_IMAGE_MODEL_LABEL,
-    )
-    await state.set_state(UserFlow.waiting_for_photo)
-    await process_photo_prompt_message(
-        message,
-        state,
-        model_id=model_id,
-        label=FREE_DEFAULT_IMAGE_MODEL_LABEL,
-        prompt=prompt,
-        telegram_file_id=file_id,
-        auto_flux=True,
-    )
+    await send_free_create_blocked(message)

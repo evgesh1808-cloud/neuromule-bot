@@ -207,6 +207,9 @@ async def reply_create_neurotext(message: Message, state: FSMContext) -> None:
 async def reply_create_image(message: Message, state: FSMContext) -> None:
     from platforms.image_menu_flow import present_image_model_menu
 
+    if await guard_free_premium_create(message, message.from_user.id):
+        return
+
     current = await state.get_state()
     if current == UserFlow.waiting_for_photo.state:
         await message.answer(msg.TXT_CREATE_IMAGE_AFTER_MODEL, parse_mode=ParseMode.HTML)

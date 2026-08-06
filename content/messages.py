@@ -450,11 +450,10 @@ def get_text_image_models(tariff) -> str:
     )
     if tariff is TariffTier.FREE:
         return base_text + (
-            "⚡️ <b>Flux FREE</b> — 3 фото в день (без ⚡)\n"
-            "🔒 <b>Flux Schnell</b> — <i>Доступно на тарифах Premium</i>\n"
-            "🔒 <b>Imagen 4</b> — <i>Доступно на тарифах Premium</i>\n"
-            "🔒 <b>Nano Banana 2</b> — <i>Доступно на тарифах Premium</i>\n"
-            "🔒 <b>Nano Banana Pro</b> — <i>Доступно на тарифах Premium</i>"
+            "🔒 <b>Flux Schnell</b> — <i>Доступно на тарифах MINI / SMART / ULTRA</i>\n"
+            "🔒 <b>Imagen 4</b> — <i>Доступно на тарифах MINI / SMART / ULTRA</i>\n"
+            "🔒 <b>Nano Banana 2</b> — <i>Доступно на тарифах MINI / SMART / ULTRA</i>\n"
+            "🔒 <b>Nano Banana Pro</b> — <i>Доступно на тарифах MINI / SMART / ULTRA</i>"
         )
     return base_text + (
         "🎨 <b>Imagen 4</b> — 10 ⚡ (или 2 💎)\n"
@@ -587,17 +586,15 @@ TXT_LOW_ENERGY = (
 )
 TXT_FREE_CREATE_BLOCKED = (
     "❌ <b>Доступ заблокирован</b>\n\n"
-    "На тарифе <code>FREE</code> генерация видео, музыки и полных разборов по Дизайну Человека "
-    "заблокирована.\n\n"
-    "💡 <i>Накопленные за друзей Кристаллы ты можешь потратить прямо сейчас на создание "
-    "шедевров в разделе <b>[ 🖼 Изображение ] ➔ PRO (Flux)</b>! Чтобы открыть доступ к видео "
-    "и видео-сценариям, активируй любой платный пакет (MINI, SMART или ULTRA) в меню "
-    "«🚀 Тарифы».</i>"
+    "На тарифе <code>FREE</code> генерация изображений, видео, музыки и полных разборов "
+    "по Дизайну Человека заблокирована.\n\n"
+    "💡 <i>Чтобы открыть «🖼 Изображение», видео и другие PRO-инструменты, активируй "
+    "любой платный пакет (MINI, SMART или ULTRA) в меню «🚀 Тарифы».</i>"
 )
 TXT_FREE_IMAGE_MODEL_BLOCKED = (
-    "❌ <b>На тарифе FREE</b> в разделе «🖼 Изображение» доступен только "
-    "<b>⚡️ Flux FREE</b>: <b>3</b> фото в день бесплатно, далее — за 💎. "
-    "Flux Schnell, Imagen 4 и другие модели — на тарифах MINI / SMART / ULTRA."
+    "❌ <b>На тарифе FREE</b> раздел «🖼 Изображение» недоступен.\n\n"
+    "Flux Schnell, Imagen 4, Nano Banana и другие модели — на тарифах "
+    "MINI / SMART / ULTRA."
 )
 
 TXT_FREE_I2I_PREMIUM_TIP = (
@@ -950,7 +947,7 @@ TXT_IMAGE_AUTO_FLUX_ACCEPTED = (
     "🚀 Автоматически выбрана модель Flux Schnell. Запрос принят в очередь..."
 )
 TXT_IMAGE_PICK_MODEL_FIRST = (
-    "⚠️ Сначала выбери модель кнопкой ниже (на FREE — «⚡️ Flux FREE»), "
+    "⚠️ Сначала выбери модель кнопкой ниже (на MINI+ — любая модель из меню), "
     "затем отправь описание одним сообщением."
 )
 TXT_IMAGE_MENU_OPEN_FAILED = (

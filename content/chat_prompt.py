@@ -572,9 +572,9 @@ Generate a highly descriptive, professional prompt written in English for the Fl
 The image must look like a premium, high-end lifestyle or expert blog cover relevant to the post topic.
 
 Follow this prompt formula precisely:
-1. Composition & Aesthetic: Describe a stunning, well-composed scene. Use expressions like "high-end editorial lifestyle photography", "magazine cover style", "authentic aesthetic".
+1. Composition & Aesthetic: Describe a stunning, well-composed scene. Use expressions like "high-end editorial lifestyle photography", "high-end commercial portrait photography, raw editorial style", "authentic aesthetic".
 2. Subject Placement: Place a central subject or a clear focal point in the scene (e.g., an elegant person or a beautifully lit tabletop setup) where a user's face or product can be later integrated via reference.
-3. Details & Textures: Specify realistic elements, natural lighting, textures, modern backgrounds (like a minimalist interior, studio, or aesthetic cafe), and a clean color palette. Avoid keywords like "3D render", "plastic texture", "cartoon", or "generic illustration".
+3. Details & Textures: Specify realistic elements, natural lighting, textures, modern backgrounds (like a minimalist interior, studio, or aesthetic cafe), and a clean color palette. Avoid keywords like "3D render", "plastic texture", "cartoon", or "generic illustration". Focus on capturing real human skin texture with natural pores, sharp details, and fine skin grain, avoiding any waxy or airbrushed appearance.
 4. Lighting & Lens: Use cinematic descriptors like "soft dramatic lighting", "shallow depth of field", "blurred elegant background", "shot on 35mm lens, sharp focus".
 
 Output ONLY the clean, ready-to-use English prompt text inside this block. Do not include aspect ratio settings, negative prompts, introductory phrases, or technical platform keywords.

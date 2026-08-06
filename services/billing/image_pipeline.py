@@ -1,9 +1,6 @@
 """Матрица цен и списание за генерацию изображений.
 
-FREE Nano Banana:
-  * слот — ``user_daily_quotas.free_banana_daily`` (⚡ не списывается);
-  * глобальный предохранитель — ``GLOBAL_FREE_IMAGE_DAILY_CAP`` (дефолт 1500);
-  * генерация — Round-Robin OpenRouter(:free) ↔ Gemini Free Tier.
+FREE: раздел «Изображение» закрыт (только MINI / SMART / ULTRA).
 """
 
 from __future__ import annotations
@@ -57,36 +54,17 @@ def build_image_spend_plan(
     daily_count: int,
     daily_date: str | None,
 ) -> ImageSpendPlan:
-    today = quota_day()
-    count = daily_count if daily_date == today else 0
     model_key = normalize_image_model(model_key)
-    free_model = free_tier_image_model()
 
     if tariff is TariffTier.FREE:
-        if model_key != free_model:
-            return ImageSpendPlan(
-                model_key=model_key,
-                energy_cost=0,
-                crystal_cost=0,
-                crystals_only=True,
-                use_free_daily_slot=False,
-                blocked=True,
-                block_reason="free_image_model_blocked",
-            )
-        if count < FREE_IMAGEN_DAILY_LIMIT:
-            return ImageSpendPlan(
-                model_key=model_key,
-                energy_cost=0,
-                crystal_cost=0,
-                crystals_only=False,
-                use_free_daily_slot=True,
-            )
         return ImageSpendPlan(
             model_key=model_key,
             energy_cost=0,
-            crystal_cost=free_tier_overlimit_crystal_cost(model_key),
+            crystal_cost=0,
             crystals_only=True,
             use_free_daily_slot=False,
+            blocked=True,
+            block_reason="free_image_model_blocked",
         )
 
     matrix = PAID_IMAGE_MATRIX.get(model_key)

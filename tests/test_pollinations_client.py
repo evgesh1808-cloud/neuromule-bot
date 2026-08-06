@@ -7,6 +7,7 @@ from urllib.parse import unquote
 import pytest
 
 from services.api_resilience import ExternalApiError
+from services.api_resilience import ExternalApiError
 from services.gemini_image_client import GeminiImageResult
 from services.pollinations_client import build_pollinations_flux_url
 from services import generation_jobs
@@ -85,9 +86,47 @@ async def test_free_photo_prefers_pollinations(monkeypatch: pytest.MonkeyPatch) 
 
 
 @pytest.mark.asyncio
-async def test_paid_tier_flux_still_uses_replicate(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_paid_tier_flux_uses_openrouter_primary(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _fake_pollinations(_prompt: str) -> GeminiImageResult:
         raise AssertionError("Pollinations must not be called for paid flux")
+
+    async def _fake_replicate(*_a, **_k):
+        raise AssertionError("Replicate must not be called when OpenRouter succeeds")
+
+    async def _fake_openrouter(_settings, **kwargs) -> GeminiImageResult:
+        assert kwargs["model"] == "black-forest-labs/flux-schnell"
+        assert kwargs["aspect_ratio"] == "1:1"
+        return GeminiImageResult(url="https://cdn.example.com/flux-or.webp")
+
+    monkeypatch.setattr(generation_jobs, "generate_flux_schnell_image", _fake_pollinations)
+    monkeypatch.setattr(generation_jobs, "call_replicate_model", _fake_replicate)
+    monkeypatch.setattr(generation_jobs, "generate_openrouter_image", _fake_openrouter)
+    monkeypatch.setattr(generation_jobs, "openrouter_images_configured", lambda _s: True)
+
+    async def _fake_row(_uid: int):
+        class _R:
+            tariff = "smart"
+
+        return _R()
+
+    monkeypatch.setattr(generation_jobs, "get_user_row", _fake_row)
+
+    result = await generation_jobs._generate_photo_result(
+        "flux_schnell",
+        "sunset",
+        user_id=7,
+    )
+    assert isinstance(result, GeminiImageResult)
+    assert result.url == "https://cdn.example.com/flux-or.webp"
+
+
+@pytest.mark.asyncio
+async def test_paid_tier_flux_falls_back_to_replicate(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _fake_pollinations(_prompt: str) -> GeminiImageResult:
+        raise AssertionError("Pollinations must not be called for paid flux")
+
+    async def _fake_openrouter(_settings, **_kwargs) -> GeminiImageResult:
+        raise ExternalApiError("OpenRouter", "HTTP 503")
 
     async def _fake_replicate(_model: str, _inputs: dict, **_k) -> str:
         return "https://replicate.delivery/photo.webp"
@@ -98,6 +137,8 @@ async def test_paid_tier_flux_still_uses_replicate(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(generation_jobs, "generate_flux_schnell_image", _fake_pollinations)
     monkeypatch.setattr(generation_jobs, "call_replicate_model", _fake_replicate)
     monkeypatch.setattr(generation_jobs, "enhance_video_prompt_for_replicate", _fake_enhance)
+    monkeypatch.setattr(generation_jobs, "generate_openrouter_image", _fake_openrouter)
+    monkeypatch.setattr(generation_jobs, "openrouter_images_configured", lambda _s: True)
     monkeypatch.setattr(generation_jobs, "replicate_configured", lambda: True)
 
     async def _fake_row(_uid: int):

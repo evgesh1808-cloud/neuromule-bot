@@ -27,7 +27,7 @@ def test_free_photo_model_default() -> None:
     assert FREE_PHOTO_QUOTA_KEY == "free_banana_daily"
 
 
-def test_free_tier_uses_free_slot_when_quota_available() -> None:
+def test_free_tier_blocks_free_photo_on_free_tariff() -> None:
     today = date.today().isoformat()
     plan = build_image_spend_plan(
         TariffTier.FREE,
@@ -35,9 +35,8 @@ def test_free_tier_uses_free_slot_when_quota_available() -> None:
         daily_count=0,
         daily_date=today,
     )
-    assert plan.use_free_daily_slot is True
-    assert plan.energy_cost == 0
-    assert plan.crystal_cost == 0
+    assert plan.blocked is True
+    assert plan.use_free_daily_slot is False
 
 
 def test_free_tier_blocked_for_premium_model() -> None:

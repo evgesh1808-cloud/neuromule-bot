@@ -116,6 +116,16 @@ def test_openrouter_free_model_enabled_when_set() -> None:
     assert openrouter_free_image_enabled() is True
 
 
+def test_gemini_t2i_models_prefers_flash_over_imagen_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    from config import settings
+    from services.free_image_cascade import DEFAULT_GEMINI_T2I_MODEL, _gemini_t2i_models
+
+    object.__setattr__(settings, "free_image_gemini_model", "imagen-3.0-generate-002")
+    models = _gemini_t2i_models()
+    assert models[0] == DEFAULT_GEMINI_T2I_MODEL
+    assert "imagen-3.0-generate-002" in models
+
+
 def test_build_free_image_providers_skips_empty() -> None:
     from config import settings
 

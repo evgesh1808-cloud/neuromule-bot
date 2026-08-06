@@ -1,8 +1,8 @@
 """Flux FREE: Pollinations → Gemini spare → (опц.) OpenRouter :free → RR по API-ключам.
 
 Путь t2i:
-  1. Pollinations Flux (без ключа, вне глобального sem)
-  2. Gemini Imagen / Flash (GEMINI_API_KEY[_2])
+  1. Pollinations Flux (POLLINATIONS_API_KEY с балансом pollen; legacy без ключа часто 402)
+  2. Gemini Flash Image через ``generateContent`` (GEMINI_API_KEY[_2])
   3. OpenRouter ``*:free`` только если модель не снята с каталога
   4. RR: GEMINI → OPENROUTER (если включён)
 
@@ -42,11 +42,10 @@ DEPRECATED_OPENROUTER_FREE_IMAGE_MODELS = frozenset(
         "black-forest-labs/flux-1-schnell",
     }
 )
-DEFAULT_GEMINI_NANO_BANANA = "imagen-3.0-generate-002"
-DEFAULT_GEMINI_I2I_MODEL = "gemini-2.5-flash-image"
+DEFAULT_GEMINI_T2I_MODEL = "gemini-2.5-flash-image"
+DEFAULT_GEMINI_I2I_MODEL = DEFAULT_GEMINI_T2I_MODEL
 _GEMINI_T2I_FALLBACK_MODELS = (
-    "imagen-4.0-fast-generate-001",
-    DEFAULT_GEMINI_NANO_BANANA,
+    "gemini-3.1-flash-image-preview",
 )
 
 # До 1 основной + 3 смещения внутри пула при 429/403/402.
@@ -167,10 +166,25 @@ def _gemini_i2i_model() -> str:
 
 def _gemini_t2i_models() -> list[str]:
     primary = (
-        getattr(settings, "free_image_gemini_model", None) or DEFAULT_GEMINI_NANO_BANANA
-    ).strip() or DEFAULT_GEMINI_NANO_BANANA
+        getattr(settings, "free_image_gemini_model", None) or DEFAULT_GEMINI_T2I_MODEL
+    ).strip() or DEFAULT_GEMINI_T2I_MODEL
+    candidates: tuple[str, ...]
+    if _is_imagen_model(primary):
+        logger.warning(
+            "FREE_IMAGE_GEMINI_MODEL=%s uses deprecated Imagen API; "
+            "trying %s first",
+            primary,
+            DEFAULT_GEMINI_T2I_MODEL,
+        )
+        candidates = (
+            DEFAULT_GEMINI_T2I_MODEL,
+            *_GEMINI_T2I_FALLBACK_MODELS,
+            primary,
+        )
+    else:
+        candidates = (primary, *_GEMINI_T2I_FALLBACK_MODELS)
     out: list[str] = []
-    for mid in (primary, *_GEMINI_T2I_FALLBACK_MODELS):
+    for mid in candidates:
         if mid and mid not in out:
             out.append(mid)
     return out
@@ -532,9 +546,9 @@ async def _call_gemini(
     model: str | None = None,
 ) -> GeminiImageResult:
     provider = "Gemini"
-    mid = (model or settings.free_image_gemini_model or DEFAULT_GEMINI_NANO_BANANA).strip()
+    mid = (model or _gemini_t2i_models()[0]).strip()
     if not mid:
-        mid = DEFAULT_GEMINI_NANO_BANANA
+        mid = DEFAULT_GEMINI_T2I_MODEL
 
     if reference_image_bytes and _is_imagen_model(mid):
         raise ExternalApiError(

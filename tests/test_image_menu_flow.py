@@ -141,7 +141,7 @@ def test_text_looks_like_image_prompt_markers() -> None:
 
 
 @pytest.mark.asyncio
-async def test_free_long_text_intercept_without_menu(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_free_long_text_not_intercepted_without_menu(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _free(_uid: int) -> bool:
         return True
 
@@ -158,7 +158,7 @@ async def test_free_long_text_intercept_without_menu(monkeypatch: pytest.MonkeyP
     message.from_user.id = 42
     message.text = "x" * (FREE_AUTO_IMAGE_INTERCEPT_MIN_LEN + 10)
 
-    assert await can_intercept_text_as_image_prompt(message, state) is True
+    assert await can_intercept_text_as_image_prompt(message, state) is False
 
 
 @pytest.mark.asyncio
@@ -183,25 +183,19 @@ async def test_paid_user_no_auto_intercept_without_menu(monkeypatch: pytest.Monk
 
 
 @pytest.mark.asyncio
-async def test_present_image_menu_preselects_flux_free_for_free_tier(
+async def test_present_image_menu_blocks_free_tier(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from platforms.image_menu_flow import present_image_model_menu
 
-    class _Row:
-        tariff = "free"
-
     monkeypatch.setattr(
-        "platforms.image_menu_flow.get_user_row",
-        AsyncMock(return_value=_Row()),
+        "services.billing.free_tier_gates.is_free_user",
+        AsyncMock(return_value=True),
     )
+    blocked = AsyncMock()
     monkeypatch.setattr(
-        "services.billing.daily_quotas.get_free_photo_snapshot",
-        AsyncMock(return_value=MagicMock(used=0, day="2026-08-04")),
-    )
-    monkeypatch.setattr(
-        "services.billing.daily_quotas.quota_day",
-        lambda: "2026-08-04",
+        "platforms.telegram_utils.send_free_create_blocked",
+        blocked,
     )
 
     message = MagicMock()
@@ -210,11 +204,9 @@ async def test_present_image_menu_preselects_flux_free_for_free_tier(
 
     await present_image_model_menu(message, state, user_id=42)
 
-    assert state.set_state.await_args_list[-1].args[0] == UserFlow.waiting_for_photo.state
-    state.update_data.assert_awaited()
-    kwargs = state.update_data.await_args.kwargs
-    assert kwargs.get("image_model_id") == "free_photo"
-    assert kwargs.get("image_model_label") == "Flux FREE"
+    blocked.assert_awaited_once_with(message)
+    message.answer.assert_not_awaited()
+    state.set_state.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -224,8 +216,12 @@ async def test_present_image_menu_sent_even_if_fsm_fails(
     from platforms.image_menu_flow import present_image_model_menu
 
     class _Row:
-        tariff = "free"
+        tariff = "smart"
 
+    monkeypatch.setattr(
+        "services.billing.free_tier_gates.is_free_user",
+        AsyncMock(return_value=False),
+    )
     monkeypatch.setattr(
         "platforms.image_menu_flow.get_user_row",
         AsyncMock(return_value=_Row()),
@@ -259,8 +255,12 @@ async def test_present_image_menu_fallback_on_send_failure(
     from platforms.image_menu_flow import present_image_model_menu
 
     class _Row:
-        tariff = "free"
+        tariff = "smart"
 
+    monkeypatch.setattr(
+        "services.billing.free_tier_gates.is_free_user",
+        AsyncMock(return_value=False),
+    )
     monkeypatch.setattr(
         "platforms.image_menu_flow.get_user_row",
         AsyncMock(return_value=_Row()),

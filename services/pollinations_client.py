@@ -1,8 +1,9 @@
-"""Pollinations.ai — бесплатный Flux для FREE-tier фото.
+"""Pollinations.ai — Flux для FREE-tier фото.
 
-Актуально (2026): ``gen.pollinations.ai`` требует API-ключ (иначе HTTP 401).
-Без ключа используем рабочий legacy-endpoint ``image.pollinations.ai/prompt/...``.
-С ``POLLINATIONS_API_KEY`` — новый gen-endpoint + Bearer.
+Актуально (2026): бесплатный legacy ``image.pollinations.ai`` часто отвечает
+HTTP 500/402 (Insufficient balance / pollen). Для стабильной работы нужен
+``POLLINATIONS_API_KEY`` (https://enter.pollinations.ai/keys) с балансом pollen.
+С ключом — ``gen.pollinations.ai`` + Bearer; без — legacy GET (может быть недоступен).
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ from services.streaming_download import DEFAULT_CHUNK_SIZE, DEFAULT_MAX_BYTES
 
 logger = logging.getLogger(__name__)
 
-# Legacy: без ключа, сейчас отвечает 200 + JPEG.
+# Legacy: без ключа; на практике часто 402/500 без pollen-баланса.
 POLLINATIONS_IMAGE_BASE_LEGACY = "https://image.pollinations.ai/prompt"
 # Новый API: нужен sk_/pk_ с enter.pollinations.ai.
 POLLINATIONS_IMAGE_BASE_GEN = "https://gen.pollinations.ai/image"

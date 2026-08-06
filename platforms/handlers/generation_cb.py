@@ -441,10 +441,13 @@ async def neurotext_clear_persistent_memory_vip(callback: CallbackQuery) -> None
 @router.callback_query(F.data == msg.CB_CREATE_IMAGE)
 async def create_image_menu(callback: CallbackQuery, state: FSMContext) -> None:
     from platforms.image_menu_flow import present_image_model_menu
+    from platforms.telegram_utils import guard_free_premium_create
 
-    # Сразу гасим «часики» на кнопке — меню моделей может ждать SQLite/FSM.
     await callback.answer()
-    if callback.message:
+    if callback.message and callback.from_user:
+        if await guard_free_premium_create(callback.message, callback.from_user.id):
+            return
+    if callback.message and callback.from_user:
         await present_image_model_menu(callback.message, state, callback.from_user.id)
 
 @router.callback_query(F.data == msg.CB_UPSCALE_START)

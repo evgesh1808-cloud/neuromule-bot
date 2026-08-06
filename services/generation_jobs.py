@@ -49,6 +49,11 @@ from services.billing.video_pipeline import VIDEO_SCENARIOS
 from services.photo_share import resolve_photo_share_url
 from services.billing.image_pipeline import FREE_PHOTO_MODEL_KEY, free_tier_image_model
 from services.free_image_cascade import FreeImageCascadeExhausted, generate_free_tier_image
+from services.openrouter_images import (
+    OPENROUTER_FLUX_SCHNELL_MODEL,
+    generate_openrouter_image,
+    openrouter_images_configured,
+)
 from services.pollinations_client import generate_flux_schnell_image
 from services.repository import get_user_row
 from services.tariffs import TariffName, normalize_tariff
@@ -234,6 +239,48 @@ async def _free_tier_flux_uses_pollinations(user_id: int | None, model_key: str)
     return normalize_tariff(row.tariff) is TariffName.FREE
 
 
+async def _generate_flux_schnell_replicate(prompt: str) -> str:
+    """Replicate fallback для платного Flux Schnell."""
+    if not replicate_configured():
+        raise ExternalApiError("Replicate", "REPLICATE_API_TOKEN не задан")
+    prompt_en = await enhance_video_prompt_for_replicate(app_settings, prompt)
+    url = await call_replicate_model(
+        OPENROUTER_FLUX_SCHNELL_MODEL,
+        {
+            "prompt": prompt_en,
+            "aspect_ratio": "1:1",
+            "output_format": "webp",
+            "output_quality": 90,
+        },
+    )
+    if not url:
+        raise ExternalApiError("Replicate", "Flux Schnell: пустой URL")
+    return url
+
+
+async def _generate_flux_schnell_paid(prompt: str) -> GeminiImageResult | str:
+    """Платный Flux Schnell: OpenRouter primary → Replicate fallback."""
+    if openrouter_images_configured(app_settings):
+        try:
+            return await generate_openrouter_image(
+                app_settings,
+                model=OPENROUTER_FLUX_SCHNELL_MODEL,
+                prompt=prompt,
+                aspect_ratio="1:1",
+                timeout_sec=float(EXTERNAL_API_TIMEOUT_SEC),
+            )
+        except ExternalApiError as exc:
+            if not replicate_configured():
+                raise
+            logger.warning(
+                "flux_schnell: OpenRouter failed (%s), falling back to Replicate",
+                exc,
+            )
+    elif not replicate_configured():
+        raise ExternalApiError("OpenRouter", "OPENROUTER_API_KEY не задан")
+    return await _generate_flux_schnell_replicate(prompt)
+
+
 async def _generate_photo_result(
     model_key: str,
     prompt: str,
@@ -248,21 +295,7 @@ async def _generate_photo_result(
         if model_key == "flux_schnell":
             if await _free_tier_flux_uses_pollinations(user_id, model_key):
                 return await generate_flux_schnell_image(prompt)
-            if not replicate_configured():
-                raise ExternalApiError("Replicate", "REPLICATE_API_TOKEN не задан")
-            prompt_en = await enhance_video_prompt_for_replicate(app_settings, prompt)
-            url = await call_replicate_model(
-                "black-forest-labs/flux-schnell",
-                {
-                    "prompt": prompt_en,
-                    "aspect_ratio": "1:1",
-                    "output_format": "webp",
-                    "output_quality": 90,
-                },
-            )
-            if not url:
-                raise ExternalApiError("Replicate", "Flux Schnell: пустой URL")
-            return url
+            return await _generate_flux_schnell_paid(prompt)
 
         if model_key == "free_photo":
             raise ExternalApiError("FreePhoto", "free_photo requires task worker context")

@@ -110,9 +110,9 @@ def sanitize_blogger_image_prompt_for_imagen(raw: str) -> str:
 
     if not prompt:
         return (
-            "High-end editorial lifestyle photography, magazine cover style, "
+            "High-end editorial lifestyle photography, high-end commercial portrait photography, raw editorial style, "
             "clear central subject, soft dramatic lighting, shallow depth of field, "
-            "shot on 35mm lens, sharp focus, authentic aesthetic"
+            "shot on 35mm lens, sharp focus, visible skin pores, natural skin grain, authentic aesthetic"
         )
     return prompt
 

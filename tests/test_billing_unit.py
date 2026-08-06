@@ -35,7 +35,7 @@ def test_free_imagen_blocked() -> None:
     assert plan.use_free_daily_slot is False
 
 
-def test_free_photo_uses_free_slot_under_daily_limit() -> None:
+def test_free_photo_blocked_on_free_tariff() -> None:
     today = date.today().isoformat()
     plan = build_image_spend_plan(
         TariffTier.FREE,
@@ -43,12 +43,12 @@ def test_free_photo_uses_free_slot_under_daily_limit() -> None:
         daily_count=0,
         daily_date=today,
     )
-    assert plan.use_free_daily_slot is True
-    assert plan.crystal_cost == 0
-    assert plan.blocked is False
+    assert plan.blocked is True
+    assert plan.block_reason == "free_image_model_blocked"
+    assert plan.use_free_daily_slot is False
 
 
-def test_free_photo_overlimit_charges_crystals() -> None:
+def test_free_photo_overlimit_also_blocked() -> None:
     today = date.today().isoformat()
     plan = build_image_spend_plan(
         TariffTier.FREE,
@@ -56,9 +56,8 @@ def test_free_photo_overlimit_charges_crystals() -> None:
         daily_count=1,
         daily_date=today,
     )
+    assert plan.blocked is True
     assert plan.use_free_daily_slot is False
-    assert plan.crystals_only is True
-    assert plan.blocked is False
 
 
 def test_paid_flux_energy_or_crystals() -> None:

@@ -532,13 +532,13 @@ class Settings(BaseSettings):
     ] = ""
     free_image_gemini_model: Annotated[
         str,
-        _nonempty_str("imagen-3.0-generate-002"),
-    ] = "imagen-3.0-generate-002"
+        _nonempty_str("gemini-2.5-flash-image"),
+    ] = "gemini-2.5-flash-image"
     free_image_gemini_i2i_model: Annotated[
         str,
         _nonempty_str("gemini-2.5-flash-image"),
     ] = "gemini-2.5-flash-image"
-    # Pollinations: без ключа — legacy image.pollinations.ai; с ключом — gen + Bearer.
+    # Pollinations: legacy без ключа часто 402; с ключом — gen.pollinations.ai + Bearer.
     pollinations_api_key: str = Field(
         default="",
         validation_alias=AliasChoices("POLLINATIONS_API_KEY", "pollinations_api_key"),

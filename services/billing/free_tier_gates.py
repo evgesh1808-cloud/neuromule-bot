@@ -27,7 +27,7 @@ async def is_free_user(user_id: int) -> bool:
 
 
 def free_allows_image_model(model_id: str) -> bool:
-    return free_allows_model_key(normalize_image_model(model_id))
+    return False
 
 
 async def free_photo_quota_snapshot(user_id: int) -> QuotaSnapshot:
@@ -59,5 +59,5 @@ async def free_photo_slot_available(user_id: int) -> bool:
 
 
 async def free_blocks_premium_create(user_id: int) -> bool:
-    """True — нужно показать экран блокировки (анимация, музыка, видео, HD)."""
+    """True — нужно показать экран блокировки (изображение, анимация, музыка, видео, HD)."""
     return await is_free_user(user_id)
