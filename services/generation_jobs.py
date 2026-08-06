@@ -50,10 +50,11 @@ from services.photo_share import resolve_photo_share_url
 from services.billing.image_pipeline import FREE_PHOTO_MODEL_KEY, free_tier_image_model
 from services.free_image_cascade import FreeImageCascadeExhausted, generate_free_tier_image
 from services.openrouter_images import (
-    OPENROUTER_FLUX_SCHNELL_MODEL,
+    OPENROUTER_FLUX_PAID_MODEL,
     OPENROUTER_IMAGEN4_FAST_MODEL,
     OPENROUTER_NANO_BANANA2_MODEL,
     OPENROUTER_NANO_BANANA_PRO_MODEL,
+    REPLICATE_FLUX_SCHNELL_MODEL,
     generate_openrouter_image,
     openrouter_images_configured,
     openrouter_input_reference,
@@ -256,7 +257,7 @@ async def _generate_flux_schnell_replicate(prompt: str) -> str:
         raise ExternalApiError("Replicate", "REPLICATE_API_TOKEN не задан")
     prompt_en = await enhance_video_prompt_for_replicate(app_settings, prompt)
     url = await call_replicate_model(
-        OPENROUTER_FLUX_SCHNELL_MODEL,
+        REPLICATE_FLUX_SCHNELL_MODEL,
         {
             "prompt": prompt_en,
             "aspect_ratio": "1:1",
@@ -285,18 +286,38 @@ async def _generate_openrouter_photo_model(
     prompt: str,
     *,
     input_references: list[dict] | None = None,
+    fallback_models: tuple[str, ...] = (),
 ) -> GeminiImageResult:
     """Платные Google/BFL модели через OpenRouter Images (единый HTTP-клиент + AI_PROXY)."""
     if not openrouter_images_configured(app_settings):
         raise ExternalApiError("OpenRouter", "OPENROUTER_API_KEY не задан")
-    return await generate_openrouter_image(
-        app_settings,
-        model=model,
-        prompt=prompt,
-        aspect_ratio="1:1",
-        input_references=input_references,
-        timeout_sec=float(EXTERNAL_API_TIMEOUT_SEC),
-    )
+
+    last_exc: ExternalApiError | None = None
+    candidates = (model, *fallback_models)
+    for idx, slug in enumerate(candidates):
+        try:
+            return await generate_openrouter_image(
+                app_settings,
+                model=slug,
+                prompt=prompt,
+                aspect_ratio="1:1",
+                input_references=input_references,
+                timeout_sec=float(EXTERNAL_API_TIMEOUT_SEC),
+            )
+        except ExternalApiError as exc:
+            last_exc = exc
+            if idx + 1 < len(candidates):
+                logger.warning(
+                    "openrouter photo model %s failed (%s), trying %s",
+                    slug,
+                    exc,
+                    candidates[idx + 1],
+                )
+                continue
+            raise
+    if last_exc is not None:
+        raise last_exc
+    raise ExternalApiError("OpenRouter", "no model candidates")
 
 
 async def _generate_flux_schnell_paid(
@@ -308,7 +329,7 @@ async def _generate_flux_schnell_paid(
     if openrouter_images_configured(app_settings):
         try:
             return await _generate_openrouter_photo_model(
-                OPENROUTER_FLUX_SCHNELL_MODEL,
+                OPENROUTER_FLUX_PAID_MODEL,
                 prompt,
                 input_references=input_references,
             )
@@ -367,6 +388,7 @@ async def _generate_photo_result(
                 OPENROUTER_NANO_BANANA2_MODEL,
                 prompt,
                 input_references=input_refs,
+                fallback_models=("google/gemini-3.1-flash-image",),
             )
 
         if model_key == "nano_banana_pro":
@@ -374,6 +396,7 @@ async def _generate_photo_result(
                 OPENROUTER_NANO_BANANA_PRO_MODEL,
                 prompt,
                 input_references=input_refs,
+                fallback_models=("google/gemini-3-pro-image-preview",),
             )
 
         raise RuntimeError(f"Неизвестная модель изображения: {model_key}")

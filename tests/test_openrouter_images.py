@@ -10,7 +10,7 @@ from config import Settings
 from services.api_resilience import ExternalApiError
 from services.gemini_image_client import GeminiImageResult
 from services.openrouter_images import (
-    OPENROUTER_FLUX_SCHNELL_MODEL,
+    OPENROUTER_FLUX_PAID_MODEL,
     OPENROUTER_IMAGES_URL,
     generate_openrouter_image,
     parse_openrouter_image_payload,
@@ -49,7 +49,7 @@ async def test_generate_openrouter_image_posts_images_endpoint() -> None:
     ):
         result = await generate_openrouter_image(
             settings,
-            model=OPENROUTER_FLUX_SCHNELL_MODEL,
+            model=OPENROUTER_FLUX_PAID_MODEL,
             prompt="sunset over mountains",
             aspect_ratio="1:1",
         )
@@ -58,7 +58,7 @@ async def test_generate_openrouter_image_posts_images_endpoint() -> None:
     call = mock_client.post.await_args
     assert call.args[0] == OPENROUTER_IMAGES_URL
     body = call.kwargs["json"]
-    assert body["model"] == OPENROUTER_FLUX_SCHNELL_MODEL
+    assert body["model"] == OPENROUTER_FLUX_PAID_MODEL
     assert body["aspect_ratio"] == "1:1"
     assert body["prompt"] == "sunset over mountains"
 
@@ -69,7 +69,7 @@ async def test_generate_openrouter_image_missing_key() -> None:
     with pytest.raises(ExternalApiError) as exc:
         await generate_openrouter_image(
             settings,
-            model=OPENROUTER_FLUX_SCHNELL_MODEL,
+            model=OPENROUTER_FLUX_PAID_MODEL,
             prompt="test",
         )
     assert exc.value.provider == "OpenRouter"

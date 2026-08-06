@@ -94,7 +94,7 @@ async def test_paid_tier_flux_uses_openrouter_primary(monkeypatch: pytest.Monkey
         raise AssertionError("Replicate must not be called when OpenRouter succeeds")
 
     async def _fake_openrouter(_settings, **kwargs) -> GeminiImageResult:
-        assert kwargs["model"] == "black-forest-labs/flux-schnell"
+        assert kwargs["model"] == "black-forest-labs/flux.2-pro"
         assert kwargs["aspect_ratio"] == "1:1"
         return GeminiImageResult(url="https://cdn.example.com/flux-or.webp")
 

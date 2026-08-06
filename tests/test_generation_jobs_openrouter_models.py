@@ -41,11 +41,17 @@ async def test_paid_google_models_use_openrouter_images(
         )
 
     assert result.url == "https://cdn.example/out.png"
-    mock_or.assert_awaited_once_with(
-        or_model,
-        "a red apple on white table",
-        input_references=None,
-    )
+    mock_or.assert_awaited_once()
+    call = mock_or.await_args
+    assert call.args[0] == or_model
+    assert call.args[1] == "a red apple on white table"
+    assert call.kwargs["input_references"] is None
+    if model_key == "nano_banana2":
+        assert call.kwargs["fallback_models"] == ("google/gemini-3.1-flash-image",)
+    elif model_key == "nano_banana_pro":
+        assert call.kwargs["fallback_models"] == ("google/gemini-3-pro-image-preview",)
+    else:
+        assert call.kwargs.get("fallback_models", ()) == ()
 
 
 @pytest.mark.asyncio
@@ -80,4 +86,5 @@ async def test_nano_banana2_i2i_passes_input_references() -> None:
         OPENROUTER_NANO_BANANA2_MODEL,
         "make it cinematic",
         input_references=[{"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,abc"}}],
+        fallback_models=("google/gemini-3.1-flash-image",),
     )
