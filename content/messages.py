@@ -429,7 +429,7 @@ TXT_NEUROTEXT_CLEAR_DONE = "🧹 <b>Контекст очищен.</b> Можн�
 IMAGE_MODELS: tuple[tuple[str, str], ...] = (
     ("Flux FREE", "free_photo"),
     ("Imagen 4", "imagen4"),
-    ("Flux Schnell", "flux-schnell"),
+    ("Flux 2 Pro", "flux-schnell"),
     ("DALL-E 3", "gpt_image2"),
     ("Nano Banana 2", "nano_banana2"),
     ("Nano Banana Pro", "nano_banana_pro"),
@@ -450,14 +450,14 @@ def get_text_image_models(tariff) -> str:
     )
     if tariff is TariffTier.FREE:
         return base_text + (
-            "🔒 <b>Flux Schnell</b> — <i>Доступно на тарифах MINI / SMART / ULTRA</i>\n"
+            "🔒 <b>Flux 2 Pro</b> — <i>Доступно на тарифах MINI / SMART / ULTRA</i>\n"
             "🔒 <b>Imagen 4</b> — <i>Доступно на тарифах MINI / SMART / ULTRA</i>\n"
             "🔒 <b>Nano Banana 2</b> — <i>Доступно на тарифах MINI / SMART / ULTRA</i>\n"
             "🔒 <b>Nano Banana Pro</b> — <i>Доступно на тарифах MINI / SMART / ULTRA</i>"
         )
     return base_text + (
         "🎨 <b>Imagen 4</b> — 10 ⚡ (или 2 💎)\n"
-        "⚡ <b>Flux Schnell</b> — 30 ⚡ (или 3 💎)\n"
+        "⚡ <b>Flux 2 Pro</b> — 30 ⚡ (или 3 💎)\n"
         "🖼 <b>DALL-E 3</b> — 5 💎\n"
         "🍌 <b>Nano Banana 2</b> — 15 ⚡ (или 2 💎)\n"
         "🚀 <b>Nano Banana Pro</b> — 35 ⚡ (или 3 💎)"
@@ -593,7 +593,7 @@ TXT_FREE_CREATE_BLOCKED = (
 )
 TXT_FREE_IMAGE_MODEL_BLOCKED = (
     "❌ <b>На тарифе FREE</b> раздел «🖼 Изображение» недоступен.\n\n"
-    "Flux Schnell, Imagen 4, Nano Banana и другие модели — на тарифах "
+    "Flux 2 Pro, Imagen 4, Nano Banana и другие модели — на тарифах "
     "MINI / SMART / ULTRA."
 )
 
@@ -944,7 +944,7 @@ TXT_CREATE_IMAGE_AFTER_MODEL = (
     "Опиши изображение одним сообщением: стиль, ключевые объекты, фон, освещение и формат (квадрат / вертикаль)."
 )
 TXT_IMAGE_AUTO_FLUX_ACCEPTED = (
-    "🚀 Автоматически выбрана модель Flux Schnell. Запрос принят в очередь..."
+    "🚀 Автоматически выбрана модель Flux 2 Pro. Запрос принят в очередь..."
 )
 TXT_IMAGE_PICK_MODEL_FIRST = (
     "⚠️ Сначала выбери модель кнопкой ниже (на MINI+ — любая модель из меню), "
@@ -1488,7 +1488,7 @@ TXT_BLOGGER_ADAPT_INSUFFICIENT = (
     "❌ Недостаточно алмазов для адаптации. Требуется 3💎"
 )
 TXT_BLOGGER_COVER_INSUFFICIENT = (
-    "❌ Недостаточно ⚡ или 💎 для обложки Flux Schnell. "
+    "❌ Недостаточно ⚡ или 💎 для обложки Flux 2 Pro. "
     "На FREE — 1 фото DALL-E 3 в день бесплатно (меню «🎨 Фото»), далее — 5 💎."
 )
 TXT_BLOGGER_ADAPT_QUEUED = "💎 Списано 3 кристалла. Gemini адаптирует текст..."
@@ -1634,7 +1634,7 @@ TXT_FAQ_ANSWER_PROMPTS = (
     "Мул — очень умный и отлично понимает команды на любом языке, включая русский.\n"
     "• <b>Для ИИ-Чата (GPT-4o) и текста:</b> Пиши так, как тебе удобно. Нейросеть идеально "
     "общается на русском языке, улавливает контекст, шутки и профессиональные термины.\n"
-    "• <b>Для PRO-фото (Flux Schnell):</b> Бот переведет твой русский запрос автоматически. "
+    "• <b>Для PRO-фото (Flux 2 Pro):</b> Бот переведет твой русский запрос автоматически. "
     "Но если ты хочешь получить максимальную детализацию (например, глянцевый журнал, неоновое "
     "освещение, кинокамера), лучше писать промпт на английском языке — так нейросеть поймет "
     "твою задумку на все 100%."

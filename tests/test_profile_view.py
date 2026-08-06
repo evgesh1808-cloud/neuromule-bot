@@ -82,4 +82,4 @@ async def test_profile_includes_blogger_constructor_block(repo_module) -> None:
     assert "AI-обложка:" in text
     assert "DALL-E 3" in text
     assert "3 💎" in text
-    assert "Flux Schnell" in text
+    assert "Flux 2 Pro" in text

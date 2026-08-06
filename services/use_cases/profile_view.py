@@ -134,13 +134,13 @@ def _photo_capacity_block(energy: int, total_diamonds: int) -> str:
     if energy <= 0:
         primary = (
             f"• 🌠 <b>Imagen 4</b> ➔ <code>{imagen_d}</code> шт. (за 💎)\n"
-            f"• 🎨 <b>Flux Schnell PRO</b> ➔ <code>{flux_d}</code> шт. (за 💎)"
+            f"• 🎨 <b>Flux 2 Pro</b> ➔ <code>{flux_d}</code> шт. (за 💎)"
         )
     else:
         primary = (
             f"• 🌠 <b>Imagen 4</b> ➔ <code>{imagen_e}</code> шт. (⚡) / "
             f"<code>{imagen_d}</code> шт. (💎)\n"
-            f"• 🎨 <b>Flux Schnell PRO</b> ➔ <code>{flux_e}</code> шт. (⚡) / "
+            f"• 🎨 <b>Flux 2 Pro</b> ➔ <code>{flux_e}</code> шт. (⚡) / "
             f"<code>{flux_d}</code> шт. (💎)\n"
             f"• 🍌 <b>Nano Banana Pro</b> ➔ <code>{banana_pro_e}</code> шт. (⚡)"
         )
@@ -192,7 +192,7 @@ def _blogger_constructor_block(snapshot: BloggerResourcesSnapshot) -> str:
         f"• <b>Энергия:</b> <code>{snapshot.energy}</code> / {snapshot.energy_max} ⚡\n"
         f"• <b>Алмазы:</b> <code>{snapshot.diamonds}</code> 💎\n"
         f"• <b>Адаптация поста:</b> {BLOGGER_ADAPT_COST} 💎 за площадку\n"
-        f"• <b>AI-обложка:</b> Flux Schnell на платных; на FREE — недоступна "
+        f"• <b>AI-обложка:</b> Flux 2 Pro на платных; на FREE — недоступна "
         f"(активируй MINI / SMART / ULTRA)"
     )
 
