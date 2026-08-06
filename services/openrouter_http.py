@@ -48,17 +48,29 @@ def log_openrouter_proxy_configuration(settings: Settings) -> None:
 
 
 def probe_openrouter_proxy(settings: Settings) -> None:
-    """При старте проверяет доступность хоста/порта из ``AI_PROXY``."""
+    """При старте проверяет доступность хоста/порта из ``AI_PROXY``.
+
+    Недоступный прокси не блокирует polling — иначе бот «молчит» на все команды,
+    включая /start, хотя Telegram API жив.
+    """
     proxy = resolve_ai_proxy_url(settings)
     if not proxy:
         return
-    if not _probe_proxy_reachable(proxy):
-        raise RuntimeError(
-            "OpenRouter proxy недоступен: "
-            f"{_redact_proxy_url(proxy)}. "
-            "Проверьте AI_PROXY в .env (на VDSina нужен рабочий удалённый прокси)."
+    try:
+        if not _probe_proxy_reachable(proxy):
+            logger.warning(
+                "OpenRouter proxy недоступен: %s — polling стартует; "
+                "проверьте AI_PROXY в .env (на VDSina нужен рабочий удалённый прокси)",
+                _redact_proxy_url(proxy),
+            )
+            return
+        logger.info("OpenRouter proxy probe OK: %s", _redact_proxy_url(proxy))
+    except OSError as exc:
+        logger.warning(
+            "OpenRouter proxy probe failed: %s — polling стартует (%s)",
+            _redact_proxy_url(proxy),
+            exc,
         )
-    logger.info("OpenRouter proxy probe OK: %s", _redact_proxy_url(proxy))
 
 
 def openrouter_client_kwargs(settings: Settings, **extra: Any) -> dict[str, Any]:
@@ -112,7 +124,15 @@ async def _wait_openrouter_api(settings: Settings) -> None:
             "OPENROUTER_API_KEY / OPENROUTER_API_KEYS не заданы — бот не запущен."
         )
 
-    client = await get_openrouter_http_client(settings)
+    try:
+        client = await get_openrouter_http_client(settings)
+    except httpx.HTTPError as exc:
+        logger.warning(
+            "OpenRouter HTTP client init failed — polling стартует: %s",
+            exc,
+        )
+        return
+
     headers = {"Authorization": f"Bearer {api_key}"}
     last_error: Exception | None = None
     last_status: int | None = None
@@ -126,10 +146,11 @@ async def _wait_openrouter_api(settings: Settings) -> None:
             )
             last_status = response.status_code
             if response.status_code == 403:
-                raise RuntimeError(
-                    "OpenRouter API заблокирован (HTTP 403, вероятно Cloudflare). "
-                    "Задайте AI_PROXY в .env с рабочим HTTP/SOCKS прокси."
+                logger.warning(
+                    "OpenRouter API probe HTTP 403 (вероятно Cloudflare) — "
+                    "polling стартует; задайте AI_PROXY в .env для генераций"
                 )
+                return
             if response.status_code in (200, 401):
                 logger.info("OpenRouter API OK: probe status=%s", response.status_code)
                 return
@@ -142,8 +163,6 @@ async def _wait_openrouter_api(settings: Settings) -> None:
                 attempt,
                 _OPENROUTER_CONNECT_RETRIES,
             )
-        except RuntimeError:
-            raise
         except httpx.HTTPError as exc:
             last_error = exc
             logger.warning(
@@ -165,7 +184,11 @@ async def _wait_openrouter_api(settings: Settings) -> None:
         )
     )
     status_hint = f" last_status={last_status}" if last_status is not None else ""
-    raise RuntimeError(
-        "Не удалось подключиться к OpenRouter API — бот не запущен."
-        f"{proxy_hint}{status_hint}"
-    ) from last_error
+    logger.warning(
+        "OpenRouter API probe failed after %s attempts — polling стартует; "
+        "нейротекст/картинки могут падать до восстановления связи.%s%s",
+        _OPENROUTER_CONNECT_RETRIES,
+        proxy_hint,
+        status_hint,
+        exc_info=last_error is not None,
+    )
