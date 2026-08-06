@@ -398,7 +398,18 @@ async def chat_handler(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
     if not has_neurotext_message_input(message):
         return
-    from platforms.telegram_utils import is_reply_nav_button_text
+    from platforms.telegram_utils import (
+        guard_free_premium_create,
+        is_image_reply_button_text,
+        is_reply_nav_button_text,
+    )
+
+    if is_image_reply_button_text(text):
+        from platforms.image_menu_flow import present_image_model_menu
+
+        if not await guard_free_premium_create(message, message.from_user.id):
+            await present_image_model_menu(message, state, message.from_user.id)
+        return
 
     if is_reply_nav_button_text(text) and not is_reply_to_bot_message(message):
         return

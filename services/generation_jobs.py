@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import uuid
 from dataclasses import dataclass
@@ -28,7 +29,6 @@ from services import last_music_request, last_share_media
 from services.photo_dl_callback import build_dl_file_callback
 from services.gemini_image_client import (
     GeminiImageResult,
-    generate_gemini_image_model,
     generate_imagen_fast,
 )
 from services.replicate_client import (
@@ -51,8 +51,12 @@ from services.billing.image_pipeline import FREE_PHOTO_MODEL_KEY, free_tier_imag
 from services.free_image_cascade import FreeImageCascadeExhausted, generate_free_tier_image
 from services.openrouter_images import (
     OPENROUTER_FLUX_SCHNELL_MODEL,
+    OPENROUTER_IMAGEN4_FAST_MODEL,
+    OPENROUTER_NANO_BANANA2_MODEL,
+    OPENROUTER_NANO_BANANA_PRO_MODEL,
     generate_openrouter_image,
     openrouter_images_configured,
+    openrouter_input_reference,
 )
 from services.pollinations_client import generate_flux_schnell_image
 from services.repository import get_user_row
@@ -194,6 +198,13 @@ async def _load_telegram_photo_bytes(bot: "Bot", file_id: str) -> tuple[bytes, s
     return data, mime
 
 
+async def _telegram_photo_data_url(bot: "Bot", file_id: str) -> str:
+    """Telegram file_id → data URL для OpenRouter ``input_references``."""
+    data, mime = await _load_telegram_photo_bytes(bot, file_id)
+    encoded = base64.standard_b64encode(data).decode("ascii")
+    return f"data:{mime};base64,{encoded}"
+
+
 async def _safe_delete_status_message(task: GenTask) -> None:
     """Убрать status_msg после успешной доставки фото."""
     msg_id = task.status_message_id
@@ -258,16 +269,48 @@ async def _generate_flux_schnell_replicate(prompt: str) -> str:
     return url
 
 
-async def _generate_flux_schnell_paid(prompt: str) -> GeminiImageResult | str:
+async def _openrouter_input_refs(
+    bot: "Bot | None",
+    file_id: str | None,
+) -> list[dict] | None:
+    """Telegram file_id → ``input_references`` для OpenRouter Images I2I."""
+    if not file_id or bot is None:
+        return None
+    data_url = await _telegram_photo_data_url(bot, file_id)
+    return [openrouter_input_reference(data_url)]
+
+
+async def _generate_openrouter_photo_model(
+    model: str,
+    prompt: str,
+    *,
+    input_references: list[dict] | None = None,
+) -> GeminiImageResult:
+    """Платные Google/BFL модели через OpenRouter Images (единый HTTP-клиент + AI_PROXY)."""
+    if not openrouter_images_configured(app_settings):
+        raise ExternalApiError("OpenRouter", "OPENROUTER_API_KEY не задан")
+    return await generate_openrouter_image(
+        app_settings,
+        model=model,
+        prompt=prompt,
+        aspect_ratio="1:1",
+        input_references=input_references,
+        timeout_sec=float(EXTERNAL_API_TIMEOUT_SEC),
+    )
+
+
+async def _generate_flux_schnell_paid(
+    prompt: str,
+    *,
+    input_references: list[dict] | None = None,
+) -> GeminiImageResult | str:
     """Платный Flux Schnell: OpenRouter primary → Replicate fallback."""
     if openrouter_images_configured(app_settings):
         try:
-            return await generate_openrouter_image(
-                app_settings,
-                model=OPENROUTER_FLUX_SCHNELL_MODEL,
-                prompt=prompt,
-                aspect_ratio="1:1",
-                timeout_sec=float(EXTERNAL_API_TIMEOUT_SEC),
+            return await _generate_openrouter_photo_model(
+                OPENROUTER_FLUX_SCHNELL_MODEL,
+                prompt,
+                input_references=input_references,
             )
         except ExternalApiError as exc:
             if not replicate_configured():
@@ -286,16 +329,24 @@ async def _generate_photo_result(
     prompt: str,
     *,
     user_id: int | None = None,
+    bot: "Bot | None" = None,
+    file_id: str | None = None,
 ) -> GeminiImageResult | str:
     """Возвращает GeminiImageResult (url/bytes) или прямой URL строки (Replicate)."""
+    input_refs = await _openrouter_input_refs(bot, file_id)
+
     try:
         if model_key == "imagen4":
-            return await generate_imagen_fast(prompt)
+            return await _generate_openrouter_photo_model(
+                OPENROUTER_IMAGEN4_FAST_MODEL,
+                prompt,
+                input_references=input_refs,
+            )
 
         if model_key == "flux_schnell":
             if await _free_tier_flux_uses_pollinations(user_id, model_key):
                 return await generate_flux_schnell_image(prompt)
-            return await _generate_flux_schnell_paid(prompt)
+            return await _generate_flux_schnell_paid(prompt, input_references=input_refs)
 
         if model_key == "free_photo":
             raise ExternalApiError("FreePhoto", "free_photo requires task worker context")
@@ -312,16 +363,29 @@ async def _generate_photo_result(
             return url
 
         if model_key == "nano_banana2":
-            return await generate_gemini_image_model(prompt, "gemini-3.1-flash-image-preview")
+            return await _generate_openrouter_photo_model(
+                OPENROUTER_NANO_BANANA2_MODEL,
+                prompt,
+                input_references=input_refs,
+            )
 
         if model_key == "nano_banana_pro":
-            return await generate_gemini_image_model(prompt, "gemini-3-pro-image-preview")
+            return await _generate_openrouter_photo_model(
+                OPENROUTER_NANO_BANANA_PRO_MODEL,
+                prompt,
+                input_references=input_refs,
+            )
 
         raise RuntimeError(f"Неизвестная модель изображения: {model_key}")
     except ExternalApiError:
         raise
     except Exception as exc:
-        provider = "Gemini" if model_key in ("imagen4", "nano_banana2", "nano_banana_pro") else "Replicate"
+        provider = (
+            "OpenRouter"
+            if model_key
+            in ("imagen4", "nano_banana2", "nano_banana_pro", "flux_schnell")
+            else "Replicate"
+        )
         raise wrap_http_error(provider, exc) from exc
 
 
@@ -447,6 +511,8 @@ async def _photo_stub_worker(task: GenTask) -> None:
                         model_key,
                         user_prompt,
                         user_id=user_id,
+                        bot=bot,
+                        file_id=task.file_id,
                     )
             except TimeoutError as err:
                 logger.error(

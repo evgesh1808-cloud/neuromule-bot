@@ -67,8 +67,13 @@ async def test_chat_handler_delegates_to_neurotext() -> None:
             return_value=True,
         ),
         patch(
-            "platforms.handlers.payment_misc._reply_menu_button_texts",
-            return_value=frozenset(),
+            "platforms.telegram_utils.is_image_reply_button_text",
+            return_value=False,
+        ),
+        patch(
+            "platforms.image_menu_flow.can_intercept_text_as_image_prompt",
+            new_callable=AsyncMock,
+            return_value=False,
         ),
         patch(
             "platforms.handlers.payment_misc.is_reply_to_bot_message",

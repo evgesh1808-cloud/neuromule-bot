@@ -105,7 +105,7 @@ async def test_photo_worker_caches_share_media(monkeypatch) -> None:
     monkeypatch.setattr(generation_jobs, "get_user_row", _fake_user_row)
 
     # Стабим внешний клиент Imagen — возвращаем URL, никакого HTTP не нужно.
-    async def _fake_generate(model_key: str, prompt: str, *, user_id=None):
+    async def _fake_generate(model_key: str, prompt: str, *, user_id=None, **kwargs):
         return "https://cdn.fake/imagen.png"
 
     monkeypatch.setattr(generation_jobs, "_generate_photo_result", _fake_generate)
@@ -166,7 +166,7 @@ async def test_photo_worker_paid_tariff_has_no_share_button(monkeypatch, tariff:
     bot = _make_bot(log)
     user_id = 70_002
 
-    async def _fake_generate(model_key: str, prompt: str, *, user_id=None):
+    async def _fake_generate(model_key: str, prompt: str, *, user_id=None, **kwargs):
         return "https://cdn.fake/imagen.png"
 
     async def _fake_user_row(uid: int):
@@ -383,7 +383,7 @@ async def test_failed_photo_worker_does_not_cache(monkeypatch) -> None:
     user_id = 70_005
     last_share_media.clear(user_id)
 
-    async def _boom(model_key: str, prompt: str, *, user_id=None):
+    async def _boom(model_key: str, prompt: str, *, user_id=None, **kwargs):
         raise RuntimeError("OpenRouter down")
 
     async def _fake_fail(task, *, user_message: str, log_msg: str = "", exc=None):

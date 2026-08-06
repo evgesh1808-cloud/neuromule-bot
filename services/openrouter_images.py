@@ -17,6 +17,9 @@ logger = logging.getLogger(__name__)
 
 OPENROUTER_IMAGES_URL = "https://openrouter.ai/api/v1/images"
 OPENROUTER_FLUX_SCHNELL_MODEL = "black-forest-labs/flux-schnell"
+OPENROUTER_IMAGEN4_FAST_MODEL = "google/imagen-4.0-fast-generate-001"
+OPENROUTER_NANO_BANANA2_MODEL = "google/gemini-3.1-flash-image-preview"
+OPENROUTER_NANO_BANANA_PRO_MODEL = "google/gemini-3-pro-image-preview"
 DEFAULT_OPENROUTER_IMAGES_TIMEOUT_SEC = 180.0
 
 

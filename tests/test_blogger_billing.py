@@ -51,7 +51,8 @@ async def test_can_afford_blogger_cover_free_slot_available() -> None:
         "services.billing.blogger_pipeline.store.load_user_billing",
         AsyncMock(return_value=_billing_user(crystals=0, photo_daily_count=0)),
     ):
-        assert await can_afford_blogger_cover(1) is True
+        # FREE: AI-обложка закрыта вместе с разделом «Изображение».
+        assert await can_afford_blogger_cover(1) is False
 
 
 @pytest.mark.asyncio
@@ -71,7 +72,7 @@ async def test_can_afford_blogger_cover_free_overlimit_with_crystals() -> None:
         "services.billing.blogger_pipeline.store.load_user_billing",
         AsyncMock(return_value=_billing_user(crystals=3, photo_daily_count=1, photo_daily_date=today)),
     ):
-        assert await can_afford_blogger_cover(1) is True
+        assert await can_afford_blogger_cover(1) is False
 
 
 @pytest.mark.asyncio
@@ -80,7 +81,7 @@ async def test_can_afford_blogger_adapt_with_zero_balance() -> None:
         "services.billing.blogger_pipeline.store.load_user_billing",
         AsyncMock(return_value=_billing_user(crystals=0)),
     ):
-        assert await can_afford_blogger_cover(1) is True  # free slot
+        assert await can_afford_blogger_cover(1) is False
         assert await can_afford_blogger_adapt(1) is False
 
 

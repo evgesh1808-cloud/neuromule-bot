@@ -449,6 +449,7 @@ async def _admin_set_simulated_tariff(message: Message, tariff: str) -> None:
     """Временно меняет тариф админа в SQLite для теста UX (God Mode биллинг не трогает)."""
     uid = message.from_user.id
     if not _is_admin(uid):
+        await message.answer(msg.TXT_ADMIN_DENIED)
         return
     await set_user_tariff(uid, tariff)
     await message.answer(
