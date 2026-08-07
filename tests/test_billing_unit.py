@@ -67,7 +67,7 @@ def test_paid_flux_energy_or_crystals() -> None:
 
 
 def test_dalle_crystals_only() -> None:
-    plan = build_image_spend_plan(TariffTier.ULTRA, "gpt_image2", daily_count=0, daily_date=None)
+    plan = build_image_spend_plan(TariffTier.ULTRA, "dalle_3", daily_count=0, daily_date=None)
     assert plan.crystals_only is True
     assert plan.crystal_cost == 5
 

@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-07-30T16:31:25.294165+00:00",
+  "updated_at": "2026-08-07T14:12:35.149912+00:00",
   "source": "https://common-api.wildberries.ru",
   "build": "cfo-v12-tariffs-cache",
   "default_return_base_rub": 50.0,
@@ -85,6 +85,15 @@
       "delivery_liter_rub": 14.0,
       "storage_base_rub": 0.07,
       "storage_liter_rub": 0.07
+    },
+    "центральный федеральный округ партнерский склад": {
+      "warehouse_name": "Центральный федеральный округ Партнерский склад",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 75.9,
+      "delivery_liter_rub": 23.1,
+      "storage_base_rub": 0.12,
+      "storage_liter_rub": 0.12
     },
     "коледино": {
       "warehouse_name": "Коледино: Горючее",
@@ -328,6 +337,15 @@
       "delivery_liter_rub": 21.0,
       "storage_base_rub": 0.13,
       "storage_liter_rub": 0.13
+    },
+    "красный бор: питание": {
+      "warehouse_name": "Красный Бор: Питание",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 101.2,
+      "delivery_liter_rub": 30.8,
+      "storage_base_rub": 0.15,
+      "storage_liter_rub": 0.15
     },
     "санкт-петербург уткина заводь": {
       "warehouse_name": "Санкт-Петербург Уткина Заводь",
@@ -581,6 +599,15 @@
       "storage_base_rub": 0.07,
       "storage_liter_rub": 0.07
     },
+    "новосибирск толмачевский": {
+      "warehouse_name": "Новосибирск Толмачевский",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 101.2,
+      "delivery_liter_rub": 30.8,
+      "storage_base_rub": 0.15,
+      "storage_liter_rub": 0.15
+    },
     "омск: питание": {
       "warehouse_name": "Омск: Питание",
       "return_base_rub": 0.0,
@@ -652,6 +679,15 @@
       "delivery_liter_rub": 0.0,
       "storage_base_rub": 0.0,
       "storage_liter_rub": 0.0
+    },
+    "владивосток": {
+      "warehouse_name": "Владивосток",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 101.2,
+      "delivery_liter_rub": 30.8,
+      "storage_base_rub": 0.15,
+      "storage_liter_rub": 0.15
     },
     "маркетплейс: армения сгт": {
       "warehouse_name": "Маркетплейс: Армения СГТ",
@@ -1436,6 +1472,15 @@
       "storage_base_rub": 0.0,
       "storage_liter_rub": 0.0
     },
+    "новосибирск толмачевский: питание": {
+      "warehouse_name": "Новосибирск Толмачевский: Питание",
+      "return_base_rub": 0.0,
+      "return_liter_rub": 0.0,
+      "delivery_base_rub": 0.0,
+      "delivery_liter_rub": 0.0,
+      "storage_base_rub": 0.0,
+      "storage_liter_rub": 0.0
+    },
     "сц барнаул": {
       "warehouse_name": "СЦ Барнаул",
       "return_base_rub": 0.0,
@@ -1553,15 +1598,6 @@
       "storage_base_rub": 0.0,
       "storage_liter_rub": 0.0
     },
-    "владивосток": {
-      "warehouse_name": "Владивосток",
-      "return_base_rub": 0.0,
-      "return_liter_rub": 0.0,
-      "delivery_base_rub": 0.0,
-      "delivery_liter_rub": 0.0,
-      "storage_base_rub": 0.0,
-      "storage_liter_rub": 0.0
-    },
     "владивосток сгт": {
       "warehouse_name": "Владивосток СГТ",
       "return_base_rub": 0.0,
@@ -1652,8 +1688,8 @@
       "storage_base_rub": 0.0,
       "storage_liter_rub": 0.0
     },
-    "маркетплейс: таджикистан": {
-      "warehouse_name": "Маркетплейс: Таджикистан",
+    "таджикистан": {
+      "warehouse_name": "Таджикистан",
       "return_base_rub": 0.0,
       "return_liter_rub": 0.0,
       "delivery_base_rub": 0.0,

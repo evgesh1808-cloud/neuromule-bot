@@ -28,7 +28,7 @@ PAID_BANANA2_ENERGY_COST = _paid["nano_banana2"].energy
 PAID_BANANA2_CRYSTAL_COST = _paid["nano_banana2"].crystals
 PAID_BANANA_PRO_ENERGY_COST = _paid["nano_banana_pro"].energy
 PAID_BANANA_PRO_CRYSTAL_COST = _paid["nano_banana_pro"].crystals
-GLOBAL_GPT_IMAGE2_COST = _paid["gpt_image2"].crystals
+GLOBAL_GPT_IMAGE2_COST = _paid["dalle_3"].crystals
 
 # --- Видео / музыка ---
 _v = catalog.video_tiers

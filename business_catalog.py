@@ -208,14 +208,19 @@ def build_video_scenario_entries() -> tuple[VideoScenarioEntry, ...]:
 VIDEO_SCENARIO_ENTRIES: tuple[VideoScenarioEntry, ...] = build_video_scenario_entries()
 
 
+# Канонический ключ меню / биллинга → OpenRouter ``openai/gpt-image-2`` (UI: GPT Image 2).
+DALLE3_MODEL_KEY = "dalle_3"
+
 # Алиасы id меню → ключ модели
 IMAGE_MODEL_ALIASES: dict[str, str] = {
     "imagen4": "imagen4",
     "imagen_4": "imagen4",
     "flux-schnell": "flux_schnell",
     "flux_schnell": "flux_schnell",
-    "gpt_image2": "gpt_image2",
-    "dalle_3": "gpt_image2",
+    DALLE3_MODEL_KEY: DALLE3_MODEL_KEY,
+    "dalle3": DALLE3_MODEL_KEY,
+    "dalle_3": DALLE3_MODEL_KEY,
+    "gpt_image2": DALLE3_MODEL_KEY,  # legacy callback / .env
     "free_photo": "free_photo",
     "nano_banana2": "nano_banana2",
     "nano_banana_pro": "nano_banana_pro",
@@ -230,7 +235,7 @@ def build_paid_image_model_entries(cfg: "Settings") -> dict[str, ImageModelPrice
         "nano_banana_pro": ImageModelPrice(
             cfg.paid_banana_pro_energy_cost, cfg.paid_banana_pro_crystal_cost
         ),
-        "gpt_image2": ImageModelPrice(
+        DALLE3_MODEL_KEY: ImageModelPrice(
             0, cfg.cost_image_dalle_crystals, crystals_only=True
         ),
     }

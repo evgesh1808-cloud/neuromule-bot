@@ -80,6 +80,6 @@ async def test_profile_includes_blogger_constructor_block(repo_module) -> None:
     assert "Конструктор «Блогер»" in text
     assert "Адаптация поста:" in text
     assert "AI-обложка:" in text
-    assert "DALL-E 3" in text
+    assert "GPT Image 2" in text
     assert "3 💎" in text
     assert "Flux 2 Pro" in text

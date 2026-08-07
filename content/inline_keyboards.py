@@ -30,6 +30,7 @@ def result_photo_keyboard(
     *,
     photo_share_url: str | None = None,
     download_callback: str | None = None,
+    include_refine: bool = True,
 ) -> InlineKeyboardMarkup:
     """Клавиатура под сгенерированным фото.
 
@@ -49,6 +50,10 @@ def result_photo_keyboard(
                     url=photo_share_url,
                 )
             ]
+        )
+    if include_refine:
+        rows.append(
+            [InlineKeyboardButton(text=msg.BTN_PHOTO_REFINE, callback_data=msg.CB_PHOTO_REFINE)]
         )
     rows.extend(
         [

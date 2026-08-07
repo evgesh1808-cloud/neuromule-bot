@@ -130,7 +130,7 @@ def _photo_capacity_block(energy: int, total_diamonds: int) -> str:
     banana_pro_e = energy // 35
     imagen_d = total_diamonds // 2
     flux_d = total_diamonds // 3
-    gpt_image_d = total_diamonds // 5
+    gpt_image2_d = total_diamonds // 5
     if energy <= 0:
         primary = (
             f"• 🌠 <b>Imagen 4</b> ➔ <code>{imagen_d}</code> шт. (за 💎)\n"
@@ -147,7 +147,7 @@ def _photo_capacity_block(energy: int, total_diamonds: int) -> str:
     return (
         "🎯 <b>Доступно генераций фото прямо сейчас:</b>\n"
         f"{primary}\n"
-        f"• 🎨 <b>GPT Image 2 (DALL-E 3)</b> ➔ <code>{gpt_image_d}</code> шт. <i>(строго 💎)</i>"
+        f"• 🖼 <b>GPT Image 2</b> ➔ <code>{gpt_image2_d}</code> шт. <i>(строго 💎)</i>"
     )
 
 

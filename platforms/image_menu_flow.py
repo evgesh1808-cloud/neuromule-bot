@@ -12,6 +12,7 @@ from aiogram.types import Message
 from content import messages as msg
 from platforms.telegram_keyboards import image_model_menu
 from platforms.telegram_states import UserFlow
+from services.photo_aspect_ratio import DEFAULT_PHOTO_ASPECT_RATIO
 from services.billing.types import TariffTier
 from services.repository import get_user_row
 
@@ -117,6 +118,7 @@ def message_looks_like_photo_prompt(text: str) -> bool:
 # Состояния, где текст — не «промпт для фото из меню».
 _BLOCKED_FSM_STATES = frozenset(
     {
+        UserFlow.waiting_for_image_aspect_ratio.state,
         UserFlow.waiting_for_photo.state,
         UserFlow.waiting_for_video.state,
         UserFlow.waiting_for_video_prank_photo.state,
@@ -191,6 +193,7 @@ async def route_free_text_to_flux_photo(
     await state.update_data(
         image_model_id=model_id,
         image_model_label=FREE_DEFAULT_IMAGE_MODEL_LABEL,
+        image_aspect_ratio=DEFAULT_PHOTO_ASPECT_RATIO,
     )
     await state.set_state(UserFlow.waiting_for_photo)
     await clear_image_model_menu_pending(state)
@@ -234,6 +237,7 @@ async def can_intercept_text_as_image_prompt(message: Message, state: FSMContext
         None,
         UserFlow.waiting_for_text_prompt.state,
         UserFlow.waiting_for_image_model_pick.state,
+        UserFlow.waiting_for_image_aspect_ratio.state,
         UserFlow.waiting_for_photo.state,
     ):
         return True
@@ -248,6 +252,7 @@ async def can_intercept_text_as_image_prompt(message: Message, state: FSMContext
         None,
         UserFlow.waiting_for_photo.state,
         UserFlow.waiting_for_image_model_pick.state,
+        UserFlow.waiting_for_image_aspect_ratio.state,
     ):
         return True
 
@@ -379,6 +384,7 @@ async def present_image_model_menu(
             await state.update_data(
                 image_model_id=free_tier_image_model(),
                 image_model_label=FREE_DEFAULT_IMAGE_MODEL_LABEL,
+                image_aspect_ratio=DEFAULT_PHOTO_ASPECT_RATIO,
             )
             await state.set_state(UserFlow.waiting_for_photo)
         else:
@@ -417,6 +423,7 @@ async def handle_pending_image_menu_text(message: Message, state: FSMContext) ->
 
         _mark_photo_flow_for_message(message)
         label = str(data.get("image_model_label") or FREE_DEFAULT_IMAGE_MODEL_LABEL).strip()
+        aspect = str(data.get("image_aspect_ratio") or DEFAULT_PHOTO_ASPECT_RATIO)
         await clear_image_model_menu_pending(state)
         await state.set_state(UserFlow.waiting_for_photo)
         await process_photo_prompt_message(
@@ -425,6 +432,7 @@ async def handle_pending_image_menu_text(message: Message, state: FSMContext) ->
             model_id=model_id,
             label=label,
             prompt=prompt,
+            aspect_ratio=aspect,
         )
         return
 

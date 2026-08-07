@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 from config import Settings
 from services.billing import billing
 from services.billing.image_pipeline import FREE_PHOTO_MODEL_KEY, free_tier_image_model
+from services.photo_aspect_ratio import DEFAULT_PHOTO_ASPECT_RATIO, normalize_photo_aspect_ratio
 
 if TYPE_CHECKING:
     from aiogram import Bot
@@ -40,6 +41,10 @@ class PhotoEnqueueSpec:
     priority: int
     billing_charge_id: str
     telegram_file_id: str | None = None
+    reference_image_url: str | None = None
+    reference_image_bytes: bytes | None = None
+    reference_mime: str = "image/jpeg"
+    aspect_ratio: str = "1:1"
 
 
 @dataclass(frozen=True)
@@ -61,10 +66,27 @@ async def run_photo_generation_turn(
     prompt: str,
     *,
     telegram_file_id: str | None = None,
+    reference_image_url: str | None = None,
+    reference_image_bytes: bytes | None = None,
+    reference_mime: str = "image/jpeg",
+    aspect_ratio: str | None = None,
 ) -> PhotoGenResult:
     # bot/chat_id/settings — контракт call-site; списание через billing store.
     _ = (settings, bot, chat_id)
-    if not prompt and not telegram_file_id:
+    tg_ref = (telegram_file_id or "").strip() or None
+    url_ref = (reference_image_url or "").strip() or None
+    bytes_ref: bytes | None = None
+    if reference_image_bytes is not None:
+        if isinstance(reference_image_bytes, memoryview):
+            bytes_ref = reference_image_bytes.tobytes()
+        elif isinstance(reference_image_bytes, (bytes, bytearray)):
+            bytes_ref = bytes(reference_image_bytes)
+        else:
+            raise TypeError("reference_image_bytes must be bytes")
+    sources = sum(x is not None for x in (tg_ref, url_ref, bytes_ref))
+    if sources > 1:
+        raise ValueError("photo_generation_turn: only one reference source allowed")
+    if not prompt and sources == 0:
         return PhotoGenResult(outcome=PhotoGenOutcome.NEED_PROMPT)
 
     model_id = image_model_id or free_tier_image_model()
@@ -99,6 +121,10 @@ async def run_photo_generation_turn(
             charged_crystals=charge.crystals,
             priority=priority,
             billing_charge_id=charge.charge_id,
-            telegram_file_id=telegram_file_id,
+            telegram_file_id=tg_ref,
+            reference_image_url=url_ref,
+            reference_image_bytes=bytes_ref,
+            reference_mime=reference_mime or "image/jpeg",
+            aspect_ratio=normalize_photo_aspect_ratio(aspect_ratio),
         ),
     )

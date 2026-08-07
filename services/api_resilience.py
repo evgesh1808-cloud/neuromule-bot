@@ -91,6 +91,8 @@ def _reset_failed_task(task: GenTask) -> None:
 
 async def _edit_status_message(task: GenTask, text: str) -> bool:
     """Заменить status_msg («Мул ушёл…») на текст ошибки. True если edit успешен."""
+    if getattr(task, "platform", "telegram") == "vk" or task.bot is None:
+        return False
     msg_id = getattr(task, "status_message_id", None)
     if msg_id is None:
         return False
@@ -150,7 +152,14 @@ async def fail_generation_task(
     # Предпочитаем edit «мула»; иначе — новое сообщение.
     if await _edit_status_message(task, user_message):
         return
-    await notify_user_safe(task.bot, task.chat_id, user_message)
+    platform = getattr(task, "platform", "telegram")
+    if platform == "vk":
+        from platforms.vk_runtime import notify_vk_user
+
+        await notify_vk_user(task.chat_id, user_message)
+        return
+    if task.bot is not None:
+        await notify_user_safe(task.bot, task.chat_id, user_message)
 
 
 def wrap_http_error(provider: str, exc: BaseException) -> ExternalApiError:

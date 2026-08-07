@@ -148,6 +148,21 @@ def _imagen_free_slots_left(
     return max(0, settings.free_daily_photo_limit - count)
 
 
+def image_aspect_ratio_menu() -> InlineKeyboardMarkup:
+    """Inline-выбор формата кадра после выбора модели."""
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=label,
+                callback_data=f"{msg.CB_IMG_AR_PREFIX}{code}",
+            )
+        ]
+        for label, code in msg.IMAGE_ASPECT_OPTIONS
+    ]
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=msg.CB_BACK_CREATE)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def image_model_menu(
     tariff,
     *,
@@ -199,7 +214,7 @@ def image_model_menu(
         rows = [
             [InlineKeyboardButton(text="🎨 Imagen 4 (10 ⚡)", callback_data=f"{prefix}imagen4")],
             [InlineKeyboardButton(text="⚡ Flux 2 Pro (30 ⚡ / 3 💎)", callback_data=f"{prefix}flux-schnell")],
-            [InlineKeyboardButton(text="🖼 DALL-E 3 (5 💎)", callback_data=f"{prefix}gpt_image2")],
+            [InlineKeyboardButton(text="🖼 GPT Image 2 (5 💎)", callback_data=f"{prefix}dalle_3")],
             [InlineKeyboardButton(text="🍌 Nano Banana 2 (15 ⚡)", callback_data=f"{prefix}nano_banana2")],
             [InlineKeyboardButton(text="🚀 Nano Banana Pro (35 ⚡)", callback_data=f"{prefix}nano_banana_pro")],
             [back],

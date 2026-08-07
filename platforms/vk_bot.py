@@ -2,13 +2,17 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import random
 
 from config import settings
 from content import messages as msg
+from platforms.vk_messages import vk_answer
 from services.ai_text import ask_ai_text
 from services.app_logging import setup_logging
 from services.repository import ensure_user, init_db, try_consume_energy, update_balance
+
+logger = logging.getLogger(__name__)
 
 
 def run_vk() -> None:
@@ -26,14 +30,63 @@ def run_vk() -> None:
     asyncio.run(init_db(settings.promo_seeds))
     bot = Bot(token=settings.vk_token)
 
+    from platforms.vk_photo_flow import (
+        clear_vk_image_mode,
+        enter_vk_image_mode,
+        handle_vk_photo_message,
+        handle_vk_photo_refine_event,
+    )
+    from platforms.vk_photo_keyboard import parse_vk_refine_payload
+    from platforms.vk_runtime import set_vk_bot
+
+    set_vk_bot(bot)
+
+    try:
+        from vkbottle import GroupEventType, GroupTypes
+    except ImportError:
+        GroupEventType = None  # type: ignore[misc, assignment]
+        GroupTypes = None  # type: ignore[misc, assignment]
+
+    if GroupEventType is not None and GroupTypes is not None:
+
+        @bot.on.raw_event(GroupEventType.MESSAGE_EVENT, dataclass=GroupTypes.MessageEvent)
+        async def vk_message_event(event: GroupTypes.MessageEvent) -> None:
+            payload = getattr(event.object, "payload", None)
+            if not parse_vk_refine_payload(payload):
+                return
+            peer_id = int(getattr(event.object, "peer_id", 0) or 0)
+            user_id = int(getattr(event.object, "user_id", 0) or 0)
+            if peer_id <= 0 or user_id <= 0:
+                return
+            try:
+                await bot.api.messages.send_message_event_answer(
+                    event_id=event.object.event_id,
+                    user_id=user_id,
+                    peer_id=peer_id,
+                )
+            except Exception:
+                logger.exception("vk message_event answer failed peer_id=%s", peer_id)
+            await handle_vk_photo_refine_event(peer_id=peer_id, user_id=user_id, bot=bot)
+
     @bot.on.message()
     async def handler(message: Message) -> None:
         text = (message.text or "").strip()
         uid = message.from_id
+        peer_id = message.peer_id
 
         if text.startswith("/start"):
             await ensure_user(uid)
-            await message.answer(msg.TXT_VK_START.format(bot_name=settings.bot_name))
+            clear_vk_image_mode(peer_id)
+            await vk_answer(message, msg.TXT_VK_START.format(bot_name=settings.bot_name))
+            return
+
+        if text.lower() in {"/image", "изображение"}:
+            await ensure_user(uid)
+            enter_vk_image_mode(peer_id)
+            await vk_answer(message, msg.TXT_CREATE_IMAGE_AFTER_MODEL)
+            return
+
+        if await handle_vk_photo_message(message):
             return
 
         if not text or text.startswith("/"):
@@ -45,16 +98,16 @@ def run_vk() -> None:
 
         await ensure_user(uid)
         if not await try_consume_energy(uid, settings.cost_text_pro):
-            await message.answer(msg.TXT_INSUFFICIENT_BALANCE)
+            await vk_answer(message, msg.TXT_INSUFFICIENT_BALANCE)
             return
 
         try:
             answer = await ask_ai_text(settings, text)
         except Exception:
             await update_balance(uid, "energy", settings.cost_text_pro)
-            await message.answer(msg.TXT_GEN_JOB_FAILED)
+            await vk_answer(message, msg.TXT_GEN_JOB_FAILED)
             return
-        await message.answer(answer)
+        await vk_answer(message, answer)
 
     print(f"{settings.bot_name} vk: polling started.")
     bot.run_forever()

@@ -70,6 +70,7 @@ async def test_text_after_pending_photo_passes_file_id() -> None:
         label="Flux 2 Pro",
         prompt="make sky purple",
         telegram_file_id="AgAC_ref",
+        aspect_ratio="1:1",
     )
 
 
@@ -98,4 +99,5 @@ async def test_text_only_still_triggers_t2i() -> None:
         model_id="imagen4",
         label="Imagen 4",
         prompt="red apple on table",
+        aspect_ratio="1:1",
     )

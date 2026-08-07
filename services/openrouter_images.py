@@ -24,6 +24,7 @@ OPENROUTER_FLUX_PAID_MODEL = "black-forest-labs/flux.2-pro"
 OPENROUTER_IMAGEN4_FAST_MODEL = "google/gemini-3.1-flash-image"
 OPENROUTER_NANO_BANANA2_MODEL = "google/gemini-3.1-flash-image-preview"
 OPENROUTER_NANO_BANANA_PRO_MODEL = "google/gemini-3-pro-image"
+OPENROUTER_GPT_IMAGE2_MODEL = "openai/gpt-image-2"
 # Backward-compatible alias (tests / старые импорты).
 OPENROUTER_FLUX_SCHNELL_MODEL = OPENROUTER_FLUX_PAID_MODEL
 DEFAULT_OPENROUTER_IMAGES_TIMEOUT_SEC = 180.0

@@ -46,6 +46,7 @@ from platforms.telegram_keyboards import (
     hd_pro_unlocked_keyboard,
     hd_report_sections_markup,
     image_model_menu,
+    image_aspect_ratio_menu,
     invite_limit_keyboard,
     main_menu,
     photo_tools_menu,
@@ -129,6 +130,8 @@ from services.use_cases.payment_invoice_turn import InvoiceBuildOutcome, build_p
 from services.use_cases.payment_shop_turn import build_tariffs_entry_text
 from services.use_cases.payment_turn import PaymentApplyOutcome, run_successful_payment_apply
 from services.generation_jobs import fire_photo_job
+from services.photo_aspect_ratio import normalize_photo_aspect_ratio
+from services.photo_edit_session import get_photo_edit_session
 from services.use_cases.photo_generation_turn import PhotoGenOutcome, run_photo_generation_turn
 from services.use_cases.promo_turn import PromoOutcome, run_promo_redeem
 from services.use_cases.start_turn import StartFlowOutcome, run_start_turn
@@ -172,6 +175,60 @@ async def _edit_or_answer_photo_status(
     await message.answer(text, parse_mode=ParseMode.HTML)
 
 
+async def _aspect_ratio_from_state(state: FSMContext) -> str:
+    data = await state.get_data()
+    return normalize_photo_aspect_ratio(data.get("image_aspect_ratio"))
+
+
+async def try_start_photo_edit_from_reply(message: Message, state: FSMContext) -> bool:
+    """Reply на сообщение бота с фото → i2i по last_generated_image (15 мин)."""
+    from platforms.telegram_quote import is_reply_to_bot_message
+    from services.billing.image_pipeline import free_tier_image_model
+
+    if not is_reply_to_bot_message(message):
+        return False
+    reply = message.reply_to_message
+    if reply is None or not reply.photo:
+        return False
+
+    prompt = (message.text or "").strip()
+    if not prompt:
+        return False
+
+    user = message.from_user
+    if user is None:
+        return False
+
+    session = get_photo_edit_session(user.id)
+    file_id = reply.photo[-1].file_id
+    data = await state.get_data()
+
+    model_id = (session.image_model_id if session else data.get("image_model_id")) or free_tier_image_model()
+    label = (
+        session.image_model_label
+        if session
+        else str(data.get("image_model_label") or "Flux FREE")
+    )
+    aspect = session.aspect_ratio if session else await _aspect_ratio_from_state(state)
+
+    await state.update_data(
+        image_model_id=model_id,
+        image_model_label=label,
+        image_aspect_ratio=aspect,
+    )
+    await state.set_state(UserFlow.waiting_for_photo)
+    await process_photo_prompt_message(
+        message,
+        state,
+        model_id=str(model_id),
+        label=str(label),
+        prompt=prompt,
+        telegram_file_id=file_id,
+        aspect_ratio=aspect,
+    )
+    return True
+
+
 async def process_photo_prompt_message(
     message: Message,
     state: FSMContext,
@@ -181,6 +238,8 @@ async def process_photo_prompt_message(
     prompt: str,
     auto_flux: bool = False,
     telegram_file_id: str | None = None,
+    reference_image_url: str | None = None,
+    aspect_ratio: str | None = None,
 ) -> None:
     from platforms.image_menu_flow import normalize_image_prompt_text
     from platforms.telegram_throttling import clear_photo_flow, mark_photo_flow
@@ -192,6 +251,7 @@ async def process_photo_prompt_message(
     user_id = user.id
     chat_id = message.chat.id
     body = normalize_image_prompt_text(prompt or "")
+    ar = normalize_photo_aspect_ratio(aspect_ratio) if aspect_ratio else await _aspect_ratio_from_state(state)
 
     mark_photo_flow(user_id)
 
@@ -221,6 +281,8 @@ async def process_photo_prompt_message(
                     label,
                     body or prompt,
                     telegram_file_id=telegram_file_id,
+                    reference_image_url=reference_image_url,
+                    aspect_ratio=ar,
                 )
     except Exception:
         logger.exception("photo prompt: billing/enqueue failed uid=%s", user_id)
@@ -310,6 +372,10 @@ async def process_photo_prompt_message(
         priority=eq.priority,
         billing_charge_id=eq.billing_charge_id,
         telegram_file_id=eq.telegram_file_id,
+        reference_image_url=eq.reference_image_url,
+        reference_image_bytes=eq.reference_image_bytes,
+        reference_mime=eq.reference_mime,
+        aspect_ratio=eq.aspect_ratio,
         status_message_id=status_msg.message_id if status_msg is not None else None,
     )
     if pr.vip_priority:
@@ -317,20 +383,24 @@ async def process_photo_prompt_message(
     from platforms.image_menu_flow import clear_image_model_menu_pending
 
     await clear_image_model_menu_pending(state)
-    await state.update_data(pending_reference_file_id=None)
+    await state.update_data(pending_reference_file_id=None, image_aspect_ratio=ar)
     await state.set_state(UserFlow.waiting_for_photo)
     mark_photo_flow(user_id)
 
 
-is_subscribed = deps.is_subscribed
-is_subscribed_cached = deps.is_subscribed_cached
-check_and_spend = deps.check_and_spend
-send_start_main_welcome = deps.send_start_main_welcome
-channel_sub = deps.channel_sub
+@router.message(StateFilter(None), REPLY_TO_BOT_FILTER, F.text)
+async def photo_edit_reply_idle(message: Message, state: FSMContext) -> None:
+    if await try_start_photo_edit_from_reply(message, state):
+        return
 
 
-def _is_admin(user_id: int) -> bool:
-    return is_admin_user(user_id)
+@router.message(UserFlow.waiting_for_image_aspect_ratio, F.text)
+async def image_aspect_ratio_pick_text(message: Message, state: FSMContext) -> None:
+    await message.answer(
+        msg.TXT_PICK_ASPECT_RATIO,
+        reply_markup=image_aspect_ratio_menu(),
+        parse_mode=ParseMode.HTML,
+    )
 
 
 @router.message(UserFlow.waiting_for_image_model_pick, F.text)
@@ -352,6 +422,7 @@ async def photo_process_with_image(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     model_id = data.get("image_model_id", "")
     label = data.get("image_model_label", "модель")
+    aspect = normalize_photo_aspect_ratio(data.get("image_aspect_ratio"))
     caption = (message.caption or "").strip()
     file_id = message.photo[-1].file_id
 
@@ -363,6 +434,7 @@ async def photo_process_with_image(message: Message, state: FSMContext) -> None:
             label=label,
             prompt=caption,
             telegram_file_id=file_id,
+            aspect_ratio=aspect,
         )
         return
 
@@ -375,6 +447,7 @@ async def photo_process(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     model_id = data.get("image_model_id", "")
     label = data.get("image_model_label", "модель")
+    aspect = normalize_photo_aspect_ratio(data.get("image_aspect_ratio"))
     prompt = (message.text or "").strip()
     pending_file_id = str(data.get("pending_reference_file_id") or "").strip()
 
@@ -387,6 +460,7 @@ async def photo_process(message: Message, state: FSMContext) -> None:
             label=label,
             prompt=prompt,
             telegram_file_id=pending_file_id,
+            aspect_ratio=aspect,
         )
         return
 
@@ -396,6 +470,7 @@ async def photo_process(message: Message, state: FSMContext) -> None:
         model_id=model_id,
         label=label,
         prompt=prompt,
+        aspect_ratio=aspect,
     )
 
 

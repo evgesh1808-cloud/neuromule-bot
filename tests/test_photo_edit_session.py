@@ -1,0 +1,126 @@
+"""Multi-turn edit session (15 мин) и reply-to-photo."""
+
+from __future__ import annotations
+
+import time
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from content import messages as msg
+from services.photo_edit_session import (
+    get_photo_edit_session,
+    reset_photo_edit_sessions_for_tests,
+    save_photo_edit_session,
+)
+
+
+@pytest.fixture(autouse=True)
+def _clear_sessions() -> None:
+    reset_photo_edit_sessions_for_tests()
+    yield
+    reset_photo_edit_sessions_for_tests()
+
+
+def test_edit_session_ttl() -> None:
+    save_photo_edit_session(
+        100,
+        image_model_id="flux_schnell",
+        image_model_label="Flux 2 Pro",
+        aspect_ratio="3:4",
+        telegram_file_id="AgAC_test",
+        message_id=555,
+        chat_id=100,
+        ttl_sec=0.05,
+    )
+    assert get_photo_edit_session(100) is not None
+    time.sleep(0.06)
+    assert get_photo_edit_session(100) is None
+
+
+@pytest.mark.asyncio
+async def test_photo_refine_callback_sets_pending_reference() -> None:
+    from platforms.handlers import generation_cb
+
+    save_photo_edit_session(
+        42,
+        image_model_id="imagen4",
+        image_model_label="Imagen 4",
+        aspect_ratio="1:1",
+        telegram_file_id="AgAC_refine",
+    )
+
+    callback = MagicMock()
+    callback.from_user.id = 42
+    callback.message = MagicMock()
+    callback.message.answer = AsyncMock()
+    callback.answer = AsyncMock()
+
+    state = MagicMock()
+    state.update_data = AsyncMock()
+    state.set_state = AsyncMock()
+
+    await generation_cb.photo_refine_start(callback, state)
+
+    state.update_data.assert_awaited()
+    kwargs = state.update_data.await_args.kwargs
+    assert kwargs["pending_reference_file_id"] == "AgAC_refine"
+    assert kwargs["image_model_id"] == "imagen4"
+    callback.message.answer.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reply_to_bot_photo_starts_i2i() -> None:
+    from platforms.handlers import generation_fsm
+
+    save_photo_edit_session(
+        77,
+        image_model_id="nano_banana2",
+        image_model_label="Nano Banana 2",
+        aspect_ratio="16:9",
+        telegram_file_id="AgAC_old",
+    )
+
+    bot_user = MagicMock()
+    bot_user.id = 999001
+
+    reply_photo = MagicMock()
+    reply_photo.file_id = "AgAC_reply"
+
+    reply_msg = MagicMock()
+    reply_msg.photo = [reply_photo]
+    reply_msg.from_user = bot_user
+
+    message = MagicMock()
+    message.text = "add golden hour lighting"
+    message.from_user.id = 77
+    message.reply_to_message = reply_msg
+
+    state = MagicMock()
+    state.get_data = AsyncMock(return_value={})
+    state.update_data = AsyncMock()
+    state.set_state = AsyncMock()
+
+    with patch.object(
+        generation_fsm.deps,
+        "bot",
+        return_value=MagicMock(id=999001),
+    ), patch.object(
+        generation_fsm,
+        "process_photo_prompt_message",
+        new_callable=AsyncMock,
+    ) as proc:
+        handled = await generation_fsm.try_start_photo_edit_from_reply(message, state)
+
+    assert handled is True
+    proc.assert_awaited_once()
+    assert proc.await_args.kwargs["telegram_file_id"] == "AgAC_reply"
+    assert proc.await_args.kwargs["aspect_ratio"] == "16:9"
+
+
+def test_result_keyboard_has_refine_button() -> None:
+    from content.inline_keyboards import result_photo_keyboard
+
+    kb = result_photo_keyboard()
+    texts = [btn.text for row in kb.inline_keyboard for btn in row]
+    assert msg.BTN_PHOTO_REFINE in texts

@@ -193,7 +193,8 @@ async def test_photo_worker_paid_tariff_has_no_share_button(monkeypatch, tariff:
             assert msg.TXT_PHOTO_SHARE_RESULT_BTN not in (btn.text or "")
 
     first_btn = markup.inline_keyboard[0][0]
-    assert first_btn.text.startswith("🪄")
+    assert first_btn.text == msg.BTN_PHOTO_REFINE
+    assert markup.inline_keyboard[1][0].text.startswith("🪄")
 
     gallery_row = markup.inline_keyboard[-1]
     forward_btns = [b for b in gallery_row if b.switch_inline_query]

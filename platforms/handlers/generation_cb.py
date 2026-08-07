@@ -48,6 +48,7 @@ from platforms.telegram_keyboards import (
     hd_pro_unlocked_keyboard,
     hd_report_sections_markup,
     image_model_menu,
+    image_aspect_ratio_menu,
     invite_limit_keyboard,
     main_menu,
     photo_tools_menu,
@@ -500,7 +501,7 @@ async def pick_image_model(callback: CallbackQuery, state: FSMContext) -> None:
     try:
         await clear_image_model_menu_pending(state)
         await state.update_data(image_model_id=mid, image_model_label=label)
-        await state.set_state(UserFlow.waiting_for_photo)
+        await state.set_state(UserFlow.waiting_for_image_aspect_ratio)
     except Exception:
         logger.warning(
             "pick_image_model: FSM save failed uid=%s model=%s",
@@ -514,7 +515,87 @@ async def pick_image_model(callback: CallbackQuery, state: FSMContext) -> None:
             await callback.message.edit_reply_markup(reply_markup=None)
         except TelegramBadRequest:
             pass
+        await callback.message.answer(
+            msg.TXT_PICK_ASPECT_RATIO,
+            reply_markup=image_aspect_ratio_menu(),
+            parse_mode=ParseMode.HTML,
+        )
+
+
+@router.callback_query(F.data.startswith(msg.CB_IMG_AR_PREFIX))
+async def pick_image_aspect_ratio(callback: CallbackQuery, state: FSMContext) -> None:
+    from services.photo_aspect_ratio import aspect_ratio_from_callback_suffix
+
+    user = callback.from_user
+    if user is None:
+        await callback.answer()
+        return
+
+    suffix = (callback.data or "")[len(msg.CB_IMG_AR_PREFIX) :].strip()
+    aspect = aspect_ratio_from_callback_suffix(suffix)
+    if aspect is None:
+        await callback.answer(msg.TXT_UNKNOWN_IMAGE_MODEL, show_alert=True)
+        return
+
+    await callback.answer()
+
+    try:
+        await state.update_data(image_aspect_ratio=aspect)
+        await state.set_state(UserFlow.waiting_for_photo)
+    except Exception:
+        logger.warning(
+            "pick_image_aspect_ratio: FSM save failed uid=%s aspect=%s",
+            user.id,
+            aspect,
+            exc_info=True,
+        )
+
+    if callback.message:
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except TelegramBadRequest:
+            pass
         await callback.message.answer(msg.TXT_CREATE_IMAGE_AFTER_MODEL)
+
+
+@router.callback_query(F.data == msg.CB_PHOTO_REFINE)
+async def photo_refine_start(callback: CallbackQuery, state: FSMContext) -> None:
+    from platforms.telegram_throttling import mark_photo_flow
+    from services.photo_edit_session import get_photo_edit_session
+
+    user = callback.from_user
+    if user is None:
+        await callback.answer()
+        return
+
+    session = get_photo_edit_session(user.id)
+    if session is None:
+        await callback.answer(msg.TXT_PHOTO_REFINE_EXPIRED, show_alert=True)
+        return
+
+    mark_photo_flow(user.id)
+    pending_file_id = session.telegram_file_id
+    try:
+        await state.update_data(
+            image_model_id=session.image_model_id,
+            image_model_label=session.image_model_label,
+            image_aspect_ratio=session.aspect_ratio,
+            pending_reference_file_id=pending_file_id,
+        )
+        await state.set_state(UserFlow.waiting_for_photo)
+    except Exception:
+        logger.warning(
+            "photo_refine_start: FSM save failed uid=%s",
+            user.id,
+            exc_info=True,
+        )
+
+    await callback.answer()
+    if callback.message:
+        await callback.message.answer(
+            msg.TXT_PHOTO_REFINE_PROMPT,
+            parse_mode=ParseMode.HTML,
+        )
 
 @router.callback_query(F.data == msg.CB_CREATE_ANIMATE)
 async def create_animate_start(callback: CallbackQuery, state: FSMContext) -> None:

@@ -52,7 +52,8 @@ def test_result_photo_keyboard_free_share_on_first_row() -> None:
 
     assert kb.inline_keyboard[0][0].url == share
     assert msg.TXT_PHOTO_SHARE_RESULT_BTN in kb.inline_keyboard[0][0].text
-    assert kb.inline_keyboard[1][0].text.startswith("🪄")
+    assert kb.inline_keyboard[1][0].text == msg.BTN_PHOTO_REFINE
+    assert kb.inline_keyboard[2][0].text.startswith("🪄")
     dl_row = [r for r in kb.inline_keyboard if r and r[0].text == msg.BTN_DOWNLOAD_UNCOMPRESSED]
     assert len(dl_row) == 1
     assert dl_row[0][0].callback_data == f"{msg.CB_DL_FILE_PREFIX}t:ph_1"
@@ -66,7 +67,8 @@ def test_result_photo_keyboard_paid_no_share_first_row_is_animate() -> None:
     )
 
     first_btn = kb.inline_keyboard[0][0]
-    assert first_btn.text.startswith("🪄")
+    assert first_btn.text == msg.BTN_PHOTO_REFINE
+    assert kb.inline_keyboard[1][0].text.startswith("🪄")
     assert first_btn.url is None
 
     gallery_row = kb.inline_keyboard[-1]
