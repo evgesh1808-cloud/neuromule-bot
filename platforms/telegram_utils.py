@@ -135,6 +135,26 @@ class ImageReplyButtonFilter(BaseFilter):
         return is_image_reply_button_text(message.text)
 
 
+class CreateMenuButtonFilter(BaseFilter):
+    """«🎨 Создать» с учётом VS16 — иначе хэндлер не матчится, chat_handler глотает текст."""
+
+    async def __call__(self, message: Message) -> bool:
+        return normalize_reply_button_text(message.text) == normalize_reply_button_text(
+            msg.BTN_CREATE
+        )
+
+
+def is_main_menu_nav_button_text(text: str | None) -> bool:
+    """Reply-кнопки главного меню (не уходят в idle-чат)."""
+    norm = normalize_reply_button_text(text)
+    if not norm:
+        return False
+    for label in msg.USER_MAIN_MENU_BUTTONS:
+        if normalize_reply_button_text(label) == norm:
+            return True
+    return False
+
+
 async def _reply_video_gen_result(
     message: Message,
     vr: VideoGenResult,

@@ -44,6 +44,7 @@ from platforms.telegram_keyboards import (
     cabinet_keyboard_for_user,
     channel_gate_markup,
     create_menu,
+    _create_menu_text_grid,
     get_admin_inline_keyboard,
     hd_menu,
     hd_pro_unlocked_keyboard,
@@ -58,6 +59,7 @@ from platforms.telegram_keyboards import (
 )
 from platforms.telegram_states import AdminStates, FeedbackStates, UserFlow
 from platforms.telegram_utils import (
+    CreateMenuButtonFilter,
     HelpInstructionWordFilter,
     ImageReplyButtonFilter,
     _extract_ticket_user_id,
@@ -164,7 +166,7 @@ def _is_admin(user_id: int) -> bool:
 async def daily_advice_from_menu(message: Message, state: FSMContext) -> None:
     await _send_daily_advice(message, message.from_user.id, state)
 
-@router.message(F.text == msg.BTN_CREATE)
+@router.message(CreateMenuButtonFilter())
 async def open_create_inline_menu(message: Message) -> None:
     """Главная кнопка «🎨 Создать» → inline-сетка 2×3 (``create_menu``).
 
@@ -172,7 +174,18 @@ async def open_create_inline_menu(message: Message) -> None:
     из-за этого новая симметричная inline-сетка не была видна при обычном
     сценарии из главного меню.
     """
-    await message.answer(msg.TXT_SELECT_TOOL, reply_markup=create_menu())
+    kb = create_menu()
+    try:
+        await message.answer(msg.TXT_SELECT_TOOL, reply_markup=kb)
+    except TelegramBadRequest:
+        logger.warning(
+            "create_menu WebApp keyboard rejected — fallback to text grid",
+            exc_info=True,
+        )
+        await message.answer(
+            msg.TXT_SELECT_TOOL,
+            reply_markup=_create_menu_text_grid(include_studio=False),
+        )
 
 
 async def _open_hd_section(message: Message) -> None:

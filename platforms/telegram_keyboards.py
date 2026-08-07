@@ -111,26 +111,41 @@ def image_studio_webapp_button() -> InlineKeyboardButton | None:
     )
 
 
+def _create_menu_text_grid(*, include_studio: bool) -> InlineKeyboardMarkup:
+    """Сетка инструментов 2×3 + «Назад» (без WebApp-only режима)."""
+    builder = InlineKeyboardBuilder()
+    if include_studio:
+        studio_btn = image_studio_webapp_button()
+        if studio_btn is not None:
+            builder.row(studio_btn)
+    for label, callback_data in msg.CREATE_MENU_GRID:
+        builder.button(text=label, callback_data=callback_data)
+    builder.adjust(2, 2, 2)
+    back_text, back_cb = msg.CREATE_MENU_BACK_ROW
+    builder.row(
+        InlineKeyboardButton(text=back_text, callback_data=back_cb),
+    )
+    return builder.as_markup()
+
+
 def create_menu() -> InlineKeyboardMarkup:
     """Inline-меню «🎨 Создать».
 
     Гибрид:
 
-    * Если ``settings.is_webapp_enabled is True`` И ``settings.webapp_shop_url``
-      задан — отдаём ОДНУ широкую WebApp-кнопку «🚀 ОТКРЫТЬ ИИ-ПАНЕЛЬ»: вся
-      фабрика инструментов живёт в Mini App, а текстовая сетка прячется.
-    * Иначе — симметричная сетка 2×3 из ``CREATE_MENU_GRID`` (тексты и
-      ``callback_data`` только из констант ``content.messages``) плюс
-      «⬅️ Назад в главное меню``. Без URL / при выключенном флаге бот не
-      падает на ``WebAppInfo``.
+    * Если ``settings.is_webapp_enabled is True`` И ``webapp_shop_url`` — валидный
+      ``https://`` URL — отдаём WebApp-кнопку «🚀 ОТКРЫТЬ ИИ-ПАНЕЛЬ».
+    * Иначе — симметричная сетка 2×3 из ``CREATE_MENU_GRID`` плюс «⬅️ Назад».
 
-    В обоих режимах при наличии ``WEBAPP_STUDIO_URL`` сверху добавляется
-    инлайн-кнопка «🎨 Открыть Студию».
+    ``http://`` / localhost URL не попадают в ``WebAppInfo`` — Telegram иначе
+    отклоняет всё сообщение с клавиатурой (кнопка «Создать» «молчит»).
     """
     from aiogram.types import WebAppInfo
 
+    from platforms.webapp_urls import resolve_webapp_shop_url
+
     studio_btn = image_studio_webapp_button()
-    webapp_url = (settings.webapp_shop_url or "").strip()
+    webapp_url = resolve_webapp_shop_url()
     if settings.is_webapp_enabled and webapp_url:
         rows: list[list[InlineKeyboardButton]] = []
         if studio_btn is not None:
@@ -145,19 +160,7 @@ def create_menu() -> InlineKeyboardMarkup:
         )
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
-    builder = InlineKeyboardBuilder()
-    if studio_btn is not None:
-        builder.row(studio_btn)
-    for label, callback_data in msg.CREATE_MENU_GRID:
-        builder.button(text=label, callback_data=callback_data)
-    # Три ряда по две кнопки — порядок пар задаётся CREATE_MENU_GRID.
-    builder.adjust(2, 2, 2)
-
-    back_text, back_cb = msg.CREATE_MENU_BACK_ROW
-    builder.row(
-        InlineKeyboardButton(text=back_text, callback_data=back_cb),
-    )
-    return builder.as_markup()
+    return _create_menu_text_grid(include_studio=True)
 
 
 def _imagen_free_slots_left(
