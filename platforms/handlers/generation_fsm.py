@@ -317,6 +317,7 @@ async def process_photo_prompt_message(
     from platforms.image_menu_flow import clear_image_model_menu_pending
 
     await clear_image_model_menu_pending(state)
+    await state.update_data(pending_reference_file_id=None)
     await state.set_state(UserFlow.waiting_for_photo)
     mark_photo_flow(user_id)
 
@@ -351,16 +352,22 @@ async def photo_process_with_image(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     model_id = data.get("image_model_id", "")
     label = data.get("image_model_label", "модель")
-    prompt = (message.caption or "").strip() or "Улучши и доработай это фото по стилю референса"
+    caption = (message.caption or "").strip()
     file_id = message.photo[-1].file_id
-    await process_photo_prompt_message(
-        message,
-        state,
-        model_id=model_id,
-        label=label,
-        prompt=prompt,
-        telegram_file_id=file_id,
-    )
+
+    if caption:
+        await process_photo_prompt_message(
+            message,
+            state,
+            model_id=model_id,
+            label=label,
+            prompt=caption,
+            telegram_file_id=file_id,
+        )
+        return
+
+    await state.update_data(pending_reference_file_id=file_id)
+    await message.answer(msg.TXT_CREATE_IMAGE_WAIT_PROMPT, parse_mode=ParseMode.HTML)
 
 
 @router.message(UserFlow.waiting_for_photo, F.text)
@@ -369,6 +376,20 @@ async def photo_process(message: Message, state: FSMContext) -> None:
     model_id = data.get("image_model_id", "")
     label = data.get("image_model_label", "модель")
     prompt = (message.text or "").strip()
+    pending_file_id = str(data.get("pending_reference_file_id") or "").strip()
+
+    if pending_file_id:
+        await state.update_data(pending_reference_file_id=None)
+        await process_photo_prompt_message(
+            message,
+            state,
+            model_id=model_id,
+            label=label,
+            prompt=prompt,
+            telegram_file_id=pending_file_id,
+        )
+        return
+
     await process_photo_prompt_message(
         message,
         state,
