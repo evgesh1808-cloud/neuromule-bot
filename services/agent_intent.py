@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from typing import Any
 
 from config import Settings, settings as default_settings
@@ -15,8 +16,8 @@ from services.photo_aspect_ratio import normalize_photo_aspect_ratio
 
 logger = logging.getLogger(__name__)
 
-INTENT_MODEL = "google/gemini-3.1-flash"
-INTENT_TIMEOUT_SEC = 12.0
+INTENT_MODEL = "google/gemini-2.5-flash"
+INTENT_TIMEOUT_SEC = 8.0
 
 TRIGGER_IMAGE_GENERATION = "trigger_image_generation"
 
@@ -44,6 +45,27 @@ _SYSTEM_PROMPT = (
     "Pick aspect_ratio when user mentions vertical, horizontal, wallpaper, stories, 16:9, etc. "
     "Do NOT call the tool for normal chat unrelated to image generation."
 )
+
+# Быстрый pre-filter: без него каждый idle-текст уходит в OpenRouter (~8–12 с «тишины»).
+_IMAGE_INTENT_HINT_RE = re.compile(
+    r"(?:"
+    r"нарис|рисун|картин|изображ|иллюстра|арт\b|"
+    r"draw(?:ing)?|paint(?:ing)?|sketch|render|visuali[sz]e|"
+    r"generate\s+(?:an?\s+)?(?:image|picture|photo|art)|"
+    r"create\s+(?:an?\s+)?(?:image|picture|photo|art)|"
+    r"picture\s+of|image\s+of|"
+    r"dall[\s-]?e|midjourney|stable\s*diffusion|flux\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def looks_like_image_generation_request(user_text: str) -> bool:
+    """True только если текст похож на запрос генерации изображения."""
+    text = (user_text or "").strip()
+    if not text:
+        return False
+    return _IMAGE_INTENT_HINT_RE.search(text) is not None
 
 
 def trigger_image_generation_tool() -> dict[str, Any]:
@@ -169,9 +191,12 @@ async def detect_image_intent(
         return None
 
     cfg = settings or default_settings
-    models = [INTENT_MODEL]
-    if cfg.paid_text_model and cfg.paid_text_model not in models:
-        models.append(cfg.paid_text_model)
+    models: list[str] = []
+    paid = (cfg.paid_text_model or "").strip()
+    if paid:
+        models.append(paid)
+    if INTENT_MODEL not in models:
+        models.append(INTENT_MODEL)
 
     messages = [
         {"role": "system", "content": _SYSTEM_PROMPT},

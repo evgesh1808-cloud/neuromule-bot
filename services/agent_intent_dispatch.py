@@ -208,6 +208,11 @@ async def try_agent_image_intent_telegram(message: Message, state: FSMContext) -
     if not text or text.startswith("/"):
         return False
 
+    from services.agent_intent import looks_like_image_generation_request
+
+    if not looks_like_image_generation_request(text):
+        return False
+
     intent = await detect_image_intent(text)
     if intent is None:
         return False
@@ -248,6 +253,11 @@ async def try_agent_image_intent_vk(message: Any) -> bool:
     if not text or not uid or text.startswith("/"):
         return False
     if peer_id in _vk_image_model:
+        return False
+
+    from services.agent_intent import looks_like_image_generation_request
+
+    if not looks_like_image_generation_request(text):
         return False
 
     intent = await detect_image_intent(text)

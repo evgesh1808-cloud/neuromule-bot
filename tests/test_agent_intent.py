@@ -11,6 +11,7 @@ from content import messages as msg
 from services.agent_intent import (
     TRIGGER_IMAGE_GENERATION,
     detect_image_intent,
+    looks_like_image_generation_request,
     parse_trigger_image_generation_args,
     trigger_image_generation_tool,
 )
@@ -131,3 +132,27 @@ def test_format_agent_image_ack() -> None:
     text = format_agent_image_ack("Flux 2 Pro", "16:9")
     assert "Flux 2 Pro" in text
     assert "16:9" in text
+
+
+def test_looks_like_image_generation_request() -> None:
+    assert looks_like_image_generation_request("нарисуй закат на море") is True
+    assert looks_like_image_generation_request("draw a cat in space") is True
+    assert looks_like_image_generation_request("привет, как дела?") is False
+    assert looks_like_image_generation_request("расскажи про Python") is False
+
+
+@pytest.mark.asyncio
+async def test_try_agent_intent_skips_plain_chat_without_openrouter() -> None:
+    message = MagicMock()
+    message.from_user.id = 3
+    message.text = "привет, как дела?"
+    message.answer = AsyncMock()
+
+    state = MagicMock()
+    state.get_state = AsyncMock(return_value=None)
+
+    with patch("services.agent_intent_dispatch.detect_image_intent", new_callable=AsyncMock) as detect:
+        handled = await try_agent_image_intent_telegram(message, state)
+
+    assert handled is False
+    detect.assert_not_awaited()
