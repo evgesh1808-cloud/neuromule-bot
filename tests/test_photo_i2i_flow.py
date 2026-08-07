@@ -85,8 +85,8 @@ async def test_text_only_still_triggers_t2i() -> None:
     state = MagicMock()
     state.get_data = AsyncMock(
         return_value={
-            "image_model_id": "imagen4",
-            "image_model_label": "Imagen 4",
+            "image_model_id": "nano_banana2",
+            "image_model_label": "Nano Banana 2",
         }
     )
 
@@ -96,8 +96,8 @@ async def test_text_only_still_triggers_t2i() -> None:
     proc.assert_awaited_once_with(
         message,
         state,
-        model_id="imagen4",
-        label="Imagen 4",
+        model_id="nano_banana2",
+        label="Nano Banana 2",
         prompt="red apple on table",
         aspect_ratio="1:1",
     )

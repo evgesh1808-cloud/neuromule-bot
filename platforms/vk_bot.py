@@ -77,7 +77,19 @@ def run_vk() -> None:
         if text.startswith("/start"):
             await ensure_user(uid)
             clear_vk_image_mode(peer_id)
-            await vk_answer(message, msg.TXT_VK_START.format(bot_name=settings.bot_name))
+            from platforms.vk_studio_keyboard import vk_image_studio_keyboard_json
+
+            studio_kb = vk_image_studio_keyboard_json()
+            start_text = msg.TXT_VK_START.format(bot_name=settings.bot_name)
+            if studio_kb:
+                await bot.api.messages.send(
+                    peer_id=peer_id,
+                    message=start_text,
+                    random_id=random.randint(1, 2_000_000_000),
+                    keyboard=studio_kb,
+                )
+            else:
+                await vk_answer(message, start_text)
             return
 
         if text.lower() in {"/image", "изображение"}:
@@ -94,6 +106,11 @@ def run_vk() -> None:
 
         if text.lower() in msg.EASTER_THANKS_TRIGGERS:
             await message.answer(random.choice(msg.EASTER_THANKS_REPLIES))
+            return
+
+        from services.agent_intent_dispatch import try_agent_image_intent_vk
+
+        if await try_agent_image_intent_vk(message):
             return
 
         await ensure_user(uid)

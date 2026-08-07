@@ -44,8 +44,8 @@ async def test_photo_refine_callback_sets_pending_reference() -> None:
 
     save_photo_edit_session(
         42,
-        image_model_id="imagen4",
-        image_model_label="Imagen 4",
+        image_model_id="flux_schnell",
+        image_model_label="Flux 2 Pro",
         aspect_ratio="1:1",
         telegram_file_id="AgAC_refine",
     )
@@ -65,7 +65,7 @@ async def test_photo_refine_callback_sets_pending_reference() -> None:
     state.update_data.assert_awaited()
     kwargs = state.update_data.await_args.kwargs
     assert kwargs["pending_reference_file_id"] == "AgAC_refine"
-    assert kwargs["image_model_id"] == "imagen4"
+    assert kwargs["image_model_id"] == "flux_schnell"
     callback.message.answer.assert_awaited()
 
 
@@ -109,13 +109,72 @@ async def test_reply_to_bot_photo_starts_i2i() -> None:
         generation_fsm,
         "process_photo_prompt_message",
         new_callable=AsyncMock,
-    ) as proc:
+    ) as proc, patch(
+        "services.photo_intent_parser.parse_image_intent",
+        new_callable=AsyncMock,
+        return_value=(None, "add golden hour lighting"),
+    ):
         handled = await generation_fsm.try_start_photo_edit_from_reply(message, state)
 
     assert handled is True
     proc.assert_awaited_once()
     assert proc.await_args.kwargs["telegram_file_id"] == "AgAC_reply"
     assert proc.await_args.kwargs["aspect_ratio"] == "16:9"
+
+
+@pytest.mark.asyncio
+async def test_reply_to_bot_photo_updates_aspect_from_intent() -> None:
+    from platforms.handlers import generation_fsm
+
+    save_photo_edit_session(
+        88,
+        image_model_id="flux_schnell",
+        image_model_label="Flux 2 Pro",
+        aspect_ratio="1:1",
+        telegram_file_id="AgAC_old",
+    )
+
+    bot_user = MagicMock()
+    bot_user.id = 999001
+
+    reply_photo = MagicMock()
+    reply_photo.file_id = "AgAC_reply"
+
+    reply_msg = MagicMock()
+    reply_msg.photo = [reply_photo]
+    reply_msg.from_user = bot_user
+
+    message = MagicMock()
+    message.text = "сделай stories 9:16, добавь неон"
+    message.from_user.id = 88
+    message.reply_to_message = reply_msg
+
+    state = MagicMock()
+    state.get_data = AsyncMock(return_value={})
+    state.update_data = AsyncMock()
+    state.set_state = AsyncMock()
+
+    with patch.object(
+        generation_fsm.deps,
+        "bot",
+        return_value=MagicMock(id=999001),
+    ), patch.object(
+        generation_fsm,
+        "process_photo_prompt_message",
+        new_callable=AsyncMock,
+    ) as proc, patch(
+        "services.photo_intent_parser.parse_image_intent",
+        new_callable=AsyncMock,
+        return_value=("9:16", "добавь неон"),
+    ):
+        handled = await generation_fsm.try_start_photo_edit_from_reply(message, state)
+
+    assert handled is True
+    assert proc.await_args.kwargs["aspect_ratio"] == "9:16"
+    assert proc.await_args.kwargs["prompt"] == "добавь неон"
+    sess = get_photo_edit_session(88)
+    assert sess is not None
+    assert sess.aspect_ratio == "9:16"
 
 
 def test_result_keyboard_has_refine_button() -> None:

@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import logging
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, Awaitable, Callable, TypedDict
+from typing import Any, AsyncIterator, Awaitable, Callable, NotRequired, TypedDict
 
 import httpx
 
@@ -29,6 +29,7 @@ class ChatCompletionResult(TypedDict):
     content: str
     prompt_tokens: int
     completion_tokens: int
+    tool_calls: NotRequired[list[dict[str, Any]]]
 
 
 def _extract_usage_tokens(data: Any) -> tuple[int, int]:
@@ -52,12 +53,34 @@ def _build_completion_result(
     *,
     prompt_tokens: int = 0,
     completion_tokens: int = 0,
+    tool_calls: list[dict[str, Any]] | None = None,
 ) -> ChatCompletionResult:
-    return {
+    out: ChatCompletionResult = {
         "content": content,
         "prompt_tokens": max(int(prompt_tokens or 0), 0),
         "completion_tokens": max(int(completion_tokens or 0), 0),
     }
+    if tool_calls:
+        out["tool_calls"] = tool_calls
+    return out
+
+
+def _extract_tool_calls(data: Any) -> list[dict[str, Any]]:
+    try:
+        if not isinstance(data, dict):
+            return []
+        choices = data.get("choices")
+        if not isinstance(choices, list) or not choices:
+            return []
+        message = choices[0].get("message")
+        if not isinstance(message, dict):
+            return []
+        tool_calls = message.get("tool_calls")
+        if not isinstance(tool_calls, list):
+            return []
+        return [tc for tc in tool_calls if isinstance(tc, dict)]
+    except (TypeError, AttributeError, IndexError):
+        return []
 
 
 def _estimate_messages_chars(messages: list[dict[str, Any]]) -> int:
@@ -243,6 +266,8 @@ def _chat_payload(
     max_tokens: int | None = None,
     response_format: dict[str, Any] | None = None,
     temperature: float | None = None,
+    tools: list[dict[str, Any]] | None = None,
+    tool_choice: str | dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Собирает тело POST /chat/completions: модель, сообщения, ``max_tokens``, опционально ``stream``.
@@ -261,6 +286,10 @@ def _chat_payload(
         body["response_format"] = response_format
     if temperature is not None:
         body["temperature"] = temperature
+    if tools:
+        body["tools"] = tools
+    if tool_choice is not None:
+        body["tool_choice"] = tool_choice
     # Не слать ``extra_body`` / ``prompt_caching`` в raw JSON OpenRouter —
     # это поля SDK, API их не ждёт и часть провайдеров (Gemini) отвечает 400.
     return body
@@ -276,6 +305,8 @@ async def _post_chat_completion(
     max_tokens: int | None = None,
     response_format: dict[str, Any] | None = None,
     temperature: float | None = None,
+    tools: list[dict[str, Any]] | None = None,
+    tool_choice: str | dict[str, Any] | None = None,
 ) -> ChatCompletionResult | None:
     """Один нестриминговый запрос; при HTTP≠200 или пустом content возвращает ``None``."""
     payload = _chat_payload(
@@ -286,6 +317,8 @@ async def _post_chat_completion(
         max_tokens=max_tokens,
         response_format=response_format,
         temperature=temperature,
+        tools=tools,
+        tool_choice=tool_choice,
     )
     response = await client.post(
         settings.openrouter_chat_url,
@@ -324,18 +357,20 @@ async def _post_chat_completion(
     try:
         content = data["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError):
-        logger.warning("OpenRouter model=%s missing choices/message/content", model)
-        return None
+        content = None
+    tool_calls = _extract_tool_calls(data)
     # Некоторые :free отдают content списком частей, не строкой.
     if not isinstance(content, str):
         content = _stream_delta_text(content)
-    if not (content or "").strip():
+    content_text = (content or "").strip()
+    if not content_text and not tool_calls:
         return None
     prompt_tokens, completion_tokens = _extract_usage_tokens(data)
     return _build_completion_result(
-        content,
+        content_text,
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
+        tool_calls=tool_calls,
     )
 
 
@@ -509,6 +544,8 @@ async def ask_ai_messages(
     text_role: str | None = None,
     response_format: dict[str, Any] | None = None,
     temperature: float | None = None,
+    tools: list[dict[str, Any]] | None = None,
+    tool_choice: str | dict[str, Any] | None = None,
 ) -> ChatCompletionResult:
     """
     Отправляет ``messages`` в OpenRouter; перебирает ``free_models`` до успеха.
@@ -523,6 +560,8 @@ async def ask_ai_messages(
     if response_format is None and is_table_role:
         response_format = {"type": "json_object"}
     if is_table_role:
+        stream_callback = None
+    if tools:
         stream_callback = None
     if _estimate_messages_chars(messages) > max_context_chars:
         logger.warning("OpenRouter: context too long (%s chars), aborting", max_context_chars)
@@ -551,6 +590,7 @@ async def ask_ai_messages(
         stream_callback is not None
         and not _messages_contain_image(messages)
         and response_format is None
+        and not tools
     )
     if stream_callback is not None and not use_stream:
         logger.debug("OpenRouter: multimodal request — streaming disabled")
@@ -590,9 +630,11 @@ async def ask_ai_messages(
                     max_tokens=max_tokens,
                     response_format=response_format,
                     temperature=temperature,
+                    tools=tools,
+                    tool_choice=tool_choice,
                 )
-                if result is not None and result.get("content"):
-                    if stream_callback is not None:
+                if result is not None and (result.get("content") or result.get("tool_calls")):
+                    if stream_callback is not None and result.get("content"):
                         await stream_callback(result["content"], True)
                     return result
             except (httpx.TimeoutException, httpx.NetworkError) as exc:

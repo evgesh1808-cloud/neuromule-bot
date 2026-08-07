@@ -132,5 +132,29 @@ def clear_photo_edit_session(user_id: int) -> None:
     _sessions.pop(user_id, None)
 
 
+def update_photo_edit_session_aspect_ratio(user_id: int, aspect_ratio: str) -> None:
+    """Обновляет aspect_ratio активной edit-сессии (multi-turn refine)."""
+    sess = get_photo_edit_session(user_id)
+    if sess is None:
+        return
+    ar = normalize_photo_aspect_ratio(aspect_ratio)
+    if sess.aspect_ratio == ar:
+        return
+    _sessions[user_id] = PhotoEditSession(
+        user_id=sess.user_id,
+        image_model_id=sess.image_model_id,
+        image_model_label=sess.image_model_label,
+        aspect_ratio=ar,
+        expires_at=sess.expires_at,
+        platform=sess.platform,
+        telegram_file_id=sess.telegram_file_id,
+        media_url=sess.media_url,
+        reference_image_bytes=sess.reference_image_bytes,
+        reference_mime=sess.reference_mime,
+        message_id=sess.message_id,
+        chat_id=sess.chat_id,
+    )
+
+
 def reset_photo_edit_sessions_for_tests() -> None:
     _sessions.clear()

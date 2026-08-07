@@ -1,4 +1,4 @@
-"""Платные Imagen / Nano Banana → OpenRouter Images (не прямой Gemini API)."""
+"""Платные Flux / GPT Image 2 / Nano Banana → OpenRouter Images."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ import pytest
 
 from services.gemini_image_client import GeminiImageResult
 from services.openrouter_images import (
+    OPENROUTER_FLUX_PAID_MODEL,
     OPENROUTER_GPT_IMAGE2_MODEL,
-    OPENROUTER_IMAGEN4_FAST_MODEL,
     OPENROUTER_NANO_BANANA2_MODEL,
     OPENROUTER_NANO_BANANA_PRO_MODEL,
 )
@@ -19,7 +19,7 @@ from services.openrouter_images import (
 @pytest.mark.parametrize(
     ("model_key", "or_model"),
     [
-        ("imagen4", OPENROUTER_IMAGEN4_FAST_MODEL),
+        ("flux_schnell", OPENROUTER_FLUX_PAID_MODEL),
         ("dalle_3", OPENROUTER_GPT_IMAGE2_MODEL),
         ("nano_banana2", OPENROUTER_NANO_BANANA2_MODEL),
         ("nano_banana_pro", OPENROUTER_NANO_BANANA_PRO_MODEL),

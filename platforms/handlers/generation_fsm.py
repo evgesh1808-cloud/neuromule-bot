@@ -184,6 +184,8 @@ async def try_start_photo_edit_from_reply(message: Message, state: FSMContext) -
     """Reply на сообщение бота с фото → i2i по last_generated_image (15 мин)."""
     from platforms.telegram_quote import is_reply_to_bot_message
     from services.billing.image_pipeline import free_tier_image_model
+    from services.photo_edit_session import update_photo_edit_session_aspect_ratio
+    from services.photo_intent_parser import resolve_photo_edit_prompt
 
     if not is_reply_to_bot_message(message):
         return False
@@ -209,7 +211,14 @@ async def try_start_photo_edit_from_reply(message: Message, state: FSMContext) -
         if session
         else str(data.get("image_model_label") or "Flux FREE")
     )
-    aspect = session.aspect_ratio if session else await _aspect_ratio_from_state(state)
+    base_aspect = session.aspect_ratio if session else await _aspect_ratio_from_state(state)
+    aspect, prompt, aspect_changed = await resolve_photo_edit_prompt(
+        prompt,
+        current_aspect=base_aspect,
+    )
+    if aspect_changed:
+        await state.update_data(image_aspect_ratio=aspect)
+        update_photo_edit_session_aspect_ratio(user.id, aspect)
 
     await state.update_data(
         image_model_id=model_id,
@@ -240,6 +249,7 @@ async def process_photo_prompt_message(
     telegram_file_id: str | None = None,
     reference_image_url: str | None = None,
     aspect_ratio: str | None = None,
+    skip_status_message: bool = False,
 ) -> None:
     from platforms.image_menu_flow import normalize_image_prompt_text
     from platforms.telegram_throttling import clear_photo_flow, mark_photo_flow
@@ -260,13 +270,14 @@ async def process_photo_prompt_message(
         return
 
     status_msg: Message | None = None
-    try:
-        status_msg = await message.answer(
-            msg.TXT_GEN_STATUS_ACCEPTED,
-            parse_mode=ParseMode.HTML,
-        )
-    except Exception:
-        logger.exception("photo prompt: failed to send status uid=%s", user_id)
+    if not skip_status_message:
+        try:
+            status_msg = await message.answer(
+                msg.TXT_GEN_STATUS_ACCEPTED,
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception:
+            logger.exception("photo prompt: failed to send status uid=%s", user_id)
 
     try:
         lock = user_locks.setdefault(user_id, asyncio.Lock())
@@ -444,6 +455,9 @@ async def photo_process_with_image(message: Message, state: FSMContext) -> None:
 
 @router.message(UserFlow.waiting_for_photo, F.text)
 async def photo_process(message: Message, state: FSMContext) -> None:
+    from services.photo_edit_session import update_photo_edit_session_aspect_ratio
+    from services.photo_intent_parser import resolve_photo_edit_prompt
+
     data = await state.get_data()
     model_id = data.get("image_model_id", "")
     label = data.get("image_model_label", "модель")
@@ -452,6 +466,13 @@ async def photo_process(message: Message, state: FSMContext) -> None:
     pending_file_id = str(data.get("pending_reference_file_id") or "").strip()
 
     if pending_file_id:
+        aspect, prompt, aspect_changed = await resolve_photo_edit_prompt(
+            prompt,
+            current_aspect=aspect,
+        )
+        if aspect_changed and message.from_user is not None:
+            await state.update_data(image_aspect_ratio=aspect)
+            update_photo_edit_session_aspect_ratio(message.from_user.id, aspect)
         await state.update_data(pending_reference_file_id=None)
         await process_photo_prompt_message(
             message,

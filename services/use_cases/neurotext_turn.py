@@ -150,13 +150,13 @@ async def build_neurotext_intro(user_id: int, active_role_id: str = "standard") 
     if user.current_tariff is TariffTier.FREE:
         lines.append(
             f"⚡ Энергия: <b>{user.total_energy} / {free_text_limit}</b>   "
-            f"🖼️ Imagen: <b>{photo_used} / {photo_limit}</b>   "
+            f"🖼️ Фото: <b>{photo_used} / {photo_limit}</b>   "
             f"💎 Кристаллы: <b>{user.crystals}</b>"
         )
     else:
         lines.append(
             f"⚡ Энергия: <b>{user.total_energy}</b>   "
-            f"🖼️ Imagen сегодня: <b>{photo_used}</b>   "
+            f"🖼️ Фото сегодня: <b>{photo_used}</b>   "
             f"💎 Кристаллы: <b>{user.crystals}</b>"
         )
     lines.append("")

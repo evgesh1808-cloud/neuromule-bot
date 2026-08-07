@@ -5,17 +5,23 @@ from __future__ import annotations
 import json
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 from urllib.parse import urlparse
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from config import settings
 from services import repository as repo
 from services.api.report_endpoints import router as reports_router
 from services.api.wb_endpoints import router as wb_router
+from ports.webapp_endpoints import router as webapp_router
 
 logger = logging.getLogger(__name__)
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_WEBAPP_DIR = _PROJECT_ROOT / "webapp"
 
 # Дефолтные origin для GitHub Pages / собственного фронта таблиц.
 _DEFAULT_TABLE_REPORTS_ORIGIN = "https://your-user.github.io"
@@ -50,6 +56,8 @@ def _fallback_webapp_origins() -> list[str]:
         settings.webapp_table_reports_url,
         settings.webapp_shop_url,
         settings.webapp_gallery_url,
+        settings.webapp_studio_url,
+        settings.mini_app_api_base_url,
     )
     origins: list[str] = []
     seen: set[str] = set()
@@ -84,14 +92,25 @@ def _cors_origins() -> list[str]:
 
 
 @asynccontextmanager
-async def _lifespan(_app: FastAPI):
+async def _lifespan(app: FastAPI):
     await repo.init_db()
-    yield
+    tg_bot = None
+    token = (settings.tg_token or "").strip()
+    if token:
+        from aiogram import Bot
+
+        tg_bot = Bot(token=token)
+        app.state.tg_bot = tg_bot
+    try:
+        yield
+    finally:
+        if tg_bot is not None:
+            await tg_bot.session.close()
 
 
 app = FastAPI(
     title="NeuroMule Mini App API",
-    version="0.4.0",
+    version="0.5.0",
     lifespan=_lifespan,
 )
 
@@ -100,11 +119,20 @@ app.add_middleware(
     allow_origins=_cors_origins(),
     allow_credentials=True,
     allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-Telegram-Init-Data"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "X-Telegram-Init-Data",
+        "X-VK-Launch-Params",
+    ],
 )
 
 app.include_router(reports_router)
 app.include_router(wb_router)
+app.include_router(webapp_router)
+
+if _WEBAPP_DIR.is_dir():
+    app.mount("/webapp", StaticFiles(directory=str(_WEBAPP_DIR), html=True), name="webapp")
 
 
 @app.get("/health")
@@ -116,5 +144,5 @@ def health() -> dict[str, bool]:
 def root() -> dict[str, str]:
     return {
         "service": "NeuroMule",
-        "hint": "GET /api/v1/reports/{report_id} — JSON таблицы (требуется Telegram initData).",
+        "hint": "GET /webapp/ — Studio UI; POST /api/webapp/generate — генерация изображений.",
     }

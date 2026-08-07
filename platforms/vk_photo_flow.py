@@ -82,6 +82,16 @@ def clear_vk_image_mode(peer_id: int) -> None:
     _vk_image_model.pop(peer_id, None)
 
 
+def set_vk_image_aspect_ratio(peer_id: int, aspect_ratio: str) -> None:
+    from services.photo_aspect_ratio import normalize_photo_aspect_ratio
+
+    entry = _vk_image_model.get(peer_id)
+    if entry is None:
+        return
+    model_id, label, _ = entry
+    _vk_image_model[peer_id] = (model_id, label, normalize_photo_aspect_ratio(aspect_ratio))
+
+
 async def handle_vk_photo_message(message: Any) -> bool:
     """
     Обрабатывает сообщение VK в режиме генерации изображений.
@@ -157,6 +167,18 @@ async def handle_vk_photo_message(message: Any) -> bool:
                 reference_image_bytes=edit_session.reference_image_bytes,
                 reference_mime=edit_session.reference_mime,
             )
+
+        if use_edit_session and prompt:
+            from services.photo_edit_session import update_photo_edit_session_aspect_ratio
+            from services.photo_intent_parser import resolve_photo_edit_prompt
+
+            aspect_ratio, prompt, aspect_changed = await resolve_photo_edit_prompt(
+                prompt,
+                current_aspect=aspect_ratio,
+            )
+            if aspect_changed:
+                set_vk_image_aspect_ratio(peer_id, aspect_ratio)
+                update_photo_edit_session_aspect_ratio(inbound.user_id, aspect_ratio)
 
         req = PhotoGenerationRequest(
             platform="vk",

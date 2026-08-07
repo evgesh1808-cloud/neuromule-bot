@@ -58,7 +58,6 @@ from services.free_image_cascade import FreeImageCascadeExhausted, generate_free
 from services.openrouter_images import (
     OPENROUTER_FLUX_PAID_MODEL,
     OPENROUTER_GPT_IMAGE2_MODEL,
-    OPENROUTER_IMAGEN4_FAST_MODEL,
     OPENROUTER_NANO_BANANA2_MODEL,
     OPENROUTER_NANO_BANANA_PRO_MODEL,
     REPLICATE_FLUX_SCHNELL_MODEL,
@@ -185,7 +184,7 @@ def _remember_share(
 
 
 def _normalize_photo_model_id(model_id: str, model_label: str = "") -> str:
-    """ID модели из меню (imagen4, flux-schnell) + алиасы из ``business_catalog``."""
+    """ID модели из меню (flux-schnell, dalle_3) + алиасы из ``business_catalog``."""
     raw = (model_id or model_label or "").strip().lower().replace("-", "_")
     aliases = {**catalog.image_aliases, "fluxschnell": "flux_schnell"}
     return aliases.get(raw, raw)
@@ -470,14 +469,6 @@ async def _generate_photo_result(
     )
 
     try:
-        if model_key == "imagen4":
-            return await _generate_openrouter_photo_model(
-                OPENROUTER_IMAGEN4_FAST_MODEL,
-                prompt,
-                aspect_ratio=ar,
-                input_references=input_refs,
-            )
-
         if model_key == "flux_schnell":
             if await _free_tier_flux_uses_pollinations(user_id, model_key):
                 return await generate_flux_schnell_image(prompt)
@@ -523,7 +514,7 @@ async def _generate_photo_result(
         provider = (
             "OpenRouter"
             if model_key
-            in ("imagen4", "nano_banana2", "nano_banana_pro", "flux_schnell", "dalle_3")
+            in ("nano_banana2", "nano_banana_pro", "flux_schnell", "dalle_3")
             else "Replicate"
         )
         raise wrap_http_error(provider, exc) from exc
@@ -942,7 +933,7 @@ def _format_music_caption(style: str, balance: int, cost: int) -> str:
 
 
 async def _music_stub_worker(task: GenTask) -> None:
-    """Музыка Suno AI v4 + ИИ-обложка Imagen 4 + апсейл-клавиатура.
+    """Музыка Suno AI v4 + ИИ-обложка + апсейл-клавиатура.
 
     Поток:
         1. ``record_voice`` chat-action 24/7 пока крутится рендер.

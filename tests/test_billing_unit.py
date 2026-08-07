@@ -28,8 +28,8 @@ def test_shop_packs_have_prices() -> None:
     assert SHOP_PACKS["crystals_10"]["crystals"] == 10
 
 
-def test_free_imagen_blocked() -> None:
-    plan = build_image_spend_plan(TariffTier.FREE, "imagen4", daily_count=0, daily_date=None)
+def test_free_paid_model_blocked_on_free_tariff() -> None:
+    plan = build_image_spend_plan(TariffTier.FREE, "flux_schnell", daily_count=0, daily_date=None)
     assert plan.blocked is True
     assert plan.block_reason == "free_image_model_blocked"
     assert plan.use_free_daily_slot is False
@@ -87,7 +87,6 @@ def test_video_route_ultra_priority() -> None:
 
 def test_image_model_aliases() -> None:
     assert normalize_image_model("flux-schnell") == "flux_schnell"
-    assert normalize_image_model("imagen4") == "imagen4"
     assert normalize_image_model("free_photo") == "free_photo"
 
 

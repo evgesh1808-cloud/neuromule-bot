@@ -96,6 +96,21 @@ def create_reply_menu() -> types.ReplyKeyboardMarkup:
     )
 
 
+def image_studio_webapp_button() -> InlineKeyboardButton | None:
+    """WebApp-кнопка «🎨 Открыть Студию»; ``None`` если URL не сконфигурирован."""
+    from aiogram.types import WebAppInfo
+
+    from platforms.webapp_urls import resolve_image_studio_webapp_url
+
+    url = resolve_image_studio_webapp_url()
+    if not url:
+        return None
+    return InlineKeyboardButton(
+        text=msg.BTN_OPEN_STUDIO,
+        web_app=WebAppInfo(url=url),
+    )
+
+
 def create_menu() -> InlineKeyboardMarkup:
     """Inline-меню «🎨 Создать».
 
@@ -108,23 +123,31 @@ def create_menu() -> InlineKeyboardMarkup:
       ``callback_data`` только из констант ``content.messages``) плюс
       «⬅️ Назад в главное меню``. Без URL / при выключенном флаге бот не
       падает на ``WebAppInfo``.
+
+    В обоих режимах при наличии ``WEBAPP_STUDIO_URL`` сверху добавляется
+    инлайн-кнопка «🎨 Открыть Студию».
     """
     from aiogram.types import WebAppInfo
 
+    studio_btn = image_studio_webapp_button()
     webapp_url = (settings.webapp_shop_url or "").strip()
     if settings.is_webapp_enabled and webapp_url:
-        return InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text="🚀 ОТКРЫТЬ ИИ-ПАНЕЛЬ",
-                        web_app=WebAppInfo(url=webapp_url),
-                    )
-                ],
+        rows: list[list[InlineKeyboardButton]] = []
+        if studio_btn is not None:
+            rows.append([studio_btn])
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="🚀 ОТКРЫТЬ ИИ-ПАНЕЛЬ",
+                    web_app=WebAppInfo(url=webapp_url),
+                )
             ]
         )
+        return InlineKeyboardMarkup(inline_keyboard=rows)
 
     builder = InlineKeyboardBuilder()
+    if studio_btn is not None:
+        builder.row(studio_btn)
     for label, callback_data in msg.CREATE_MENU_GRID:
         builder.button(text=label, callback_data=callback_data)
     # Три ряда по две кнопки — порядок пар задаётся CREATE_MENU_GRID.
@@ -149,16 +172,31 @@ def _imagen_free_slots_left(
 
 
 def image_aspect_ratio_menu() -> InlineKeyboardMarkup:
-    """Inline-выбор формата кадра после выбора модели."""
-    rows = [
+    """Inline-выбор формата кадра после выбора модели (2 колонки + широкий)."""
+    from services.photo_aspect_ratio import aspect_ratio_menu_options
+
+    opts = list(aspect_ratio_menu_options())
+    rows: list[list[InlineKeyboardButton]] = []
+    for i in range(0, len(opts) - 1, 2):
+        pair = opts[i : i + 2]
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=label,
+                    callback_data=f"{msg.CB_IMG_AR_PREFIX}{code}",
+                )
+                for label, code in pair
+            ]
+        )
+    last_label, last_code = opts[-1]
+    rows.append(
         [
             InlineKeyboardButton(
-                text=label,
-                callback_data=f"{msg.CB_IMG_AR_PREFIX}{code}",
+                text=last_label,
+                callback_data=f"{msg.CB_IMG_AR_PREFIX}{last_code}",
             )
         ]
-        for label, code in msg.IMAGE_ASPECT_OPTIONS
-    ]
+    )
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=msg.CB_BACK_CREATE)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -197,7 +235,6 @@ def image_model_menu(
         # Premium-lock: не дублируем callback той же модели, что уже в FREE-слоте.
         locked: list[tuple[str, str]] = [
             ("🔒 Flux 2 Pro (Premium)", "flux-schnell"),
-            ("🔒 Imagen 4 (Premium)", "imagen4"),
             ("🔒 Nano Banana 2 (Premium)", "nano_banana2"),
             ("🔒 Nano Banana Pro (Premium)", "nano_banana_pro"),
         ]
@@ -212,7 +249,6 @@ def image_model_menu(
         ]
     else:
         rows = [
-            [InlineKeyboardButton(text="🎨 Imagen 4 (10 ⚡)", callback_data=f"{prefix}imagen4")],
             [InlineKeyboardButton(text="⚡ Flux 2 Pro (30 ⚡ / 3 💎)", callback_data=f"{prefix}flux-schnell")],
             [InlineKeyboardButton(text="🖼 GPT Image 2 (5 💎)", callback_data=f"{prefix}dalle_3")],
             [InlineKeyboardButton(text="🍌 Nano Banana 2 (15 ⚡)", callback_data=f"{prefix}nano_banana2")],

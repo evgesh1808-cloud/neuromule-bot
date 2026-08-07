@@ -66,7 +66,6 @@ _IMAGE_PROMPT_MARKERS = (
     "генерац",
     "aspect",
     "flux",
-    "imagen",
     "reference",
     "референс",
     "лицо",

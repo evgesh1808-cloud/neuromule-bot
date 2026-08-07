@@ -311,8 +311,10 @@ CB_PHOTO_REFINE = "photo_refine"
 BTN_PHOTO_REFINE = "✏️ Доработать"
 IMAGE_ASPECT_OPTIONS: tuple[tuple[str, str], ...] = (
     ("Квадрат (1:1)", "1x1"),
-    ("Портрет (3:4)", "3x4"),
-    ("Широкий (16:9)", "16x9"),
+    ("Вертикальный пост (3:4)", "3x4"),
+    ("Соцсети/Instagram (4:5)", "4x5"),
+    ("Stories/Вертикальный экран (9:16)", "9x16"),
+    ("Широкий экран/ПК (16:9)", "16x9"),
 )
 CB_ADMIN_STATS = "admin_stats"
 CB_ADMIN_GIVE_CRYSTALS = "admin_give_crystals"
@@ -334,6 +336,8 @@ BTN_TABLE_CHART_LINE = "📈 Линейная"
 BTN_TABLE_CHART_BAR = "📊 Гистограмма"
 BTN_MINI_APP_DASHBOARD = "🚀 Премиум-дашборд ABC"
 BTN_STUDIO_MENU = "📱 Studio"
+BTN_OPEN_STUDIO = "🎨 Открыть Студию"
+TXT_WEBAPP_QUEUE_ACK = "🎨 Задача из Мини-приложения принята в очередь! Генерирую..."
 BTN_TEXT_ROLE_TABLE = "📊 ИИ-Аналитик (Excel)"
 BTN_TEXT_ROLE_TABLE_LEGACY = "📊 Сквозная аналитика & Дашборд"
 TXT_AI_ANALYST_CARD_TITLE = (
@@ -436,7 +440,6 @@ TXT_NEUROTEXT_CLEAR_DONE = "🧹 <b>Контекст очищен.</b> Можн�
 
 IMAGE_MODELS: tuple[tuple[str, str], ...] = (
     ("Flux FREE", "free_photo"),
-    ("Imagen 4", "imagen4"),
     ("Flux 2 Pro", "flux-schnell"),
     ("GPT Image 2", "dalle_3"),
     ("Nano Banana 2", "nano_banana2"),
@@ -459,12 +462,10 @@ def get_text_image_models(tariff) -> str:
     if tariff is TariffTier.FREE:
         return base_text + (
             "🔒 <b>Flux 2 Pro</b> — <i>Доступно на тарифах MINI / SMART / ULTRA</i>\n"
-            "🔒 <b>Imagen 4</b> — <i>Доступно на тарифах MINI / SMART / ULTRA</i>\n"
             "🔒 <b>Nano Banana 2</b> — <i>Доступно на тарифах MINI / SMART / ULTRA</i>\n"
             "🔒 <b>Nano Banana Pro</b> — <i>Доступно на тарифах MINI / SMART / ULTRA</i>"
         )
     return base_text + (
-        "🎨 <b>Imagen 4</b> — 10 ⚡ (или 2 💎)\n"
         "⚡ <b>Flux 2 Pro</b> — 30 ⚡ (или 3 💎)\n"
         "🖼 <b>GPT Image 2</b> — 5 💎\n"
         "🍌 <b>Nano Banana 2</b> — 15 ⚡ (или 2 💎)\n"
@@ -601,7 +602,7 @@ TXT_FREE_CREATE_BLOCKED = (
 )
 TXT_FREE_IMAGE_MODEL_BLOCKED = (
     "❌ <b>На тарифе FREE</b> раздел «🖼 Изображение» недоступен.\n\n"
-    "Flux 2 Pro, Imagen 4, Nano Banana и другие модели — на тарифах "
+    "Flux 2 Pro, Nano Banana и другие модели — на тарифах "
     "MINI / SMART / ULTRA."
 )
 
@@ -951,6 +952,7 @@ TXT_STD_REPLY_ZERO_BALANCE = (
 TXT_PICK_ASPECT_RATIO = (
     "Выбери <b>формат кадра</b> для генерации — он будет передан в модель как aspect ratio."
 )
+TXT_SMART_MODE_IMAGE_ACK = "🤖 Понял вас, запускаю генерацию изображения..."
 TXT_CREATE_IMAGE_AFTER_MODEL = (
     "Опиши изображение одним сообщением: стиль, ключевые объекты, фон и освещение.\n\n"
     "Для <b>редактирования по фото</b>: отправь снимок (можно с подписью) или сначала фото, "
@@ -1818,7 +1820,7 @@ TXT_FEEDBACK_NO_ADMINS = (
 TXT_INSTRUCTION = (
     "📍 Инструкция: Как управлять Нейро-Мулом?\n\n"
     "🤖 ИИ-Ассистент — быстрые ответы, фото, файлы и экспертные роли.\n"
-    "🎨 Фото — на FREE: 1 качественное фото GPT Image 2 в день бесплатно, далее — 5 💎; на платных — Imagen, Flux и др. за 💎.\n"
+    "🎨 Фото — на FREE: 1 качественное фото GPT Image 2 в день бесплатно, далее — 5 💎; на платных — Flux, Nano Banana и др. за 💎.\n"
     "🎵 Музыка — идеи треков и генерация через музыкальные Системы.\n"
     "🎬 Видео — короткие ролики через видео-Системы.\n"
     "👤 Мой профиль — балансы ⚡️ и 💎.\n"

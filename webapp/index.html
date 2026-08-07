@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
+  <title>NeuroMule Studio</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script src="https://unpkg.com/@vkontakte/vk-bridge@2/dist/index.umd.js"></script>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="header">
+      <p class="eyebrow">NeuroMule Studio</p>
+      <h1 id="greetingTitle">Привет!</h1>
+      <p id="platformHint">Графическая студия генерации изображений</p>
+    </header>
+
+    <section class="card">
+      <h2 class="card-title">Модель</h2>
+      <div class="model-grid" id="modelGrid" role="radiogroup" aria-label="Выбор модели"></div>
+    </section>
+
+    <section class="card">
+      <h2 class="card-title">Формат кадра</h2>
+      <div class="ratio-grid" id="ratioGrid" role="radiogroup" aria-label="Соотношение сторон"></div>
+    </section>
+
+    <section class="card">
+      <h2 class="card-title">Промпт</h2>
+      <textarea
+        id="promptInput"
+        rows="4"
+        maxlength="2000"
+        placeholder="Опишите изображение: стиль, объекты, освещение, фон…"
+      ></textarea>
+      <button type="button" class="btn-primary" id="generateBtn">🚀 Создать арт</button>
+      <p class="status" id="statusLine" aria-live="polite"></p>
+    </section>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

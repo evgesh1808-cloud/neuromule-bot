@@ -213,8 +213,6 @@ DALLE3_MODEL_KEY = "dalle_3"
 
 # Алиасы id меню → ключ модели
 IMAGE_MODEL_ALIASES: dict[str, str] = {
-    "imagen4": "imagen4",
-    "imagen_4": "imagen4",
     "flux-schnell": "flux_schnell",
     "flux_schnell": "flux_schnell",
     DALLE3_MODEL_KEY: DALLE3_MODEL_KEY,
@@ -229,7 +227,6 @@ IMAGE_MODEL_ALIASES: dict[str, str] = {
 def build_paid_image_model_entries(cfg: "Settings") -> dict[str, ImageModelPrice]:
     """Матрица PRO-фото из ``config`` (без хардкода в пайплайне)."""
     return {
-        "imagen4": ImageModelPrice(cfg.paid_imagen_energy_cost, cfg.paid_imagen_crystal_cost),
         "flux_schnell": ImageModelPrice(cfg.paid_flux_energy_cost, cfg.paid_flux_crystal_cost),
         "nano_banana2": ImageModelPrice(cfg.paid_banana2_energy_cost, cfg.paid_banana2_crystal_cost),
         "nano_banana_pro": ImageModelPrice(

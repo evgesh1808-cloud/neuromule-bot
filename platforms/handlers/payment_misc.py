@@ -423,6 +423,11 @@ async def chat_handler(message: Message, state: FSMContext) -> None:
         await handle_pending_image_menu_text(message, state)
         return
 
+    from services.agent_intent_dispatch import try_agent_image_intent_telegram
+
+    if await try_agent_image_intent_telegram(message, state):
+        return
+
     from platforms.neurotext_input import handle_neurotext_user_message
 
     await handle_neurotext_user_message(message, state)

@@ -20,8 +20,7 @@ OPENROUTER_IMAGES_URL = "https://openrouter.ai/api/v1/images"
 REPLICATE_FLUX_SCHNELL_MODEL = "black-forest-labs/flux-schnell"
 # OpenRouter Images: flux-schnell снят с каталога OR → flux.2-pro.
 OPENROUTER_FLUX_PAID_MODEL = "black-forest-labs/flux.2-pro"
-# Imagen 4 нет в OR Images → GA Gemini flash-image (ближайший Google T2I/I2I).
-OPENROUTER_IMAGEN4_FAST_MODEL = "google/gemini-3.1-flash-image"
+# Nano Banana 2 / fallback Google T2I/I2I на OR Images.
 OPENROUTER_NANO_BANANA2_MODEL = "google/gemini-3.1-flash-image-preview"
 OPENROUTER_NANO_BANANA_PRO_MODEL = "google/gemini-3-pro-image"
 OPENROUTER_GPT_IMAGE2_MODEL = "openai/gpt-image-2"

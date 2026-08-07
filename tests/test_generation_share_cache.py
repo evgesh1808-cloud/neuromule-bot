@@ -70,7 +70,7 @@ def _task(
     task_type: str,
     bot,
     prompt: str = "epic test",
-    image_model_id: str = "imagen4",
+    image_model_id: str = "flux_schnell",
     scenario_id: str = "",
     charged: int = 5,
     file_id: str | None = None,
@@ -106,7 +106,7 @@ async def test_photo_worker_caches_share_media(monkeypatch) -> None:
 
     # Стабим внешний клиент Imagen — возвращаем URL, никакого HTTP не нужно.
     async def _fake_generate(model_key: str, prompt: str, *, user_id=None, **kwargs):
-        return "https://cdn.fake/imagen.png"
+        return "https://cdn.fake/flux.png"
 
     monkeypatch.setattr(generation_jobs, "_generate_photo_result", _fake_generate)
 
@@ -131,7 +131,7 @@ async def test_photo_worker_caches_share_media(monkeypatch) -> None:
     assert entry is not None
     assert entry.task_type == "photo"
     assert entry.file_id == "tg_photo_xl"     # самый крупный размер
-    assert entry.media_url == "https://cdn.fake/imagen.png"
+    assert entry.media_url == "https://cdn.fake/flux.png"
     assert entry.prompt == "epic test"
 
     markup = log.photo_calls[0]["kwargs"]["reply_markup"]
@@ -167,7 +167,7 @@ async def test_photo_worker_paid_tariff_has_no_share_button(monkeypatch, tariff:
     user_id = 70_002
 
     async def _fake_generate(model_key: str, prompt: str, *, user_id=None, **kwargs):
-        return "https://cdn.fake/imagen.png"
+        return "https://cdn.fake/flux.png"
 
     async def _fake_user_row(uid: int):
         return SimpleNamespace(tariff=tariff, crystals=50)

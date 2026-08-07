@@ -20,8 +20,6 @@ FREE_IMAGEN_OVERLIMIT_COST = catalog.free_imagen_overlimit_cost
 FREE_PRO_IMAGE_COST = catalog.free_pro_image_cost
 
 _paid = catalog.paid_image_models
-PAID_IMAGEN_ENERGY_COST = _paid["imagen4"].energy
-PAID_IMAGEN_CRYSTAL_COST = _paid["imagen4"].crystals
 PAID_FLUX_ENERGY_COST = _paid["flux_schnell"].energy
 PAID_FLUX_CRYSTAL_COST = _paid["flux_schnell"].crystals
 PAID_BANANA2_ENERGY_COST = _paid["nano_banana2"].energy

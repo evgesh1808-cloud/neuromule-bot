@@ -125,24 +125,24 @@ def _photos_block_paid(sub_crystals: int, max_sub: int) -> str:
 
 
 def _photo_capacity_block(energy: int, total_diamonds: int) -> str:
-    imagen_e = energy // 10
     flux_e = energy // 30
+    banana2_e = energy // 15
     banana_pro_e = energy // 35
-    imagen_d = total_diamonds // 2
     flux_d = total_diamonds // 3
+    banana2_d = total_diamonds // 2
     gpt_image2_d = total_diamonds // 5
     if energy <= 0:
         primary = (
-            f"• 🌠 <b>Imagen 4</b> ➔ <code>{imagen_d}</code> шт. (за 💎)\n"
-            f"• 🎨 <b>Flux 2 Pro</b> ➔ <code>{flux_d}</code> шт. (за 💎)"
+            f"• 🎨 <b>Flux 2 Pro</b> ➔ <code>{flux_d}</code> шт. (за 💎)\n"
+            f"• 🍌 <b>Nano Banana 2</b> ➔ <code>{banana2_d}</code> шт. (за 💎)"
         )
     else:
         primary = (
-            f"• 🌠 <b>Imagen 4</b> ➔ <code>{imagen_e}</code> шт. (⚡) / "
-            f"<code>{imagen_d}</code> шт. (💎)\n"
             f"• 🎨 <b>Flux 2 Pro</b> ➔ <code>{flux_e}</code> шт. (⚡) / "
             f"<code>{flux_d}</code> шт. (💎)\n"
-            f"• 🍌 <b>Nano Banana Pro</b> ➔ <code>{banana_pro_e}</code> шт. (⚡)"
+            f"• 🍌 <b>Nano Banana 2</b> ➔ <code>{banana2_e}</code> шт. (⚡) / "
+            f"<code>{banana2_d}</code> шт. (💎)\n"
+            f"• 🚀 <b>Nano Banana Pro</b> ➔ <code>{banana_pro_e}</code> шт. (⚡)"
         )
     return (
         "🎯 <b>Доступно генераций фото прямо сейчас:</b>\n"

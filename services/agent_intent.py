@@ -1,0 +1,205 @@
+"""SMART_MODE: детекция intent генерации изображения через OpenRouter Function Calling."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+from typing import Any
+
+from config import Settings, settings as default_settings
+from content import messages as msg
+from services.ai_text import ask_ai_messages
+from services.billing.image_pipeline import normalize_image_model
+from services.photo_aspect_ratio import normalize_photo_aspect_ratio
+
+logger = logging.getLogger(__name__)
+
+INTENT_MODEL = "google/gemini-3.1-flash"
+INTENT_TIMEOUT_SEC = 12.0
+
+TRIGGER_IMAGE_GENERATION = "trigger_image_generation"
+
+MODEL_KEY_ALIASES: dict[str, str] = {
+    "nano_banana2": "nano_banana2",
+    "flux-schnell": "flux_schnell",
+    "flux_schnell": "flux_schnell",
+    "gpt_image2": "dalle_3",
+    "dalle_3": "dalle_3",
+}
+
+DEFAULT_MODEL_KEY = "nano_banana2"
+DEFAULT_ASPECT_RATIO = "1:1"
+
+_ASPECT_ENUM = ("1:1", "3:4", "4:5", "9:16", "16:9")
+_MODEL_ENUM = ("nano_banana2", "flux-schnell", "gpt_image2")
+
+_SYSTEM_PROMPT = (
+    "You route user messages for an AI bot. "
+    "If the user asks to draw, paint, create, generate, depict, or visualize an image — "
+    "call trigger_image_generation. "
+    "Translate prompt to English. "
+    "Pick model_key: flux-schnell for Flux/premium requests; gpt_image2 for DALL-E/OpenAI; "
+    "otherwise nano_banana2. "
+    "Pick aspect_ratio when user mentions vertical, horizontal, wallpaper, stories, 16:9, etc. "
+    "Do NOT call the tool for normal chat unrelated to image generation."
+)
+
+
+def trigger_image_generation_tool() -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": TRIGGER_IMAGE_GENERATION,
+            "description": (
+                "Start image generation when the user explicitly asks to create/draw an image."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": "Image description in English.",
+                    },
+                    "model_key": {
+                        "type": "string",
+                        "enum": list(_MODEL_ENUM),
+                        "default": DEFAULT_MODEL_KEY,
+                    },
+                    "aspect_ratio": {
+                        "type": "string",
+                        "enum": list(_ASPECT_ENUM),
+                        "default": DEFAULT_ASPECT_RATIO,
+                    },
+                },
+                "required": ["prompt"],
+            },
+        },
+    }
+
+
+def _model_label(model_id: str) -> str:
+    normalized = normalize_image_model(model_id)
+    for label, mid in msg.IMAGE_MODELS:
+        if normalize_image_model(mid) == normalized:
+            return label
+    return normalized
+
+
+def _resolve_model_from_key(model_key: str | None) -> tuple[str, str, str]:
+    """Returns (model_key enum, model_id, model_label)."""
+    raw = (model_key or DEFAULT_MODEL_KEY).strip().lower().replace("_", "-")
+    if raw in ("flux-schnell", "flux"):
+        enum_key, model_id = "flux-schnell", "flux_schnell"
+    elif raw in ("gpt_image2", "gpt-image2", "dalle", "dalle-3", "openai"):
+        enum_key, model_id = "gpt_image2", "dalle_3"
+    else:
+        enum_key, model_id = "nano_banana2", "nano_banana2"
+    return enum_key, model_id, _model_label(model_id)
+
+
+def parse_trigger_image_generation_args(
+    raw_arguments: str | dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    payload: dict[str, Any] | None
+    if isinstance(raw_arguments, dict):
+        payload = raw_arguments
+    else:
+        text = (raw_arguments or "").strip()
+        if not text:
+            return None
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            logger.warning("trigger_image_generation: invalid JSON")
+            return None
+        payload = parsed if isinstance(parsed, dict) else None
+
+    if payload is None:
+        return None
+
+    prompt = str(payload.get("prompt") or "").strip()
+    if not prompt:
+        return None
+
+    model_key, model_id, model_label = _resolve_model_from_key(
+        str(payload.get("model_key") or "")
+    )
+    aspect_ratio = normalize_photo_aspect_ratio(
+        str(payload.get("aspect_ratio") or DEFAULT_ASPECT_RATIO)
+    )
+
+    return {
+        "prompt": prompt,
+        "model_key": model_key,
+        "model_id": model_id,
+        "model_label": model_label,
+        "aspect_ratio": aspect_ratio,
+    }
+
+
+def extract_trigger_image_intent(tool_calls: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+    for call in tool_calls or []:
+        if not isinstance(call, dict):
+            continue
+        fn = call.get("function")
+        if not isinstance(fn, dict):
+            continue
+        if str(fn.get("name") or "").strip() != TRIGGER_IMAGE_GENERATION:
+            continue
+        parsed = parse_trigger_image_generation_args(fn.get("arguments"))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+async def detect_image_intent(
+    user_text: str,
+    *,
+    settings: Settings | None = None,
+) -> dict[str, Any] | None:
+    """
+    Быстрый запрос к Gemini Flash с tools.
+
+    Returns:
+        dict с prompt/model_id/model_label/aspect_ratio или None для обычного диалога.
+    """
+    text = (user_text or "").strip()
+    if not text:
+        return None
+
+    cfg = settings or default_settings
+    models = [INTENT_MODEL]
+    if cfg.paid_text_model and cfg.paid_text_model not in models:
+        models.append(cfg.paid_text_model)
+
+    messages = [
+        {"role": "system", "content": _SYSTEM_PROMPT},
+        {"role": "user", "content": text},
+    ]
+
+    try:
+        async with asyncio.timeout(INTENT_TIMEOUT_SEC):
+            result = await ask_ai_messages(
+                cfg,
+                messages,
+                models=models,
+                tools=[trigger_image_generation_tool()],
+                tool_choice="auto",
+                max_tokens=256,
+                timeout=INTENT_TIMEOUT_SEC,
+                max_context_chars=8_000,
+                max_context_tokens=2_000,
+                temperature=0.0,
+            )
+    except TimeoutError:
+        logger.warning("agent_intent: detection timed out")
+        return None
+    except RuntimeError:
+        logger.warning("agent_intent: OpenRouter unavailable")
+        return None
+    except Exception:
+        logger.warning("agent_intent: detection failed", exc_info=True)
+        return None
+
+    return extract_trigger_image_intent(result.get("tool_calls"))

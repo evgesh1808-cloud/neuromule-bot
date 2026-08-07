@@ -498,10 +498,32 @@ async def pick_image_model(callback: CallbackQuery, state: FSMContext) -> None:
 
     mark_photo_flow(user.id)
 
+    from services.photo_aspect_ratio import (
+        DEFAULT_PHOTO_ASPECT_RATIO,
+        model_shows_aspect_ratio_menu,
+    )
+
+    if callback.message:
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except TelegramBadRequest:
+            pass
+
+    show_aspect_menu = model_shows_aspect_ratio_menu(mid)
     try:
         await clear_image_model_menu_pending(state)
-        await state.update_data(image_model_id=mid, image_model_label=label)
-        await state.set_state(UserFlow.waiting_for_image_aspect_ratio)
+        fsm_payload: dict[str, str] = {
+            "image_model_id": mid,
+            "image_model_label": label,
+        }
+        if not show_aspect_menu:
+            fsm_payload["image_aspect_ratio"] = DEFAULT_PHOTO_ASPECT_RATIO
+        await state.update_data(**fsm_payload)
+        await state.set_state(
+            UserFlow.waiting_for_image_aspect_ratio
+            if show_aspect_menu
+            else UserFlow.waiting_for_photo
+        )
     except Exception:
         logger.warning(
             "pick_image_model: FSM save failed uid=%s model=%s",
@@ -511,15 +533,14 @@ async def pick_image_model(callback: CallbackQuery, state: FSMContext) -> None:
         )
 
     if callback.message:
-        try:
-            await callback.message.edit_reply_markup(reply_markup=None)
-        except TelegramBadRequest:
-            pass
-        await callback.message.answer(
-            msg.TXT_PICK_ASPECT_RATIO,
-            reply_markup=image_aspect_ratio_menu(),
-            parse_mode=ParseMode.HTML,
-        )
+        if show_aspect_menu:
+            await callback.message.answer(
+                msg.TXT_PICK_ASPECT_RATIO,
+                reply_markup=image_aspect_ratio_menu(),
+                parse_mode=ParseMode.HTML,
+            )
+        else:
+            await callback.message.answer(msg.TXT_CREATE_IMAGE_AFTER_MODEL)
 
 
 @router.callback_query(F.data.startswith(msg.CB_IMG_AR_PREFIX))
@@ -536,6 +557,10 @@ async def pick_image_aspect_ratio(callback: CallbackQuery, state: FSMContext) ->
     if aspect is None:
         await callback.answer(msg.TXT_UNKNOWN_IMAGE_MODEL, show_alert=True)
         return
+
+    from services.photo_aspect_ratio import openrouter_aspect_ratio
+
+    aspect = openrouter_aspect_ratio(aspect)
 
     await callback.answer()
 

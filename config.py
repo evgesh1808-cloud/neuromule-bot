@@ -337,6 +337,14 @@ class Settings(BaseSettings):
         default=0,
         validation_alias=AliasChoices("VK_VIDEO_ALBUM_ID", "vk_video_album_id"),
     )
+    vk_mini_app_secret: str = Field(
+        default="",
+        validation_alias=AliasChoices("VK_MINI_APP_SECRET", "vk_mini_app_secret"),
+    )
+    vk_mini_app_id: Annotated[int, _coerce_int(0)] = Field(
+        default=0,
+        validation_alias=AliasChoices("VK_MINI_APP_ID", "vk_mini_app_id"),
+    )
     vk_share_short_url: Annotated[
         str, _nonempty_str("https://vk.cc/neuromule_bot")
     ] = "https://vk.cc/neuromule_bot"
@@ -420,8 +428,6 @@ class Settings(BaseSettings):
     cost_text_pro: Annotated[int, _coerce_int(10)] = 10
     cost_image_pro: Annotated[int, _coerce_int(3)] = 3
     free_imagen_overlimit_cost: Annotated[int, _coerce_int(2)] = 2
-    paid_imagen_energy_cost: Annotated[int, _coerce_int(10)] = 10
-    paid_imagen_crystal_cost: Annotated[int, _coerce_int(2)] = 2
     paid_flux_energy_cost: Annotated[int, _coerce_int(30)] = 30
     paid_flux_crystal_cost: Annotated[int, _coerce_int(3)] = 3
     paid_banana2_energy_cost: Annotated[int, _coerce_int(15)] = 15

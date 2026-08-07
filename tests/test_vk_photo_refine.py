@@ -32,6 +32,8 @@ def test_vk_refine_keyboard_payload() -> None:
 def test_aspect_ratio_provider_formats() -> None:
     assert openrouter_aspect_ratio("16x9") == "1:1"
     assert openrouter_aspect_ratio("16:9") == "16:9"
+    assert openrouter_aspect_ratio("9:16") == "9:16"
+    assert openrouter_aspect_ratio("4:5") == "4:5"
     assert replicate_flux_aspect_ratio("3:4") == "3:4"
 
 
@@ -75,8 +77,8 @@ async def test_vk_refine_pending_uses_edit_session_bytes() -> None:
 
     save_photo_edit_session(
         42,
-        image_model_id="imagen4",
-        image_model_label="Imagen 4",
+        image_model_id="flux_schnell",
+        image_model_label="Flux 2 Pro",
         aspect_ratio="16:9",
         reference_image_bytes=b"\xff\xd8\xff",
         platform="vk",
@@ -106,13 +108,52 @@ async def test_vk_refine_pending_uses_edit_session_bytes() -> None:
 
 
 @pytest.mark.asyncio
+async def test_vk_refine_pending_updates_aspect_from_intent() -> None:
+    from platforms import vk_photo_flow
+
+    save_photo_edit_session(
+        42,
+        image_model_id="flux_schnell",
+        image_model_label="Flux 2 Pro",
+        aspect_ratio="1:1",
+        reference_image_bytes=b"\xff\xd8\xff",
+        platform="vk",
+        chat_id=100,
+    )
+    vk_photo_flow.enter_vk_image_mode(100)
+    mark_vk_refine_pending(100, 42)
+
+    message = MagicMock()
+    message.text = "сделай широкий 16:9, добавь дождь"
+    message.from_id = 42
+    message.peer_id = 100
+    message.attachments = []
+
+    with patch.object(vk_photo_flow, "route_photo_generation", new_callable=AsyncMock) as route:
+        from services.use_cases.photo_generation_turn import PhotoGenOutcome, PhotoGenResult
+
+        route.return_value = PhotoGenResult(outcome=PhotoGenOutcome.NEED_PROMPT)
+        with patch.object(vk_photo_flow, "vk_answer", new_callable=AsyncMock), patch(
+            "services.photo_intent_parser.parse_image_intent",
+            new_callable=AsyncMock,
+            return_value=("16:9", "добавь дождь"),
+        ):
+            await vk_photo_flow.handle_vk_photo_message(message)
+
+    req = route.await_args.args[1]
+    assert req.aspect_ratio == "16:9"
+    assert req.prompt == "добавь дождь"
+    assert vk_photo_flow._vk_image_model[100][2] == "16:9"
+
+
+@pytest.mark.asyncio
 async def test_activate_vk_refine_rejects_wrong_peer() -> None:
     from platforms import vk_photo_flow
 
     save_photo_edit_session(
         42,
-        image_model_id="imagen4",
-        image_model_label="Imagen 4",
+        image_model_id="flux_schnell",
+        image_model_label="Flux 2 Pro",
         aspect_ratio="1:1",
         reference_image_bytes=b"\xff\xd8\xff",
         platform="vk",
