@@ -17,8 +17,11 @@ from content import messages as msg
 from platforms.handlers import deps
 from platforms.neurotext_flow import ensure_neurotext_waiting_state, send_neurotext_role_menu
 from platforms.telegram_flood_safe import flood_safe_answer, flood_safe_chat_action_loop
-from platforms.telegram_chat_action import chat_action_loop
-from platforms.telegram_chat_stream import create_throttled_stream_reply
+from platforms.telegram_streaming import (
+    TELEGRAM_STREAM_EDIT_INTERVAL_SEC,
+    create_telegram_streaming_handle,
+)
+from services.bot_activity_indicator import bot_typing_indicator
 from platforms.table_generator_delivery import send_table_generator_pack
 from platforms.telegram_chunks import answer_chat_text, answer_free_standard_success
 from platforms.telegram_quote import (
@@ -1356,17 +1359,18 @@ async def handle_neurotext_user_message(
                     column_structure_warning=column_structure_warning,
                 )
     else:
-        # Live-SSE отключён: OpenRouter часто не отдаёт чанки → «бот не отвечает».
-        # Ответ уходит одним message.answer после non-stream completion.
-        use_stream = False
-        _ = (
+        use_stream = (
             settings.telegram_chat_streaming
             and not is_photo
             and not user_image_data_url
         )
-        async with chat_action_loop(deps.bot(), message.chat.id, "typing"):
+        async with bot_typing_indicator(deps.bot(), message.chat.id, platform="telegram"):
             stream_handle = (
-                create_throttled_stream_reply(message, deps.bot(), settings)
+                create_telegram_streaming_handle(
+                    message,
+                    deps.bot(),
+                    edit_interval_sec=TELEGRAM_STREAM_EDIT_INTERVAL_SEC,
+                )
                 if use_stream
                 else None
             )

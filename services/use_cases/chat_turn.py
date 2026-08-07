@@ -386,10 +386,10 @@ async def run_chat_turn(
                 logger.debug("send_typing failed", exc_info=True)
 
         is_table_role = (effective_role or "").strip().lower() == "table_generator"
-        # OpenRouter SSE (free router / Gemini) часто зависает без чанков → «бот молчит».
-        # Пока стрим нестабилен — всегда non-stream.
-        if stream_callback is not None:
-            logger.debug("run_chat_turn: stream_callback ignored (SSE temporarily disabled)")
+        effective_stream_callback = stream_callback
+        if effective_stream_callback is not None:
+            if plan.tariff is TariffTier.FREE or is_table_role or user_image_data_url:
+                effective_stream_callback = None
 
         # Основная модель из биллинга + резервный каскад (FREE → :free, MINI+ → Gemini/smart_models).
         model_chain: list[str] = []
@@ -442,7 +442,7 @@ async def run_chat_turn(
                     max_context_tokens=settings.chat_max_context_tokens_est,
                     char_per_token=settings.chat_char_per_token_est,
                     http_client=http_client,
-                    stream_callback=None,
+                    stream_callback=effective_stream_callback,
                     models=model_chain,
                     max_tokens=plan.max_tokens,
                     text_role=effective_role,

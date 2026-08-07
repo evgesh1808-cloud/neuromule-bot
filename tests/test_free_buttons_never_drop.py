@@ -80,6 +80,11 @@ async def test_chat_handler_delegates_to_neurotext() -> None:
             return_value=False,
         ),
         patch(
+            "services.agent_intent_dispatch.try_agent_image_intent_telegram",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+        patch(
             "platforms.neurotext_input.handle_neurotext_user_message",
             new_callable=AsyncMock,
         ) as handle,

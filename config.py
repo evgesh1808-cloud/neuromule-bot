@@ -649,7 +649,7 @@ class Settings(BaseSettings):
 
     # Стриминг в Telegram: минимальный интервал между edit_message_text (антифлуд API).
     telegram_chat_streaming: bool = True
-    telegram_stream_edit_interval_sec: Annotated[float, _coerce_float(0.8)] = 0.8
+    telegram_stream_edit_interval_sec: Annotated[float, _coerce_float(1.8)] = 1.8
 
     # Длинный ответ в Telegram: несколько сообщений по порогу (символов).
     chat_chunk_reply_threshold: Annotated[int, _coerce_int(3500)] = 3500

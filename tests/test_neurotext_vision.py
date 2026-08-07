@@ -74,6 +74,7 @@ async def test_ask_ai_messages_multimodal_payload(monkeypatch) -> None:
         max_tokens=None,
         response_format=None,
         temperature=None,
+        **kwargs,
     ):
         captured["messages"] = messages
         captured["model"] = model

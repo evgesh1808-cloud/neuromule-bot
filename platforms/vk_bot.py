@@ -10,6 +10,7 @@ from content import messages as msg
 from platforms.vk_messages import vk_answer
 from services.ai_text import ask_ai_text
 from services.app_logging import setup_logging
+from services.bot_activity_indicator import bot_typing_indicator
 from services.repository import ensure_user, init_db, try_consume_energy, update_balance
 
 logger = logging.getLogger(__name__)
@@ -119,7 +120,8 @@ def run_vk() -> None:
             return
 
         try:
-            answer = await ask_ai_text(settings, text)
+            async with bot_typing_indicator(bot.api, peer_id, platform="vk"):
+                answer = await ask_ai_text(settings, text)
         except Exception:
             await update_balance(uid, "energy", settings.cost_text_pro)
             await vk_answer(message, msg.TXT_GEN_JOB_FAILED)
