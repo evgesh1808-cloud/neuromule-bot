@@ -13,6 +13,7 @@ from platforms.handlers import deps, register_all
 from platforms.telegram_middleware import (
     ChannelGateMiddleware,
     DailyResetMiddleware,
+    InboundUpdateMiddleware,
     TermsGateMiddleware,
 )
 from platforms.telegram_proxy import resolve_telegram_proxy_url
@@ -187,6 +188,10 @@ def build_dispatcher() -> tuple[Bot, Dispatcher]:
     dp.message.outer_middleware(channel_gate)
     dp.callback_query.outer_middleware(channel_gate)
 
+    inbound = InboundUpdateMiddleware()
+    dp.message.middleware(inbound)
+    dp.callback_query.middleware(inbound)
+
     from platforms.summarizer_telegram import summarizer_router
 
     # До generation_fsm: перехват ввода в режиме «📄 Саммари» (ИИ-Ассистент).
@@ -208,6 +213,14 @@ def _register_telegram_error_handler(dp: Dispatcher) -> None:
 
         exc = event.exception
         update = event.update
+        from aiogram.exceptions import TelegramConflictError
+
+        if isinstance(exc, TelegramConflictError):
+            logger.critical(
+                "Telegram Conflict: второй процесс с тем же TG_TOKEN — "
+                "остановите дубликат (pm2 delete neuromule; bash scripts/vdsina-update.sh)",
+                exc_info=exc,
+            )
         logger.error(
             "telegram handler error update_id=%s: %s",
             getattr(update, "update_id", None),

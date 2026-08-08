@@ -1,6 +1,8 @@
 """Middleware Telegram-бота."""
 from __future__ import annotations
 
+import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -13,6 +15,11 @@ from platforms.telegram_subscription import ChannelSubscription
 from platforms.telegram_utils import send_start_paywall_screen, send_terms_required_reminder
 from services.repository import ensure_user, user_has_accepted_terms
 
+logger = logging.getLogger(__name__)
+
+_ENSURE_USER_TIMEOUT_SEC = 5.0
+
+
 class DailyResetMiddleware(BaseMiddleware):
     async def __call__(
         self,
@@ -22,7 +29,34 @@ class DailyResetMiddleware(BaseMiddleware):
     ) -> Any:
         user = data.get("event_from_user")
         if user is not None:
-            await ensure_user(user.id, getattr(user, "username", None))
+            try:
+                async with asyncio.timeout(_ENSURE_USER_TIMEOUT_SEC):
+                    await ensure_user(user.id, getattr(user, "username", None))
+            except TimeoutError:
+                logger.error(
+                    "ensure_user timed out uid=%s — продолжаем handler",
+                    user.id,
+                )
+            except Exception:
+                logger.exception("ensure_user failed uid=%s — продолжаем handler", user.id)
+        return await handler(event, data)
+
+
+class InboundUpdateMiddleware(BaseMiddleware):
+    """Метрики входящих апдейтов — видно в /metrics/json, что polling жив."""
+
+    async def __call__(
+        self,
+        handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
+        data: dict[str, Any],
+    ) -> Any:
+        from services import metrics
+
+        if isinstance(event, types.Message):
+            metrics.incr("telegram.message.received")
+        elif isinstance(event, types.CallbackQuery):
+            metrics.incr("telegram.callback.received")
         return await handler(event, data)
 
 

@@ -14,8 +14,8 @@ module.exports = {
         // Меньше фоновых cover-тасков — меньше пик RAM на 1GB VDS.
         BLOGGER_COVER_WORKERS_COUNT: "2",
       },
-      // Перезапуск до системного OOM (на ~1GB ноде без swap убивали tg при ~220–270MB).
-      max_memory_restart: "280M",
+      // 280M убивало tg на 1GB VDS после старта (импорты + фоновые воркеры) → «бот молчит».
+      max_memory_restart: "480M",
       exp_backoff_restart_delay: 3000,
       max_restarts: 20,
       min_uptime: "10s",

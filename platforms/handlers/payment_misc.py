@@ -465,7 +465,7 @@ async def cmd_version(message: Message) -> None:
     await reply_build_version(message)
 
 
-@router.message()
+@router.message(StateFilter(None))
 async def unhandled_message_fallback(message: Message, state: FSMContext) -> None:
     """Last-resort: ни один router не сматчился — не молчим."""
     if message.from_user is None:
@@ -485,12 +485,6 @@ async def unhandled_message_fallback(message: Message, state: FSMContext) -> Non
 
         if await try_dispatch_reply_nav_button(message, state):
             return
-    if current_state is not None:
-        await message.answer(
-            "⚠️ Сначала завершите текущий шаг или нажмите /start.",
-            parse_mode=ParseMode.HTML,
-        )
-        return
     if text.startswith("/"):
         return
     await message.answer(
