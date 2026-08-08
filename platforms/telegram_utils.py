@@ -135,13 +135,21 @@ class ImageReplyButtonFilter(BaseFilter):
         return is_image_reply_button_text(message.text)
 
 
-class CreateMenuButtonFilter(BaseFilter):
-    """«🎨 Создать» с учётом VS16 — иначе хэндлер не матчится, chat_handler глотает текст."""
+class ReplyButtonFilter(BaseFilter):
+    """Reply-кнопка с учётом VS16 (U+FE0F) — Telegram шлёт оба варианта emoji."""
+
+    def __init__(self, *labels: str) -> None:
+        self._norms = frozenset(normalize_reply_button_text(label) for label in labels)
 
     async def __call__(self, message: Message) -> bool:
-        return normalize_reply_button_text(message.text) == normalize_reply_button_text(
-            msg.BTN_CREATE
-        )
+        return normalize_reply_button_text(message.text) in self._norms
+
+
+class CreateMenuButtonFilter(ReplyButtonFilter):
+    """«🎨 Создать» с учётом VS16 — иначе хэндлер не матчится, chat_handler глотает текст."""
+
+    def __init__(self) -> None:
+        super().__init__(msg.BTN_CREATE)
 
 
 def is_main_menu_nav_button_text(text: str | None) -> bool:

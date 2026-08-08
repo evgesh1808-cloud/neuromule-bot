@@ -62,6 +62,8 @@ from platforms.telegram_utils import (
     CreateMenuButtonFilter,
     HelpInstructionWordFilter,
     ImageReplyButtonFilter,
+    ReplyButtonFilter,
+    normalize_reply_button_text,
     _extract_ticket_user_id,
     _reply_menu_button_texts,
     _reply_video_gen_result,
@@ -162,7 +164,7 @@ def _is_admin(user_id: int) -> bool:
     return is_admin_user(user_id)
 
 
-@router.message(F.text == msg.BTN_DAILY_ADVICE)
+@router.message(ReplyButtonFilter(msg.BTN_DAILY_ADVICE))
 async def daily_advice_from_menu(message: Message, state: FSMContext) -> None:
     await _send_daily_advice(message, message.from_user.id, state)
 
@@ -201,17 +203,19 @@ async def _open_hd_section(message: Message) -> None:
     )
 
 
-@router.message(F.text == msg.BTN_REPLY_HD)
+@router.message(ReplyButtonFilter(msg.BTN_REPLY_HD))
 async def open_hd_from_create_menu(message: Message) -> None:
     await _open_hd_section(message)
 
 
-@router.message(F.text == msg.BTN_HD_SECTION)
+@router.message(ReplyButtonFilter(msg.BTN_HD_SECTION))
 async def open_hd_legacy_label(message: Message) -> None:
     await _open_hd_section(message)
 
 
-@router.message(F.text.in_({msg.BTN_REPLY_NEUROTEXT, msg.BTN_REPLY_NEUROTEXT_LEGACY}))
+@router.message(
+    ReplyButtonFilter(msg.BTN_REPLY_NEUROTEXT, msg.BTN_REPLY_NEUROTEXT_LEGACY)
+)
 async def reply_create_neurotext(message: Message, state: FSMContext) -> None:
     await send_neurotext_role_menu(message, state)
 
@@ -231,7 +235,7 @@ async def reply_create_image(message: Message, state: FSMContext) -> None:
     await present_image_model_menu(message, state, message.from_user.id)
 
 
-@router.message(F.text == msg.BTN_REPLY_ANIMATE)
+@router.message(ReplyButtonFilter(msg.BTN_REPLY_ANIMATE))
 async def reply_create_animate(message: Message, state: FSMContext) -> None:
     if await guard_free_premium_create(message, message.from_user.id):
         return
@@ -239,7 +243,7 @@ async def reply_create_animate(message: Message, state: FSMContext) -> None:
     await state.set_state(UserFlow.waiting_for_animate)
 
 
-@router.message(F.text == msg.BTN_REPLY_VIDEO)
+@router.message(ReplyButtonFilter(msg.BTN_REPLY_VIDEO))
 async def reply_create_video(message: Message, state: FSMContext) -> None:
     if await guard_free_premium_create(message, message.from_user.id):
         return
@@ -271,7 +275,7 @@ async def _send_profile_screen(target: Message, user_id: int) -> None:
     )
 
 
-@router.message(F.text.in_(msg.PROFILE_MENU_BUTTONS))
+@router.message(ReplyButtonFilter(*msg.PROFILE_MENU_BUTTONS))
 async def show_profile_from_short_menu(message: Message) -> None:
     await _send_profile_screen(message, message.from_user.id)
 
@@ -338,7 +342,7 @@ async def profile_enter_promocode(callback: CallbackQuery, state: FSMContext) ->
         await callback.message.answer(msg.TXT_PROMO_ASK)
     await callback.answer()
 
-@router.message(F.text == msg.BTN_TARIFFS)
+@router.message(ReplyButtonFilter(msg.BTN_TARIFFS))
 async def show_tariffs_from_short_menu(message: Message) -> None:
     await send_tariffs_screen(message, build_tariffs_entry_text())
 
@@ -348,7 +352,11 @@ async def promo_redeem(message: Message, state: FSMContext) -> None:
     await handle_promo_code_message(message, state)
 
 @router.message(
-    F.text.in_({msg.BTN_SUPPORT, msg.BTN_SUPPORT_LEGACY, msg.BTN_SUPPORT_LEGACY2})
+    ReplyButtonFilter(
+        msg.BTN_SUPPORT,
+        msg.BTN_SUPPORT_LEGACY,
+        msg.BTN_SUPPORT_LEGACY2,
+    )
 )
 async def show_support_and_faq(message: Message) -> None:
     await message.answer(
@@ -357,6 +365,53 @@ async def show_support_and_faq(message: Message) -> None:
         reply_markup=support_faq_keyboard(),
         link_preview_options=types.LinkPreviewOptions(is_disabled=True),
     )
+
+async def dispatch_reply_nav_button(message: Message, state: FSMContext) -> bool:
+    """VS16-safe fallback: Reply-навигация, если dedicated handler не сматчился."""
+    norm = normalize_reply_button_text(message.text)
+    if not norm:
+        return False
+
+    n = normalize_reply_button_text
+
+    if norm == n(msg.BTN_CREATE):
+        await open_create_inline_menu(message)
+        return True
+    if norm == n(msg.BTN_DAILY_ADVICE):
+        await daily_advice_from_menu(message, state)
+        return True
+    if norm == n(msg.BTN_TARIFFS):
+        await show_tariffs_from_short_menu(message)
+        return True
+    if norm in {n(x) for x in msg.PROFILE_MENU_BUTTONS}:
+        await show_profile_from_short_menu(message)
+        return True
+    if norm in {
+        n(msg.BTN_SUPPORT),
+        n(msg.BTN_SUPPORT_LEGACY),
+        n(msg.BTN_SUPPORT_LEGACY2),
+    }:
+        await show_support_and_faq(message)
+        return True
+    if norm == n(msg.BTN_REPLY_NEUROTEXT) or norm == n(msg.BTN_REPLY_NEUROTEXT_LEGACY):
+        await reply_create_neurotext(message, state)
+        return True
+    if norm == n(msg.BTN_REPLY_HD) or norm == n(msg.BTN_HD_SECTION):
+        await _open_hd_section(message)
+        return True
+    if norm == n(msg.BTN_REPLY_ANIMATE):
+        await reply_create_animate(message, state)
+        return True
+    if norm == n(msg.BTN_REPLY_VIDEO):
+        await reply_create_video(message, state)
+        return True
+    if norm == n(msg.BTN_REPLY_MUSIC):
+        from platforms.music_studio import reply_open_music_studio
+
+        await reply_open_music_studio(message, state)
+        return True
+    return False
+
 
 @router.callback_query(F.data == msg.CB_BACK_TO_SUPP_MAIN)
 async def support_back_to_main(callback: CallbackQuery) -> None:

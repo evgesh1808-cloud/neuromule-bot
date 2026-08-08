@@ -412,10 +412,11 @@ async def chat_handler(message: Message, state: FSMContext) -> None:
         return
 
     if is_reply_nav_button_text(text) and not is_reply_to_bot_message(message):
-        from platforms.telegram_utils import is_main_menu_nav_button_text
+        from platforms.handlers.menu_support import dispatch_reply_nav_button
 
-        if is_main_menu_nav_button_text(text):
+        if await dispatch_reply_nav_button(message, state):
             return
+        logger.warning("chat_handler: unhandled reply nav button %r", text)
         return
 
     from platforms.image_menu_flow import (

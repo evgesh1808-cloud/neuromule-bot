@@ -213,7 +213,10 @@ async def try_agent_image_intent_telegram(message: Message, state: FSMContext) -
     if not looks_like_image_generation_request(text):
         return False
 
-    intent = await detect_image_intent(text)
+    from services.bot_activity_indicator import bot_typing_indicator
+
+    async with bot_typing_indicator(message.bot, message.chat.id, platform="telegram"):
+        intent = await detect_image_intent(text)
     if intent is None:
         return False
 

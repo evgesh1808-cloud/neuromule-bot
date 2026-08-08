@@ -1,11 +1,15 @@
-"""Regression: кнопка «🎨 Создать» и WebApp URL в create_menu."""
+"""Regression: Reply-кнопки меню и WebApp URL в create_menu."""
 
 from __future__ import annotations
 
 from config import settings
 from content import messages as msg
 from platforms.telegram_keyboards import create_menu, image_studio_webapp_button
-from platforms.telegram_utils import CreateMenuButtonFilter, normalize_reply_button_text
+from platforms.telegram_utils import (
+    CreateMenuButtonFilter,
+    ReplyButtonFilter,
+    normalize_reply_button_text,
+)
 from platforms.webapp_urls import is_valid_telegram_webapp_url, resolve_image_studio_webapp_url
 from unittest.mock import MagicMock
 
@@ -43,3 +47,25 @@ async def test_create_menu_button_filter_matches_fe0f_variant() -> None:
     message.text = "🎨️ Создать"
     assert await filt(message) is True
     assert normalize_reply_button_text(message.text) == normalize_reply_button_text(msg.BTN_CREATE)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "label",
+    [
+        msg.BTN_TARIFFS,
+        msg.BTN_PROFILE,
+        msg.BTN_SUPPORT,
+        msg.BTN_DAILY_ADVICE,
+        msg.BTN_REPLY_NEUROTEXT,
+        msg.BTN_REPLY_VIDEO,
+    ],
+)
+async def test_reply_button_filter_matches_fe0f_variant(label: str) -> None:
+    filt = ReplyButtonFilter(label)
+    message = MagicMock()
+    if label and ord(label[0]) > 0x1F000:
+        message.text = label[0] + "\ufe0f" + label[1:]
+    else:
+        message.text = label
+    assert await filt(message) is True

@@ -663,13 +663,25 @@ async def _reply_chat_turn_result(
                         message_id=sent_message.message_id,
                     )
 
-                await stream_handle.finalize(
-                    result.assistant_message,
-                    reply_markup=reply_kb,
-                    on_finalized=_on_finalized
-                    if (action_uuid or blogger_post_id)
-                    else None,
-                )
+                try:
+                    await stream_handle.finalize(
+                        result.assistant_message,
+                        reply_markup=reply_kb,
+                        on_finalized=_on_finalized
+                        if (action_uuid or blogger_post_id)
+                        else None,
+                    )
+                except Exception:
+                    logger.exception(
+                        "stream_handle.finalize failed uid=%s — fallback answer",
+                        owner_id,
+                    )
+                    reply_kb, _, _ = await _success_reply_keyboard(owner_id, result)
+                    await message.answer(
+                        result.assistant_message or msg.TXT_CHAT_AI_UNAVAILABLE,
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=reply_kb,
+                    )
         elif stream_handle is None:
             if result.table_raw_json:
                 try:
@@ -858,6 +870,10 @@ async def handle_neurotext_user_message(
             await present_image_model_menu(message, state, message.from_user.id)
             return
         if is_reply_nav_button_text(raw_nav):
+            from platforms.handlers.menu_support import dispatch_reply_nav_button
+
+            if await dispatch_reply_nav_button(message, state):
+                return
             return
 
     if forced_user_text is None and (message.text or "").strip():

@@ -37,6 +37,7 @@ from content.inline_keyboards import (
     music_studio_keyboard,
     result_music_keyboard_pro,
 )
+from platforms.telegram_utils import ReplyButtonFilter
 from platforms.telegram_states import MusicFlow, UserFlow
 from platforms.tariffs_center import crystals_shop_inline_card_keyboard
 from services import last_music_request
@@ -160,7 +161,7 @@ async def cb_open_music_studio(callback: CallbackQuery, state: FSMContext) -> No
     await callback.answer()
 
 
-@router.message(F.text == msg.BTN_REPLY_MUSIC)
+@router.message(ReplyButtonFilter(msg.BTN_REPLY_MUSIC))
 async def reply_open_music_studio(message: Message, state: FSMContext) -> None:
     await open_music_studio_screen(message, message.from_user.id, state=state)
 
