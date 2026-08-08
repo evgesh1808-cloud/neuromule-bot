@@ -176,14 +176,20 @@ async def open_create_inline_menu(message: Message) -> None:
     из-за этого новая симметричная inline-сетка не была видна при обычном
     сценарии из главного меню.
     """
-    kb = create_menu()
     try:
+        kb = create_menu()
         await message.answer(msg.TXT_SELECT_TOOL, reply_markup=kb)
     except TelegramBadRequest:
         logger.warning(
             "create_menu WebApp keyboard rejected — fallback to text grid",
             exc_info=True,
         )
+        await message.answer(
+            msg.TXT_SELECT_TOOL,
+            reply_markup=_create_menu_text_grid(include_studio=False),
+        )
+    except Exception:
+        logger.exception("open_create_inline_menu failed")
         await message.answer(
             msg.TXT_SELECT_TOOL,
             reply_markup=_create_menu_text_grid(include_studio=False),

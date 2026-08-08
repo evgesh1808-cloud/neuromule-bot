@@ -40,6 +40,17 @@ def test_create_menu_fallback_when_shop_url_http_only() -> None:
     assert not any(b.web_app is not None for b in flat)
 
 
+def test_create_menu_webapp_plus_tool_grid_when_shop_https() -> None:
+    object.__setattr__(settings, "is_webapp_enabled", True)
+    object.__setattr__(settings, "webapp_shop_url", "https://shop.example/shop/")
+    object.__setattr__(settings, "webapp_studio_url", None)
+    kb = create_menu()
+    flat = [b for row in kb.inline_keyboard for b in row]
+    assert any(b.web_app is not None for b in flat)
+    assert any(b.callback_data == msg.CB_CREATE_TEXT for b in flat)
+    assert any(b.callback_data == msg.CB_CREATE_IMAGE for b in flat)
+
+
 @pytest.mark.asyncio
 async def test_create_menu_button_filter_matches_fe0f_variant() -> None:
     filt = CreateMenuButtonFilter()

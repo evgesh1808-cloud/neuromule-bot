@@ -113,6 +113,15 @@ def _is_image_menu_reply_button(event: TelegramObject) -> bool:
     return is_image_reply_button_text(getattr(event, "text", None))
 
 
+def _is_reply_nav_button_message(event: TelegramObject) -> bool:
+    """Reply-кнопки главного/создать-меню — не режем cooldown."""
+    if not isinstance(event, Message):
+        return False
+    from platforms.telegram_utils import is_reply_nav_button_text
+
+    return is_reply_nav_button_text(getattr(event, "text", None))
+
+
 def _is_blogger_callback(event: TelegramObject) -> bool:
     if not isinstance(event, CallbackQuery):
         return False
@@ -144,6 +153,16 @@ def _is_whitelisted_callback(event: TelegramObject) -> bool:
     if data in WHITELISTED_CALLBACK_DATA:
         return True
     if data == msg.CB_CREATE_IMAGE or data.startswith(msg.CB_IMG_PREFIX):
+        return True
+    if data in (
+        msg.CB_CREATE_TEXT,
+        msg.CB_CREATE_ANIMATE,
+        msg.CB_CREATE_VIDEO,
+        msg.CB_CREATE_MUSIC,
+        msg.CB_BACK_CREATE,
+        msg.CB_BACK_TO_TOOLS,
+        msg.CB_HD_SECTION,
+    ):
         return True
     if data.startswith(msg.CB_SET_ROLE_PREFIX) or data.startswith(msg.CB_TEXT_ROLE_PREFIX):
         return True
@@ -200,6 +219,9 @@ class ThrottlingMiddleware(BaseMiddleware):
             return await handler(event, data)
 
         if _is_image_menu_reply_button(event):
+            return await handler(event, data)
+
+        if _is_reply_nav_button_message(event):
             return await handler(event, data)
 
         if _is_document_message(event):

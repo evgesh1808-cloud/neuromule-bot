@@ -133,9 +133,10 @@ def create_menu() -> InlineKeyboardMarkup:
 
     Гибрид:
 
-    * Если ``settings.is_webapp_enabled is True`` И ``webapp_shop_url`` — валидный
-      ``https://`` URL — отдаём WebApp-кнопку «🚀 ОТКРЫТЬ ИИ-ПАНЕЛЬ».
-    * Иначе — симметричная сетка 2×3 из ``CREATE_MENU_GRID`` плюс «⬅️ Назад».
+    * Опционально WebApp-кнопки (Студия / ИИ-панель), если URL валидный ``https://``.
+    * **Всегда** симметричная сетка 2×3 из ``CREATE_MENU_GRID`` + «⬅️ Назад`` —
+      иначе при ``is_webapp_enabled`` пользователь видит только WebApp и «молчит»,
+      если Mini App недоступен.
 
     ``http://`` / localhost URL не попадают в ``WebAppInfo`` — Telegram иначе
     отклоняет всё сообщение с клавиатурой (кнопка «Создать» «молчит»).
@@ -144,12 +145,14 @@ def create_menu() -> InlineKeyboardMarkup:
 
     from platforms.webapp_urls import resolve_webapp_shop_url
 
+    rows: list[list[InlineKeyboardButton]] = []
+
     studio_btn = image_studio_webapp_button()
+    if studio_btn is not None:
+        rows.append([studio_btn])
+
     webapp_url = resolve_webapp_shop_url()
     if settings.is_webapp_enabled and webapp_url:
-        rows: list[list[InlineKeyboardButton]] = []
-        if studio_btn is not None:
-            rows.append([studio_btn])
         rows.append(
             [
                 InlineKeyboardButton(
@@ -158,9 +161,19 @@ def create_menu() -> InlineKeyboardMarkup:
                 )
             ]
         )
-        return InlineKeyboardMarkup(inline_keyboard=rows)
 
-    return _create_menu_text_grid(include_studio=True)
+    grid = list(msg.CREATE_MENU_GRID)
+    for i in range(0, len(grid), 2):
+        rows.append(
+            [
+                InlineKeyboardButton(text=label, callback_data=callback_data)
+                for label, callback_data in grid[i : i + 2]
+            ]
+        )
+
+    back_text, back_cb = msg.CREATE_MENU_BACK_ROW
+    rows.append([InlineKeyboardButton(text=back_text, callback_data=back_cb)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _imagen_free_slots_left(
