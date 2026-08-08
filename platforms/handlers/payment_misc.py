@@ -460,3 +460,33 @@ async def cmd_version(message: Message) -> None:
 
     await reply_build_version(message)
 
+
+@router.message()
+async def unhandled_message_fallback(message: Message, state: FSMContext) -> None:
+    """Last-resort: ни один router не сматчился — не молчим."""
+    if message.from_user is None:
+        return
+    text = (message.text or "").strip()
+    current_state = await state.get_state()
+    logger.warning(
+        "unhandled message uid=%s state=%s text=%r",
+        message.from_user.id,
+        current_state,
+        text[:120],
+    )
+    from platforms.telegram_utils import is_reply_nav_button_text
+
+    if text and is_reply_nav_button_text(text):
+        from platforms.handlers.menu_support import dispatch_reply_nav_button
+
+        if await dispatch_reply_nav_button(message, state):
+            return
+    if current_state is not None:
+        return
+    if text.startswith("/"):
+        return
+    await message.answer(
+        "⚠️ Не удалось обработать сообщение. Нажмите /start или кнопку меню ниже.",
+        parse_mode=ParseMode.HTML,
+    )
+

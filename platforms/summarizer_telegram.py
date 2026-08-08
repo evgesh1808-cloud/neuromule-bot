@@ -8,8 +8,9 @@ from aiogram.filters import BaseFilter, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
-from platforms.summarizer_flow import REPLY_NAV_BUTTON_TEXTS, handle_summary_neurotext_message
+from platforms.summarizer_flow import handle_summary_neurotext_message
 from platforms.telegram_states import UserFlow
+from platforms.telegram_utils import is_reply_nav_button_text
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,7 @@ class SummaryUserTextFilter(BaseFilter):
         text = (message.text or "").strip()
         if not text or text.startswith("/"):
             return False
-        return text not in REPLY_NAV_BUTTON_TEXTS
+        return not is_reply_nav_button_text(text)
 
 
 _summary_state = StateFilter(UserFlow.waiting_for_text_prompt)

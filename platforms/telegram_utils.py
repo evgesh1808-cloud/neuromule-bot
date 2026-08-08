@@ -7,6 +7,7 @@ import re
 
 from aiogram import Bot
 from aiogram.enums import ParseMode
+from aiogram import F
 from aiogram.filters import BaseFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.exceptions import TelegramBadRequest
@@ -133,6 +134,18 @@ class ImageReplyButtonFilter(BaseFilter):
 
     async def __call__(self, message: Message) -> bool:
         return is_image_reply_button_text(message.text)
+
+
+def reply_button_text_filter(*labels: str):
+    """MagicFilter для Reply-кнопок (VS16-safe) — надёжнее custom BaseFilter.__init__."""
+    norms = frozenset(normalize_reply_button_text(label) for label in labels)
+
+    def _matches(text: str | None) -> bool:
+        if not text:
+            return False
+        return normalize_reply_button_text(text) in norms
+
+    return F.text.func(_matches)
 
 
 class ReplyButtonFilter(BaseFilter):

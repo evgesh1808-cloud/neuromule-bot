@@ -64,6 +64,7 @@ from platforms.telegram_utils import (
     ImageReplyButtonFilter,
     ReplyButtonFilter,
     normalize_reply_button_text,
+    reply_button_text_filter,
     _extract_ticket_user_id,
     _reply_menu_button_texts,
     _reply_video_gen_result,
@@ -164,11 +165,11 @@ def _is_admin(user_id: int) -> bool:
     return is_admin_user(user_id)
 
 
-@router.message(ReplyButtonFilter(msg.BTN_DAILY_ADVICE))
+@router.message(reply_button_text_filter(msg.BTN_DAILY_ADVICE))
 async def daily_advice_from_menu(message: Message, state: FSMContext) -> None:
     await _send_daily_advice(message, message.from_user.id, state)
 
-@router.message(CreateMenuButtonFilter())
+@router.message(reply_button_text_filter(msg.BTN_CREATE))
 async def open_create_inline_menu(message: Message) -> None:
     """Главная кнопка «🎨 Создать» → inline-сетка 2×3 (``create_menu``).
 
@@ -281,7 +282,7 @@ async def _send_profile_screen(target: Message, user_id: int) -> None:
     )
 
 
-@router.message(ReplyButtonFilter(*msg.PROFILE_MENU_BUTTONS))
+@router.message(reply_button_text_filter(*msg.PROFILE_MENU_BUTTONS))
 async def show_profile_from_short_menu(message: Message) -> None:
     await _send_profile_screen(message, message.from_user.id)
 
@@ -348,9 +349,16 @@ async def profile_enter_promocode(callback: CallbackQuery, state: FSMContext) ->
         await callback.message.answer(msg.TXT_PROMO_ASK)
     await callback.answer()
 
-@router.message(ReplyButtonFilter(msg.BTN_TARIFFS))
+@router.message(reply_button_text_filter(msg.BTN_TARIFFS))
 async def show_tariffs_from_short_menu(message: Message) -> None:
-    await send_tariffs_screen(message, build_tariffs_entry_text())
+    try:
+        await send_tariffs_screen(message, build_tariffs_entry_text())
+    except Exception:
+        logger.exception("show_tariffs_from_short_menu failed uid=%s", message.from_user.id)
+        await message.answer(
+            "⚠️ Не удалось открыть тарифы. Попробуйте /start или напишите в поддержку.",
+            parse_mode=ParseMode.HTML,
+        )
 
 
 @router.message(UserFlow.waiting_promo_code, F.text)

@@ -99,7 +99,9 @@ async def handle_summary_neurotext_message(
 
     if not is_photo and not is_document:
         user_text = (message.text or "").strip()
-        if user_text in REPLY_NAV_BUTTON_TEXTS or user_text.startswith("/"):
+        from platforms.telegram_utils import is_reply_nav_button_text
+
+        if is_reply_nav_button_text(user_text) or user_text.startswith("/"):
             return
 
     if is_photo:

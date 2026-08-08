@@ -9,6 +9,7 @@ from platforms.telegram_utils import (
     CreateMenuButtonFilter,
     ReplyButtonFilter,
     normalize_reply_button_text,
+    reply_button_text_filter,
 )
 from platforms.webapp_urls import is_valid_telegram_webapp_url, resolve_image_studio_webapp_url
 from unittest.mock import MagicMock
@@ -58,6 +59,15 @@ async def test_create_menu_button_filter_matches_fe0f_variant() -> None:
     message.text = "🎨️ Создать"
     assert await filt(message) is True
     assert normalize_reply_button_text(message.text) == normalize_reply_button_text(msg.BTN_CREATE)
+
+
+def test_reply_button_text_filter_matches_fe0f_variant() -> None:
+    filt = ReplyButtonFilter(msg.BTN_TARIFFS)
+    message = MagicMock()
+    message.text = "🚀️ Тарифы"
+    import asyncio
+
+    assert asyncio.run(filt(message)) is True
 
 
 @pytest.mark.asyncio

@@ -192,7 +192,41 @@ def build_dispatcher() -> tuple[Bot, Dispatcher]:
     # До generation_fsm: перехват ввода в режиме «📄 Саммари» (ИИ-Ассистент).
     dp.include_router(summarizer_router)
     register_all(dp)
+    _register_telegram_error_handler(dp)
     return bot, dp
+
+
+def _register_telegram_error_handler(dp: Dispatcher) -> None:
+    """Любое необработанное исключение в handler → лог + короткий ответ юзеру."""
+
+    @dp.errors()
+    async def _on_handler_error(event) -> bool:
+        from aiogram.types import CallbackQuery, ErrorEvent
+
+        if not isinstance(event, ErrorEvent):
+            return False
+
+        exc = event.exception
+        update = event.update
+        logger.error(
+            "telegram handler error update_id=%s: %s",
+            getattr(update, "update_id", None),
+            exc,
+            exc_info=exc,
+        )
+
+        notice = "⚠️ Что-то пошло не так. Попробуйте ещё раз или /start."
+        try:
+            if update.message is not None:
+                await update.message.answer(notice)
+            elif update.callback_query is not None:
+                cb: CallbackQuery = update.callback_query
+                await cb.answer(notice, show_alert=True)
+                if cb.message is not None:
+                    await cb.message.answer(notice)
+        except Exception:
+            logger.debug("error handler: failed to notify user", exc_info=True)
+        return True
 
 
 async def run_telegram() -> None:
