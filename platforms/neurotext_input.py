@@ -772,15 +772,14 @@ async def _reply_chat_turn_result(
         await message.answer(msg.TXT_CHAT_RATE_LIMIT)
         return
     if result.outcome is ChatTurnOutcome.CHAT_BUSY:
-        notice = (result.user_notice or "").strip()
-        if notice:
-            from services.rate_limit_service import remember_chat_busy_message_id
+        notice = (result.user_notice or msg.TXT_CHAT_BUSY).strip()
+        from services.rate_limit_service import remember_chat_busy_message_id
 
-            sent = await message.answer(notice)
-            if sent is not None and getattr(sent, "message_id", None) is not None:
-                await remember_chat_busy_message_id(
-                    settings, owner_id, int(sent.message_id)
-                )
+        sent = await message.answer(notice)
+        if sent is not None and getattr(sent, "message_id", None) is not None:
+            await remember_chat_busy_message_id(
+                settings, owner_id, int(sent.message_id)
+            )
         return
     if result.outcome is ChatTurnOutcome.ROLE_NOT_ALLOWED:
         await message.answer(
@@ -870,10 +869,14 @@ async def handle_neurotext_user_message(
             await present_image_model_menu(message, state, message.from_user.id)
             return
         if is_reply_nav_button_text(raw_nav):
-            from platforms.handlers.menu_support import dispatch_reply_nav_button
+            from platforms.telegram_utils import try_dispatch_reply_nav_button
 
-            if await dispatch_reply_nav_button(message, state):
+            if await try_dispatch_reply_nav_button(message, state):
                 return
+            await message.answer(
+                "⚠️ Не удалось открыть меню. Нажмите /start.",
+                parse_mode=ParseMode.HTML,
+            )
             return
 
     if forced_user_text is None and (message.text or "").strip():
@@ -896,6 +899,11 @@ async def handle_neurotext_user_message(
         if cmd:
             if cmd == "/version":
                 await reply_build_version(message)
+            else:
+                await message.answer(
+                    "⚠️ Команда недоступна в этом режиме. Нажмите /start.",
+                    parse_mode=ParseMode.HTML,
+                )
             return
 
     xlsx_auto_finance = False

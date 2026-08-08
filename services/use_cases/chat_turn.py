@@ -299,7 +299,10 @@ async def run_chat_turn(
                     outcome=ChatTurnOutcome.CHAT_BUSY,
                     user_notice=TXT_CHAT_BUSY,
                 )
-            return ChatTurnResult(outcome=ChatTurnOutcome.CHAT_BUSY)
+            return ChatTurnResult(
+                outcome=ChatTurnOutcome.CHAT_BUSY,
+                user_notice=TXT_CHAT_BUSY,
+            )
 
         await dialog_append(user_id, "user", history_text, platform=platform)
         payload = await conv.build_openrouter_messages(

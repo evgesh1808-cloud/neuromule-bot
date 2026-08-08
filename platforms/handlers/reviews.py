@@ -159,6 +159,10 @@ async def cb_leave_review(callback: CallbackQuery, state: FSMContext) -> None:
 async def collect_review(message: Message, state: FSMContext) -> None:
     if message.from_user is None:
         return
+    from platforms.telegram_utils import try_dispatch_reply_nav_button
+
+    if message.text and await try_dispatch_reply_nav_button(message, state):
+        return
     user_id = message.from_user.id
 
     kind, file_id, content = _detect_review_kind(message)

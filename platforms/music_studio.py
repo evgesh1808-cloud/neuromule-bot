@@ -245,6 +245,10 @@ async def _launch_music_turn(
 
 @router.message(MusicFlow.waiting_for_style_prompt, F.text)
 async def fsm_collect_ai_style(message: Message, state: FSMContext) -> None:
+    from platforms.telegram_utils import try_dispatch_reply_nav_button
+
+    if await try_dispatch_reply_nav_button(message, state):
+        return
     style = (message.text or "").strip()
     if not style:
         await _answer_html(message, msg.TXT_MUSIC_ASK_STYLE_AI)
@@ -260,6 +264,10 @@ async def fsm_collect_ai_style(message: Message, state: FSMContext) -> None:
 
 @router.message(MusicFlow.waiting_for_custom_lyrics, F.text)
 async def fsm_collect_custom_lyrics(message: Message, state: FSMContext) -> None:
+    from platforms.telegram_utils import try_dispatch_reply_nav_button
+
+    if await try_dispatch_reply_nav_button(message, state):
+        return
     lyrics = (message.text or "").strip()
     if not lyrics:
         await _answer_html(message, msg.TXT_MUSIC_ASK_LYRICS)
@@ -274,6 +282,10 @@ async def fsm_collect_custom_lyrics(message: Message, state: FSMContext) -> None
 
 @router.message(MusicFlow.waiting_for_custom_style, F.text)
 async def fsm_collect_custom_style(message: Message, state: FSMContext) -> None:
+    from platforms.telegram_utils import try_dispatch_reply_nav_button
+
+    if await try_dispatch_reply_nav_button(message, state):
+        return
     style = (message.text or "").strip()
     if not style:
         await _answer_html(message, msg.TXT_MUSIC_ASK_STYLE_AFTER_LYRICS)
@@ -295,6 +307,10 @@ async def fsm_collect_custom_style(message: Message, state: FSMContext) -> None:
 
 @router.message(MusicFlow.waiting_for_instrumental_style, F.text)
 async def fsm_collect_instrumental_style(message: Message, state: FSMContext) -> None:
+    from platforms.telegram_utils import try_dispatch_reply_nav_button
+
+    if await try_dispatch_reply_nav_button(message, state):
+        return
     style = (message.text or "").strip()
     if not style:
         await _answer_html(message, msg.TXT_MUSIC_ASK_INSTRUMENTAL_STYLE)

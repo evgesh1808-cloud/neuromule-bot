@@ -99,9 +99,21 @@ async def handle_summary_neurotext_message(
 
     if not is_photo and not is_document:
         user_text = (message.text or "").strip()
-        from platforms.telegram_utils import is_reply_nav_button_text
+        from platforms.telegram_utils import is_reply_nav_button_text, try_dispatch_reply_nav_button
 
-        if is_reply_nav_button_text(user_text) or user_text.startswith("/"):
+        if is_reply_nav_button_text(user_text):
+            if await try_dispatch_reply_nav_button(message, state):
+                return
+            await message.answer(
+                "⚠️ Не удалось открыть меню. Нажмите /start.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        if user_text.startswith("/"):
+            await message.answer(
+                "⚠️ Команда недоступна в режиме «Саммари». Нажмите /start.",
+                parse_mode=ParseMode.HTML,
+            )
             return
 
     if is_photo:

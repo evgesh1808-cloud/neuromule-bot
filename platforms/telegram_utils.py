@@ -176,6 +176,15 @@ def is_main_menu_nav_button_text(text: str | None) -> bool:
     return False
 
 
+async def try_dispatch_reply_nav_button(message: Message, state: FSMContext) -> bool:
+    """Маршрутизация Reply nav-кнопки (VS16-safe). True — обработано."""
+    if not is_reply_nav_button_text((message.text or "").strip()):
+        return False
+    from platforms.handlers.menu_support import dispatch_reply_nav_button
+
+    return await dispatch_reply_nav_button(message, state)
+
+
 async def _reply_video_gen_result(
     message: Message,
     vr: VideoGenResult,
@@ -194,7 +203,7 @@ async def _reply_video_gen_result(
         await message.answer(msg.TXT_VIDEO_NEED_PHOTO, parse_mode=ParseMode.HTML)
         return
     if vr.outcome is VideoGenOutcome.FREE_PREMIUM_BLOCKED:
-        await send_free_create_blocked(target)
+        await send_free_create_blocked(message)
         if state:
             await state.clear()
         return

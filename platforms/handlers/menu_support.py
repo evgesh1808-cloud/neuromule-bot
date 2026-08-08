@@ -59,7 +59,6 @@ from platforms.telegram_keyboards import (
 )
 from platforms.telegram_states import AdminStates, FeedbackStates, UserFlow
 from platforms.telegram_utils import (
-    CreateMenuButtonFilter,
     HelpInstructionWordFilter,
     ImageReplyButtonFilter,
     ReplyButtonFilter,
@@ -169,16 +168,10 @@ def _is_admin(user_id: int) -> bool:
 async def daily_advice_from_menu(message: Message, state: FSMContext) -> None:
     await _send_daily_advice(message, message.from_user.id, state)
 
-@router.message(reply_button_text_filter(msg.BTN_CREATE))
-async def open_create_inline_menu(message: Message) -> None:
-    """Главная кнопка «🎨 Создать» → inline-сетка 2×3 (``create_menu``).
-
-    Раньше здесь открывалось вертикальное Reply-подменю ``create_reply_menu`` —
-    из-за этого новая симметричная inline-сетка не была видна при обычном
-    сценарии из главного меню.
-    """
+async def send_create_menu_screen(message: Message) -> None:
+    """Inline «🎨 Создать» с fallback при отклонении WebApp-клавиатуры."""
+    kb = create_menu()
     try:
-        kb = create_menu()
         await message.answer(msg.TXT_SELECT_TOOL, reply_markup=kb)
     except TelegramBadRequest:
         logger.warning(
@@ -190,11 +183,22 @@ async def open_create_inline_menu(message: Message) -> None:
             reply_markup=_create_menu_text_grid(include_studio=False),
         )
     except Exception:
-        logger.exception("open_create_inline_menu failed")
+        logger.exception("send_create_menu_screen failed")
         await message.answer(
             msg.TXT_SELECT_TOOL,
             reply_markup=_create_menu_text_grid(include_studio=False),
         )
+
+
+@router.message(reply_button_text_filter(msg.BTN_CREATE))
+async def open_create_inline_menu(message: Message) -> None:
+    """Главная кнопка «🎨 Создать» → inline-сетка 2×3 (``create_menu``).
+
+    Раньше здесь открывалось вертикальное Reply-подменю ``create_reply_menu`` —
+    из-за этого новая симметричная inline-сетка не была видна при обычном
+    сценарии из главного меню.
+    """
+    await send_create_menu_screen(message)
 
 
 async def _open_hd_section(message: Message) -> None:
@@ -423,6 +427,12 @@ async def dispatch_reply_nav_button(message: Message, state: FSMContext) -> bool
         from platforms.music_studio import reply_open_music_studio
 
         await reply_open_music_studio(message, state)
+        return True
+    if norm == n(msg.BTN_REPLY_IMAGE):
+        from platforms.image_menu_flow import present_image_model_menu
+
+        if not await guard_free_premium_create(message, message.from_user.id):
+            await present_image_model_menu(message, state, message.from_user.id)
         return True
     return False
 

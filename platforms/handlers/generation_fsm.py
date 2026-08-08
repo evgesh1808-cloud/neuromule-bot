@@ -73,6 +73,7 @@ from platforms.telegram_utils import (
     is_admin_user,
     notify_admins_about_payment,
     send_same_as_instruction_button,
+    try_dispatch_reply_nav_button,
 )
 from services import hd_service
 from services import payments_catalog as paycat
@@ -146,6 +147,11 @@ from services.use_cases.video_generation_turn import (
 logger = logging.getLogger(__name__)
 
 router = Router()
+
+
+async def _dispatch_nav_or_none(message: Message, state: FSMContext) -> bool:
+    """True если Reply nav-кнопка обработана (вызывающий handler должен return)."""
+    return await try_dispatch_reply_nav_button(message, state)
 
 # Один активный photo/chat turn на user_id — защита от двойного списания при retry Telegram.
 user_locks: dict[int, asyncio.Lock] = {}
@@ -407,6 +413,8 @@ async def photo_edit_reply_idle(message: Message, state: FSMContext) -> None:
 
 @router.message(UserFlow.waiting_for_image_aspect_ratio, F.text)
 async def image_aspect_ratio_pick_text(message: Message, state: FSMContext) -> None:
+    if await _dispatch_nav_or_none(message, state):
+        return
     await message.answer(
         msg.TXT_PICK_ASPECT_RATIO,
         reply_markup=image_aspect_ratio_menu(),
@@ -455,6 +463,8 @@ async def photo_process_with_image(message: Message, state: FSMContext) -> None:
 
 @router.message(UserFlow.waiting_for_photo, F.text)
 async def photo_process(message: Message, state: FSMContext) -> None:
+    if await _dispatch_nav_or_none(message, state):
+        return
     from services.photo_edit_session import update_photo_edit_session_aspect_ratio
     from services.photo_intent_parser import resolve_photo_edit_prompt
 
@@ -727,6 +737,8 @@ async def wb_audit_wait_for_xlsx_text(message: Message) -> None:
 
 @router.message(UserFlow.waiting_for_video, F.text)
 async def video_process(message: Message, state: FSMContext) -> None:
+    if await _dispatch_nav_or_none(message, state):
+        return
     user_id = message.from_user.id
     prompt = (message.text or "").strip()
     data = await state.get_data()

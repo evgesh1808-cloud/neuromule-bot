@@ -155,13 +155,19 @@ from platforms.neurotext_flow import (
 
 @router.callback_query(F.data == msg.CB_BACK_CREATE)
 async def back_create(callback: CallbackQuery) -> None:
-    await callback.message.answer(msg.TXT_SELECT_TOOL, reply_markup=create_menu())
+    if callback.message:
+        from platforms.handlers.menu_support import send_create_menu_screen
+
+        await send_create_menu_screen(callback.message)
     await callback.answer()
 
 
 @router.callback_query(F.data == msg.CB_BACK_TO_TOOLS)
 async def back_to_tools(callback: CallbackQuery) -> None:
-    await callback.message.answer(msg.TXT_SELECT_TOOL, reply_markup=create_menu())
+    if callback.message:
+        from platforms.handlers.menu_support import send_create_menu_screen
+
+        await send_create_menu_screen(callback.message)
     await callback.answer()
 
 @router.callback_query(F.data == msg.CB_HD_SECTION)

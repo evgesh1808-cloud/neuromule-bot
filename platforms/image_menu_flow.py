@@ -399,7 +399,11 @@ async def present_image_model_menu(
 
 async def handle_pending_image_menu_text(message: Message, state: FSMContext) -> None:
     """Текст после меню фото без выбора модели: FREE → Flux FREE, иначе — подсказка."""
-    from platforms.telegram_utils import is_image_reply_button_text, is_reply_nav_button_text
+    from platforms.telegram_utils import (
+        is_image_reply_button_text,
+        is_reply_nav_button_text,
+        try_dispatch_reply_nav_button,
+    )
     from services.billing.free_tier_gates import is_free_user
 
     user_id = message.from_user.id
@@ -408,6 +412,12 @@ async def handle_pending_image_menu_text(message: Message, state: FSMContext) ->
         await present_image_model_menu(message, state, user_id)
         return
     if is_reply_nav_button_text(raw_text):
+        if await try_dispatch_reply_nav_button(message, state):
+            return
+        await message.answer(
+            "⚠️ Не удалось открыть меню. Нажмите /start.",
+            parse_mode=ParseMode.HTML,
+        )
         return
 
     prompt = normalize_image_prompt_text(raw_text)

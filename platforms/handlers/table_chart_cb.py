@@ -83,6 +83,7 @@ async def _edit_chart_media(
 async def switch_wb_chart(callback: CallbackQuery) -> None:
     """Перерисовка WB-графика по данным из SQLite ``table_reports``."""
     if not callback.from_user or not callback.message:
+        await callback.answer("Ошибка кнопки", show_alert=True)
         return
 
     parsed = _parse_wb_chart_callback(callback.data or "")
@@ -143,6 +144,7 @@ async def switch_wb_chart(callback: CallbackQuery) -> None:
 async def switch_table_chart_legacy(callback: CallbackQuery) -> None:
     """Fallback: переключение по in-memory сессии (без report_id в callback)."""
     if not callback.from_user or not callback.message:
+        await callback.answer("Ошибка кнопки", show_alert=True)
         return
 
     chart_key = (callback.data or "").removeprefix(msg.CB_TABLE_CHART_PREFIX).strip().lower()

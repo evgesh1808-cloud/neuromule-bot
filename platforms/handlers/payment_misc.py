@@ -411,12 +411,16 @@ async def chat_handler(message: Message, state: FSMContext) -> None:
             await present_image_model_menu(message, state, message.from_user.id)
         return
 
-    if is_reply_nav_button_text(text) and not is_reply_to_bot_message(message):
-        from platforms.handlers.menu_support import dispatch_reply_nav_button
+    if is_reply_nav_button_text(text):
+        from platforms.telegram_utils import try_dispatch_reply_nav_button
 
-        if await dispatch_reply_nav_button(message, state):
+        if await try_dispatch_reply_nav_button(message, state):
             return
         logger.warning("chat_handler: unhandled reply nav button %r", text)
+        await message.answer(
+            "⚠️ Не удалось открыть меню. Нажмите /start.",
+            parse_mode=ParseMode.HTML,
+        )
         return
 
     from platforms.image_menu_flow import (
@@ -477,11 +481,15 @@ async def unhandled_message_fallback(message: Message, state: FSMContext) -> Non
     from platforms.telegram_utils import is_reply_nav_button_text
 
     if text and is_reply_nav_button_text(text):
-        from platforms.handlers.menu_support import dispatch_reply_nav_button
+        from platforms.telegram_utils import try_dispatch_reply_nav_button
 
-        if await dispatch_reply_nav_button(message, state):
+        if await try_dispatch_reply_nav_button(message, state):
             return
     if current_state is not None:
+        await message.answer(
+            "⚠️ Сначала завершите текущий шаг или нажмите /start.",
+            parse_mode=ParseMode.HTML,
+        )
         return
     if text.startswith("/"):
         return

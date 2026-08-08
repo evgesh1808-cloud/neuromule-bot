@@ -67,6 +67,7 @@ from platforms.telegram_utils import (
     send_same_as_instruction_button,
     send_activation_success,
     send_start_paywall_screen,
+    reply_button_text_filter,
 )
 from services.admin_openrouter_stats import (
     build_financial_pulse_report,
@@ -570,7 +571,7 @@ async def cmd_admin_stats(message: Message) -> None:
 
 
 @router.message(Command("admin"))
-@router.message(F.text == msg.ADMIN_MAIN_MENU_BUTTON)
+@router.message(reply_button_text_filter(msg.ADMIN_MAIN_MENU_BUTTON))
 async def show_admin_panel(message: Message, state: FSMContext) -> None:
     uid = message.from_user.id
     if not _is_admin(uid):

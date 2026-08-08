@@ -64,6 +64,7 @@ from platforms.telegram_utils import (
     is_admin_user,
     notify_admins_about_payment,
     send_same_as_instruction_button,
+    try_dispatch_reply_nav_button,
 )
 from services import hd_service
 from services import payments_catalog as paycat
@@ -436,12 +437,9 @@ async def advice_birth_cancel(message: Message, state: FSMContext) -> None:
 
 @router.message(UserFlow.waiting_advice_birth, F.text)
 async def advice_birth_save(message: Message, state: FSMContext) -> None:
-    raw = (message.text or "").strip()
-    menus = _reply_menu_button_texts()
-    if raw in menus:
-        await state.clear()
-        await message.answer(msg.TXT_ADVICE_BIRTH_CANCELLED, parse_mode=ParseMode.HTML)
+    if await try_dispatch_reply_nav_button(message, state):
         return
+    raw = (message.text or "").strip()
     if not raw:
         await message.answer(msg.TXT_ADVICE_BIRTH_INVALID, parse_mode=ParseMode.HTML)
         return
@@ -466,6 +464,8 @@ async def hd_free_advice(callback: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(UserFlow.waiting_hd_birth_data, F.text)
 async def hd_premium_process(message: Message, state: FSMContext) -> None:
+    if await try_dispatch_reply_nav_button(message, state):
+        return
     uid = message.from_user.id
     raw = (message.text or "").strip()
     if not raw:
@@ -541,6 +541,8 @@ async def hd_premium_need_text(message: Message) -> None:
 
 @router.message(UserFlow.WAITING_PARTNER_DATA, F.text)
 async def match_process(message: Message, state: FSMContext) -> None:
+    if await try_dispatch_reply_nav_button(message, state):
+        return
     uid = message.from_user.id
     raw = (message.text or "").strip()
     data = await state.get_data()
