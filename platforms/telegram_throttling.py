@@ -208,6 +208,11 @@ class ThrottlingMiddleware(BaseMiddleware):
         user_id = _user_id_of(event)
         if user_id is not None and isinstance(event, Message):
             text = (getattr(event, "text", None) or "").strip()
+            if text.startswith("/"):
+                from platforms.build_info import is_gate_bypass_command
+
+                if is_gate_bypass_command(text):
+                    return await handler(event, data)
             if text:
                 from platforms.image_menu_flow import message_looks_like_photo_prompt
 

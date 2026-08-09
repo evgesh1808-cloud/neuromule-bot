@@ -56,7 +56,11 @@ def slash_command_base(text: str | None) -> str | None:
 
 def is_gate_bypass_command(text: str | None) -> bool:
     """Команды, проходящие TOS/channel/terms gate (диагностика деплоя)."""
-    return slash_command_base(text) in {"/start", "/version"}
+    return slash_command_base(text) in {"/start", "/version", "/ping"}
+
+
+async def reply_ping(message: Message) -> None:
+    await message.answer("🏓 pong")
 
 
 async def reply_build_version(message: Message) -> None:

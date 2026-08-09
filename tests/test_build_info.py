@@ -10,6 +10,7 @@ def test_slash_command_base() -> None:
 def test_gate_bypass_includes_version() -> None:
     assert is_gate_bypass_command("/start")
     assert is_gate_bypass_command("/version")
+    assert is_gate_bypass_command("/ping")
     assert not is_gate_bypass_command("/help")
 
 

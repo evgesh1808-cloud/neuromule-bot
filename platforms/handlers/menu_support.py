@@ -63,7 +63,6 @@ from platforms.telegram_utils import (
     ImageReplyButtonFilter,
     ReplyButtonFilter,
     normalize_reply_button_text,
-    reply_button_text_filter,
     _extract_ticket_user_id,
     _reply_menu_button_texts,
     _reply_video_gen_result,
@@ -164,7 +163,7 @@ def _is_admin(user_id: int) -> bool:
     return is_admin_user(user_id)
 
 
-@router.message(reply_button_text_filter(msg.BTN_DAILY_ADVICE))
+@router.message(ReplyButtonFilter(msg.BTN_DAILY_ADVICE))
 async def daily_advice_from_menu(message: Message, state: FSMContext) -> None:
     await _send_daily_advice(message, message.from_user.id, state)
 
@@ -190,7 +189,7 @@ async def send_create_menu_screen(message: Message) -> None:
         )
 
 
-@router.message(reply_button_text_filter(msg.BTN_CREATE))
+@router.message(ReplyButtonFilter(msg.BTN_CREATE))
 async def open_create_inline_menu(message: Message) -> None:
     """Главная кнопка «🎨 Создать» → inline-сетка 2×3 (``create_menu``).
 
@@ -286,7 +285,7 @@ async def _send_profile_screen(target: Message, user_id: int) -> None:
     )
 
 
-@router.message(reply_button_text_filter(*msg.PROFILE_MENU_BUTTONS))
+@router.message(ReplyButtonFilter(*msg.PROFILE_MENU_BUTTONS))
 async def show_profile_from_short_menu(message: Message) -> None:
     await _send_profile_screen(message, message.from_user.id)
 
@@ -353,7 +352,7 @@ async def profile_enter_promocode(callback: CallbackQuery, state: FSMContext) ->
         await callback.message.answer(msg.TXT_PROMO_ASK)
     await callback.answer()
 
-@router.message(reply_button_text_filter(msg.BTN_TARIFFS))
+@router.message(ReplyButtonFilter(msg.BTN_TARIFFS))
 async def show_tariffs_from_short_menu(message: Message) -> None:
     try:
         await send_tariffs_screen(message, build_tariffs_entry_text())
@@ -391,50 +390,62 @@ async def dispatch_reply_nav_button(message: Message, state: FSMContext) -> bool
         return False
 
     n = normalize_reply_button_text
+    enters_fsm = norm in {
+        n(msg.BTN_REPLY_NEUROTEXT),
+        n(msg.BTN_REPLY_NEUROTEXT_LEGACY),
+        n(msg.BTN_REPLY_ANIMATE),
+        n(msg.BTN_REPLY_VIDEO),
+        n(msg.BTN_REPLY_MUSIC),
+        n(msg.BTN_REPLY_IMAGE),
+    }
+    handled = False
 
     if norm == n(msg.BTN_CREATE):
         await open_create_inline_menu(message)
-        return True
-    if norm == n(msg.BTN_DAILY_ADVICE):
+        handled = True
+    elif norm == n(msg.BTN_DAILY_ADVICE):
         await daily_advice_from_menu(message, state)
-        return True
-    if norm == n(msg.BTN_TARIFFS):
+        handled = True
+    elif norm == n(msg.BTN_TARIFFS):
         await show_tariffs_from_short_menu(message)
-        return True
-    if norm in {n(x) for x in msg.PROFILE_MENU_BUTTONS}:
+        handled = True
+    elif norm in {n(x) for x in msg.PROFILE_MENU_BUTTONS}:
         await show_profile_from_short_menu(message)
-        return True
-    if norm in {
+        handled = True
+    elif norm in {
         n(msg.BTN_SUPPORT),
         n(msg.BTN_SUPPORT_LEGACY),
         n(msg.BTN_SUPPORT_LEGACY2),
     }:
         await show_support_and_faq(message)
-        return True
-    if norm == n(msg.BTN_REPLY_NEUROTEXT) or norm == n(msg.BTN_REPLY_NEUROTEXT_LEGACY):
+        handled = True
+    elif norm == n(msg.BTN_REPLY_NEUROTEXT) or norm == n(msg.BTN_REPLY_NEUROTEXT_LEGACY):
         await reply_create_neurotext(message, state)
-        return True
-    if norm == n(msg.BTN_REPLY_HD) or norm == n(msg.BTN_HD_SECTION):
+        handled = True
+    elif norm == n(msg.BTN_REPLY_HD) or norm == n(msg.BTN_HD_SECTION):
         await _open_hd_section(message)
-        return True
-    if norm == n(msg.BTN_REPLY_ANIMATE):
+        handled = True
+    elif norm == n(msg.BTN_REPLY_ANIMATE):
         await reply_create_animate(message, state)
-        return True
-    if norm == n(msg.BTN_REPLY_VIDEO):
+        handled = True
+    elif norm == n(msg.BTN_REPLY_VIDEO):
         await reply_create_video(message, state)
-        return True
-    if norm == n(msg.BTN_REPLY_MUSIC):
+        handled = True
+    elif norm == n(msg.BTN_REPLY_MUSIC):
         from platforms.music_studio import reply_open_music_studio
 
         await reply_open_music_studio(message, state)
-        return True
-    if norm == n(msg.BTN_REPLY_IMAGE):
+        handled = True
+    elif norm == n(msg.BTN_REPLY_IMAGE):
         from platforms.image_menu_flow import present_image_model_menu
 
         if not await guard_free_premium_create(message, message.from_user.id):
             await present_image_model_menu(message, state, message.from_user.id)
-        return True
-    return False
+        handled = True
+
+    if handled and not enters_fsm:
+        await state.clear()
+    return handled
 
 
 @router.callback_query(F.data == msg.CB_BACK_TO_SUPP_MAIN)

@@ -397,6 +397,11 @@ async def chat_handler(message: Message, state: FSMContext) -> None:
     """Idle-чат без FSM: тот же путь, что Нейротекст — иначе FREE-кнопки не вешаются."""
     text = (message.text or "").strip()
     if not has_neurotext_message_input(message):
+        if text:
+            await message.answer(
+                "⚠️ Не удалось обработать сообщение. Нажмите /start или кнопку меню.",
+                parse_mode=ParseMode.HTML,
+            )
         return
     from platforms.telegram_utils import (
         guard_free_premium_create,

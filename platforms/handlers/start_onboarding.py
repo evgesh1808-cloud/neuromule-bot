@@ -250,6 +250,14 @@ async def cmd_version(message: Message) -> None:
     await reply_build_version(message)
 
 
+@router.message(Command("ping"))
+async def cmd_ping(message: Message) -> None:
+    """Liveness: отвечает даже если OpenRouter/чат недоступны."""
+    from platforms.build_info import reply_ping
+
+    await reply_ping(message)
+
+
 @router.message(CommandStart())
 async def cmd_start(message: Message) -> None:
     """`/start` → экран-заслонка с TOS-ссылками и кнопкой проверки подписки."""

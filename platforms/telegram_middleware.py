@@ -42,6 +42,30 @@ class DailyResetMiddleware(BaseMiddleware):
         return await handler(event, data)
 
 
+class ReplyNavDispatchMiddleware(BaseMiddleware):
+    """Reply nav-кнопки из любого FSM — до photo/video/music handlers."""
+
+    async def __call__(
+        self,
+        handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
+        data: dict[str, Any],
+    ) -> Any:
+        if not isinstance(event, types.Message):
+            return await handler(event, data)
+        text = (event.text or "").strip()
+        if not text:
+            return await handler(event, data)
+        state = data.get("state")
+        if state is None:
+            return await handler(event, data)
+        from platforms.telegram_utils import try_dispatch_reply_nav_button
+
+        if await try_dispatch_reply_nav_button(event, state):
+            return None
+        return await handler(event, data)
+
+
 class InboundUpdateMiddleware(BaseMiddleware):
     """Метрики входящих апдейтов — видно в /metrics/json, что polling жив."""
 

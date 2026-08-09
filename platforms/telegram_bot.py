@@ -192,6 +192,11 @@ def build_dispatcher() -> tuple[Bot, Dispatcher]:
     dp.message.middleware(inbound)
     dp.callback_query.middleware(inbound)
 
+    from platforms.telegram_middleware import ReplyNavDispatchMiddleware
+
+    reply_nav = ReplyNavDispatchMiddleware()
+    dp.message.middleware(reply_nav)
+
     from platforms.summarizer_telegram import summarizer_router
 
     # До generation_fsm: перехват ввода в режиме «📄 Саммари» (ИИ-Ассистент).

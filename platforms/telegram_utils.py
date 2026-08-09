@@ -11,7 +11,6 @@ from aiogram import F
 from aiogram.filters import BaseFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message, ReplyKeyboardRemove
 
 from config import settings
