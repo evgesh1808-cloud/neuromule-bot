@@ -125,6 +125,9 @@ pm2 status
 if [ "${online}" -ne 1 ]; then
   echo "ERROR: neuromule-tg не в статусе online"
   pm2 logs neuromule-tg --lines 50 --nostream || true
+  if [ -f scripts/vdsina-memory-check.sh ]; then
+    bash scripts/vdsina-memory-check.sh || true
+  fi
   exit 1
 fi
 

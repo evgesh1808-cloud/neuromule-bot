@@ -310,11 +310,11 @@ CB_IMG_AR_PREFIX = "img_ar:"
 CB_PHOTO_REFINE = "photo_refine"
 BTN_PHOTO_REFINE = "✏️ Доработать"
 IMAGE_ASPECT_OPTIONS: tuple[tuple[str, str], ...] = (
-    ("Квадрат (1:1)", "1x1"),
-    ("Вертикальный пост (3:4)", "3x4"),
-    ("Соцсети/Instagram (4:5)", "4x5"),
-    ("Stories/Вертикальный экран (9:16)", "9x16"),
-    ("Широкий экран/ПК (16:9)", "16x9"),
+    ("▢ 1:1", "1x1"),
+    ("▮ 3:4", "3x4"),
+    ("📷 4:5", "4x5"),
+    ("📱 9:16", "9x16"),
+    ("🖥 16:9", "16x9"),
 )
 CB_ADMIN_STATS = "admin_stats"
 CB_ADMIN_GIVE_CRYSTALS = "admin_give_crystals"
@@ -950,7 +950,7 @@ TXT_STD_REPLY_ZERO_BALANCE = (
     "👥 <b>Пригласить друзей</b> (+10 💎 за каждого приглашенного блогера)"
 )
 TXT_PICK_ASPECT_RATIO = (
-    "Выбери <b>формат кадра</b> для генерации — он будет передан в модель как aspect ratio."
+    "Выбери <b>формат кадра</b> — подписи к кнопкам в сообщении выше."
 )
 TXT_SMART_MODE_IMAGE_ACK = "🤖 Понял вас, запускаю генерацию изображения..."
 TXT_CREATE_IMAGE_AFTER_MODEL = (

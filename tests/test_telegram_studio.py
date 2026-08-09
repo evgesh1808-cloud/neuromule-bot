@@ -29,6 +29,33 @@ def test_resolve_studio_falls_back_to_table_base(monkeypatch) -> None:
     assert resolve_studio_webapp_url() == "https://user.github.io/neuromule-table/"
 
 
+def test_resolve_studio_rejects_http_shop_url(monkeypatch) -> None:
+    from config import settings
+
+    object.__setattr__(settings, "webapp_studio_url", None)
+    object.__setattr__(settings, "webapp_shop_url", "http://192.144.59/")
+    object.__setattr__(
+        settings,
+        "webapp_table_reports_url",
+        "https://user.github.io/neuromule-table/?report_id={report_id}",
+    )
+    assert resolve_studio_webapp_url() == "https://user.github.io/neuromule-table/"
+
+
+def test_setup_studio_menu_button_survives_telegram_bad_request(monkeypatch) -> None:
+    from aiogram.exceptions import TelegramBadRequest
+    from config import settings
+
+    object.__setattr__(settings, "webapp_studio_url", "https://studio.example/app")
+    bot = MagicMock()
+    bot.set_chat_menu_button = AsyncMock(
+        side_effect=TelegramBadRequest(method=None, message="invalid url")
+    )
+
+    ok = asyncio.run(setup_studio_menu_button(bot))
+    assert ok is False
+
+
 def test_setup_studio_menu_button_calls_telegram(monkeypatch) -> None:
     from config import settings
 

@@ -188,31 +188,23 @@ def _imagen_free_slots_left(
 
 
 def image_aspect_ratio_menu() -> InlineKeyboardMarkup:
-    """Inline-выбор формата кадра после выбора модели (2 колонки + широкий)."""
-    from services.photo_aspect_ratio import aspect_ratio_menu_options
+    """Inline-выбор формата: короткие подписи, 3+2 в ряд (как Midjourney/Canva chips)."""
+    from services.photo_aspect_ratio import ASPECT_RATIO_MENU_ENTRIES
 
-    opts = list(aspect_ratio_menu_options())
+    entries = list(ASPECT_RATIO_MENU_ENTRIES)
     rows: list[list[InlineKeyboardButton]] = []
-    for i in range(0, len(opts) - 1, 2):
-        pair = opts[i : i + 2]
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text=label,
-                    callback_data=f"{msg.CB_IMG_AR_PREFIX}{code}",
-                )
-                for label, code in pair
-            ]
-        )
-    last_label, last_code = opts[-1]
-    rows.append(
-        [
+
+    def _row(items: list) -> list[InlineKeyboardButton]:
+        return [
             InlineKeyboardButton(
-                text=last_label,
-                callback_data=f"{msg.CB_IMG_AR_PREFIX}{last_code}",
+                text=entry.button_label,
+                callback_data=f"{msg.CB_IMG_AR_PREFIX}{entry.callback_suffix}",
             )
+            for entry in items
         ]
-    )
+
+    rows.append(_row(entries[:3]))
+    rows.append(_row(entries[3:5]))
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=msg.CB_BACK_CREATE)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

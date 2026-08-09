@@ -24,37 +24,18 @@ class AspectRatioMenuEntry:
 
     callback_suffix: str
     value: str
-    label: str
+    button_label: str
     description: str
 
 
 # Суффикс callback ``img_ar:1x1`` → ``1:1`` (двоеточие в ``callback_data`` ломает парсинг).
+# На кнопке — короткая подпись (иконка + ratio); пояснение — в тексте сообщения.
 ASPECT_RATIO_MENU_ENTRIES: tuple[AspectRatioMenuEntry, ...] = (
-    AspectRatioMenuEntry("1x1", ASPECT_RATIO_SQUARE, "Квадрат (1:1)", "Квадрат"),
-    AspectRatioMenuEntry(
-        "3x4",
-        ASPECT_RATIO_VERTICAL_POST,
-        "Вертикальный пост (3:4)",
-        "Вертикальный пост",
-    ),
-    AspectRatioMenuEntry(
-        "4x5",
-        ASPECT_RATIO_SOCIAL,
-        "Соцсети/Instagram (4:5)",
-        "Соцсети/Instagram",
-    ),
-    AspectRatioMenuEntry(
-        "9x16",
-        ASPECT_RATIO_STORIES,
-        "Stories/Вертикальный экран (9:16)",
-        "Stories/Вертикальный экран",
-    ),
-    AspectRatioMenuEntry(
-        "16x9",
-        ASPECT_RATIO_WIDE,
-        "Широкий экран/ПК (16:9)",
-        "Широкий экран/ПК",
-    ),
+    AspectRatioMenuEntry("1x1", ASPECT_RATIO_SQUARE, "▢ 1:1", "квадрат — аватар, пост"),
+    AspectRatioMenuEntry("3x4", ASPECT_RATIO_VERTICAL_POST, "▮ 3:4", "вертикальный пост"),
+    AspectRatioMenuEntry("4x5", ASPECT_RATIO_SOCIAL, "📷 4:5", "Instagram / лента"),
+    AspectRatioMenuEntry("9x16", ASPECT_RATIO_STORIES, "📱 9:16", "Stories, Reels, TikTok"),
+    AspectRatioMenuEntry("16x9", ASPECT_RATIO_WIDE, "🖥 16:9", "обложка, презентация, ПК"),
 )
 
 _ASPECT_CALLBACK_MAP: dict[str, str] = {
@@ -63,8 +44,16 @@ _ASPECT_CALLBACK_MAP: dict[str, str] = {
 
 
 def aspect_ratio_menu_options() -> tuple[tuple[str, str], ...]:
-    """Пары ``(label, callback_suffix)`` для inline-клавиатуры."""
-    return tuple((entry.label, entry.callback_suffix) for entry in ASPECT_RATIO_MENU_ENTRIES)
+    """Пары ``(button_label, callback_suffix)`` для inline-клавиатуры."""
+    return tuple((entry.button_label, entry.callback_suffix) for entry in ASPECT_RATIO_MENU_ENTRIES)
+
+
+def format_aspect_ratio_picker_html() -> str:
+    """Текст экрана выбора формата: легенда в сообщении, короткие кнопки ниже."""
+    lines = ["Выбери <b>формат кадра</b>:\n"]
+    for entry in ASPECT_RATIO_MENU_ENTRIES:
+        lines.append(f"{entry.button_label} — {entry.description}")
+    return "\n".join(lines)
 
 
 def model_shows_aspect_ratio_menu(model_id: str | None) -> bool:

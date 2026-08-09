@@ -13,6 +13,7 @@ from platforms.telegram_states import UserFlow
 from services.photo_aspect_ratio import (
     ASPECT_RATIO_MENU_ENTRIES,
     aspect_ratio_from_callback_suffix,
+    format_aspect_ratio_picker_html,
     model_shows_aspect_ratio_menu,
     normalize_photo_aspect_ratio,
     openrouter_aspect_ratio,
@@ -33,6 +34,14 @@ def test_aspect_ratio_menu_entries_map_to_openrouter_values() -> None:
         assert entry.value in {"1:1", "3:4", "4:5", "9:16", "16:9"}
         assert aspect_ratio_from_callback_suffix(entry.callback_suffix) == entry.value
         assert openrouter_aspect_ratio(entry.value) == entry.value
+        assert len(entry.button_label) <= 8
+
+
+def test_format_aspect_ratio_picker_html_lists_all_ratios() -> None:
+    text = format_aspect_ratio_picker_html()
+    assert "▢ 1:1" in text
+    assert "📱 9:16" in text
+    assert "Instagram" in text
 
 
 def test_normalize_aspect_ratio_defaults() -> None:
@@ -85,7 +94,8 @@ async def test_pick_image_model_goes_to_aspect_ratio_state() -> None:
     state.set_state.assert_awaited_with(UserFlow.waiting_for_image_aspect_ratio)
     callback.message.answer.assert_awaited()
     args, kwargs = callback.message.answer.await_args
-    assert msg.TXT_PICK_ASPECT_RATIO in args[0]
+    assert "▢ 1:1" in args[0]
+    assert "📱 9:16" in args[0]
     assert kwargs.get("parse_mode") == ParseMode.HTML
 
 

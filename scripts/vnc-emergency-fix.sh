@@ -27,6 +27,11 @@ fi
 echo "==> $(hostname) $(date -Is)"
 echo "==> DEPLOY_DIR=${DEPLOY_DIR}"
 
+if [ -f scripts/vdsina-memory-check.sh ]; then
+  bash scripts/vdsina-memory-check.sh || true
+  echo
+fi
+
 mkdir -p "${DEPLOY_DIR}"
 cd "${DEPLOY_DIR}"
 

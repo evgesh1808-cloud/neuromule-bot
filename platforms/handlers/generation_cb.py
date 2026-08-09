@@ -540,8 +540,10 @@ async def pick_image_model(callback: CallbackQuery, state: FSMContext) -> None:
 
     if callback.message:
         if show_aspect_menu:
+            from services.photo_aspect_ratio import format_aspect_ratio_picker_html
+
             await callback.message.answer(
-                msg.TXT_PICK_ASPECT_RATIO,
+                format_aspect_ratio_picker_html(),
                 reply_markup=image_aspect_ratio_menu(),
                 parse_mode=ParseMode.HTML,
             )

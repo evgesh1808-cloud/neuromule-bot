@@ -415,8 +415,10 @@ async def photo_edit_reply_idle(message: Message, state: FSMContext) -> None:
 async def image_aspect_ratio_pick_text(message: Message, state: FSMContext) -> None:
     if await _dispatch_nav_or_none(message, state):
         return
+    from services.photo_aspect_ratio import format_aspect_ratio_picker_html
+
     await message.answer(
-        msg.TXT_PICK_ASPECT_RATIO,
+        format_aspect_ratio_picker_html(),
         reply_markup=image_aspect_ratio_menu(),
         parse_mode=ParseMode.HTML,
     )
