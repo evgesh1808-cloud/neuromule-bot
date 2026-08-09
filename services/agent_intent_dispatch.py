@@ -79,6 +79,7 @@ async def enqueue_image_generation_job(
     prompt: str,
     aspect_ratio: str,
     bot: Any | None,
+    status_message_id: int | None = None,
 ) -> PhotoGenOutcome:
     """Списание + ``fire_photo_job`` (общий пайплайн Smart Mode / Mini App)."""
     intent = {
@@ -93,6 +94,7 @@ async def enqueue_image_generation_job(
         chat_id=chat_id,
         intent=intent,
         bot=bot,
+        status_message_id=status_message_id,
     )
 
 
@@ -133,10 +135,24 @@ async def run_webapp_image_pipeline(
     aspect_ratio: str,
     bot: Any | None,
 ) -> tuple[PhotoGenOutcome, str | None]:
-    """Preview баланса → enqueue → уведомление в чат."""
+    """Preview баланса → status msg → enqueue."""
     ok, refusal = await preview_image_affordability(user_id, model_id)
     if not ok:
         return PhotoGenOutcome.INSUFFICIENT_BALANCE, refusal
+
+    status_message_id: int | None = None
+    if platform == "telegram" and bot is not None:
+        from services.photo_gen_status import send_photo_gen_status_message
+
+        status_msg = await send_photo_gen_status_message(
+            bot,
+            chat_id,
+            model_label=model_label,
+            aspect_ratio=aspect_ratio,
+            model_id=model_id,
+        )
+        if status_msg is not None:
+            status_message_id = status_msg.message_id
 
     outcome = await enqueue_image_generation_job(
         platform=platform,
@@ -147,9 +163,8 @@ async def run_webapp_image_pipeline(
         prompt=prompt,
         aspect_ratio=aspect_ratio,
         bot=bot,
+        status_message_id=status_message_id,
     )
-    if outcome is PhotoGenOutcome.SUCCESS:
-        await notify_webapp_queue_accepted(platform=platform, chat_id=chat_id, bot=bot)
     return outcome, None
 
 
@@ -160,6 +175,7 @@ async def _enqueue_agent_image_job(
     chat_id: int,
     intent: dict[str, Any],
     bot: Any | None,
+    status_message_id: int | None = None,
 ) -> PhotoGenOutcome:
     model_id = str(intent["model_id"])
     model_label = str(intent["model_label"])
@@ -192,6 +208,7 @@ async def _enqueue_agent_image_job(
         priority=eq.priority,
         billing_charge_id=eq.billing_charge_id,
         aspect_ratio=eq.aspect_ratio,
+        status_message_id=status_message_id,
         platform=platform,  # type: ignore[arg-type]
     )
     return PhotoGenOutcome.SUCCESS
@@ -226,10 +243,19 @@ async def try_agent_image_intent_telegram(message: Message, state: FSMContext) -
         await message.answer(refusal or msg.TXT_INSUFFICIENT_BALANCE, parse_mode=ParseMode.HTML)
         return True
 
-    await message.answer(
-        format_agent_image_ack(intent["model_label"], intent["aspect_ratio"]),
-        parse_mode=ParseMode.HTML,
-    )
+    status_message_id: int | None = None
+    if message.bot is not None:
+        from services.photo_gen_status import send_photo_gen_status_message
+
+        status_msg = await send_photo_gen_status_message(
+            message.bot,
+            message.chat.id,
+            model_label=str(intent["model_label"]),
+            aspect_ratio=str(intent["aspect_ratio"]),
+            model_id=str(intent["model_id"]),
+        )
+        if status_msg is not None:
+            status_message_id = status_msg.message_id
 
     from platforms.handlers import deps
 
@@ -239,6 +265,7 @@ async def try_agent_image_intent_telegram(message: Message, state: FSMContext) -
         chat_id=message.chat.id,
         intent=intent,
         bot=deps.bot(),
+        status_message_id=status_message_id,
     )
     if outcome is not PhotoGenOutcome.SUCCESS:
         await message.answer(msg.TXT_GEN_JOB_FAILED, parse_mode=ParseMode.HTML)

@@ -714,21 +714,24 @@ async def _photo_stub_worker(task: GenTask) -> None:
     model_key = _normalize_photo_model_id(task.image_model_id, task.model_label)
     is_free = task.used_daily_slot or model_key == FREE_PHOTO_MODEL_KEY
 
+    logger.info(
+        "photo job %s user_id=%s model_id=%s model_key=%s prompt_len=%s file_id=%s ref_url=%s ref_bytes=%s free_slot=%s platform=%s",
+        task.task_id,
+        user_id,
+        task.image_model_id,
+        model_key,
+        len(user_prompt),
+        bool(task.file_id),
+        bool(task.reference_image_url),
+        bool(task.reference_image_bytes),
+        task.used_daily_slot,
+        task.platform,
+    )
+
     try:
-        logger.info(
-            "photo job %s user_id=%s model_id=%s model_key=%s prompt_len=%s file_id=%s ref_url=%s ref_bytes=%s free_slot=%s platform=%s",
-            task.task_id,
-            user_id,
-            task.image_model_id,
-            model_key,
-            len(user_prompt),
-            bool(task.file_id),
-            bool(task.reference_image_url),
-            bool(task.reference_image_bytes),
-            task.used_daily_slot,
-            task.platform,
-        )
-        from contextlib import asynccontextmanager, nullcontext
+        from contextlib import asynccontextmanager
+
+        from services.photo_gen_status import photo_status_progress_scope
 
         @asynccontextmanager
         async def _photo_action_scope():
@@ -738,51 +741,60 @@ async def _photo_stub_worker(task: GenTask) -> None:
             async with chat_action_loop(bot, chat_id, "upload_photo"):
                 yield
 
-        async with _photo_action_scope():
-            try:
-                if is_free:
-                    async with asyncio.timeout(FREE_PHOTO_HARD_TIMEOUT_SEC):
-                        raw = await _generate_free_tier_photo(
+        async with photo_status_progress_scope(
+            bot if task.platform == "telegram" else None,
+            chat_id,
+            task.status_message_id,
+            model_label=task.model_label or task.image_model_id,
+            aspect_ratio=task.aspect_ratio,
+            model_id=task.image_model_id,
+            used_daily_slot=task.used_daily_slot,
+        ):
+            async with _photo_action_scope():
+                try:
+                    if is_free:
+                        async with asyncio.timeout(FREE_PHOTO_HARD_TIMEOUT_SEC):
+                            raw = await _generate_free_tier_photo(
+                                user_prompt,
+                                bot=bot,
+                                file_id=task.file_id,
+                                reference_image_url=task.reference_image_url,
+                                reference_image_bytes=task.reference_image_bytes,
+                                reference_mime=task.reference_mime,
+                            )
+                    else:
+                        raw = await _generate_photo_result(
+                            model_key,
                             user_prompt,
+                            aspect_ratio=task.aspect_ratio,
+                            user_id=user_id,
                             bot=bot,
                             file_id=task.file_id,
                             reference_image_url=task.reference_image_url,
                             reference_image_bytes=task.reference_image_bytes,
                             reference_mime=task.reference_mime,
                         )
-                else:
-                    raw = await _generate_photo_result(
-                        model_key,
-                        user_prompt,
-                        aspect_ratio=task.aspect_ratio,
-                        user_id=user_id,
-                        bot=bot,
-                        file_id=task.file_id,
-                        reference_image_url=task.reference_image_url,
-                        reference_image_bytes=task.reference_image_bytes,
-                        reference_mime=task.reference_mime,
+                except TimeoutError as err:
+                    logger.error(
+                        "Критический сбой бесплатного каскада. Мул завис. Ошибка: %s",
+                        err,
                     )
-            except TimeoutError as err:
-                logger.error(
-                    "Критический сбой бесплатного каскада. Мул завис. Ошибка: %s",
-                    err,
-                )
-                await fail_generation_task(
-                    task,
-                    user_message=msg.TXT_FREE_IMAGE_CASCADE_FAILED,
-                    log_msg="photo free hard timeout",
-                    exc=err,
-                )
-                return
-            photo_url: str | None = None
-            photo_bytes: bytes | None = None
-            if isinstance(raw, str):
-                photo_url = raw
-            elif isinstance(raw, GeminiImageResult):
-                photo_url = raw.url
-                photo_bytes = raw.data
-            await _safe_delete_status_message(task)
-            await _send_generated_photo(task, photo_url=photo_url, photo_bytes=photo_bytes)
+                    await fail_generation_task(
+                        task,
+                        user_message=msg.TXT_FREE_IMAGE_CASCADE_FAILED,
+                        log_msg="photo free hard timeout",
+                        exc=err,
+                    )
+                    return
+                photo_url: str | None = None
+                photo_bytes: bytes | None = None
+                if isinstance(raw, str):
+                    photo_url = raw
+                elif isinstance(raw, GeminiImageResult):
+                    photo_url = raw.url
+                    photo_bytes = raw.data
+                await _safe_delete_status_message(task)
+                await _send_generated_photo(task, photo_url=photo_url, photo_bytes=photo_bytes)
         task.status = "completed"
     except FreeImageCascadeExhausted as exc:
         logger.error(

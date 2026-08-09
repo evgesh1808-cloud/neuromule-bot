@@ -277,13 +277,15 @@ async def process_photo_prompt_message(
 
     status_msg: Message | None = None
     if not skip_status_message:
-        try:
-            status_msg = await message.answer(
-                msg.TXT_GEN_STATUS_ACCEPTED,
-                parse_mode=ParseMode.HTML,
-            )
-        except Exception:
-            logger.exception("photo prompt: failed to send status uid=%s", user_id)
+        from services.photo_gen_status import send_photo_gen_status_message
+
+        status_msg = await send_photo_gen_status_message(
+            deps.bot(),
+            chat_id,
+            model_label=label,
+            aspect_ratio=ar,
+            model_id=model_id,
+        )
 
     try:
         lock = user_locks.setdefault(user_id, asyncio.Lock())
