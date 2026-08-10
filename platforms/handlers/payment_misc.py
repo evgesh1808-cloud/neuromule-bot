@@ -343,7 +343,6 @@ async def open_tariffs_from_result_or_instruction(callback: CallbackQuery) -> No
 
 result_cbs = (
     msg.CB_RESULT_ANIMATE,
-    msg.CB_RESULT_REPEAT_PHOTO,
     msg.CB_RESULT_HD_PRO,
     msg.CB_RESULT_GALLERY,
     msg.CB_RESULT_MP3,

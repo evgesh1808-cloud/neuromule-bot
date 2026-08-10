@@ -38,6 +38,9 @@ class PhotoEditSession:
     reference_mime: str = "image/jpeg"
     message_id: int | None = None
     chat_id: int | None = None
+    user_prompt: str | None = None
+    reference_file_id: str | None = None
+    generation_seed: int | None = None
 
 
 def _evict_expired(now: float | None = None) -> None:
@@ -71,6 +74,9 @@ def save_photo_edit_session(
     message_id: int | None = None,
     chat_id: int | None = None,
     platform: PlatformKind = "telegram",
+    user_prompt: str | None = None,
+    reference_file_id: str | None = None,
+    generation_seed: int | None = None,
     ttl_sec: float = DEFAULT_EDIT_SESSION_TTL_SEC,
 ) -> PhotoEditSession | None:
     """Сохраняет контекст последней генерации; нужен хотя бы один источник изображения."""
@@ -90,6 +96,9 @@ def save_photo_edit_session(
     if not tg_id and not url and not raw:
         return None
 
+    ref_id = (reference_file_id or "").strip() or None
+    prompt = (user_prompt or "").strip() or None
+
     sess = PhotoEditSession(
         user_id=user_id,
         image_model_id=(image_model_id or "").strip(),
@@ -103,6 +112,9 @@ def save_photo_edit_session(
         reference_mime=(reference_mime or "image/jpeg").strip() or "image/jpeg",
         message_id=message_id,
         chat_id=chat_id,
+        user_prompt=prompt,
+        reference_file_id=ref_id,
+        generation_seed=generation_seed,
     )
     _sessions[user_id] = sess
     _trim_if_needed()
@@ -153,6 +165,9 @@ def update_photo_edit_session_aspect_ratio(user_id: int, aspect_ratio: str) -> N
         reference_mime=sess.reference_mime,
         message_id=sess.message_id,
         chat_id=sess.chat_id,
+        user_prompt=sess.user_prompt,
+        reference_file_id=sess.reference_file_id,
+        generation_seed=sess.generation_seed,
     )
 
 

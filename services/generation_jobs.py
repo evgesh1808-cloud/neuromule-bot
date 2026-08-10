@@ -8,25 +8,25 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import random
 import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramNetworkError
-from aiogram.types import BufferedInputFile, InputFile, URLInputFile
+from aiogram.types import BufferedInputFile, URLInputFile
 
 from config import settings
 from content import messages as msg
 from content.inline_keyboards import (
+    new_result_keyboard,
     result_music_keyboard,
     result_music_keyboard_pro,
-    result_photo_keyboard,
 )
 from content.video_menu import result_video_keyboard_pro
 from platforms.telegram_chat_action import chat_action_loop
 from services import last_music_request, last_share_media
-from services.photo_dl_callback import build_dl_file_callback
 from services.gemini_image_client import (
     GeminiImageResult,
     generate_imagen_fast,
@@ -51,8 +51,8 @@ from services.photo_aspect_ratio import (
     openrouter_aspect_ratio,
     replicate_flux_aspect_ratio,
 )
+from services.fal_image_pipeline import fal_configured, generate_fal_i2i_reference
 from services.photo_edit_session import save_photo_edit_session
-from services.photo_share import resolve_photo_share_url
 from services.billing.image_pipeline import FREE_PHOTO_MODEL_KEY, free_tier_image_model
 from services.free_image_cascade import FreeImageCascadeExhausted, generate_free_tier_image
 from services.openrouter_images import (
@@ -67,6 +67,7 @@ from services.openrouter_images import (
 )
 from services.pollinations_client import generate_flux_schnell_image
 from services.repository import get_user_row
+
 from services.tariffs import TariffName, normalize_tariff
 
 if TYPE_CHECKING:
@@ -114,6 +115,8 @@ class GenTask:
     music_lyrics: str | None = None
     music_instrumental: bool = False
     music_continue_clip_id: str | None = None
+    generation_seed: int | None = None
+    cleanup_message_ids: tuple[int, ...] = ()
 
     @property
     def kind(self) -> JobKind:
@@ -298,6 +301,43 @@ async def _safe_delete_status_message(task: GenTask) -> None:
         logger.warning("status delete unexpected task=%s", task.task_id, exc_info=True)
     finally:
         task.status_message_id = None
+
+
+async def _safe_delete_cleanup_messages(task: GenTask) -> None:
+    """Удалить промежуточные сервисные сообщения (zero-trash UX)."""
+    if task.platform == "vk" or task.bot is None:
+        return
+    for raw_id in task.cleanup_message_ids:
+        if raw_id is None:
+            continue
+        try:
+            await task.bot.delete_message(chat_id=task.chat_id, message_id=int(raw_id))
+        except (TelegramBadRequest, TelegramForbiddenError, TelegramNetworkError) as exc:
+            logger.debug("cleanup delete skipped task=%s msg=%s: %s", task.task_id, raw_id, exc)
+        except Exception:
+            logger.warning("cleanup delete unexpected task=%s msg=%s", task.task_id, raw_id, exc_info=True)
+    task.cleanup_message_ids = ()
+
+
+def _task_has_reference(task: GenTask) -> bool:
+    return bool(task.file_id or task.reference_image_url or task.reference_image_bytes)
+
+
+async def _resolve_swap_image_url(bot: "Bot | None", task: GenTask) -> str:
+    if task.file_id and bot is not None:
+        return await telegram_photo_download_url(bot, task.file_id)
+    ref_url = (task.reference_image_url or "").strip()
+    if ref_url:
+        return ref_url
+    raise ExternalApiError("fal.ai", "нет прямой ссылки на референс-фото")
+
+
+async def _generate_fal_reference_photo(task: GenTask) -> str:
+    seed = task.generation_seed
+    if seed is None:
+        seed = random.randint(1, 2_000_000_000)
+    swap_url = await _resolve_swap_image_url(task.bot, task)
+    return await generate_fal_i2i_reference(task.prompt or "", swap_url, seed=seed)
 
 
 async def _generate_free_tier_photo(
@@ -611,56 +651,40 @@ async def _send_generated_photo(
     bot, chat_id = task.bot, task.chat_id
     if bot is None:
         raise RuntimeError("Telegram photo delivery requires bot")
+
     display = task.model_label or task.image_model_id or "модель"
-    if task.used_daily_slot:
-        # Остаток дневных попыток — только в Профиле, не в caption.
-        caption = (
-            f"🎨 **Бесплатное фото дня готово!**\n"
-            f"🤖 Модель: {display}\n"
-            f"💎 Стоимость: 0 💎"
-        )
-        if task.file_id or task.reference_image_url or task.reference_image_bytes:
-            caption = f"{caption}\n\n{msg.TXT_FREE_I2I_PREMIUM_TIP}"
-    else:
-        caption = (
-            f"🎨 **Ваше изображение успешно сгенерировано!**\n"
-            f"🤖 Модель: {display}\n"
-            f"💎 Стоимость: {task.charged_crystals} 💎"
-        )
-        if (task.file_id or task.reference_image_url or task.reference_image_bytes) and (
-            task.image_model_id == FREE_PHOTO_MODEL_KEY
-            or (task.model_label or "").strip() == "Flux FREE"
-        ):
-            caption = f"{caption}\n\n{msg.TXT_FREE_I2I_PREMIUM_TIP}"
-    row = await get_user_row(task.user_id)
-    photo_share_url = resolve_photo_share_url(
-        normalize_tariff(row.tariff),
-        task.prompt or "",
-        task.user_id,
-    )
-    # Сначала превью без кнопки скачивания — file_id появится только после send_photo.
-    markup = result_photo_keyboard(task_id=task.task_id, photo_share_url=photo_share_url)
+    prompt_line = (task.prompt or "").strip()
+    if len(prompt_line) > 400:
+        prompt_line = f"{prompt_line[:397]}…"
+
     if photo_url:
-        sent = await bot.send_photo(
-            chat_id,
-            photo=photo_url,
-            caption=caption,
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=markup,
-        )
+        final_url = photo_url
     elif photo_bytes:
-        sent = await bot.send_photo(
+        sent_tmp = await bot.send_photo(
             chat_id,
             photo=BufferedInputFile(photo_bytes, filename="neuromule_generated.jpg"),
-            caption=caption,
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=markup,
         )
+        final_url = None
+        tg_file_id = sent_tmp.photo[-1].file_id if sent_tmp.photo else None
+        if tg_file_id:
+            final_url = tg_file_id
+        if not final_url:
+            raise RuntimeError("Не удалось получить URL/file_id для доставки")
     else:
         raise RuntimeError("Нет URL и байтов изображения")
 
-    # Кэшируем file_id наибольшего размера + оригинальный URL (если был):
-    # TG-канал отправим file_id'ом без скачивания, VK/MAX — оригинальный URL.
+    doc_caption = "📥 Оригинальный файл (HD)"
+    photo_caption = f"🤖 Модель: {display}\n📝 Промпт: {prompt_line or '—'}"
+    markup = new_result_keyboard(task_id=task.task_id)
+
+    await bot.send_document(chat_id, document=final_url, caption=doc_caption)
+    sent = await bot.send_photo(
+        chat_id,
+        photo=final_url,
+        caption=photo_caption,
+        reply_markup=markup,
+    )
+
     tg_file_id = sent.photo[-1].file_id if sent.photo else None
     _remember_share(task, file_id=tg_file_id, media_url=photo_url)
 
@@ -670,37 +694,18 @@ async def _send_generated_photo(
         image_model_label=task.model_label or task.image_model_id,
         aspect_ratio=task.aspect_ratio,
         telegram_file_id=tg_file_id,
-        media_url=photo_url,
+        media_url=photo_url or (final_url if isinstance(final_url, str) and final_url.startswith("http") else None),
         reference_image_bytes=photo_bytes,
         message_id=sent.message_id,
         chat_id=chat_id,
         platform="telegram",
+        user_prompt=task.prompt,
+        reference_file_id=task.file_id,
+        generation_seed=task.generation_seed,
     )
 
-    # «Скачать без сжатия»: переиспользуем Telegram file_id (бесплатно / мгновенно).
-    if tg_file_id:
-        try:
-            dl_cb = build_dl_file_callback(
-                file_id=tg_file_id,
-                task_id=task.task_id,
-                user_id=task.user_id,
-            )
-            markup_with_dl = result_photo_keyboard(
-                task_id=task.task_id,
-                photo_share_url=photo_share_url,
-                download_callback=dl_cb,
-            )
-            await bot.edit_message_reply_markup(
-                chat_id=chat_id,
-                message_id=sent.message_id,
-                reply_markup=markup_with_dl,
-            )
-        except (TelegramBadRequest, TelegramForbiddenError, TelegramNetworkError) as exc:
-            logger.warning(
-                "photo download button attach failed task=%s: %s",
-                task.task_id,
-                exc,
-            )
+    await _safe_delete_status_message(task)
+    await _safe_delete_cleanup_messages(task)
 
 
 async def _photo_stub_worker(task: GenTask) -> None:
@@ -751,8 +756,16 @@ async def _photo_stub_worker(task: GenTask) -> None:
             used_daily_slot=task.used_daily_slot,
         ):
             async with _photo_action_scope():
+                photo_url: str | None = None
+                photo_bytes: bytes | None = None
+                raw: GeminiImageResult | str | None = None
+                fal_i2i = _task_has_reference(task) and fal_configured()
+
                 try:
-                    if is_free:
+                    if fal_i2i:
+                        async with asyncio.timeout(EXTERNAL_API_TIMEOUT_SEC):
+                            photo_url = await _generate_fal_reference_photo(task)
+                    elif is_free:
                         async with asyncio.timeout(FREE_PHOTO_HARD_TIMEOUT_SEC):
                             raw = await _generate_free_tier_photo(
                                 user_prompt,
@@ -774,6 +787,37 @@ async def _photo_stub_worker(task: GenTask) -> None:
                             reference_image_bytes=task.reference_image_bytes,
                             reference_mime=task.reference_mime,
                         )
+                except ExternalApiError as exc:
+                    if fal_i2i:
+                        logger.warning(
+                            "fal i2i failed (%s), fallback legacy i2i path task=%s",
+                            exc,
+                            task.task_id,
+                        )
+                        if is_free:
+                            async with asyncio.timeout(FREE_PHOTO_HARD_TIMEOUT_SEC):
+                                raw = await _generate_free_tier_photo(
+                                    user_prompt,
+                                    bot=bot,
+                                    file_id=task.file_id,
+                                    reference_image_url=task.reference_image_url,
+                                    reference_image_bytes=task.reference_image_bytes,
+                                    reference_mime=task.reference_mime,
+                                )
+                        else:
+                            raw = await _generate_photo_result(
+                                model_key,
+                                user_prompt,
+                                aspect_ratio=task.aspect_ratio,
+                                user_id=user_id,
+                                bot=bot,
+                                file_id=task.file_id,
+                                reference_image_url=task.reference_image_url,
+                                reference_image_bytes=task.reference_image_bytes,
+                                reference_mime=task.reference_mime,
+                            )
+                    else:
+                        raise
                 except TimeoutError as err:
                     logger.error(
                         "Критический сбой бесплатного каскада. Мул завис. Ошибка: %s",
@@ -786,14 +830,14 @@ async def _photo_stub_worker(task: GenTask) -> None:
                         exc=err,
                     )
                     return
-                photo_url: str | None = None
-                photo_bytes: bytes | None = None
-                if isinstance(raw, str):
-                    photo_url = raw
-                elif isinstance(raw, GeminiImageResult):
-                    photo_url = raw.url
-                    photo_bytes = raw.data
-                await _safe_delete_status_message(task)
+
+                if raw is not None:
+                    if isinstance(raw, str):
+                        photo_url = raw
+                    elif isinstance(raw, GeminiImageResult):
+                        photo_url = raw.url
+                        photo_bytes = raw.data
+
                 await _send_generated_photo(task, photo_url=photo_url, photo_bytes=photo_bytes)
         task.status = "completed"
     except FreeImageCascadeExhausted as exc:
@@ -1170,6 +1214,8 @@ def fire_photo_job(
     status_message_id: int | None = None,
     *,
     platform: PlatformKind = "telegram",
+    generation_seed: int | None = None,
+    cleanup_message_ids: tuple[int, ...] | list[int] | None = None,
 ) -> None:
     ref_url = (reference_image_url or "").strip() or None
     ref_bytes: bytes | None = None
@@ -1178,6 +1224,8 @@ def fire_photo_job(
             ref_bytes = reference_image_bytes.tobytes()
         elif isinstance(reference_image_bytes, (bytes, bytearray)):
             ref_bytes = bytes(reference_image_bytes)
+    seed = generation_seed if generation_seed is not None else random.randint(1, 2_000_000_000)
+    cleanup_ids = tuple(int(x) for x in (cleanup_message_ids or ()) if x)
     _enqueue(
         priority,
         GenTask(
@@ -1199,6 +1247,8 @@ def fire_photo_job(
             charged_crystals=charged_crystals,
             billing_charge_id=billing_charge_id,
             status_message_id=status_message_id,
+            generation_seed=seed,
+            cleanup_message_ids=cleanup_ids,
         ),
     )
 

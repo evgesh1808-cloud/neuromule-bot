@@ -25,6 +25,51 @@ def _gallery_share_row(task_id: str | None = None) -> list[InlineKeyboardButton]
     ]
 
 
+def new_result_keyboard(*, task_id: str | None = None) -> InlineKeyboardMarkup:
+    """Компактная сетка под результатом (@chatcom-style)."""
+    _ = task_id
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🔍 Увеличить разрешение", callback_data=msg.CB_RESULT_UPSCALE),
+                InlineKeyboardButton(text="🔄 Повторить", callback_data=msg.CB_RESULT_REPEAT_PHOTO),
+            ],
+            [
+                InlineKeyboardButton(text="🪄 Оживить (Видео)", callback_data=msg.CB_RESULT_ANIMATE),
+                InlineKeyboardButton(text="📐 Сменить формат", callback_data=msg.CB_RESULT_CHANGE_FORMAT),
+            ],
+            [
+                InlineKeyboardButton(text="✏️ Доработать текстом", callback_data=msg.CB_PHOTO_REFINE),
+            ],
+        ]
+    )
+
+
+def result_upscale_submenu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔍 Увеличить х2 (1 💎)", callback_data=msg.CB_RESULT_UPSCALE_X2)],
+            [InlineKeyboardButton(text="💎 Максимум х4 (3 💎)", callback_data=msg.CB_RESULT_UPSCALE_X4)],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data=msg.CB_RESULT_GRID_BACK)],
+        ]
+    )
+
+
+def result_format_submenu_keyboard() -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for label, suffix in msg.IMAGE_ASPECT_OPTIONS:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=label,
+                    callback_data=f"{msg.CB_RES_FMT_PREFIX}{suffix}",
+                )
+            ]
+        )
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=msg.CB_RESULT_GRID_BACK)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def result_photo_keyboard(
     task_id: str | None = None,
     *,

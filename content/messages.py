@@ -272,6 +272,12 @@ CB_CHECK_SUBSCRIPTION = "check_subscription"
 CB_RECHECK_SUBSCRIPTION = "recheck_subscription"
 CB_RESULT_ANIMATE = "res_anim"
 CB_RESULT_REPEAT_PHOTO = "res_repeat_ph"
+CB_RESULT_UPSCALE = "res_upscale"
+CB_RESULT_UPSCALE_X2 = "res_up_x2"
+CB_RESULT_UPSCALE_X4 = "res_up_x4"
+CB_RESULT_GRID_BACK = "res_grid_back"
+CB_RESULT_CHANGE_FORMAT = "res_chg_fmt"
+CB_RES_FMT_PREFIX = "res_fmt:"
 CB_RESULT_HD_PRO = "res_hd_pro"  # legacy stub; заменён на CB_DL_FILE_PREFIX
 CB_DL_FILE_PREFIX = "dl_file:"  # dl_file:<task_id|file_id|token>
 CB_RESULT_PREMIUM = "res_premium"
@@ -965,6 +971,16 @@ TXT_PHOTO_REFINE_PROMPT = (
 TXT_PHOTO_REFINE_EXPIRED = (
     "Сессия доработки истекла (15 мин). Сгенерируй новое фото или отправь снимок заново."
 )
+TXT_UPSCALE_X2_NEED_CRYSTAL = (
+    "💎 Для увеличения х2 требуется 1 кристалл! Эта функция платная для всех тарифов. "
+    "Пополнить баланс кристаллов: /buy"
+)
+TXT_UPSCALE_X4_NEED_CRYSTAL = (
+    "💎 Ультра-качество х4 стоит 3 кристалла! Пополните баланс кристаллов командой /buy."
+)
+TXT_UPSCALE_IN_PROGRESS = "🔍 Увеличиваю разрешение…"
+TXT_UPSCALE_DONE = "📥 Увеличенное изображение (HD)"
+TXT_RESULT_REPEAT_STARTED = "🔄 Повторяю генерацию с новым seed…"
 TXT_CREATE_IMAGE_WAIT_PROMPT = (
     "📎 Фото принято. Теперь отправь <b>текстовый промпт</b> — что изменить или добавить."
 )

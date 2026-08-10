@@ -379,6 +379,10 @@ async def process_photo_prompt_message(
         clear_photo_flow(user_id)
         return
 
+    data = await state.get_data()
+    cleanup_ids = tuple(int(x) for x in (data.get("photo_service_message_ids") or []) if x)
+    await state.update_data(photo_service_message_ids=[])
+
     fire_photo_job(
         deps.bot(),
         chat_id,
@@ -396,6 +400,7 @@ async def process_photo_prompt_message(
         reference_mime=eq.reference_mime,
         aspect_ratio=eq.aspect_ratio,
         status_message_id=status_msg.message_id if status_msg is not None else None,
+        cleanup_message_ids=cleanup_ids,
     )
     if pr.vip_priority:
         await message.answer(msg.TXT_GEN_STATUS_VIP)
@@ -461,8 +466,14 @@ async def photo_process_with_image(message: Message, state: FSMContext) -> None:
         )
         return
 
-    await state.update_data(pending_reference_file_id=file_id)
-    await message.answer(msg.TXT_CREATE_IMAGE_WAIT_PROMPT, parse_mode=ParseMode.HTML)
+    hint = await message.answer(msg.TXT_CREATE_IMAGE_WAIT_PROMPT, parse_mode=ParseMode.HTML)
+    data = await state.get_data()
+    service_ids = list(data.get("photo_service_message_ids") or [])
+    service_ids.append(hint.message_id)
+    await state.update_data(
+        pending_reference_file_id=file_id,
+        photo_service_message_ids=service_ids,
+    )
 
 
 @router.message(UserFlow.waiting_for_photo, F.text)

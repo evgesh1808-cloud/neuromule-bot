@@ -27,6 +27,7 @@ from services.generation_jobs import GenTask
 @dataclass
 class _SentLog:
     photo_calls: list[dict[str, Any]] = field(default_factory=list)
+    document_calls: list[dict[str, Any]] = field(default_factory=list)
     video_calls: list[dict[str, Any]] = field(default_factory=list)
     audio_calls: list[dict[str, Any]] = field(default_factory=list)
 
@@ -38,6 +39,10 @@ def _make_bot(log: _SentLog) -> SimpleNamespace:
             message_id=101,
             photo=[SimpleNamespace(file_id="tg_photo_xxs"), SimpleNamespace(file_id="tg_photo_xl")],
         )
+
+    async def send_document(*args, **kwargs):
+        log.document_calls.append({"args": args, "kwargs": kwargs})
+        return SimpleNamespace(message_id=100)
 
     async def send_video(*args, **kwargs):
         log.video_calls.append({"args": args, "kwargs": kwargs})
@@ -56,6 +61,7 @@ def _make_bot(log: _SentLog) -> SimpleNamespace:
 
     return SimpleNamespace(
         send_photo=send_photo,
+        send_document=send_document,
         send_video=send_video,
         send_audio=send_audio,
         send_message=send_message,
@@ -125,6 +131,7 @@ async def test_photo_worker_caches_share_media(monkeypatch) -> None:
     await generation_jobs._photo_stub_worker(task)
 
     assert task.status == "completed"
+    assert log.document_calls, "send_document must be called first (HD original)"
     assert log.photo_calls, "send_photo must be called"
 
     entry = last_share_media.get_by_task("ph_001")
@@ -134,29 +141,11 @@ async def test_photo_worker_caches_share_media(monkeypatch) -> None:
     assert entry.media_url == "https://cdn.fake/flux.png"
     assert entry.prompt == "epic test"
 
+    assert log.document_calls[0]["kwargs"]["document"] == "https://cdn.fake/flux.png"
     markup = log.photo_calls[0]["kwargs"]["reply_markup"]
-    share_btn = markup.inline_keyboard[0][0]
-    assert share_btn.url is not None
-    assert share_btn.url.startswith("https://t.me/share/url?")
-    assert "ref70001" in share_btn.url
-    assert msg.TXT_PHOTO_SHARE_RESULT_BTN in share_btn.text
-
-    gallery_row = markup.inline_keyboard[-1]
-    forward_btns = [b for b in gallery_row if b.switch_inline_query]
-    assert len(forward_btns) == 1
-    assert forward_btns[0].text == msg.TXT_GALLERY_FORWARD_FRIEND_BTN
-
-    edits = [c for c in log.photo_calls if c.get("edit_markup")]
-    assert edits, "download button must be attached via edit_message_reply_markup"
-    edited_kb = edits[0]["kwargs"]["reply_markup"]
-    dl_btns = [
-        b
-        for row in edited_kb.inline_keyboard
-        for b in row
-        if b.text == msg.BTN_DOWNLOAD_UNCOMPRESSED
-    ]
-    assert len(dl_btns) == 1
-    assert dl_btns[0].callback_data.startswith(msg.CB_DL_FILE_PREFIX)
+    assert markup.inline_keyboard[0][0].callback_data == msg.CB_RESULT_UPSCALE
+    assert markup.inline_keyboard[0][1].callback_data == msg.CB_RESULT_REPEAT_PHOTO
+    assert markup.inline_keyboard[2][0].callback_data == msg.CB_PHOTO_REFINE
 
 
 @pytest.mark.asyncio
@@ -190,16 +179,10 @@ async def test_photo_worker_paid_tariff_has_no_share_button(monkeypatch, tariff:
     for row in markup.inline_keyboard:
         for btn in row:
             assert btn.url is None or "share/url" not in (btn.url or "")
-            assert msg.TXT_PHOTO_SHARE_RESULT_BTN not in (btn.text or "")
 
     first_btn = markup.inline_keyboard[0][0]
-    assert first_btn.text == msg.BTN_PHOTO_REFINE
+    assert first_btn.callback_data == msg.CB_RESULT_UPSCALE
     assert markup.inline_keyboard[1][0].text.startswith("🪄")
-
-    gallery_row = markup.inline_keyboard[-1]
-    forward_btns = [b for b in gallery_row if b.switch_inline_query]
-    assert len(forward_btns) == 1
-    assert forward_btns[0].text == msg.TXT_GALLERY_FORWARD_FRIEND_BTN
 
 
 # ─── video ──────────────────────────────────────────────────────────────────

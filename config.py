@@ -247,6 +247,7 @@ class Settings(BaseSettings):
     gemini_api_key: str = Field(default="", alias="GEMINI_API_KEY")
     # Второй ключ Google AI Studio Free Tier (failover / round-robin для Nano Banana).
     gemini_api_key_2: str = Field(default="", alias="GEMINI_API_KEY_2")
+    fal_api_key: str = Field(default="", validation_alias=AliasChoices("FAL_KEY", "fal_api_key"))
     replicate_api_token: str = Field(default="", alias="REPLICATE_API_TOKEN")
     replicate_video_model: Annotated[str, _nonempty_str("luma/ray-flash")] = "luma/ray-flash"
     replicate_animate_model: Annotated[str, _nonempty_str("luma/ray-flash")] = "luma/ray-flash"
