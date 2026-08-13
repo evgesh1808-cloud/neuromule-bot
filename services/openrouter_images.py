@@ -27,14 +27,151 @@ OPENROUTER_GPT_IMAGE2_MODEL = "openai/gpt-image-2"
 # Backward-compatible alias (tests / старые импорты).
 OPENROUTER_FLUX_SCHNELL_MODEL = OPENROUTER_FLUX_PAID_MODEL
 DEFAULT_OPENROUTER_IMAGES_TIMEOUT_SEC = 180.0
+IDENTITY_REFERENCE_WEIGHT = 0.85
+FACE_DESCRIBE_VISION_MODEL = "google/gemini-2.5-flash"
+FACE_DESCRIBE_SYSTEM_PROMPT = (
+    "Опиши лицо на фото детально за 15 слов для генератора картинок."
+)
+
+# Меню NeuroMule → официальный slug OpenRouter Images.
+OPENROUTER_MODEL_BY_MENU_KEY: dict[str, str] = {
+    "flux_schnell": OPENROUTER_FLUX_PAID_MODEL,
+    "dalle_3": OPENROUTER_GPT_IMAGE2_MODEL,
+    "nano_banana2": OPENROUTER_NANO_BANANA2_MODEL,
+    "nano_banana_pro": OPENROUTER_NANO_BANANA_PRO_MODEL,
+}
+
+# Модели с ювелирным удержанием лица через input_references + weight.
+MODELS_WITH_WEIGHTED_IDENTITY_REFERENCE: frozenset[str] = frozenset(
+    {
+        OPENROUTER_FLUX_PAID_MODEL,
+        OPENROUTER_NANO_BANANA_PRO_MODEL,
+        OPENROUTER_NANO_BANANA2_MODEL,
+    }
+)
+
+_IDENTITY_STYLE_TEMPLATE = (
+    "{prompt}. Generate a new scene matching the description. "
+    "Preserve the subject's facial identity, bone structure, skin tone, and "
+    "distinctive features from the reference exactly — new background and styling only."
+)
 
 
 def openrouter_images_configured(settings: Settings) -> bool:
     return bool((settings.openrouter_key or "").strip())
 
 
+def resolve_openrouter_model_for_menu_key(model_key: str) -> str:
+    """Ключ меню/биллинга → slug OpenRouter Images."""
+    normalized = (model_key or "").strip().lower().replace("-", "_")
+    slug = OPENROUTER_MODEL_BY_MENU_KEY.get(normalized)
+    if not slug:
+        raise ExternalApiError("OpenRouter", f"unknown image model key: {model_key}")
+    return slug
+
+
+def format_identity_photo_prompt(user_prompt: str) -> str:
+    """Текст пользователя + шаблон удержания биометрии лица (без init_images)."""
+    cleaned = (user_prompt or "").strip() or "Professional portrait photo"
+    return _IDENTITY_STYLE_TEMPLATE.format(prompt=cleaned)
+
+
 def openrouter_input_reference(data_url: str) -> dict[str, Any]:
+    """Обычная i2i-ссылка (обложки, upscale)."""
     return {"type": "image_url", "image_url": {"url": data_url}}
+
+
+def openrouter_identity_reference(
+    data_url: str,
+    *,
+    weight: float = IDENTITY_REFERENCE_WEIGHT,
+) -> dict[str, Any]:
+    """Референс лица: type identity + weight для удержания черт без размытия."""
+    return {
+        "type": "identity",
+        "weight": float(weight),
+        "image_url": {"url": data_url},
+    }
+
+
+def model_uses_weighted_identity_reference(model: str) -> bool:
+    return (model or "").strip() in MODELS_WITH_WEIGHTED_IDENTITY_REFERENCE
+
+
+def model_uses_face_description_prompt(model: str) -> bool:
+    return (model or "").strip() == OPENROUTER_GPT_IMAGE2_MODEL
+
+
+def append_face_description_to_prompt(user_prompt: str, face_description: str) -> str:
+    base = (user_prompt or "").strip() or "Professional portrait photo"
+    face = (face_description or "").strip()
+    if not face:
+        return base
+    return f"{base}. Subject face: {face}"
+
+
+async def describe_reference_face_for_prompt(
+    settings: Settings,
+    reference_data_url: str,
+) -> str:
+    """GPT Image 2: vision-описание лица через google/gemini-2.5-flash (без Images API refs)."""
+    from services.ai_text import ask_ai_messages
+
+    data_url = (reference_data_url or "").strip()
+    if not data_url:
+        raise ExternalApiError("OpenRouter", "empty reference for face description")
+
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": FACE_DESCRIBE_SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": FACE_DESCRIBE_SYSTEM_PROMPT},
+                {"type": "image_url", "image_url": {"url": data_url}},
+            ],
+        },
+    ]
+    try:
+        completion = await ask_ai_messages(
+            settings,
+            messages,
+            models=[FACE_DESCRIBE_VISION_MODEL],
+            max_tokens=80,
+            timeout=45.0,
+        )
+    except Exception as exc:
+        logger.exception("face description via %s failed", FACE_DESCRIBE_VISION_MODEL)
+        raise ExternalApiError("OpenRouter", clip_error_text(exc)) from exc
+
+    description = (completion.content or "").strip()
+    if not description:
+        raise ExternalApiError("OpenRouter", "face description empty")
+    logger.info("face description len=%s model=%s", len(description), FACE_DESCRIBE_VISION_MODEL)
+    return description
+
+
+async def resolve_openrouter_photo_prompt_and_refs(
+    settings: Settings,
+    *,
+    model: str,
+    user_prompt: str,
+    reference_data_url: str | None,
+) -> tuple[str, list[dict[str, Any]] | None]:
+    """Промпт и input_references с учётом возможностей конкретной Images-модели."""
+    cleaned = (user_prompt or "").strip() or "Professional portrait photo"
+    ref = (reference_data_url or "").strip()
+    if not ref:
+        return cleaned, None
+
+    model_id = (model or "").strip()
+    if model_uses_face_description_prompt(model_id):
+        face_desc = await describe_reference_face_for_prompt(settings, ref)
+        return append_face_description_to_prompt(cleaned, face_desc), None
+
+    if model_uses_weighted_identity_reference(model_id):
+        return cleaned, [openrouter_identity_reference(ref)]
+
+    return cleaned, [openrouter_input_reference(ref)]
 
 
 def parse_openrouter_image_payload(payload: dict[str, Any]) -> GeminiImageResult:
@@ -80,6 +217,7 @@ async def generate_openrouter_image(
     prompt: str,
     aspect_ratio: str = "1:1",
     input_references: list[dict[str, Any]] | None = None,
+    resolution: str | None = None,
     timeout_sec: float = DEFAULT_OPENROUTER_IMAGES_TIMEOUT_SEC,
 ) -> GeminiImageResult:
     """POST ``/api/v1/images`` → ``GeminiImageResult``; ошибки → ``ExternalApiError``."""
@@ -101,6 +239,8 @@ async def generate_openrouter_image(
     }
     if input_references:
         body["input_references"] = input_references
+    if resolution:
+        body["resolution"] = resolution
 
     api_key = (settings.openrouter_key or "").strip()
     headers = {
@@ -140,3 +280,91 @@ async def generate_openrouter_image(
         return parse_openrouter_image_payload(payload)
     except RuntimeError as exc:
         raise ExternalApiError("OpenRouter", clip_error_text(exc)) from exc
+
+
+async def upscale_openrouter_image_url(
+    settings: Settings,
+    image_url: str,
+    *,
+    scale_value: int,
+) -> str:
+    """Upscale x2/x4 через OpenRouter Images (референс + resolution tier)."""
+    src = (image_url or "").strip()
+    if not src.startswith(("http://", "https://")):
+        raise ExternalApiError("OpenRouter", "upscale requires http(s) image URL")
+
+    scale = int(scale_value)
+    if scale not in (2, 4):
+        raise ExternalApiError("OpenRouter", f"unsupported scale_value={scale}")
+
+    resolution = "2K" if scale == 2 else "4K"
+    result = await generate_openrouter_image(
+        settings,
+        model=OPENROUTER_FLUX_PAID_MODEL,
+        prompt=(
+            "Enhance resolution, sharpness, and fine detail. "
+            "Preserve composition, subjects, colors, and facial identity exactly."
+        ),
+        aspect_ratio="auto",
+        input_references=[openrouter_input_reference(src)],
+        resolution=resolution,
+    )
+    if result.url:
+        return result.url
+    raise ExternalApiError("OpenRouter", "upscale returned no URL")
+
+
+async def generate_openrouter_photo(
+    settings: Settings,
+    *,
+    model: str,
+    user_prompt: str,
+    aspect_ratio: str = "1:1",
+    reference_data_url: str | None = None,
+    fallback_models: tuple[str, ...] = (),
+    timeout_sec: float = DEFAULT_OPENROUTER_IMAGES_TIMEOUT_SEC,
+) -> GeminiImageResult:
+    """Images API с модель-специфичной обработкой референса (identity / GPT face-desc)."""
+    api_prompt, input_refs = await resolve_openrouter_photo_prompt_and_refs(
+        settings,
+        model=model,
+        user_prompt=user_prompt,
+        reference_data_url=reference_data_url,
+    )
+
+    last_exc: ExternalApiError | None = None
+    candidates = ((model or "").strip(), *fallback_models)
+    for idx, slug in enumerate(candidates):
+        if not slug:
+            continue
+        try:
+            prompt, refs = api_prompt, input_refs
+            if idx > 0:
+                prompt, refs = await resolve_openrouter_photo_prompt_and_refs(
+                    settings,
+                    model=slug,
+                    user_prompt=user_prompt,
+                    reference_data_url=reference_data_url,
+                )
+            return await generate_openrouter_image(
+                settings,
+                model=slug,
+                prompt=prompt,
+                aspect_ratio=aspect_ratio,
+                input_references=refs,
+                timeout_sec=timeout_sec,
+            )
+        except ExternalApiError as exc:
+            last_exc = exc
+            if idx + 1 < len(candidates):
+                logger.warning(
+                    "openrouter photo model %s failed (%s), trying %s",
+                    slug,
+                    exc,
+                    candidates[idx + 1],
+                )
+                continue
+            raise
+    if last_exc is not None:
+        raise last_exc
+    raise ExternalApiError("OpenRouter", "no model candidates")

@@ -47,7 +47,7 @@ async def test_paid_google_models_use_openrouter_images(
     call = mock_or.await_args
     assert call.args[0] == or_model
     assert call.args[1] == "a red apple on white table"
-    assert call.kwargs["input_references"] is None
+    assert call.kwargs.get("reference_data_url") is None
     assert call.kwargs.get("aspect_ratio") == "1:1"
     if model_key == "nano_banana2":
         assert call.kwargs["fallback_models"] == ("google/gemini-3.1-flash-image",)
@@ -58,17 +58,17 @@ async def test_paid_google_models_use_openrouter_images(
 
 
 @pytest.mark.asyncio
-async def test_nano_banana2_i2i_passes_input_references() -> None:
+async def test_nano_banana2_i2i_passes_identity_input_references() -> None:
     from services import generation_jobs
 
     bot = MagicMock()
     with (
         patch.object(
             generation_jobs,
-            "_openrouter_input_refs",
+            "_resolve_reference_data_url",
             new_callable=AsyncMock,
-            return_value=[{"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,abc"}}],
-        ) as mock_refs,
+            return_value="data:image/jpeg;base64,abc",
+        ),
         patch.object(
             generation_jobs,
             "_generate_openrouter_photo_model",
@@ -84,11 +84,10 @@ async def test_nano_banana2_i2i_passes_input_references() -> None:
         )
 
     assert result.url == "https://cdn.example/i2i.png"
-    mock_refs.assert_awaited_once_with(bot, "AgACAgIAAxkB", None, None, "image/jpeg")
     mock_or.assert_awaited_once_with(
         OPENROUTER_NANO_BANANA2_MODEL,
         "make it cinematic",
         aspect_ratio="1:1",
-        input_references=[{"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,abc"}}],
+        reference_data_url="data:image/jpeg;base64,abc",
         fallback_models=("google/gemini-3.1-flash-image",),
     )

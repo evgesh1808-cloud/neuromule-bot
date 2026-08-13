@@ -18,7 +18,10 @@ from platforms.handlers import deps
 from platforms.telegram_chat_action import chat_action_loop
 from platforms.telegram_states import UserFlow
 from services import payments_catalog as paycat
-from services.fal_image_pipeline import fal_configured, upscale_fal_image
+from services.openrouter_images import (
+    openrouter_images_configured,
+    upscale_openrouter_image_url,
+)
 from services.generation_jobs import fire_photo_job
 from services.photo_aspect_ratio import aspect_ratio_from_callback_suffix, normalize_photo_aspect_ratio
 from services.photo_edit_session import get_photo_edit_session, update_photo_edit_session_aspect_ratio
@@ -216,8 +219,8 @@ async def _run_upscale(callback: CallbackQuery, *, scale: int, cost: int, alert_
         await callback.answer()
         return
 
-    if not fal_configured():
-        await callback.answer(msg.TXT_FAL_NOT_CONFIGURED, show_alert=True)
+    if not openrouter_images_configured(settings):
+        await callback.answer(msg.TXT_GEN_JOB_FAILED, show_alert=True)
         return
 
     session = get_photo_edit_session(user.id, peer_id=callback.message.chat.id)
@@ -241,7 +244,11 @@ async def _run_upscale(callback: CallbackQuery, *, scale: int, cost: int, alert_
 
     try:
         async with chat_action_loop(bot, chat_id, "upload_document"):
-            upscaled_url = await upscale_fal_image(image_url, scale_value=scale)
+            upscaled_url = await upscale_openrouter_image_url(
+                settings,
+                image_url,
+                scale_value=scale,
+            )
         await bot.send_document(
             chat_id,
             document=upscaled_url,
@@ -257,7 +264,7 @@ async def _run_upscale(callback: CallbackQuery, *, scale: int, cost: int, alert_
         from services.billing.crystals_balance import refund_crystals_to_buy
 
         await refund_crystals_to_buy(user.id, cost)
-        logger.exception("upscale fal failed uid=%s scale=%s", user.id, scale)
+        logger.exception("upscale openrouter failed uid=%s scale=%s", user.id, scale)
         await callback.message.answer(msg.TXT_GEN_JOB_FAILED)
 
 

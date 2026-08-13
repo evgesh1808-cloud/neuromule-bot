@@ -51,7 +51,6 @@ from services.photo_aspect_ratio import (
     openrouter_aspect_ratio,
     replicate_flux_aspect_ratio,
 )
-from services.fal_image_pipeline import fal_configured, generate_fal_i2i_reference
 from services.photo_edit_session import save_photo_edit_session
 from services.billing.image_pipeline import FREE_PHOTO_MODEL_KEY, free_tier_image_model
 from services.free_image_cascade import FreeImageCascadeExhausted, generate_free_tier_image
@@ -61,9 +60,8 @@ from services.openrouter_images import (
     OPENROUTER_NANO_BANANA2_MODEL,
     OPENROUTER_NANO_BANANA_PRO_MODEL,
     REPLICATE_FLUX_SCHNELL_MODEL,
-    generate_openrouter_image,
+    generate_openrouter_photo,
     openrouter_images_configured,
-    openrouter_input_reference,
 )
 from services.pollinations_client import generate_flux_schnell_image
 from services.repository import get_user_row
@@ -319,47 +317,6 @@ async def _safe_delete_cleanup_messages(task: GenTask) -> None:
     task.cleanup_message_ids = ()
 
 
-def _task_has_reference(task: GenTask) -> bool:
-    return bool(task.file_id or task.reference_image_url or task.reference_image_bytes)
-
-
-async def _resolve_swap_image_url(bot: "Bot | None", task: GenTask) -> str:
-    if task.file_id and bot is not None:
-        return await telegram_photo_download_url(bot, task.file_id)
-    ref_url = (task.reference_image_url or "").strip()
-    if ref_url:
-        return ref_url
-    if task.reference_image_bytes:
-        from services.fal_image_pipeline import upload_fal_image_bytes
-
-        raw = task.reference_image_bytes
-        if isinstance(raw, memoryview):
-            raw = raw.tobytes()
-        elif isinstance(raw, bytearray):
-            raw = bytes(raw)
-        return await upload_fal_image_bytes(raw, task.reference_mime or "image/jpeg")
-    raise ExternalApiError("fal.ai", "нет прямой ссылки на референс-фото")
-
-
-async def _run_fal_photo_i2i_pipeline(task: GenTask) -> str:
-    """
-    Двухэтапный fal-client конвейер для генерации по референсу:
-    A) fal-ai/flux/schnell — база (фон + поза)
-    B) fal-ai/fash-cron/face-swap — лицо пользователя на базу
-    """
-    if not fal_configured():
-        raise ExternalApiError("fal.ai", "FAL_KEY не задан")
-    swap_url = await _resolve_swap_image_url(task.bot, task)
-    seed = task.generation_seed
-    if seed is None:
-        seed = random.randint(1, 2_000_000_000)
-    return await generate_fal_i2i_reference(task.prompt or "", swap_url, seed=seed)
-
-
-async def _generate_fal_reference_photo(task: GenTask) -> str:
-    return await _run_fal_photo_i2i_pipeline(task)
-
-
 async def _deliver_photo_url_chatcom(task: GenTask, final_image_url: str) -> None:
     """@chatcom UX: document(HD) + photo с клавиатурой — только URL, без байтов на VDSina."""
     bot, chat_id = task.bot, task.chat_id
@@ -396,6 +353,55 @@ async def _deliver_photo_url_chatcom(task: GenTask, final_image_url: str) -> Non
         aspect_ratio=task.aspect_ratio,
         telegram_file_id=tg_file_id,
         media_url=final_url,
+        message_id=sent.message_id,
+        chat_id=chat_id,
+        platform="telegram",
+        user_prompt=task.prompt,
+        reference_file_id=task.file_id,
+        generation_seed=task.generation_seed,
+    )
+
+    await _safe_delete_status_message(task)
+    await _safe_delete_cleanup_messages(task)
+
+
+async def _deliver_photo_bytes_chatcom(task: GenTask, photo_bytes: bytes) -> None:
+    """Fallback: document + photo из байтов (когда провайдер вернул b64_json)."""
+    bot, chat_id = task.bot, task.chat_id
+    if bot is None:
+        raise RuntimeError("Telegram photo delivery requires bot")
+
+    raw = photo_bytes if isinstance(photo_bytes, bytes) else bytes(photo_bytes)
+    if not raw:
+        raise RuntimeError("empty photo bytes")
+
+    display = task.model_label or task.image_model_id or "модель"
+    caption_html = msg.format_photo_result_caption_html(display, task.prompt or "")
+    file = BufferedInputFile(raw, filename="neuromule_generated.jpg")
+
+    await bot.send_document(
+        chat_id,
+        document=file,
+        caption=msg.TXT_PHOTO_RESULT_DOCUMENT_CAPTION,
+    )
+    sent = await bot.send_photo(
+        chat_id,
+        photo=file,
+        caption=caption_html,
+        parse_mode=ParseMode.HTML,
+        reply_markup=new_result_keyboard(task_id=task.task_id),
+    )
+
+    tg_file_id = sent.photo[-1].file_id if sent.photo else None
+    _remember_share(task, file_id=tg_file_id, media_url=None)
+
+    save_photo_edit_session(
+        task.user_id,
+        image_model_id=task.image_model_id,
+        image_model_label=task.model_label or task.image_model_id,
+        aspect_ratio=task.aspect_ratio,
+        telegram_file_id=tg_file_id,
+        reference_image_bytes=raw,
         message_id=sent.message_id,
         chat_id=chat_id,
         platform="telegram",
@@ -467,24 +473,22 @@ async def _generate_flux_schnell_replicate(prompt: str, *, aspect_ratio: str = "
     return url
 
 
-async def _openrouter_input_refs(
+async def _resolve_reference_data_url(
     bot: "Bot | None",
     file_id: str | None,
     reference_image_url: str | None = None,
     reference_image_bytes: bytes | None = None,
     reference_mime: str = "image/jpeg",
-) -> list[dict] | None:
-    """Telegram file_id / URL / bytes → ``input_references`` для OpenRouter Images I2I."""
+) -> str | None:
     if not file_id and not reference_image_url and not reference_image_bytes:
         return None
-    data_url = await _reference_image_data_url(
+    return await _reference_image_data_url(
         bot=bot,
         file_id=file_id,
         reference_image_url=reference_image_url,
         reference_image_bytes=reference_image_bytes,
         reference_mime=reference_mime,
     )
-    return [openrouter_input_reference(data_url)]
 
 
 async def _generate_openrouter_photo_model(
@@ -492,46 +496,29 @@ async def _generate_openrouter_photo_model(
     prompt: str,
     *,
     aspect_ratio: str = "1:1",
-    input_references: list[dict] | None = None,
+    reference_data_url: str | None = None,
     fallback_models: tuple[str, ...] = (),
 ) -> GeminiImageResult:
-    """Платные Google/BFL модели через OpenRouter Images (единый HTTP-клиент + AI_PROXY)."""
+    """Платные модели через OpenRouter Images (identity / GPT face-desc / fallback)."""
     if not openrouter_images_configured(app_settings):
         raise ExternalApiError("OpenRouter", "OPENROUTER_API_KEY не задан")
 
-    last_exc: ExternalApiError | None = None
-    candidates = (model, *fallback_models)
-    for idx, slug in enumerate(candidates):
-        try:
-            return await generate_openrouter_image(
-                app_settings,
-                model=slug,
-                prompt=prompt,
-                aspect_ratio=openrouter_aspect_ratio(aspect_ratio),
-                input_references=input_references,
-                timeout_sec=float(EXTERNAL_API_TIMEOUT_SEC),
-            )
-        except ExternalApiError as exc:
-            last_exc = exc
-            if idx + 1 < len(candidates):
-                logger.warning(
-                    "openrouter photo model %s failed (%s), trying %s",
-                    slug,
-                    exc,
-                    candidates[idx + 1],
-                )
-                continue
-            raise
-    if last_exc is not None:
-        raise last_exc
-    raise ExternalApiError("OpenRouter", "no model candidates")
+    return await generate_openrouter_photo(
+        app_settings,
+        model=model,
+        user_prompt=prompt,
+        aspect_ratio=openrouter_aspect_ratio(aspect_ratio),
+        reference_data_url=reference_data_url,
+        fallback_models=fallback_models,
+        timeout_sec=float(EXTERNAL_API_TIMEOUT_SEC),
+    )
 
 
 async def _generate_flux_schnell_paid(
     prompt: str,
     *,
     aspect_ratio: str = "1:1",
-    input_references: list[dict] | None = None,
+    reference_data_url: str | None = None,
 ) -> GeminiImageResult | str:
     """Платный Flux Schnell: OpenRouter primary → Replicate fallback."""
     if openrouter_images_configured(app_settings):
@@ -540,7 +527,7 @@ async def _generate_flux_schnell_paid(
                 OPENROUTER_FLUX_PAID_MODEL,
                 prompt,
                 aspect_ratio=aspect_ratio,
-                input_references=input_references,
+                reference_data_url=reference_data_url,
             )
         except ExternalApiError as exc:
             if not replicate_configured():
@@ -568,7 +555,7 @@ async def _generate_photo_result(
 ) -> GeminiImageResult | str:
     """Возвращает GeminiImageResult (url/bytes) или прямой URL строки (Replicate)."""
     ar = normalize_photo_aspect_ratio(aspect_ratio)
-    input_refs = await _openrouter_input_refs(
+    reference_data_url = await _resolve_reference_data_url(
         bot,
         file_id,
         reference_image_url,
@@ -583,7 +570,7 @@ async def _generate_photo_result(
             return await _generate_flux_schnell_paid(
                 prompt,
                 aspect_ratio=ar,
-                input_references=input_refs,
+                reference_data_url=reference_data_url,
             )
 
         if model_key == "free_photo":
@@ -594,7 +581,7 @@ async def _generate_photo_result(
                 OPENROUTER_GPT_IMAGE2_MODEL,
                 prompt,
                 aspect_ratio=ar,
-                input_references=input_refs,
+                reference_data_url=reference_data_url,
             )
 
         if model_key == "nano_banana2":
@@ -602,7 +589,7 @@ async def _generate_photo_result(
                 OPENROUTER_NANO_BANANA2_MODEL,
                 prompt,
                 aspect_ratio=ar,
-                input_references=input_refs,
+                reference_data_url=reference_data_url,
                 fallback_models=("google/gemini-3.1-flash-image",),
             )
 
@@ -611,7 +598,7 @@ async def _generate_photo_result(
                 OPENROUTER_NANO_BANANA_PRO_MODEL,
                 prompt,
                 aspect_ratio=ar,
-                input_references=input_refs,
+                reference_data_url=reference_data_url,
                 fallback_models=("google/gemini-3-pro-image-preview",),
             )
 
@@ -724,63 +711,11 @@ async def _send_generated_photo(
         await _deliver_photo_url_chatcom(task, str(photo_url))
         return
 
-    display = task.model_label or task.image_model_id or "модель"
-    caption_html = msg.format_photo_result_caption_html(display, task.prompt or "")
+    if photo_bytes:
+        await _deliver_photo_bytes_chatcom(task, photo_bytes)
+        return
 
-    if photo_url:
-        final_url = photo_url
-    elif photo_bytes:
-        from services.fal_image_pipeline import fal_configured, upload_fal_image_bytes
-
-        if fal_configured():
-            final_url = await upload_fal_image_bytes(photo_bytes, "image/jpeg")
-            await _deliver_photo_url_chatcom(task, final_url)
-            return
-        sent_tmp = await bot.send_photo(
-            chat_id,
-            photo=BufferedInputFile(photo_bytes, filename="neuromule_generated.jpg"),
-        )
-        tg_file_id = sent_tmp.photo[-1].file_id if sent_tmp.photo else None
-        if not tg_file_id:
-            raise RuntimeError("Не удалось получить file_id для доставки")
-        final_url = tg_file_id
-    else:
-        raise RuntimeError("Нет URL и байтов изображения")
-
-    await bot.send_document(
-        chat_id,
-        document=final_url,
-        caption=msg.TXT_PHOTO_RESULT_DOCUMENT_CAPTION,
-    )
-    sent = await bot.send_photo(
-        chat_id,
-        photo=final_url,
-        caption=caption_html,
-        parse_mode=ParseMode.HTML,
-        reply_markup=new_result_keyboard(task_id=task.task_id),
-    )
-
-    tg_file_id = sent.photo[-1].file_id if sent.photo else None
-    _remember_share(task, file_id=tg_file_id, media_url=photo_url)
-
-    save_photo_edit_session(
-        task.user_id,
-        image_model_id=task.image_model_id,
-        image_model_label=task.model_label or task.image_model_id,
-        aspect_ratio=task.aspect_ratio,
-        telegram_file_id=tg_file_id,
-        media_url=photo_url,
-        reference_image_bytes=photo_bytes,
-        message_id=sent.message_id,
-        chat_id=chat_id,
-        platform="telegram",
-        user_prompt=task.prompt,
-        reference_file_id=task.file_id,
-        generation_seed=task.generation_seed,
-    )
-
-    await _safe_delete_status_message(task)
-    await _safe_delete_cleanup_messages(task)
+    raise RuntimeError("Нет URL и байтов изображения")
 
 
 async def _photo_stub_worker(task: GenTask) -> None:
@@ -834,57 +769,42 @@ async def _photo_stub_worker(task: GenTask) -> None:
                 photo_url: str | None = None
                 photo_bytes: bytes | None = None
                 raw: GeminiImageResult | str | None = None
-                has_ref = _task_has_reference(task)
 
-                if has_ref:
-                    try:
-                        async with asyncio.timeout(EXTERNAL_API_TIMEOUT_SEC):
-                            photo_url = await _run_fal_photo_i2i_pipeline(task)
-                    except ExternalApiError:
-                        await fail_generation_task(
-                            task,
-                            user_message=msg.TXT_FAL_NOT_CONFIGURED
-                            if not fal_configured()
-                            else msg.TXT_GEN_JOB_FAILED,
-                            log_msg="photo fal i2i pipeline failed",
-                        )
-                        return
-                else:
-                    try:
-                        if is_free:
-                            async with asyncio.timeout(FREE_PHOTO_HARD_TIMEOUT_SEC):
-                                raw = await _generate_free_tier_photo(
-                                    user_prompt,
-                                    bot=bot,
-                                    file_id=task.file_id,
-                                    reference_image_url=task.reference_image_url,
-                                    reference_image_bytes=task.reference_image_bytes,
-                                    reference_mime=task.reference_mime,
-                                )
-                        else:
-                            raw = await _generate_photo_result(
-                                model_key,
+                try:
+                    if is_free:
+                        async with asyncio.timeout(FREE_PHOTO_HARD_TIMEOUT_SEC):
+                            raw = await _generate_free_tier_photo(
                                 user_prompt,
-                                aspect_ratio=task.aspect_ratio,
-                                user_id=user_id,
                                 bot=bot,
                                 file_id=task.file_id,
                                 reference_image_url=task.reference_image_url,
                                 reference_image_bytes=task.reference_image_bytes,
                                 reference_mime=task.reference_mime,
                             )
-                    except TimeoutError as err:
-                        logger.error(
-                            "Критический сбой бесплатного каскада. Мул завис. Ошибка: %s",
-                            err,
+                    else:
+                        raw = await _generate_photo_result(
+                            model_key,
+                            user_prompt,
+                            aspect_ratio=task.aspect_ratio,
+                            user_id=user_id,
+                            bot=bot,
+                            file_id=task.file_id,
+                            reference_image_url=task.reference_image_url,
+                            reference_image_bytes=task.reference_image_bytes,
+                            reference_mime=task.reference_mime,
                         )
-                        await fail_generation_task(
-                            task,
-                            user_message=msg.TXT_FREE_IMAGE_CASCADE_FAILED,
-                            log_msg="photo free hard timeout",
-                            exc=err,
-                        )
-                        return
+                except TimeoutError as err:
+                    logger.error(
+                        "Критический сбой бесплатного каскада. Мул завис. Ошибка: %s",
+                        err,
+                    )
+                    await fail_generation_task(
+                        task,
+                        user_message=msg.TXT_FREE_IMAGE_CASCADE_FAILED,
+                        log_msg="photo free hard timeout",
+                        exc=err,
+                    )
+                    return
 
                 if raw is not None:
                     if isinstance(raw, str):

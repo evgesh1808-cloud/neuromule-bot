@@ -181,9 +181,118 @@ async def _edit_or_answer_photo_status(
     await message.answer(text, parse_mode=ParseMode.HTML)
 
 
+async def _delete_photo_service_messages(message: Message, state: FSMContext) -> None:
+    """Удаляет «Фото принято…» и прочие подсказки i2i (zero-trash при ошибке)."""
+    data = await state.get_data()
+    ids = [int(x) for x in (data.get("photo_service_message_ids") or []) if x]
+    if not ids:
+        return
+    bot = deps.bot()
+    chat_id = message.chat.id
+    for mid in ids:
+        try:
+            await bot.delete_message(chat_id=chat_id, message_id=mid)
+        except TelegramBadRequest:
+            pass
+    await state.update_data(photo_service_message_ids=[])
+
+
 async def _aspect_ratio_from_state(state: FSMContext) -> str:
     data = await state.get_data()
     return normalize_photo_aspect_ratio(data.get("image_aspect_ratio"))
+
+
+def _image_document_file_id(message: Message) -> str | None:
+    """file_id документа, если это изображение (jpg/png/webp/…)."""
+    doc = message.document
+    if doc is None:
+        return None
+    mime = (doc.mime_type or "").lower()
+    name = (doc.file_name or "").lower()
+    if mime.startswith("image/"):
+        return doc.file_id
+    if name.endswith((".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".heic")):
+        return doc.file_id
+    return None
+
+
+def _photo_reference_from_message(message: Message) -> tuple[str | None, str]:
+    """(telegram_file_id, caption/промпт) из photo или image-document."""
+    caption = (message.caption or "").strip()
+    if message.photo:
+        return message.photo[-1].file_id, caption
+    doc_id = _image_document_file_id(message)
+    if doc_id:
+        return doc_id, caption
+    return None, caption
+
+
+async def _dispatch_photo_reference_message(message: Message, state: FSMContext) -> bool:
+    """
+    Фото/файл-картинка в photo-flow: caption в том же сообщении → сразу i2i;
+    без caption → двухшаговый режим (pending_reference_file_id).
+    """
+    file_id, caption = _photo_reference_from_message(message)
+    if not file_id:
+        return False
+
+    data = await state.get_data()
+    model_id = str(data.get("image_model_id") or "").strip()
+    if not model_id:
+        await message.answer(msg.TXT_IMAGE_PICK_MODEL_FIRST, parse_mode=ParseMode.HTML)
+        return True
+
+    label = str(data.get("image_model_label") or "модель")
+    aspect = normalize_photo_aspect_ratio(data.get("image_aspect_ratio"))
+
+    if caption:
+        await process_photo_prompt_message(
+            message,
+            state,
+            model_id=model_id,
+            label=label,
+            prompt=caption,
+            telegram_file_id=file_id,
+            aspect_ratio=aspect,
+        )
+        return True
+
+    hint = await message.answer(msg.TXT_CREATE_IMAGE_WAIT_PROMPT, parse_mode=ParseMode.HTML)
+    service_ids = list(data.get("photo_service_message_ids") or [])
+    service_ids.append(hint.message_id)
+    await state.update_data(
+        pending_reference_file_id=file_id,
+        photo_service_message_ids=service_ids,
+    )
+    await state.set_state(UserFlow.waiting_for_photo)
+    return True
+
+
+async def try_handle_photo_for_image_generation(message: Message, state: FSMContext) -> bool:
+    """
+    Перехват фото вне waiting_for_photo (idle / aspect / model pick),
+    чтобы caption+i2i не уходили в Нейротекст.
+    """
+    file_id, _caption = _photo_reference_from_message(message)
+    if not file_id or message.from_user is None:
+        return False
+
+    from platforms.telegram_throttling import is_photo_flow_active
+
+    current = await state.get_state()
+    photo_states = {
+        UserFlow.waiting_for_photo.state,
+        UserFlow.waiting_for_image_model_pick.state,
+        UserFlow.waiting_for_image_aspect_ratio.state,
+    }
+    data = await state.get_data()
+    model_id = str(data.get("image_model_id") or "").strip()
+
+    in_photo_flow = current in photo_states or is_photo_flow_active(message.from_user.id)
+    if not in_photo_flow and not model_id:
+        return False
+
+    return await _dispatch_photo_reference_message(message, state)
 
 
 async def try_start_photo_edit_from_reply(message: Message, state: FSMContext) -> bool:
@@ -310,6 +419,7 @@ async def process_photo_prompt_message(
             status_msg,
             msg.TXT_FREE_IMAGE_CASCADE_FAILED,
         )
+        await _delete_photo_service_messages(message, state)
         await state.clear()
         clear_photo_flow(user_id)
         return
@@ -327,6 +437,7 @@ async def process_photo_prompt_message(
             status_msg,
             msg.TXT_FREE_IMAGE_GLOBAL_CAP,
         )
+        await _delete_photo_service_messages(message, state)
         await state.clear()
         clear_photo_flow(user_id)
         return
@@ -341,6 +452,7 @@ async def process_photo_prompt_message(
             reply_markup=paycat.shop_packages_keyboard(),
             parse_mode=ParseMode.HTML,
         )
+        await _delete_photo_service_messages(message, state)
         await state.clear()
         clear_photo_flow(user_id)
         return
@@ -355,6 +467,7 @@ async def process_photo_prompt_message(
             reply_markup=invite_limit_keyboard(),
             parse_mode=ParseMode.HTML,
         )
+        await _delete_photo_service_messages(message, state)
         await state.clear()
         clear_photo_flow(user_id)
         return
@@ -364,6 +477,7 @@ async def process_photo_prompt_message(
             status_msg,
             msg.TXT_FREE_IMAGE_MODEL_BLOCKED,
         )
+        await _delete_photo_service_messages(message, state)
         await state.clear()
         clear_photo_flow(user_id)
         return
@@ -375,6 +489,7 @@ async def process_photo_prompt_message(
             status_msg,
             msg.TXT_GEN_JOB_FAILED,
         )
+        await _delete_photo_service_messages(message, state)
         await state.clear()
         clear_photo_flow(user_id)
         return
@@ -445,35 +560,20 @@ async def image_menu_pending_text(message: Message, state: FSMContext) -> None:
     await handle_pending_image_menu_text(message, state)
 
 
-@router.message(UserFlow.waiting_for_photo, F.photo)
+@router.message(UserFlow.waiting_for_photo, F.photo | F.document)
 async def photo_process_with_image(message: Message, state: FSMContext) -> None:
-    data = await state.get_data()
-    model_id = data.get("image_model_id", "")
-    label = data.get("image_model_label", "модель")
-    aspect = normalize_photo_aspect_ratio(data.get("image_aspect_ratio"))
-    caption = (message.caption or "").strip()
-    file_id = message.photo[-1].file_id
-
-    if caption:
-        await process_photo_prompt_message(
-            message,
-            state,
-            model_id=model_id,
-            label=label,
-            prompt=caption,
-            telegram_file_id=file_id,
-            aspect_ratio=aspect,
-        )
+    if await _dispatch_nav_or_none(message, state):
         return
+    if not await _dispatch_photo_reference_message(message, state):
+        await message.answer(msg.TXT_CREATE_IMAGE_AFTER_MODEL, parse_mode=ParseMode.HTML)
 
-    hint = await message.answer(msg.TXT_CREATE_IMAGE_WAIT_PROMPT, parse_mode=ParseMode.HTML)
-    data = await state.get_data()
-    service_ids = list(data.get("photo_service_message_ids") or [])
-    service_ids.append(hint.message_id)
-    await state.update_data(
-        pending_reference_file_id=file_id,
-        photo_service_message_ids=service_ids,
-    )
+
+@router.message(UserFlow.waiting_for_image_model_pick, F.photo | F.document)
+@router.message(UserFlow.waiting_for_image_aspect_ratio, F.photo | F.document)
+async def photo_process_during_model_setup(message: Message, state: FSMContext) -> None:
+    if await _dispatch_nav_or_none(message, state):
+        return
+    await _dispatch_photo_reference_message(message, state)
 
 
 @router.message(UserFlow.waiting_for_photo, F.text)

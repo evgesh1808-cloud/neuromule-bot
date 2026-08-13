@@ -383,7 +383,11 @@ async def help_instruction_keyword(message: Message) -> None:
     F.photo | F.document,
 )
 async def chat_media_neurotext(message: Message, state: FSMContext) -> None:
+    from platforms.handlers.generation_fsm import try_handle_photo_for_image_generation
     from platforms.neurotext_input import handle_neurotext_user_message
+
+    if await try_handle_photo_for_image_generation(message, state):
+        return
 
     await handle_neurotext_user_message(message, state)
 

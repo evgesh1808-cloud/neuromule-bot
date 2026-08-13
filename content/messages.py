@@ -971,10 +971,6 @@ TXT_PHOTO_REFINE_PROMPT = (
 TXT_PHOTO_REFINE_EXPIRED = (
     "Сессия доработки истекла (15 мин). Сгенерируй новое фото или отправь снимок заново."
 )
-TXT_FAL_NOT_CONFIGURED = (
-    "❌ Генерация по фото недоступна: на сервере не задан FAL_KEY (fal.ai). "
-    "Напишите в поддержку."
-)
 TXT_PHOTO_RESULT_DOCUMENT_CAPTION = "📥 Оригинальный файл (HD качество без сжатия)"
 TXT_UPSCALE_X2_NEED_CRYSTAL = "💎 Нужен 1 кристалл"
 TXT_UPSCALE_X4_NEED_CRYSTAL = "💎 Нужно 3 кристалла"

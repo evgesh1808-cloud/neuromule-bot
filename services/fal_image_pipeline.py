@@ -6,7 +6,6 @@ import logging
 import os
 from typing import Any
 
-from config import settings as app_settings
 from services.api_resilience import ExternalApiError
 
 logger = logging.getLogger(__name__)
@@ -21,7 +20,7 @@ def fal_configured() -> bool:
 
 
 def _fal_key() -> str:
-    return (app_settings.fal_api_key or os.environ.get("FAL_KEY") or "").strip()
+    return (os.environ.get("FAL_KEY") or "").strip()
 
 
 def _ensure_fal_key() -> str:
@@ -55,6 +54,11 @@ def _extract_image_url(result: dict[str, Any]) -> str:
         return url
 
     raise ExternalApiError("fal.ai", "ответ без URL изображения")
+
+
+def fal_error_is_balance_exhausted(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return "exhausted balance" in text or "user is locked" in text
 
 
 async def upload_fal_image_bytes(data: bytes, content_type: str = "image/jpeg") -> str:

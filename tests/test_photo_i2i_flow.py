@@ -29,6 +29,7 @@ async def test_photo_without_caption_waits_for_prompt() -> None:
         }
     )
     state.update_data = AsyncMock()
+    state.set_state = AsyncMock()
 
     with patch.object(generation_fsm, "process_photo_prompt_message", new_callable=AsyncMock) as proc:
         await generation_fsm.photo_process_with_image(message, state)

@@ -1,8 +1,8 @@
-"""OpenRouter i2i: reference_image_url (VK CDN) параллельно Telegram file_id."""
+"""OpenRouter identity refs: reference_image_url (VK CDN) параллельно Telegram file_id."""
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -17,10 +17,10 @@ async def test_nano_banana2_i2i_from_reference_image_url() -> None:
     with (
         patch.object(
             generation_jobs,
-            "_openrouter_input_refs",
+            "_resolve_reference_data_url",
             new_callable=AsyncMock,
-            return_value=[{"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,abc"}}],
-        ) as mock_refs,
+            return_value="data:image/jpeg;base64,abc",
+        ) as mock_ref,
         patch.object(
             generation_jobs,
             "_generate_openrouter_photo_model",
@@ -35,24 +35,18 @@ async def test_nano_banana2_i2i_from_reference_image_url() -> None:
         )
 
     assert result.url == "https://cdn.example/vk-i2i.png"
-    mock_refs.assert_awaited_once_with(
-        None,
-        None,
-        "https://sun9.userapi.com/photo.jpg",
-        None,
-        "image/jpeg",
-    )
+    mock_ref.assert_awaited_once()
     mock_or.assert_awaited_once_with(
         OPENROUTER_NANO_BANANA2_MODEL,
         "make it cinematic",
         aspect_ratio="1:1",
-        input_references=[{"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,abc"}}],
+        reference_data_url="data:image/jpeg;base64,abc",
         fallback_models=("google/gemini-3.1-flash-image",),
     )
 
 
 @pytest.mark.asyncio
-async def test_openrouter_input_refs_from_url() -> None:
+async def test_resolve_reference_data_url_from_http() -> None:
     from services import generation_jobs
 
     with patch.object(
@@ -61,14 +55,13 @@ async def test_openrouter_input_refs_from_url() -> None:
         new_callable=AsyncMock,
         return_value="data:image/jpeg;base64,QQ==",
     ) as mock_data:
-        refs = await generation_jobs._openrouter_input_refs(
+        url = await generation_jobs._resolve_reference_data_url(
             None,
             None,
             "https://cdn.example/ref.jpg",
         )
 
-    assert refs is not None
-    assert refs[0]["image_url"]["url"] == "data:image/jpeg;base64,QQ=="
+    assert url == "data:image/jpeg;base64,QQ=="
     mock_data.assert_awaited_once_with(
         bot=None,
         file_id=None,

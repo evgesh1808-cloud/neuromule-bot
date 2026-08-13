@@ -149,6 +149,24 @@ async def fail_generation_task(
             clip_error_text(exc) if exc is not None else "",
         )
     await refund_generation_task(task)
+    cleanup_ids = getattr(task, "cleanup_message_ids", ()) or ()
+    if task.bot is not None and cleanup_ids:
+        for raw_id in cleanup_ids:
+            if raw_id is None:
+                continue
+            try:
+                await task.bot.delete_message(
+                    chat_id=task.chat_id,
+                    message_id=int(raw_id),
+                )
+            except Exception:
+                logger.debug(
+                    "fail_generation_task cleanup delete skipped task=%s msg=%s",
+                    task.task_id,
+                    raw_id,
+                    exc_info=True,
+                )
+        task.cleanup_message_ids = ()
     # Предпочитаем edit «мула»; иначе — новое сообщение.
     if await _edit_status_message(task, user_message):
         return

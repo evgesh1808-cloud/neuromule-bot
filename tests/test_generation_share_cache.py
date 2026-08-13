@@ -149,17 +149,15 @@ async def test_photo_worker_caches_share_media(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_photo_worker_fal_i2i_uses_url_delivery(monkeypatch) -> None:
+async def test_photo_worker_reference_uses_openrouter_url_delivery(monkeypatch) -> None:
     log = _SentLog()
     bot = _make_bot(log)
     user_id = 70_010
 
-    monkeypatch.setattr(generation_jobs, "fal_configured", lambda: True)
+    async def _fake_generate(model_key, prompt, **kwargs):
+        return "https://cdn.openrouter.ai/identity-out.png"
 
-    async def _fake_fal_photo(task):
-        return "https://fal.media/final-face-swap.png"
-
-    monkeypatch.setattr(generation_jobs, "_run_fal_photo_i2i_pipeline", _fake_fal_photo)
+    monkeypatch.setattr(generation_jobs, "_generate_photo_result", _fake_generate)
 
     class _NoopAction:
         async def __aenter__(self):
@@ -180,8 +178,8 @@ async def test_photo_worker_fal_i2i_uses_url_delivery(monkeypatch) -> None:
     await generation_jobs._photo_stub_worker(task)
 
     assert task.status == "completed"
-    assert log.document_calls[0]["kwargs"]["document"] == "https://fal.media/final-face-swap.png"
-    assert log.photo_calls[0]["kwargs"]["photo"] == "https://fal.media/final-face-swap.png"
+    assert log.document_calls[0]["kwargs"]["document"] == "https://cdn.openrouter.ai/identity-out.png"
+    assert log.photo_calls[0]["kwargs"]["photo"] == "https://cdn.openrouter.ai/identity-out.png"
 
 
 @pytest.mark.asyncio

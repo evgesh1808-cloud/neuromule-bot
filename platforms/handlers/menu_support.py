@@ -152,6 +152,9 @@ logger = logging.getLogger(__name__)
 
 router = Router()
 
+_CREATE_MENU_DEDUP_SEC = 2.5
+_CREATE_MENU_LAST_AT: dict[int, float] = {}
+
 is_subscribed = deps.is_subscribed
 is_subscribed_cached = deps.is_subscribed_cached
 check_and_spend = deps.check_and_spend
@@ -169,6 +172,14 @@ async def daily_advice_from_menu(message: Message, state: FSMContext) -> None:
 
 async def send_create_menu_screen(message: Message) -> None:
     """Inline «🎨 Создать» с fallback при отклонении WebApp-клавиатуры."""
+    uid = message.from_user.id if message.from_user else 0
+    if uid:
+        now = time.monotonic()
+        last = _CREATE_MENU_LAST_AT.get(uid, 0.0)
+        if now - last < _CREATE_MENU_DEDUP_SEC:
+            return
+        _CREATE_MENU_LAST_AT[uid] = now
+
     kb = create_menu()
     try:
         await message.answer(msg.TXT_SELECT_TOOL, reply_markup=kb)

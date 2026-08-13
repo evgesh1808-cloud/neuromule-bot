@@ -297,6 +297,10 @@ async def run_telegram() -> None:
     from services.daily_advice_pool import daily_advice_pool_refill_loop
 
     _asyncio.create_task(daily_advice_pool_refill_loop())
+    # Ежедневный отчёт админу о балансе OpenRouter в 09:00 МСК.
+    from services.api_balance_monitor import api_balance_monitor_loop
+
+    _asyncio.create_task(api_balance_monitor_loop())
     # Очередь AI-обложек блогера (OpenRouter Images) — один воркер, rate-limit 2с.
     from services.blogger_cover import start_cover_queue_worker
 
