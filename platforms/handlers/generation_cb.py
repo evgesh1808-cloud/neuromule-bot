@@ -607,7 +607,7 @@ async def photo_refine_start(callback: CallbackQuery, state: FSMContext) -> None
         return
 
     mark_photo_flow(user.id)
-    pending_file_id = session.telegram_file_id
+    pending_file_id = session.reference_file_id or session.telegram_file_id
     try:
         await state.update_data(
             image_model_id=session.image_model_id,

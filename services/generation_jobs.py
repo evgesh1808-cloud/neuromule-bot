@@ -19,8 +19,8 @@ from aiogram.types import BufferedInputFile, URLInputFile
 
 from config import settings
 from content import messages as msg
+from content.keyboards import new_result_keyboard
 from content.inline_keyboards import (
-    new_result_keyboard,
     result_music_keyboard,
     result_music_keyboard_pro,
 )
@@ -329,15 +329,83 @@ async def _resolve_swap_image_url(bot: "Bot | None", task: GenTask) -> str:
     ref_url = (task.reference_image_url or "").strip()
     if ref_url:
         return ref_url
+    if task.reference_image_bytes:
+        from services.fal_image_pipeline import upload_fal_image_bytes
+
+        raw = task.reference_image_bytes
+        if isinstance(raw, memoryview):
+            raw = raw.tobytes()
+        elif isinstance(raw, bytearray):
+            raw = bytes(raw)
+        return await upload_fal_image_bytes(raw, task.reference_mime or "image/jpeg")
     raise ExternalApiError("fal.ai", "нет прямой ссылки на референс-фото")
 
 
-async def _generate_fal_reference_photo(task: GenTask) -> str:
+async def _run_fal_photo_i2i_pipeline(task: GenTask) -> str:
+    """
+    Двухэтапный fal-client конвейер для генерации по референсу:
+    A) fal-ai/flux/schnell — база (фон + поза)
+    B) fal-ai/fash-cron/face-swap — лицо пользователя на базу
+    """
+    if not fal_configured():
+        raise ExternalApiError("fal.ai", "FAL_KEY не задан")
+    swap_url = await _resolve_swap_image_url(task.bot, task)
     seed = task.generation_seed
     if seed is None:
         seed = random.randint(1, 2_000_000_000)
-    swap_url = await _resolve_swap_image_url(task.bot, task)
     return await generate_fal_i2i_reference(task.prompt or "", swap_url, seed=seed)
+
+
+async def _generate_fal_reference_photo(task: GenTask) -> str:
+    return await _run_fal_photo_i2i_pipeline(task)
+
+
+async def _deliver_photo_url_chatcom(task: GenTask, final_image_url: str) -> None:
+    """@chatcom UX: document(HD) + photo с клавиатурой — только URL, без байтов на VDSina."""
+    bot, chat_id = task.bot, task.chat_id
+    if bot is None:
+        raise RuntimeError("Telegram photo delivery requires bot")
+
+    final_url = (final_image_url or "").strip()
+    if not final_url.startswith(("http://", "https://")):
+        raise RuntimeError("chatcom delivery requires http(s) URL")
+
+    display = task.model_label or task.image_model_id or "модель"
+    caption_html = msg.format_photo_result_caption_html(display, task.prompt or "")
+
+    await bot.send_document(
+        chat_id,
+        document=final_url,
+        caption=msg.TXT_PHOTO_RESULT_DOCUMENT_CAPTION,
+    )
+    sent = await bot.send_photo(
+        chat_id,
+        photo=final_url,
+        caption=caption_html,
+        parse_mode=ParseMode.HTML,
+        reply_markup=new_result_keyboard(task_id=task.task_id),
+    )
+
+    tg_file_id = sent.photo[-1].file_id if sent.photo else None
+    _remember_share(task, file_id=tg_file_id, media_url=final_url)
+
+    save_photo_edit_session(
+        task.user_id,
+        image_model_id=task.image_model_id,
+        image_model_label=task.model_label or task.image_model_id,
+        aspect_ratio=task.aspect_ratio,
+        telegram_file_id=tg_file_id,
+        media_url=final_url,
+        message_id=sent.message_id,
+        chat_id=chat_id,
+        platform="telegram",
+        user_prompt=task.prompt,
+        reference_file_id=task.file_id,
+        generation_seed=task.generation_seed,
+    )
+
+    await _safe_delete_status_message(task)
+    await _safe_delete_cleanup_messages(task)
 
 
 async def _generate_free_tier_photo(
@@ -652,37 +720,44 @@ async def _send_generated_photo(
     if bot is None:
         raise RuntimeError("Telegram photo delivery requires bot")
 
+    if photo_url and str(photo_url).startswith(("http://", "https://")):
+        await _deliver_photo_url_chatcom(task, str(photo_url))
+        return
+
     display = task.model_label or task.image_model_id or "модель"
-    prompt_line = (task.prompt or "").strip()
-    if len(prompt_line) > 400:
-        prompt_line = f"{prompt_line[:397]}…"
+    caption_html = msg.format_photo_result_caption_html(display, task.prompt or "")
 
     if photo_url:
         final_url = photo_url
     elif photo_bytes:
+        from services.fal_image_pipeline import fal_configured, upload_fal_image_bytes
+
+        if fal_configured():
+            final_url = await upload_fal_image_bytes(photo_bytes, "image/jpeg")
+            await _deliver_photo_url_chatcom(task, final_url)
+            return
         sent_tmp = await bot.send_photo(
             chat_id,
             photo=BufferedInputFile(photo_bytes, filename="neuromule_generated.jpg"),
         )
-        final_url = None
         tg_file_id = sent_tmp.photo[-1].file_id if sent_tmp.photo else None
-        if tg_file_id:
-            final_url = tg_file_id
-        if not final_url:
-            raise RuntimeError("Не удалось получить URL/file_id для доставки")
+        if not tg_file_id:
+            raise RuntimeError("Не удалось получить file_id для доставки")
+        final_url = tg_file_id
     else:
         raise RuntimeError("Нет URL и байтов изображения")
 
-    doc_caption = "📥 Оригинальный файл (HD)"
-    photo_caption = f"🤖 Модель: {display}\n📝 Промпт: {prompt_line or '—'}"
-    markup = new_result_keyboard(task_id=task.task_id)
-
-    await bot.send_document(chat_id, document=final_url, caption=doc_caption)
+    await bot.send_document(
+        chat_id,
+        document=final_url,
+        caption=msg.TXT_PHOTO_RESULT_DOCUMENT_CAPTION,
+    )
     sent = await bot.send_photo(
         chat_id,
         photo=final_url,
-        caption=photo_caption,
-        reply_markup=markup,
+        caption=caption_html,
+        parse_mode=ParseMode.HTML,
+        reply_markup=new_result_keyboard(task_id=task.task_id),
     )
 
     tg_file_id = sent.photo[-1].file_id if sent.photo else None
@@ -694,7 +769,7 @@ async def _send_generated_photo(
         image_model_label=task.model_label or task.image_model_id,
         aspect_ratio=task.aspect_ratio,
         telegram_file_id=tg_file_id,
-        media_url=photo_url or (final_url if isinstance(final_url, str) and final_url.startswith("http") else None),
+        media_url=photo_url,
         reference_image_bytes=photo_bytes,
         message_id=sent.message_id,
         chat_id=chat_id,
@@ -759,41 +834,23 @@ async def _photo_stub_worker(task: GenTask) -> None:
                 photo_url: str | None = None
                 photo_bytes: bytes | None = None
                 raw: GeminiImageResult | str | None = None
-                fal_i2i = _task_has_reference(task) and fal_configured()
+                has_ref = _task_has_reference(task)
 
-                try:
-                    if fal_i2i:
+                if has_ref:
+                    try:
                         async with asyncio.timeout(EXTERNAL_API_TIMEOUT_SEC):
-                            photo_url = await _generate_fal_reference_photo(task)
-                    elif is_free:
-                        async with asyncio.timeout(FREE_PHOTO_HARD_TIMEOUT_SEC):
-                            raw = await _generate_free_tier_photo(
-                                user_prompt,
-                                bot=bot,
-                                file_id=task.file_id,
-                                reference_image_url=task.reference_image_url,
-                                reference_image_bytes=task.reference_image_bytes,
-                                reference_mime=task.reference_mime,
-                            )
-                    else:
-                        raw = await _generate_photo_result(
-                            model_key,
-                            user_prompt,
-                            aspect_ratio=task.aspect_ratio,
-                            user_id=user_id,
-                            bot=bot,
-                            file_id=task.file_id,
-                            reference_image_url=task.reference_image_url,
-                            reference_image_bytes=task.reference_image_bytes,
-                            reference_mime=task.reference_mime,
+                            photo_url = await _run_fal_photo_i2i_pipeline(task)
+                    except ExternalApiError:
+                        await fail_generation_task(
+                            task,
+                            user_message=msg.TXT_FAL_NOT_CONFIGURED
+                            if not fal_configured()
+                            else msg.TXT_GEN_JOB_FAILED,
+                            log_msg="photo fal i2i pipeline failed",
                         )
-                except ExternalApiError as exc:
-                    if fal_i2i:
-                        logger.warning(
-                            "fal i2i failed (%s), fallback legacy i2i path task=%s",
-                            exc,
-                            task.task_id,
-                        )
+                        return
+                else:
+                    try:
                         if is_free:
                             async with asyncio.timeout(FREE_PHOTO_HARD_TIMEOUT_SEC):
                                 raw = await _generate_free_tier_photo(
@@ -816,20 +873,18 @@ async def _photo_stub_worker(task: GenTask) -> None:
                                 reference_image_bytes=task.reference_image_bytes,
                                 reference_mime=task.reference_mime,
                             )
-                    else:
-                        raise
-                except TimeoutError as err:
-                    logger.error(
-                        "Критический сбой бесплатного каскада. Мул завис. Ошибка: %s",
-                        err,
-                    )
-                    await fail_generation_task(
-                        task,
-                        user_message=msg.TXT_FREE_IMAGE_CASCADE_FAILED,
-                        log_msg="photo free hard timeout",
-                        exc=err,
-                    )
-                    return
+                    except TimeoutError as err:
+                        logger.error(
+                            "Критический сбой бесплатного каскада. Мул завис. Ошибка: %s",
+                            err,
+                        )
+                        await fail_generation_task(
+                            task,
+                            user_message=msg.TXT_FREE_IMAGE_CASCADE_FAILED,
+                            log_msg="photo free hard timeout",
+                            exc=err,
+                        )
+                        return
 
                 if raw is not None:
                     if isinstance(raw, str):

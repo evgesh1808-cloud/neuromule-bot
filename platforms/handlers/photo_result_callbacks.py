@@ -12,11 +12,8 @@ from aiogram.types import CallbackQuery
 
 from config import settings
 from content import messages as msg
-from content.inline_keyboards import (
-    new_result_keyboard,
-    result_format_submenu_keyboard,
-    result_upscale_submenu_keyboard,
-)
+from content.inline_keyboards import result_format_submenu_keyboard
+from content.keyboards import new_result_keyboard, result_upscale_submenu_keyboard
 from platforms.handlers import deps
 from platforms.telegram_chat_action import chat_action_loop
 from platforms.telegram_states import UserFlow
@@ -26,7 +23,7 @@ from services.generation_jobs import fire_photo_job
 from services.photo_aspect_ratio import aspect_ratio_from_callback_suffix, normalize_photo_aspect_ratio
 from services.photo_edit_session import get_photo_edit_session, update_photo_edit_session_aspect_ratio
 from services.photo_gen_status import send_photo_gen_status_message
-from services.repository import try_consume_crystals
+from services.repository import get_user_row, try_consume_crystals
 from services.use_cases.photo_generation_turn import PhotoGenOutcome, run_photo_generation_turn
 
 logger = logging.getLogger(__name__)
@@ -220,13 +217,18 @@ async def _run_upscale(callback: CallbackQuery, *, scale: int, cost: int, alert_
         return
 
     if not fal_configured():
-        await callback.answer("fal.ai не настроен (FAL_KEY)", show_alert=True)
+        await callback.answer(msg.TXT_FAL_NOT_CONFIGURED, show_alert=True)
         return
 
     session = get_photo_edit_session(user.id, peer_id=callback.message.chat.id)
     image_url = (session.media_url or "").strip() if session else ""
     if not image_url or not image_url.startswith("http"):
         await callback.answer(msg.TXT_PHOTO_REFINE_EXPIRED, show_alert=True)
+        return
+
+    row = await get_user_row(user.id)
+    if int(row.crystals or 0) < cost:
+        await callback.answer(alert_text, show_alert=True)
         return
 
     if not await try_consume_crystals(user.id, cost):
@@ -246,9 +248,15 @@ async def _run_upscale(callback: CallbackQuery, *, scale: int, cost: int, alert_
             caption=msg.TXT_UPSCALE_DONE,
         )
     except (TelegramBadRequest, TelegramForbiddenError, TelegramNetworkError) as exc:
+        from services.billing.crystals_balance import refund_crystals_to_buy
+
+        await refund_crystals_to_buy(user.id, cost)
         logger.warning("upscale delivery failed uid=%s: %s", user.id, exc)
         await callback.message.answer(msg.TXT_GEN_JOB_FAILED)
     except Exception:
+        from services.billing.crystals_balance import refund_crystals_to_buy
+
+        await refund_crystals_to_buy(user.id, cost)
         logger.exception("upscale fal failed uid=%s scale=%s", user.id, scale)
         await callback.message.answer(msg.TXT_GEN_JOB_FAILED)
 

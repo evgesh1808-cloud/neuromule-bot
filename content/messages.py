@@ -971,16 +971,26 @@ TXT_PHOTO_REFINE_PROMPT = (
 TXT_PHOTO_REFINE_EXPIRED = (
     "Сессия доработки истекла (15 мин). Сгенерируй новое фото или отправь снимок заново."
 )
-TXT_UPSCALE_X2_NEED_CRYSTAL = (
-    "💎 Для увеличения х2 требуется 1 кристалл! Эта функция платная для всех тарифов. "
-    "Пополнить баланс кристаллов: /buy"
+TXT_FAL_NOT_CONFIGURED = (
+    "❌ Генерация по фото недоступна: на сервере не задан FAL_KEY (fal.ai). "
+    "Напишите в поддержку."
 )
-TXT_UPSCALE_X4_NEED_CRYSTAL = (
-    "💎 Ультра-качество х4 стоит 3 кристалла! Пополните баланс кристаллов командой /buy."
-)
+TXT_PHOTO_RESULT_DOCUMENT_CAPTION = "📥 Оригинальный файл (HD качество без сжатия)"
+TXT_UPSCALE_X2_NEED_CRYSTAL = "💎 Нужен 1 кристалл"
+TXT_UPSCALE_X4_NEED_CRYSTAL = "💎 Нужно 3 кристалла"
 TXT_UPSCALE_IN_PROGRESS = "🔍 Увеличиваю разрешение…"
 TXT_UPSCALE_DONE = "📥 Увеличенное изображение (HD)"
 TXT_RESULT_REPEAT_STARTED = "🔄 Повторяю генерацию с новым seed…"
+
+
+def format_photo_result_caption_html(model_label: str, prompt: str) -> str:
+    from html import escape
+
+    display = escape((model_label or "модель").strip())
+    prompt_line = (prompt or "").strip()
+    if len(prompt_line) > 400:
+        prompt_line = f"{prompt_line[:397]}…"
+    return f"🤖 <b>Модель:</b> {display}\n📝 <b>Промпт:</b> {escape(prompt_line or '—')}"
 TXT_CREATE_IMAGE_WAIT_PROMPT = (
     "📎 Фото принято. Теперь отправь <b>текстовый промпт</b> — что изменить или добавить."
 )

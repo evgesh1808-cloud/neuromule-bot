@@ -57,6 +57,27 @@ def _extract_image_url(result: dict[str, Any]) -> str:
     raise ExternalApiError("fal.ai", "ответ без URL изображения")
 
 
+async def upload_fal_image_bytes(data: bytes, content_type: str = "image/jpeg") -> str:
+    raw = data if isinstance(data, bytes) else bytes(data)
+    if not raw:
+        raise ExternalApiError("fal.ai", "пустые байты изображения")
+    mime = (content_type or "image/jpeg").strip() or "image/jpeg"
+    _ensure_fal_key()
+    try:
+        import fal_client
+    except ImportError as exc:
+        raise ExternalApiError("fal.ai", "pip install fal-client") from exc
+    try:
+        upload_async = getattr(fal_client, "upload_async", None)
+        if callable(upload_async):
+            return str(await upload_async(raw, mime))
+        return str(fal_client.upload(raw, mime))
+    except ExternalApiError:
+        raise
+    except Exception as exc:
+        raise ExternalApiError("fal.ai", str(exc)) from exc
+
+
 async def fal_subscribe(model: str, arguments: dict[str, Any]) -> dict[str, Any]:
     _ensure_fal_key()
     try:
