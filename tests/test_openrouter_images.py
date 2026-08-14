@@ -10,17 +10,21 @@ from config import Settings
 from services.api_resilience import ExternalApiError
 from services.gemini_image_client import GeminiImageResult
 from services.openrouter_images import (
+    IDENTITY_NEGATIVE_PROMPT,
     IDENTITY_REFERENCE_WEIGHT,
     OPENROUTER_FLUX_PAID_MODEL,
     OPENROUTER_GPT_IMAGE2_MODEL,
     OPENROUTER_IMAGES_URL,
+    REFERENCE_QUALITY_SUFFIX,
     append_face_description_to_prompt,
+    append_reference_quality_modifiers,
     format_identity_photo_prompt,
     generate_openrouter_image,
     generate_openrouter_photo,
     openrouter_identity_reference,
     parse_openrouter_image_payload,
     resolve_openrouter_photo_prompt_and_refs,
+    resolve_openrouter_reference_url,
 )
 
 
@@ -83,10 +87,29 @@ async def test_generate_openrouter_image_missing_key() -> None:
 
 
 def test_openrouter_identity_reference_type_and_weight() -> None:
-    ref = openrouter_identity_reference("data:image/jpeg;base64,abc")
+    ref = openrouter_identity_reference("https://api.telegram.org/file/bot123/photos/x.jpg")
     assert ref["type"] == "identity"
     assert ref["weight"] == IDENTITY_REFERENCE_WEIGHT
-    assert ref["image_url"]["url"] == "data:image/jpeg;base64,abc"
+    assert ref["image_url"]["url"] == "https://api.telegram.org/file/bot123/photos/x.jpg"
+
+
+def test_append_reference_quality_modifiers() -> None:
+    out = append_reference_quality_modifiers("sunset portrait")
+    assert out.endswith("look sharp and gorgeous")
+    assert REFERENCE_QUALITY_SUFFIX in out
+    assert append_reference_quality_modifiers(out) == out
+
+
+@pytest.mark.asyncio
+async def test_resolve_openrouter_reference_url_from_telegram_file_id() -> None:
+    bot = MagicMock()
+    with patch(
+        "services.replicate_client.telegram_photo_download_url",
+        AsyncMock(return_value="https://api.telegram.org/file/botT/photos/ref.jpg"),
+    ) as dl:
+        url = await resolve_openrouter_reference_url(bot=bot, file_id="AgACabc")
+    assert url == "https://api.telegram.org/file/botT/photos/ref.jpg"
+    dl.assert_awaited_once_with(bot, "AgACabc")
 
 
 def test_format_identity_photo_prompt_wraps_user_text() -> None:
@@ -115,32 +138,60 @@ async def test_generate_openrouter_image_with_identity_reference() -> None:
             model=OPENROUTER_FLUX_PAID_MODEL,
             prompt=format_identity_photo_prompt("studio headshot"),
             aspect_ratio="1:1",
-            input_references=[openrouter_identity_reference("data:image/jpeg;base64,abc")],
+            input_references=[openrouter_identity_reference("https://cdn.example.com/ref.jpg")],
         )
 
     assert result.url == "https://cdn.example.com/identity.webp"
     body = mock_client.post.await_args.kwargs["json"]
     assert body["input_references"][0]["type"] == "identity"
     assert body["input_references"][0]["weight"] == IDENTITY_REFERENCE_WEIGHT
+    assert body["negative_prompt"] == IDENTITY_NEGATIVE_PROMPT
 
 
 @pytest.mark.asyncio
 async def test_resolve_flux_identity_refs_with_weight() -> None:
     settings = Settings(tg_token="t", openrouter_key="test-key")
+    tg_ref = "https://api.telegram.org/file/bot123/photos/user.jpg"
     prompt, refs = await resolve_openrouter_photo_prompt_and_refs(
         settings,
         model=OPENROUTER_FLUX_PAID_MODEL,
         user_prompt="sunset portrait",
-        reference_data_url="data:image/jpeg;base64,abc",
+        reference_data_url=tg_ref,
     )
-    assert prompt == "sunset portrait"
+    assert prompt == f"sunset portrait{REFERENCE_QUALITY_SUFFIX}"
     assert refs == [
         {
             "type": "identity",
             "weight": IDENTITY_REFERENCE_WEIGHT,
-            "image_url": {"url": "data:image/jpeg;base64,abc"},
+            "image_url": {"url": tg_ref},
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_generate_openrouter_photo_includes_negative_prompt_with_refs() -> None:
+    settings = Settings(tg_token="t", openrouter_key="test-key")
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "data": [{"url": "https://cdn.example.com/flux.webp"}],
+    }
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(return_value=mock_response)
+
+    with patch(
+        "services.openrouter_http.get_openrouter_http_client",
+        AsyncMock(return_value=mock_client),
+    ):
+        await generate_openrouter_photo(
+            settings,
+            model=OPENROUTER_FLUX_PAID_MODEL,
+            user_prompt="sunset portrait",
+            reference_data_url="https://api.telegram.org/file/bot123/photos/user.jpg",
+        )
+
+    body = mock_client.post.await_args.kwargs["json"]
+    assert body["negative_prompt"] == IDENTITY_NEGATIVE_PROMPT
 
 
 @pytest.mark.asyncio
@@ -154,11 +205,12 @@ async def test_resolve_gpt_image2_uses_face_description_not_refs() -> None:
             settings,
             model=OPENROUTER_GPT_IMAGE2_MODEL,
             user_prompt="studio headshot",
-            reference_data_url="data:image/jpeg;base64,face",
+            reference_data_url="https://api.telegram.org/file/bot123/photos/face.jpg",
         )
     assert refs is None
     assert "Subject face:" in prompt
     assert "brown eyes" in prompt
+    assert REFERENCE_QUALITY_SUFFIX in prompt
 
 
 @pytest.mark.asyncio
@@ -186,7 +238,7 @@ async def test_generate_openrouter_photo_gpt_text_only_body() -> None:
             settings,
             model=OPENROUTER_GPT_IMAGE2_MODEL,
             user_prompt="cyberpunk portrait",
-            reference_data_url="data:image/jpeg;base64,abc",
+            reference_data_url="https://api.telegram.org/file/bot123/photos/face.jpg",
         )
 
     assert result.url == "https://cdn.example.com/gpt.webp"

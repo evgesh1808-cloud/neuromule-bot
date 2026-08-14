@@ -19,7 +19,7 @@ async def test_nano_banana2_i2i_from_reference_image_url() -> None:
             generation_jobs,
             "_resolve_reference_data_url",
             new_callable=AsyncMock,
-            return_value="data:image/jpeg;base64,abc",
+            return_value="https://sun9.userapi.com/photo.jpg",
         ) as mock_ref,
         patch.object(
             generation_jobs,
@@ -40,7 +40,7 @@ async def test_nano_banana2_i2i_from_reference_image_url() -> None:
         OPENROUTER_NANO_BANANA2_MODEL,
         "make it cinematic",
         aspect_ratio="1:1",
-        reference_data_url="data:image/jpeg;base64,abc",
+        reference_data_url="https://sun9.userapi.com/photo.jpg",
         fallback_models=("google/gemini-3.1-flash-image",),
     )
 
@@ -49,23 +49,28 @@ async def test_nano_banana2_i2i_from_reference_image_url() -> None:
 async def test_resolve_reference_data_url_from_http() -> None:
     from services import generation_jobs
 
-    with patch.object(
-        generation_jobs,
-        "_reference_image_data_url",
-        new_callable=AsyncMock,
-        return_value="data:image/jpeg;base64,QQ==",
-    ) as mock_data:
+    url = await generation_jobs._resolve_reference_data_url(
+        None,
+        None,
+        "https://cdn.example/ref.jpg",
+    )
+
+    assert url == "https://cdn.example/ref.jpg"
+
+
+@pytest.mark.asyncio
+async def test_resolve_reference_data_url_from_telegram_file_id() -> None:
+    from services import generation_jobs
+
+    bot = AsyncMock()
+    with patch(
+        "services.replicate_client.telegram_photo_download_url",
+        AsyncMock(return_value="https://api.telegram.org/file/botT/photos/x.jpg"),
+    ):
         url = await generation_jobs._resolve_reference_data_url(
+            bot,
+            "AgAC_ref",
             None,
-            None,
-            "https://cdn.example/ref.jpg",
         )
 
-    assert url == "data:image/jpeg;base64,QQ=="
-    mock_data.assert_awaited_once_with(
-        bot=None,
-        file_id=None,
-        reference_image_url="https://cdn.example/ref.jpg",
-        reference_image_bytes=None,
-        reference_mime="image/jpeg",
-    )
+    assert url == "https://api.telegram.org/file/botT/photos/x.jpg"

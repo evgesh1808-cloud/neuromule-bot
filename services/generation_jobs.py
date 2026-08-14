@@ -265,23 +265,29 @@ async def _reference_image_data_url(
     reference_image_bytes: bytes | None = None,
     reference_mime: str = "image/jpeg",
 ) -> str:
-    """Референс (Telegram file_id, URL или bytes) → data URL для OpenRouter."""
-    data, mime = await _load_reference_image_bytes(
+    """Референс → URL для OpenRouter ``input_references`` (Telegram https, не base64)."""
+    from services.openrouter_images import resolve_openrouter_reference_url
+
+    url = await resolve_openrouter_reference_url(
         bot=bot,
         file_id=file_id,
         reference_image_url=reference_image_url,
         reference_image_bytes=reference_image_bytes,
         reference_mime=reference_mime,
     )
-    encoded = base64.standard_b64encode(data).decode("ascii")
-    return f"data:{mime};base64,{encoded}"
+    if not url:
+        raise ExternalApiError("PhotoRef", "нет file_id или reference_image_url")
+    return url
 
 
 async def _telegram_photo_data_url(bot: "Bot", file_id: str) -> str:
-    """Telegram file_id → data URL для OpenRouter ``input_references``."""
-    data, mime = await _load_telegram_photo_bytes(bot, file_id)
-    encoded = base64.standard_b64encode(data).decode("ascii")
-    return f"data:{mime};base64,{encoded}"
+    """Legacy alias: Telegram file_id → https URL для OpenRouter."""
+    from services.openrouter_images import resolve_openrouter_reference_url
+
+    url = await resolve_openrouter_reference_url(bot=bot, file_id=file_id)
+    if not url:
+        raise ExternalApiError("Telegram", "empty reference URL")
+    return url
 
 
 async def _safe_delete_status_message(task: GenTask) -> None:
