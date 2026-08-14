@@ -505,7 +505,7 @@ async def _generate_openrouter_photo_model(
     reference_data_url: str | None = None,
     fallback_models: tuple[str, ...] = (),
 ) -> GeminiImageResult:
-    """Платные модели через OpenRouter Images (identity / GPT face-desc / fallback)."""
+    """Платные модели через OpenRouter Images (image_url refs / GPT face-desc / fallback)."""
     if not openrouter_images_configured(app_settings):
         raise ExternalApiError("OpenRouter", "OPENROUTER_API_KEY не задан")
 
