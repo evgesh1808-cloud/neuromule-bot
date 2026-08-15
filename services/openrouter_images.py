@@ -9,6 +9,8 @@ from typing import Any
 
 import httpx
 
+from io import BytesIO
+
 from config import Settings
 from services.api_resilience import ExternalApiError, clip_error_text
 from services.gemini_image_client import GeminiImageResult
@@ -44,6 +46,29 @@ GPT_IMAGE2_FALLBACKS: tuple[str, ...] = (
     *OPENROUTER_FLUX_STACK_FALLBACKS,
 )
 DEFAULT_OPENROUTER_IMAGES_TIMEOUT_SEC = 180.0
+DEFAULT_PHOTO_USER_INTENT = "professional portrait"
+
+# Google Nano / Gemini Images — identity i2i (команды только в тексте prompt).
+GOOGLE_SELFIE_I2I_PROMPT_TEMPLATE = (
+    "Using the attached image strictly as a character identity reference, "
+    "generate a cinematic raw photo of this exact young woman, {user_intent}. "
+    "Shot on 35mm film, natural skin texture, realistic facial features, "
+    "cinematic lighting, highly detailed."
+)
+
+# OpenAI gpt-image-2 — inpaint-логика (лицо из image layer → новая сцена).
+OPENAI_INPAINT_I2I_PROMPT_TEMPLATE = (
+    "Inpaint and seamlessly integrate the face from the provided image layer "
+    "into the new scene. A beautiful young woman, {user_intent}. "
+    "Maintain exact facial morphology, proportions, and features. "
+    "Photorealistic, crisp details, raw texture."
+)
+
+FLUX_SELFIE_I2I_PROMPT_TEMPLATE = (
+    "Using the attached image as a face identity reference, generate a new cinematic photo "
+    "of this exact young woman, {user_intent}. Preserve facial identity exactly; "
+    "new scene and background only.{film_suffix}"
+)
 
 FLUX_OPENAI_FILM_SUFFIX = (
     ", raw photo, shot on 35mm film, natural skin texture with micro-imperfections, "
@@ -126,7 +151,7 @@ def is_nano_banano_stack(model: str) -> bool:
 
 
 def is_google_image_face_stack(model: str) -> bool:
-    """Nano Banano + Gemini Images fallback — type face + identity в корне body."""
+    """Nano Banano + Gemini Images fallback — i2i через prompt + PNG base64 ref."""
     mid = (model or "").strip().lower()
     if is_nano_banano_stack(mid):
         return True
@@ -140,6 +165,97 @@ def is_openai_flux_stack(model: str) -> bool:
     if mid in {m.lower() for m in OPENAI_FLUX_OR_MODELS}:
         return True
     return any(token in mid for token in ("flux", "gpt-image", "openai"))
+
+
+def build_selfie_i2i_prompt_for_model(model: str, user_intent_en: str) -> str:
+    """Склейка английского intent + stack-specific шаблон (без non-JSON полей OR)."""
+    intent = (user_intent_en or DEFAULT_PHOTO_USER_INTENT).strip()
+    model_id = (model or "").strip()
+
+    if model_id == OPENROUTER_GPT_IMAGE2_MODEL:
+        return OPENAI_INPAINT_I2I_PROMPT_TEMPLATE.format(user_intent=intent)
+
+    if is_google_image_face_stack(model_id):
+        return GOOGLE_SELFIE_I2I_PROMPT_TEMPLATE.format(user_intent=intent)
+
+    if is_openai_flux_stack(model_id):
+        base = FLUX_SELFIE_I2I_PROMPT_TEMPLATE.format(
+            user_intent=intent,
+            film_suffix=FLUX_OPENAI_FILM_SUFFIX,
+        )
+        return append_negative_prompt_directive(base, negative=FLUX_OPENAI_NEGATIVE_IN_PROMPT)
+
+    return format_identity_photo_prompt(intent)
+
+
+async def translate_photo_user_intent(settings: Settings, user_prompt: str) -> str:
+    """RU → EN перед склейкой с английскими маркерами identity/inpaint."""
+    from services.billing.translator import translate_prompt_to_english
+
+    raw = (user_prompt or "").strip() or DEFAULT_PHOTO_USER_INTENT
+    return await translate_prompt_to_english(settings, raw)
+
+
+def _image_bytes_to_png_data_url(image_bytes: bytes) -> str:
+    from PIL import Image
+
+    raw = bytes(image_bytes)
+    if not raw:
+        raise ExternalApiError("OpenRouter", "empty reference image bytes")
+
+    with Image.open(BytesIO(raw)) as img:
+        if img.mode not in ("RGB", "RGBA"):
+            img = img.convert("RGBA" if "A" in img.getbands() else "RGB")
+        out = BytesIO()
+        img.save(out, format="PNG", optimize=True)
+        png_bytes = out.getvalue()
+
+    encoded = base64.standard_b64encode(png_bytes).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
+
+
+async def reference_url_to_png_data_url(reference_url: str) -> str:
+    """Telegram/https/data → ``data:image/png;base64,...`` для Google identity i2i."""
+    ref = (reference_url or "").strip()
+    if not ref:
+        raise ExternalApiError("OpenRouter", "empty reference for PNG data URL")
+
+    if ref.startswith("data:"):
+        header = ref.split(",", 1)[0].lower()
+        if "image/png" in header:
+            return ref
+        try:
+            raw = base64.b64decode(ref.split(",", 1)[1], validate=False)
+        except Exception as exc:
+            raise ExternalApiError("OpenRouter", "invalid reference data URL") from exc
+        return _image_bytes_to_png_data_url(raw)
+
+    if not ref.startswith(("http://", "https://")):
+        raise ExternalApiError("OpenRouter", "reference must be http(s) or data URL")
+
+    from services.streaming_download import stream_download_to_bytes
+
+    async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=15.0)) as client:
+        data = await stream_download_to_bytes(client, ref, source="openrouter_ref_png")
+    if not data:
+        raise ExternalApiError("OpenRouter", "failed to download reference for PNG")
+    logger.info("reference encoded to PNG data URL bytes=%s", len(data))
+    return _image_bytes_to_png_data_url(data)
+
+
+async def ensure_png_reference_data_url(
+    reference_url: str,
+    *,
+    reference_input_url: str | None = None,
+) -> str:
+    """Предпочитает уже закодированный ref; иначе кодирует в PNG data-URL."""
+    cached = (reference_input_url or "").strip()
+    if cached.startswith("data:image/png;base64,"):
+        return cached
+    raw = cached or (reference_url or "").strip()
+    if not raw:
+        raise ExternalApiError("OpenRouter", "empty reference for PNG encoding")
+    return await reference_url_to_png_data_url(raw)
 
 
 def prepend_selfie_woman_prompt(user_prompt: str) -> str:
@@ -229,7 +345,8 @@ def model_uses_weighted_identity_reference(model: str) -> bool:
 
 
 def model_uses_face_description_prompt(model: str) -> bool:
-    return (model or "").strip() == OPENROUTER_GPT_IMAGE2_MODEL
+    """gpt-image-2 использует inpaint prompt + input_references, не face-desc."""
+    return False
 
 
 def append_face_description_to_prompt(user_prompt: str, face_description: str) -> str:
@@ -366,28 +483,29 @@ async def resolve_openrouter_photo_prompt_and_refs(
     user_prompt: str,
     reference_data_url: str | None = None,
     reference_input_url: str | None = None,
+    user_intent_en: str | None = None,
 ) -> tuple[str, list[dict[str, Any]] | None, dict[str, Any]]:
     """
-    Промпт, input_references (base64 data-URL) и body extensions по стеку модели.
+    Промпт, input_references (PNG base64 data-URL) и body extensions по стеку модели.
     ``reference_input_url`` — уже закодированный ref (для fallback без повторной загрузки).
     """
-    cleaned = (user_prompt or "").strip() or "Professional portrait photo"
+    cleaned = (user_prompt or "").strip() or DEFAULT_PHOTO_USER_INTENT
     raw_ref = (reference_input_url or reference_data_url or "").strip()
     if not raw_ref:
         return cleaned, None, {}
 
-    ref_b64 = raw_ref if raw_ref.startswith("data:") else await reference_url_to_data_url(raw_ref)
     model_id = (model or "").strip()
-    body_extensions: dict[str, Any] = {}
+    intent_en = (user_intent_en or "").strip()
+    if not intent_en:
+        intent_en = await translate_photo_user_intent(settings, cleaned)
 
-    if model_uses_face_description_prompt(model_id):
-        cleaned = append_reference_prompt_modifiers(cleaned, model_id, has_reference=True)
-        face_desc = await describe_reference_face_for_prompt(settings, ref_b64)
-        return append_face_description_to_prompt(cleaned, face_desc), None, body_extensions
-
-    cleaned = append_reference_prompt_modifiers(cleaned, model_id, has_reference=True)
-    # OpenRouter Images API: только type image_url; identity/negative_prompt → в prompt.
-    return cleaned, [openrouter_input_reference(ref_b64)], body_extensions
+    ref_png = await ensure_png_reference_data_url(
+        reference_data_url or raw_ref,
+        reference_input_url=reference_input_url,
+    )
+    prompt = build_selfie_i2i_prompt_for_model(model_id, intent_en)
+    # OpenRouter Images API: только type image_url; identity/inpaint → в prompt.
+    return prompt, [openrouter_input_reference(ref_png)], {}
 
 
 def parse_openrouter_image_payload(payload: dict[str, Any]) -> GeminiImageResult:
@@ -556,9 +674,11 @@ async def generate_openrouter_photo(
     fallback_models: tuple[str, ...] = (),
     timeout_sec: float = DEFAULT_OPENROUTER_IMAGES_TIMEOUT_SEC,
 ) -> GeminiImageResult:
-    ref_b64: str | None = None
+    ref_png: str | None = None
+    user_intent_en: str | None = None
     if (reference_data_url or "").strip():
-        ref_b64 = await resolve_reference_input_url(reference_data_url)
+        ref_png = await reference_url_to_png_data_url(reference_data_url)
+        user_intent_en = await translate_photo_user_intent(settings, user_prompt)
 
     last_exc: ExternalApiError | None = None
     candidates = ((model or "").strip(), *fallback_models)
@@ -571,7 +691,8 @@ async def generate_openrouter_photo(
                 model=slug,
                 user_prompt=user_prompt,
                 reference_data_url=reference_data_url,
-                reference_input_url=ref_b64,
+                reference_input_url=ref_png,
+                user_intent_en=user_intent_en,
             )
             return await generate_openrouter_image(
                 settings,
@@ -590,7 +711,7 @@ async def generate_openrouter_photo(
                     slug,
                     exc,
                     candidates[idx + 1],
-                    bool(ref_b64),
+                    bool(ref_png),
                 )
                 continue
             raise

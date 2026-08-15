@@ -583,7 +583,12 @@ async def _generate_openrouter_photo_model(
     reference_data_url: str | None = None,
     fallback_models: tuple[str, ...] = (),
 ) -> GeminiImageResult:
-    """Платные модели через OpenRouter Images (image_url refs / GPT face-desc / fallback)."""
+    """Платные модели через OpenRouter Images.
+
+    При i2i (селфи + intent) ``openrouter_images`` переводит intent на EN,
+    склеивает stack-specific prompt (Google identity / OpenAI inpaint / Flux)
+    и кодирует референс в PNG base64 для ``input_references``.
+    """
     if not openrouter_images_configured(app_settings):
         raise ExternalApiError("OpenRouter", "OPENROUTER_API_KEY не задан")
 
