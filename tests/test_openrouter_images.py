@@ -76,8 +76,9 @@ def test_build_google_selfie_prompt_template() -> None:
         OPENROUTER_NANO_BANANA2_MODEL,
         "sunset in paris",
     )
-    assert prompt == GOOGLE_SELFIE_I2I_PROMPT_TEMPLATE.format(user_intent="sunset in paris")
+    assert GOOGLE_SELFIE_I2I_PROMPT_TEMPLATE.format(user_intent="sunset in paris") in prompt
     assert "character identity reference" in prompt
+    assert "[Negative prompt:" in prompt
 
 
 def test_build_openai_inpaint_prompt_template() -> None:
@@ -115,6 +116,8 @@ async def test_resolve_nano_google_prompt_and_png_ref() -> None:
         user_intent_en="sunset in paris",
     )
     assert "character identity reference" in prompt
+    assert "ignore the background" in prompt.lower()
+    assert "[Negative prompt:" in prompt
     assert refs == [{"type": "image_url", "image_url": {"url": _PNG_DATA_URL}}]
     assert extras == {}
 

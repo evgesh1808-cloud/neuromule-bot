@@ -18,12 +18,12 @@ def test_selfie_routes_to_nano_banana_pro() -> None:
         "dalle_3",
         has_reference=True,
         prompt="studio",
-    ) == "nano_banana_pro"
+    ) == "dalle_3"
     assert resolve_smart_photo_model_key(
         "nano_banana2",
         has_reference=True,
         prompt="portrait",
-    ) == "nano_banana_pro"
+    ) == "nano_banana2"
 
 
 def test_selfie_already_pro_stays() -> None:

@@ -50,8 +50,10 @@ DEFAULT_PHOTO_USER_INTENT = "professional portrait"
 
 # Google Nano / Gemini Images — identity i2i (команды только в тексте prompt).
 GOOGLE_SELFIE_I2I_PROMPT_TEMPLATE = (
-    "Using the attached image strictly as a character identity reference, "
+    "Using the attached image strictly as a character identity reference only, "
     "generate a cinematic raw photo of this exact young woman, {user_intent}. "
+    "Completely ignore the background, clothing, pose, and lighting from the reference — "
+    "extract only facial identity and bone structure. "
     "Shot on 35mm film, natural skin texture, realistic facial features, "
     "cinematic lighting, highly detailed."
 )
@@ -59,15 +61,16 @@ GOOGLE_SELFIE_I2I_PROMPT_TEMPLATE = (
 # OpenAI gpt-image-2 — inpaint-логика (лицо из image layer → новая сцена).
 OPENAI_INPAINT_I2I_PROMPT_TEMPLATE = (
     "Inpaint and seamlessly integrate the face from the provided image layer "
-    "into the new scene. A beautiful young woman, {user_intent}. "
+    "into a completely new scene. A beautiful young woman, {user_intent}. "
+    "Do not copy the reference background, outfit, or composition — face identity only. "
     "Maintain exact facial morphology, proportions, and features. "
     "Photorealistic, crisp details, raw texture."
 )
 
 FLUX_SELFIE_I2I_PROMPT_TEMPLATE = (
-    "Using the attached image as a face identity reference, generate a new cinematic photo "
+    "Using the attached image as a face identity reference only, generate a new cinematic photo "
     "of this exact young woman, {user_intent}. Preserve facial identity exactly; "
-    "new scene and background only.{film_suffix}"
+    "ignore reference background, clothing, and pose — new scene only.{film_suffix}"
 )
 
 FLUX_OPENAI_FILM_SUFFIX = (
@@ -176,7 +179,14 @@ def build_selfie_i2i_prompt_for_model(model: str, user_intent_en: str) -> str:
         return OPENAI_INPAINT_I2I_PROMPT_TEMPLATE.format(user_intent=intent)
 
     if is_google_image_face_stack(model_id):
-        return GOOGLE_SELFIE_I2I_PROMPT_TEMPLATE.format(user_intent=intent)
+        prompt = GOOGLE_SELFIE_I2I_PROMPT_TEMPLATE.format(user_intent=intent)
+        return append_negative_prompt_directive(
+            prompt,
+            negative=(
+                f"{NANO_BANANO_NEGATIVE_PROMPT}, copied background, duplicate scene, "
+                "same outfit as reference"
+            ),
+        )
 
     if is_openai_flux_stack(model_id):
         base = FLUX_SELFIE_I2I_PROMPT_TEMPLATE.format(
@@ -431,12 +441,19 @@ async def reference_url_to_data_url(reference_url: str) -> str:
     return f"data:{mime};base64,{encoded}"
 
 
+def reference_bytes_to_png_data_url(image_bytes: bytes) -> str:
+    """Raw JPEG/PNG/WebP bytes → ``data:image/png;base64,...``."""
+    return _image_bytes_to_png_data_url(image_bytes)
+
+
 async def resolve_reference_input_url(reference_url: str | None) -> str | None:
-    """Telegram/https/data → base64 data-URL для ``input_references`` OpenRouter."""
+    """Telegram/https/data → PNG base64 data-URL для ``input_references`` OpenRouter."""
     ref = (reference_url or "").strip()
     if not ref:
         return None
-    return await reference_url_to_data_url(ref)
+    if ref.startswith("data:image/png;base64,"):
+        return ref
+    return await reference_url_to_png_data_url(ref)
 
 
 async def describe_reference_face_for_prompt(
@@ -677,7 +694,11 @@ async def generate_openrouter_photo(
     ref_png: str | None = None
     user_intent_en: str | None = None
     if (reference_data_url or "").strip():
-        ref_png = await reference_url_to_png_data_url(reference_data_url)
+        ref_raw = reference_data_url.strip()
+        if ref_raw.startswith("data:image/png;base64,"):
+            ref_png = ref_raw
+        else:
+            ref_png = await resolve_reference_input_url(ref_raw)
         user_intent_en = await translate_photo_user_intent(settings, user_prompt)
 
     last_exc: ExternalApiError | None = None

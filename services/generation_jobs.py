@@ -242,11 +242,13 @@ def resolve_smart_photo_model_key(
     prompt: str,
 ) -> str:
     """
-    Chatcom-style роутинг: селфи → Nano Banano Pro (Google face swap);
-    чистый текст / дизайн → Flux или gpt-image (OpenAI stack).
+    Chatcom-style роутинг: селфи → identity-модель по выбору пользователя;
+    GPT Image 2 и Nano сохраняют свой стек; прочие модели → nano_banana_pro.
     """
     key = (model_key or "").strip().lower()
     if has_reference:
+        if key in ("dalle_3", "nano_banana2", "nano_banana_pro"):
+            return key
         if key != "nano_banana_pro":
             logger.info(
                 "smart photo routing: model=%s + reference → nano_banana_pro",
@@ -337,6 +339,35 @@ async def _load_telegram_photo_bytes(bot: "Bot", file_id: str) -> tuple[bytes, s
     return data, mime
 
 
+async def _resolve_reference_data_url(
+    bot: "Bot | None",
+    file_id: str | None,
+    reference_image_url: str | None = None,
+    reference_image_bytes: bytes | None = None,
+    reference_mime: str = "image/jpeg",
+) -> str | None:
+    """Референс → PNG data-URL для OpenRouter (скачивание через bot, без TG https URL)."""
+    if not _photo_has_reference(file_id, reference_image_url, reference_image_bytes):
+        return None
+
+    ref_bytes, _ref_mime = await _load_reference_image_bytes(
+        bot=bot,
+        file_id=file_id,
+        reference_image_url=reference_image_url,
+        reference_image_bytes=reference_image_bytes,
+        reference_mime=reference_mime,
+    )
+    from services.openrouter_images import reference_bytes_to_png_data_url
+
+    png_data_url = reference_bytes_to_png_data_url(ref_bytes)
+    logger.info(
+        "reference resolved via bot download bytes=%s png_len=%s",
+        len(ref_bytes),
+        len(png_data_url),
+    )
+    return png_data_url
+
+
 async def _reference_image_data_url(
     *,
     bot: "Bot | None",
@@ -345,10 +376,8 @@ async def _reference_image_data_url(
     reference_image_bytes: bytes | None = None,
     reference_mime: str = "image/jpeg",
 ) -> str:
-    """Референс → URL для OpenRouter ``input_references`` (Telegram https, не base64)."""
-    from services.openrouter_images import resolve_openrouter_reference_url
-
-    url = await resolve_openrouter_reference_url(
+    """Backward-compatible alias → ``_resolve_reference_data_url``."""
+    url = await _resolve_reference_data_url(
         bot=bot,
         file_id=file_id,
         reference_image_url=reference_image_url,
@@ -358,6 +387,19 @@ async def _reference_image_data_url(
     if not url:
         raise ExternalApiError("PhotoRef", "нет file_id или reference_image_url")
     return url
+
+
+async def _download_result_image_bytes(image_url: str) -> bytes | None:
+    """Скачать результат OpenRouter на VDSina — Telegram часто не тянет внешний CDN."""
+    url = (image_url or "").strip()
+    if not url.startswith(("http://", "https://")):
+        return None
+    import httpx
+
+    from services.streaming_download import stream_download_to_bytes
+
+    async with httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=20.0)) as client:
+        return await stream_download_to_bytes(client, url, source="openrouter_result")
 
 
 async def _telegram_photo_data_url(bot: "Bot", file_id: str) -> str:
@@ -554,24 +596,6 @@ async def _generate_flux_schnell_paid(
         aspect_ratio=aspect_ratio,
         reference_data_url=reference_data_url,
         fallback_models=OPENROUTER_FLUX_STACK_FALLBACKS,
-    )
-
-
-async def _resolve_reference_data_url(
-    bot: "Bot | None",
-    file_id: str | None,
-    reference_image_url: str | None = None,
-    reference_image_bytes: bytes | None = None,
-    reference_mime: str = "image/jpeg",
-) -> str | None:
-    if not file_id and not reference_image_url and not reference_image_bytes:
-        return None
-    return await _reference_image_data_url(
-        bot=bot,
-        file_id=file_id,
-        reference_image_url=reference_image_url,
-        reference_image_bytes=reference_image_bytes,
-        reference_mime=reference_mime,
     )
 
 
@@ -777,6 +801,14 @@ async def _send_generated_photo(
         raise RuntimeError("Telegram photo delivery requires bot")
 
     if photo_url and str(photo_url).startswith(("http://", "https://")):
+        downloaded = await _download_result_image_bytes(str(photo_url))
+        if downloaded:
+            await _deliver_photo_bytes_chatcom(task, downloaded)
+            return
+        logger.warning(
+            "photo delivery: CDN download failed task=%s, fallback to URL send",
+            task.task_id,
+        )
         await _deliver_photo_url_chatcom(task, str(photo_url))
         return
 
