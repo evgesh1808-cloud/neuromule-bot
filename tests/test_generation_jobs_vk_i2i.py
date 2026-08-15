@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from services.gemini_image_client import GeminiImageResult
-from services.openrouter_images import OPENROUTER_NANO_BANANA_PRO_MODEL
+from services.openrouter_images import NANO_BANANO_PRO_FALLBACKS, OPENROUTER_NANO_BANANA_PRO_MODEL
 
 
 @pytest.mark.asyncio
@@ -41,7 +41,7 @@ async def test_nano_banana2_i2i_from_reference_image_url() -> None:
         "make it cinematic",
         aspect_ratio="1:1",
         reference_data_url="https://sun9.userapi.com/photo.jpg",
-        fallback_models=("google/gemini-3-pro-image-preview",),
+        fallback_models=NANO_BANANO_PRO_FALLBACKS,
     )
 
 

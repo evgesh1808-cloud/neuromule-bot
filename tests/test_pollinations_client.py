@@ -90,17 +90,21 @@ async def test_paid_tier_flux_uses_openrouter_primary(monkeypatch: pytest.Monkey
     async def _fake_pollinations(_prompt: str) -> GeminiImageResult:
         raise AssertionError("Pollinations must not be called for paid flux")
 
-    async def _fake_replicate(*_a, **_k):
-        raise AssertionError("Replicate must not be called when OpenRouter succeeds")
-
-    async def _fake_openrouter(_settings, **kwargs) -> GeminiImageResult:
-        assert kwargs["model"] == "black-forest-labs/flux.2-pro"
-        assert kwargs["aspect_ratio"] == "1:1"
+    async def _fake_openrouter_photo_model(
+        model: str,
+        prompt: str,
+        *,
+        aspect_ratio: str = "1:1",
+        reference_data_url=None,
+        fallback_models=(),
+    ) -> GeminiImageResult:
+        assert model == "black-forest-labs/flux.2-pro"
+        assert aspect_ratio == "1:1"
+        assert fallback_models
         return GeminiImageResult(url="https://cdn.example.com/flux-or.webp")
 
     monkeypatch.setattr(generation_jobs, "generate_flux_schnell_image", _fake_pollinations)
-    monkeypatch.setattr(generation_jobs, "call_replicate_model", _fake_replicate)
-    monkeypatch.setattr(generation_jobs, "generate_openrouter_image", _fake_openrouter)
+    monkeypatch.setattr(generation_jobs, "_generate_openrouter_photo_model", _fake_openrouter_photo_model)
     monkeypatch.setattr(generation_jobs, "openrouter_images_configured", lambda _s: True)
 
     async def _fake_row(_uid: int):
@@ -121,25 +125,27 @@ async def test_paid_tier_flux_uses_openrouter_primary(monkeypatch: pytest.Monkey
 
 
 @pytest.mark.asyncio
-async def test_paid_tier_flux_falls_back_to_replicate(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_paid_tier_flux_uses_openrouter_with_fallback_models(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _fake_pollinations(_prompt: str) -> GeminiImageResult:
         raise AssertionError("Pollinations must not be called for paid flux")
 
-    async def _fake_openrouter(_settings, **_kwargs) -> GeminiImageResult:
-        raise ExternalApiError("OpenRouter", "HTTP 503")
+    seen_fallbacks: tuple[str, ...] = ()
 
-    async def _fake_replicate(_model: str, _inputs: dict, **_k) -> str:
-        return "https://replicate.delivery/photo.webp"
-
-    async def _fake_enhance(_settings, _prompt: str) -> str:
-        return "enhanced prompt"
+    async def _fake_openrouter_photo_model(
+        model: str,
+        prompt: str,
+        *,
+        aspect_ratio: str = "1:1",
+        reference_data_url=None,
+        fallback_models=(),
+    ) -> GeminiImageResult:
+        nonlocal seen_fallbacks
+        seen_fallbacks = fallback_models
+        return GeminiImageResult(url="https://cdn.openrouter.example/flux.webp")
 
     monkeypatch.setattr(generation_jobs, "generate_flux_schnell_image", _fake_pollinations)
-    monkeypatch.setattr(generation_jobs, "call_replicate_model", _fake_replicate)
-    monkeypatch.setattr(generation_jobs, "enhance_video_prompt_for_replicate", _fake_enhance)
-    monkeypatch.setattr(generation_jobs, "generate_openrouter_image", _fake_openrouter)
+    monkeypatch.setattr(generation_jobs, "_generate_openrouter_photo_model", _fake_openrouter_photo_model)
     monkeypatch.setattr(generation_jobs, "openrouter_images_configured", lambda _s: True)
-    monkeypatch.setattr(generation_jobs, "replicate_configured", lambda: True)
 
     async def _fake_row(_uid: int):
         class _R:
@@ -154,4 +160,6 @@ async def test_paid_tier_flux_falls_back_to_replicate(monkeypatch: pytest.Monkey
         "sunset",
         user_id=7,
     )
-    assert result == "https://replicate.delivery/photo.webp"
+    assert isinstance(result, GeminiImageResult)
+    assert result.url == "https://cdn.openrouter.example/flux.webp"
+    assert seen_fallbacks

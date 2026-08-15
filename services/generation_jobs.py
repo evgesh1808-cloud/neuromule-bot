@@ -49,17 +49,19 @@ from services.billing.video_pipeline import VIDEO_SCENARIOS
 from services.photo_aspect_ratio import (
     normalize_photo_aspect_ratio,
     openrouter_aspect_ratio,
-    replicate_flux_aspect_ratio,
 )
 from services.photo_edit_session import save_photo_edit_session
 from services.billing.image_pipeline import FREE_PHOTO_MODEL_KEY, free_tier_image_model
 from services.free_image_cascade import FreeImageCascadeExhausted, generate_free_tier_image
 from services.openrouter_images import (
+    GPT_IMAGE2_FALLBACKS,
+    NANO_BANANO2_FALLBACKS,
+    NANO_BANANO_PRO_FALLBACKS,
     OPENROUTER_FLUX_PAID_MODEL,
+    OPENROUTER_FLUX_STACK_FALLBACKS,
     OPENROUTER_GPT_IMAGE2_MODEL,
     OPENROUTER_NANO_BANANA2_MODEL,
     OPENROUTER_NANO_BANANA_PRO_MODEL,
-    REPLICATE_FLUX_SCHNELL_MODEL,
     generate_openrouter_photo,
     openrouter_images_configured,
 )
@@ -530,31 +532,29 @@ async def _generate_free_tier_photo(
 
 
 async def _free_tier_flux_uses_pollinations(user_id: int | None, model_key: str) -> bool:
-    """FREE + Flux Schnell → Pollinations (без Replicate и без API-ключей)."""
+    """FREE + Flux Schnell → Pollinations (без платных API-ключей)."""
     if model_key != "flux_schnell" or user_id is None:
         return False
     row = await get_user_row(user_id)
     return normalize_tariff(row.tariff) is TariffName.FREE
 
 
-async def _generate_flux_schnell_replicate(prompt: str, *, aspect_ratio: str = "1:1") -> str:
-    """Replicate fallback для платного Flux Schnell."""
-    if not replicate_configured():
-        raise ExternalApiError("Replicate", "REPLICATE_API_TOKEN не задан")
-    prompt_en = await enhance_video_prompt_for_replicate(app_settings, prompt)
-    ar = replicate_flux_aspect_ratio(aspect_ratio)
-    url = await call_replicate_model(
-        REPLICATE_FLUX_SCHNELL_MODEL,
-        {
-            "prompt": prompt_en,
-            "aspect_ratio": ar,
-            "output_format": "webp",
-            "output_quality": 90,
-        },
+async def _generate_flux_schnell_paid(
+    prompt: str,
+    *,
+    aspect_ratio: str = "1:1",
+    reference_data_url: str | None = None,
+) -> GeminiImageResult:
+    """Платный Flux: только OpenRouter Images (+ внутренние OR-fallback)."""
+    if not openrouter_images_configured(app_settings):
+        raise ExternalApiError("OpenRouter", "OPENROUTER_API_KEY не задан")
+    return await _generate_openrouter_photo_model(
+        OPENROUTER_FLUX_PAID_MODEL,
+        prompt,
+        aspect_ratio=aspect_ratio,
+        reference_data_url=reference_data_url,
+        fallback_models=OPENROUTER_FLUX_STACK_FALLBACKS,
     )
-    if not url:
-        raise ExternalApiError("Replicate", "Flux Schnell: пустой URL")
-    return url
 
 
 async def _resolve_reference_data_url(
@@ -598,33 +598,6 @@ async def _generate_openrouter_photo_model(
     )
 
 
-async def _generate_flux_schnell_paid(
-    prompt: str,
-    *,
-    aspect_ratio: str = "1:1",
-    reference_data_url: str | None = None,
-) -> GeminiImageResult | str:
-    """Платный Flux Schnell: OpenRouter primary → Replicate fallback."""
-    if openrouter_images_configured(app_settings):
-        try:
-            return await _generate_openrouter_photo_model(
-                OPENROUTER_FLUX_PAID_MODEL,
-                prompt,
-                aspect_ratio=aspect_ratio,
-                reference_data_url=reference_data_url,
-            )
-        except ExternalApiError as exc:
-            if not replicate_configured():
-                raise
-            logger.warning(
-                "flux_schnell: OpenRouter failed (%s), falling back to Replicate",
-                exc,
-            )
-    elif not replicate_configured():
-        raise ExternalApiError("OpenRouter", "OPENROUTER_API_KEY не задан")
-    return await _generate_flux_schnell_replicate(prompt, aspect_ratio=aspect_ratio)
-
-
 async def _generate_photo_result(
     model_key: str,
     prompt: str,
@@ -637,7 +610,7 @@ async def _generate_photo_result(
     reference_image_bytes: bytes | None = None,
     reference_mime: str = "image/jpeg",
 ) -> GeminiImageResult | str:
-    """Возвращает GeminiImageResult (url/bytes) или прямой URL строки (Replicate)."""
+    """Возвращает GeminiImageResult (url/bytes) или прямой URL строки."""
     ar = normalize_photo_aspect_ratio(aspect_ratio)
     has_reference = _photo_has_reference(file_id, reference_image_url, reference_image_bytes)
     model_key = resolve_smart_photo_model_key(
@@ -672,6 +645,7 @@ async def _generate_photo_result(
                 prompt,
                 aspect_ratio=ar,
                 reference_data_url=reference_data_url,
+                fallback_models=GPT_IMAGE2_FALLBACKS,
             )
 
         if model_key == "nano_banana2":
@@ -680,7 +654,7 @@ async def _generate_photo_result(
                 prompt,
                 aspect_ratio=ar,
                 reference_data_url=reference_data_url,
-                fallback_models=("google/gemini-3.1-flash-image",),
+                fallback_models=NANO_BANANO2_FALLBACKS,
             )
 
         if model_key == "nano_banana_pro":
@@ -689,7 +663,7 @@ async def _generate_photo_result(
                 prompt,
                 aspect_ratio=ar,
                 reference_data_url=reference_data_url,
-                fallback_models=("google/gemini-3-pro-image-preview",),
+                fallback_models=NANO_BANANO_PRO_FALLBACKS,
             )
 
         raise RuntimeError(f"Неизвестная модель изображения: {model_key}")
@@ -700,7 +674,7 @@ async def _generate_photo_result(
             "OpenRouter"
             if model_key
             in ("nano_banana2", "nano_banana_pro", "flux_schnell", "dalle_3")
-            else "Replicate"
+            else "ExternalApi"
         )
         raise wrap_http_error(provider, exc) from exc
 

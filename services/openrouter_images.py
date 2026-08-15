@@ -16,15 +16,35 @@ from services.gemini_image_client import GeminiImageResult
 logger = logging.getLogger(__name__)
 
 OPENROUTER_IMAGES_URL = "https://openrouter.ai/api/v1/images"
-REPLICATE_FLUX_SCHNELL_MODEL = "black-forest-labs/flux-schnell"
 OPENROUTER_FLUX_PAID_MODEL = "black-forest-labs/flux.2-pro"
+OPENROUTER_FLUX_SCHNELL_OR_MODEL = "black-forest-labs/flux-schnell"
+OPENROUTER_FLUX_DEV_OR_MODEL = "black-forest-labs/flux-1.1-pro"
 OPENROUTER_NANO_BANANA2_MODEL = "google/gemini-3.1-flash-image-preview"
 OPENROUTER_NANO_BANANA_PRO_MODEL = "google/gemini-3-pro-image"
 OPENROUTER_GPT_IMAGE2_MODEL = "openai/gpt-image-2"
 OPENROUTER_FLUX_SCHNELL_MODEL = OPENROUTER_FLUX_PAID_MODEL
+
+# Внутренние fallback-цепочки OpenRouter Images (без сторонних провайдеров).
+OPENROUTER_FLUX_STACK_FALLBACKS: tuple[str, ...] = (
+    OPENROUTER_FLUX_SCHNELL_OR_MODEL,
+    OPENROUTER_FLUX_DEV_OR_MODEL,
+)
+NANO_BANANO2_FALLBACKS: tuple[str, ...] = (
+    "google/gemini-3.1-flash-image",
+    OPENROUTER_FLUX_PAID_MODEL,
+    *OPENROUTER_FLUX_STACK_FALLBACKS,
+)
+NANO_BANANO_PRO_FALLBACKS: tuple[str, ...] = (
+    "google/gemini-3-pro-image-preview",
+    OPENROUTER_FLUX_PAID_MODEL,
+    *OPENROUTER_FLUX_STACK_FALLBACKS,
+)
+GPT_IMAGE2_FALLBACKS: tuple[str, ...] = (
+    OPENROUTER_FLUX_PAID_MODEL,
+    *OPENROUTER_FLUX_STACK_FALLBACKS,
+)
 DEFAULT_OPENROUTER_IMAGES_TIMEOUT_SEC = 180.0
 
-# Стек Flux / OpenAI — плёночный фотореализм (без глянца).
 FLUX_OPENAI_FILM_SUFFIX = (
     ", raw photo, shot on 35mm film, natural skin texture with micro-imperfections, "
     "authentic candid photography, cinematic lighting, subtle bokeh"
@@ -34,22 +54,21 @@ FLUX_OPENAI_NEGATIVE_IN_PROMPT = (
     "bad skin, old, expressionless, distorted lips"
 )
 
-# Стек Google Nano Banano — anti-CGI в корневом negative_prompt (где API поддерживает).
 NANO_BANANO_NEGATIVE_PROMPT = (
     "CGI, 3d render, airbrushed, plastic skin, smooth face, digital art, illustration"
 )
 NANO_CHARACTER_IDENTITY_WEIGHT = 1.0
 
-# Backward-compatible aliases (старые тесты / импорты).
 REFERENCE_QUALITY_SUFFIX = FLUX_OPENAI_FILM_SUFFIX
 IDENTITY_NEGATIVE_PROMPT = FLUX_OPENAI_NEGATIVE_IN_PROMPT
 
+SELFIE_WOMAN_PROMPT_PREFIX = "A professional photo of a beautiful young woman, "
+
 FACE_DESCRIBE_VISION_MODEL = "google/gemini-2.5-flash"
 FACE_DESCRIBE_SYSTEM_PROMPT = (
-    "Опиши только неизменяемые анатомические черты лица (форма глаз, носа, губ, "
-    "структура скул, прическа). Полностью игнорируй эмоции, одежду, фон, ракурс кадра "
-    "и освещение. Описание должно быть ультра-лаконичным, без художественных прикрас, "
-    "чтобы модель генерации не копировала композицию исходного селфи."
+    "Ты обязан определить пол человека на фото и начать описание строго со слов "
+    "'A photo of a young woman...' или 'A female portrait...'. "
+    "Далее опиши только анатомические черты лица, полностью игнорируя фон, эмоции и одежду."
 )
 
 OPENROUTER_MODEL_BY_MENU_KEY: dict[str, str] = {
@@ -65,6 +84,12 @@ NANO_BANANO_OR_MODELS: frozenset[str] = frozenset(
         OPENROUTER_NANO_BANANA_PRO_MODEL,
     }
 )
+GOOGLE_IMAGE_FALLBACK_MODELS: frozenset[str] = frozenset(
+    {
+        "google/gemini-3.1-flash-image",
+        "google/gemini-3-pro-image-preview",
+    }
+)
 OPENAI_FLUX_OR_MODELS: frozenset[str] = frozenset(
     {
         OPENROUTER_FLUX_PAID_MODEL,
@@ -72,12 +97,12 @@ OPENAI_FLUX_OR_MODELS: frozenset[str] = frozenset(
     }
 )
 
-MODELS_WITH_IMAGE_REFERENCE = NANO_BANANO_OR_MODELS | OPENAI_FLUX_OR_MODELS
+MODELS_WITH_IMAGE_REFERENCE = NANO_BANANO_OR_MODELS | OPENAI_FLUX_OR_MODELS | GOOGLE_IMAGE_FALLBACK_MODELS
 MODELS_WITH_WEIGHTED_IDENTITY_REFERENCE = MODELS_WITH_IMAGE_REFERENCE
 IDENTITY_REFERENCE_WEIGHT = NANO_CHARACTER_IDENTITY_WEIGHT
 
-_NANO_CHARACTER_PROMPT_SUFFIX = (
-    ". Preserve the subject's facial identity from the character reference exactly."
+_NANO_FACE_PROMPT_SUFFIX = (
+    ". Preserve the subject's facial identity from the face reference exactly."
 )
 
 
@@ -94,19 +119,38 @@ def resolve_openrouter_model_for_menu_key(model_key: str) -> str:
 
 
 def is_nano_banano_stack(model: str) -> bool:
-    """Google Nano Banano 2 / Pro (character reference + identity body)."""
     mid = (model or "").strip().lower()
     if mid in {m.lower() for m in NANO_BANANO_OR_MODELS}:
         return True
     return any(token in mid for token in ("nano", "banano", "banana"))
 
 
+def is_google_image_face_stack(model: str) -> bool:
+    """Nano Banano + Gemini Images fallback — type face + identity в корне body."""
+    mid = (model or "").strip().lower()
+    if is_nano_banano_stack(mid):
+        return True
+    if mid in {m.lower() for m in GOOGLE_IMAGE_FALLBACK_MODELS}:
+        return True
+    return "gemini" in mid and "image" in mid
+
+
 def is_openai_flux_stack(model: str) -> bool:
-    """Flux 2 Pro / OpenAI gpt-image (строгий image_url, без identity в корне)."""
     mid = (model or "").strip().lower()
     if mid in {m.lower() for m in OPENAI_FLUX_OR_MODELS}:
         return True
     return any(token in mid for token in ("flux", "gpt-image", "openai"))
+
+
+def prepend_selfie_woman_prompt(user_prompt: str) -> str:
+    """При i2i-селфи — явный женский пол в начале промпта."""
+    base = (user_prompt or "").strip() or "Professional portrait photo"
+    low = base.lower()
+    if base.startswith(SELFIE_WOMAN_PROMPT_PREFIX):
+        return base
+    if any(token in low for token in ("woman", "female", "девушк", "женщин", "girl")):
+        return base
+    return f"{SELFIE_WOMAN_PROMPT_PREFIX}{base}"
 
 
 def format_identity_photo_prompt(user_prompt: str) -> str:
@@ -123,7 +167,6 @@ def append_negative_prompt_directive(
     *,
     negative: str = FLUX_OPENAI_NEGATIVE_IN_PROMPT,
 ) -> str:
-    """Негатив в текст prompt (Flux/OpenAI — API не принимает negative_prompt в JSON)."""
     base = (user_prompt or "").strip() or "Professional portrait photo"
     directive = f" [Negative prompt: {(negative or '').strip()}]"
     if directive in base:
@@ -131,14 +174,15 @@ def append_negative_prompt_directive(
     return f"{base}{directive}"
 
 
-def append_reference_prompt_modifiers(user_prompt: str, model: str) -> str:
-    """Модификаторы промпта по стеку провайдера (anti-gloss vs character)."""
+def append_reference_prompt_modifiers(user_prompt: str, model: str, *, has_reference: bool = False) -> str:
     base = (user_prompt or "").strip() or "Professional portrait photo"
+    if has_reference:
+        base = prepend_selfie_woman_prompt(base)
     model_id = (model or "").strip()
 
-    if is_nano_banano_stack(model_id):
-        if _NANO_CHARACTER_PROMPT_SUFFIX not in base:
-            base = f"{base}{_NANO_CHARACTER_PROMPT_SUFFIX}"
+    if is_google_image_face_stack(model_id):
+        if _NANO_FACE_PROMPT_SUFFIX not in base:
+            base = f"{base}{_NANO_FACE_PROMPT_SUFFIX}"
         return base
 
     if is_openai_flux_stack(model_id):
@@ -150,10 +194,9 @@ def append_reference_prompt_modifiers(user_prompt: str, model: str) -> str:
 
 
 def append_reference_quality_modifiers(user_prompt: str, *, model: str = "") -> str:
-    """Backward-compatible alias → ``append_reference_prompt_modifiers``."""
     if model:
-        return append_reference_prompt_modifiers(user_prompt, model)
-    return append_reference_prompt_modifiers(user_prompt, OPENROUTER_FLUX_PAID_MODEL)
+        return append_reference_prompt_modifiers(user_prompt, model, has_reference=True)
+    return append_reference_prompt_modifiers(user_prompt, OPENROUTER_FLUX_PAID_MODEL, has_reference=True)
 
 
 def openrouter_input_reference(image_url: str) -> dict[str, Any]:
@@ -163,12 +206,17 @@ def openrouter_input_reference(image_url: str) -> dict[str, Any]:
     return {"type": "image_url", "image_url": {"url": url}}
 
 
-def openrouter_character_reference(image_url: str) -> dict[str, Any]:
-    """Google Nano Banano: Character Reference для вклейки лица."""
+def openrouter_face_reference(image_url: str) -> dict[str, Any]:
+    """Google Nano / Gemini Images: face reference для вклейки лица."""
     url = (image_url or "").strip()
     if not url:
-        raise ExternalApiError("OpenRouter", "empty character reference URL")
-    return {"type": "character", "image_url": {"url": url}}
+        raise ExternalApiError("OpenRouter", "empty face reference URL")
+    return {"type": "face", "image_url": {"url": url}}
+
+
+def openrouter_character_reference(image_url: str) -> dict[str, Any]:
+    """Backward-compatible alias → ``openrouter_face_reference``."""
+    return openrouter_face_reference(image_url)
 
 
 def openrouter_identity_reference(image_url: str, **_: Any) -> dict[str, Any]:
@@ -176,7 +224,7 @@ def openrouter_identity_reference(image_url: str, **_: Any) -> dict[str, Any]:
 
 
 def model_uses_image_reference(model: str) -> bool:
-    return (model or "").strip() in MODELS_WITH_IMAGE_REFERENCE
+    return (model or "").strip() in MODELS_WITH_IMAGE_REFERENCE or is_google_image_face_stack(model)
 
 
 def model_uses_weighted_identity_reference(model: str) -> bool:
@@ -196,7 +244,6 @@ def append_face_description_to_prompt(user_prompt: str, face_description: str) -
 
 
 def build_nano_banano_body_extensions() -> dict[str, Any]:
-    """Корневые поля identity для стека Google (не для Flux/OpenAI)."""
     return {
         "identity": True,
         "identity_weight": NANO_CHARACTER_IDENTITY_WEIGHT,
@@ -268,20 +315,28 @@ async def reference_url_to_data_url(reference_url: str) -> str:
     from services.streaming_download import stream_download_to_bytes
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=15.0)) as client:
-        data = await stream_download_to_bytes(client, ref, source="face_desc_ref")
+        data = await stream_download_to_bytes(client, ref, source="openrouter_ref_b64")
     if not data:
-        raise ExternalApiError("OpenRouter", "failed to download reference for face description")
+        raise ExternalApiError("OpenRouter", "failed to download reference for data URL")
 
     mime = _mime_from_reference_url(ref)
     encoded = base64.standard_b64encode(data).decode("ascii")
+    logger.info("reference encoded to data URL mime=%s bytes=%s", mime, len(data))
     return f"data:{mime};base64,{encoded}"
+
+
+async def resolve_reference_input_url(reference_url: str | None) -> str | None:
+    """Telegram/https/data → base64 data-URL для ``input_references`` OpenRouter."""
+    ref = (reference_url or "").strip()
+    if not ref:
+        return None
+    return await reference_url_to_data_url(ref)
 
 
 async def describe_reference_face_for_prompt(
     settings: Settings,
     reference_image_url: str,
 ) -> str:
-    """GPT Image 2: анатомическое описание лица через vision (data URL)."""
     from services.ai_text import ask_ai_messages
 
     image_data_url = await reference_url_to_data_url(reference_image_url)
@@ -320,38 +375,39 @@ async def resolve_openrouter_photo_prompt_and_refs(
     *,
     model: str,
     user_prompt: str,
-    reference_data_url: str | None,
+    reference_data_url: str | None = None,
+    reference_input_url: str | None = None,
 ) -> tuple[str, list[dict[str, Any]] | None, dict[str, Any]]:
     """
-    Промпт, input_references и доп. поля body по стеку модели.
-
-    Nano Banano → type character + identity в корне.
-    Flux / gpt-image → type image_url, негатив только в тексте prompt.
+    Промпт, input_references (base64 data-URL) и body extensions по стеку модели.
+    ``reference_input_url`` — уже закодированный ref (для fallback без повторной загрузки).
     """
-    _ = settings
     cleaned = (user_prompt or "").strip() or "Professional portrait photo"
-    ref = (reference_data_url or "").strip()
-    if not ref:
+    raw_ref = (reference_input_url or reference_data_url or "").strip()
+    if not raw_ref:
         return cleaned, None, {}
 
+    ref_b64 = raw_ref if raw_ref.startswith("data:") else await reference_url_to_data_url(raw_ref)
     model_id = (model or "").strip()
     body_extensions: dict[str, Any] = {}
 
     if model_uses_face_description_prompt(model_id):
-        cleaned = append_reference_prompt_modifiers(cleaned, model_id)
-        face_desc = await describe_reference_face_for_prompt(settings, ref)
+        cleaned = append_reference_prompt_modifiers(cleaned, model_id, has_reference=True)
+        face_desc = await describe_reference_face_for_prompt(settings, ref_b64)
         return append_face_description_to_prompt(cleaned, face_desc), None, body_extensions
 
-    cleaned = append_reference_prompt_modifiers(cleaned, model_id)
+    cleaned = append_reference_prompt_modifiers(cleaned, model_id, has_reference=True)
 
-    if is_nano_banano_stack(model_id):
+    if is_google_image_face_stack(model_id):
         body_extensions = build_nano_banano_body_extensions()
-        return cleaned, [openrouter_character_reference(ref)], body_extensions
+        return cleaned, [openrouter_face_reference(ref_b64)], body_extensions
 
     if is_openai_flux_stack(model_id):
-        return cleaned, [openrouter_input_reference(ref)], body_extensions
+        return cleaned, [openrouter_input_reference(ref_b64)], body_extensions
 
-    return cleaned, None, body_extensions
+    # Неизвестный fallback slug — сохраняем ref как image_url (base64).
+    logger.warning("openrouter photo: unknown stack for %s — using image_url ref", model_id)
+    return cleaned, [openrouter_input_reference(ref_b64)], body_extensions
 
 
 def parse_openrouter_image_payload(payload: dict[str, Any]) -> GeminiImageResult:
@@ -492,6 +548,7 @@ async def upscale_openrouter_image_url(
     if scale not in (2, 4):
         raise ExternalApiError("OpenRouter", f"unsupported scale_value={scale}")
 
+    ref_b64 = await reference_url_to_data_url(src)
     resolution = "2K" if scale == 2 else "4K"
     result = await generate_openrouter_image(
         settings,
@@ -501,7 +558,7 @@ async def upscale_openrouter_image_url(
             "Preserve composition, subjects, colors, and facial identity exactly."
         ),
         aspect_ratio="auto",
-        input_references=[openrouter_input_reference(src)],
+        input_references=[openrouter_input_reference(ref_b64)],
         resolution=resolution,
     )
     if result.url:
@@ -519,12 +576,9 @@ async def generate_openrouter_photo(
     fallback_models: tuple[str, ...] = (),
     timeout_sec: float = DEFAULT_OPENROUTER_IMAGES_TIMEOUT_SEC,
 ) -> GeminiImageResult:
-    api_prompt, input_refs, body_ext = await resolve_openrouter_photo_prompt_and_refs(
-        settings,
-        model=model,
-        user_prompt=user_prompt,
-        reference_data_url=reference_data_url,
-    )
+    ref_b64: str | None = None
+    if (reference_data_url or "").strip():
+        ref_b64 = await resolve_reference_input_url(reference_data_url)
 
     last_exc: ExternalApiError | None = None
     candidates = ((model or "").strip(), *fallback_models)
@@ -532,14 +586,13 @@ async def generate_openrouter_photo(
         if not slug:
             continue
         try:
-            prompt, refs, extensions = api_prompt, input_refs, body_ext
-            if idx > 0:
-                prompt, refs, extensions = await resolve_openrouter_photo_prompt_and_refs(
-                    settings,
-                    model=slug,
-                    user_prompt=user_prompt,
-                    reference_data_url=reference_data_url,
-                )
+            prompt, refs, extensions = await resolve_openrouter_photo_prompt_and_refs(
+                settings,
+                model=slug,
+                user_prompt=user_prompt,
+                reference_data_url=reference_data_url,
+                reference_input_url=ref_b64,
+            )
             return await generate_openrouter_image(
                 settings,
                 model=slug,
@@ -553,10 +606,11 @@ async def generate_openrouter_photo(
             last_exc = exc
             if idx + 1 < len(candidates):
                 logger.warning(
-                    "openrouter photo model %s failed (%s), trying %s",
+                    "openrouter photo model %s failed (%s), trying %s (ref preserved=%s)",
                     slug,
                     exc,
                     candidates[idx + 1],
+                    bool(ref_b64),
                 )
                 continue
             raise

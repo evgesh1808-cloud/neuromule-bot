@@ -8,6 +8,7 @@ import pytest
 
 from services.gemini_image_client import GeminiImageResult
 from services.openrouter_images import (
+    NANO_BANANO_PRO_FALLBACKS,
     OPENROUTER_FLUX_PAID_MODEL,
     OPENROUTER_GPT_IMAGE2_MODEL,
     OPENROUTER_NANO_BANANA_PRO_MODEL,
@@ -83,5 +84,5 @@ async def test_selfie_routes_to_nano_banana_pro_openrouter() -> None:
         "make it cinematic",
         aspect_ratio="1:1",
         reference_data_url="data:image/jpeg;base64,abc",
-        fallback_models=("google/gemini-3-pro-image-preview",),
+        fallback_models=NANO_BANANO_PRO_FALLBACKS,
     )
