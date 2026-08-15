@@ -79,10 +79,57 @@ def test_build_google_selfie_prompt_template() -> None:
     )
     assert "STRICTLY as character identity reference" in prompt
     assert "CRITICAL: Completely override the camera distance" in prompt
+    assert "OUTPUT FRAMING (mandatory)" in prompt
+    assert "pull the camera back wider" in prompt.lower()
+    assert "three-quarter body" in prompt.lower()
+    assert "HAIR FRAMING (mandatory)" in prompt
+    assert "generous headroom" in prompt.lower()
+    assert "shoulders up only" not in prompt.lower()
     assert "identical eye shape" in prompt
     assert "sunset in paris" in prompt
     assert "[Negative prompt:" in prompt
-    assert "waist-up crop" in prompt
+    assert "reference waist-up crop" in prompt
+    assert "copied reference framing" in prompt
+    assert "cropped hair" in prompt
+
+
+def test_build_selfie_prompt_tight_framing_only_when_user_asks_headshot() -> None:
+    prompt = build_selfie_i2i_prompt_for_model(
+        OPENROUTER_NANO_BANANA2_MODEL,
+        "studio headshot with soft light",
+    )
+    assert "close-up headshot or bust portrait" in prompt.lower()
+    assert "pull the camera back wider" not in prompt.lower()
+    assert "HAIR FRAMING (mandatory)" in prompt
+    assert "cropped hair" in prompt
+
+
+def test_build_selfie_prompt_allows_hair_crop_only_when_user_asks() -> None:
+    prompt = build_selfie_i2i_prompt_for_model(
+        OPENROUTER_NANO_BANANA2_MODEL,
+        "extreme face close-up, crop hair at top of frame",
+    )
+    assert "HAIR FRAMING: follow the scene description" in prompt
+    assert "HAIR FRAMING (mandatory)" not in prompt
+    assert "cropped hair" not in prompt
+
+
+def test_build_flux_selfie_prompt_protects_hair_framing() -> None:
+    prompt = build_selfie_i2i_prompt_for_model(
+        OPENROUTER_FLUX_PAID_MODEL,
+        "sunset in paris",
+    )
+    assert "generous headroom" in prompt.lower()
+    assert "cut-off hair" in prompt
+
+
+def test_build_selfie_prompt_wider_framing_when_user_asks_full_body() -> None:
+    prompt = build_selfie_i2i_prompt_for_model(
+        OPENROUTER_NANO_BANANA2_MODEL,
+        "full body portrait on the beach at sunset",
+    )
+    assert "OUTPUT FRAMING: follow the scene description" in prompt
+    assert "shoulders up only" not in prompt.lower()
 
 
 def test_build_openai_inpaint_prompt_template() -> None:

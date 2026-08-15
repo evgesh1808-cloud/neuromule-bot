@@ -48,20 +48,94 @@ GPT_IMAGE2_FALLBACKS: tuple[str, ...] = (
 DEFAULT_OPENROUTER_IMAGES_TIMEOUT_SEC = 180.0
 DEFAULT_PHOTO_USER_INTENT = "professional portrait"
 
+# Явный close-up в intent — только тогда сужаем кадр.
+_TIGHT_FRAMING_INTENT_KEYWORDS: tuple[str, ...] = (
+    "headshot",
+    "close-up",
+    "close up",
+    "bust shot",
+    "shoulders only",
+    "face only",
+    "tight portrait",
+    "close portrait",
+    "macro portrait",
+)
+
+# Явный полный рост / широкий кадр в intent.
+_WIDER_FRAMING_INTENT_KEYWORDS: tuple[str, ...] = (
+    "full body",
+    "full length",
+    "full-length",
+    "head to toe",
+    "head-to-toe",
+    "full figure",
+    "standing shot",
+    "from knees",
+)
+
+# Только если пользователь сам просит обрезать волосы / убрать headroom.
+_ALLOW_HAIR_CROP_INTENT_KEYWORDS: tuple[str, ...] = (
+    "crop hair",
+    "cropped hair",
+    "hair cropped",
+    "cut off hair",
+    "hair cut off",
+    "hair outside frame",
+    "no headroom",
+    "forehead only",
+    "extreme face close-up",
+    "extreme close-up face",
+    "face fills entire frame",
+    "top of head cropped",
+    "partial head crop",
+)
+
 # Единый i2i-шаблон (Nano Banano / GPT inpaint / Flux fallback) — Chatcom-style.
 SELFIE_I2I_PROMPT_TEMPLATE = (
+    "{framing_directive} "
+    "{hair_directive} "
     "Using the attached image STRICTLY as character identity reference only. "
     "CRITICAL: Completely override the camera distance, framing, body pose, and original crop "
-    "of the reference image. Do not copy the waist-up or medium shot composition. "
+    "of the reference image. Never reuse the reference waist-up cut-off, belly crop, or medium shot. "
+    "Extract facial identity only — ignore reference body boundaries and aspect framing. "
     "Maintain the exact same facial identity as the reference: identical eye shape, nose bridge, "
     "jawline, lip proportions, skin tone, and apparent age. "
+    "Preserve the exact hairstyle, hair length, and hair color from the reference. "
     "Do not age, rejuvenate, or add freckles/spots not in the reference. "
-    "Generate an upper-body editorial portrait or close-up headshot (unless specified otherwise) "
-    "of this exact person: {user_intent}. "
+    "Generate this exact person in a new scene: {user_intent}. "
     "High-end editorial photography, soft beauty lighting, healthy rested appearance, "
     "clean luminous skin, sharp focus, balanced colors, 85mm lens. "
     "Ignore reference background, clothing, and pose entirely — "
     "create a completely new scene and composition."
+)
+
+# По умолчанию — шире референсного селфи (больше тела), не копировать кроп «до пояса».
+SELFIE_I2I_DEFAULT_FRAMING_DIRECTIVE = (
+    "OUTPUT FRAMING (mandatory): pull the camera back wider than the reference selfie. "
+    "Three-quarter body or full-length editorial portrait — show substantially more body than "
+    "the reference crop (head, torso, hips, and legs when the scene allows). "
+    "Never copy the reference waist-up cut-off, belly boundary, or medium-shot crop."
+)
+
+SELFIE_I2I_TIGHT_FRAMING_DIRECTIVE = (
+    "OUTPUT FRAMING: close-up headshot or bust portrait as described in the scene — "
+    "never copy the reference image crop boundaries."
+)
+
+SELFIE_I2I_CUSTOM_FRAMING_DIRECTIVE = (
+    "OUTPUT FRAMING: follow the scene description below for body framing — "
+    "frame wider than the reference selfie unless the scene explicitly asks for a tight crop. "
+    "Never copy the reference crop line."
+)
+
+SELFIE_I2I_HAIR_PROTECT_DIRECTIVE = (
+    "HAIR FRAMING (mandatory): keep the entire head and complete hairstyle fully visible with "
+    "generous headroom — never crop hair or cut off the top of the head unless the scene "
+    "explicitly requests hair cropping."
+)
+
+SELFIE_I2I_HAIR_CROP_ALLOWED_DIRECTIVE = (
+    "HAIR FRAMING: follow the scene description for head and hair cropping."
 )
 
 SELFIE_I2I_NEGATIVE_PROMPT = (
@@ -69,12 +143,20 @@ SELFIE_I2I_NEGATIVE_PROMPT = (
     "detailed skin pores, skin imperfections, raw photo, 35mm film, red face, "
     "tired eyes, sunburn, alcoholic flush, dark circles, tired face, haggard, "
     "plastic skin, deformed, duplicate background, copying reference clothing, "
-    "waist-up crop, medium shot, CGI, 3d render, digital art, illustration"
+    "copied reference framing, same crop as reference, matching reference composition, "
+    "reference waist-up crop, reference belly crop, "
+    "CGI, 3d render, digital art, illustration"
+)
+
+SELFIE_I2I_HAIR_CROP_NEGATIVE = (
+    "tight head crop, cropped hair, cut-off hair, hair cropped at top, head cut off, "
+    "cropped head, missing hair, chopped hair"
 )
 
 OPENAI_INPAINT_I2I_PREFIX = (
-    "Inpaint and seamlessly integrate the face from the provided image layer into a completely "
-    "new scene. "
+    "Inpaint and seamlessly integrate the face and identity from the provided image layer "
+    "into a completely new scene with wider camera framing than the reference. "
+    "Do not copy reference body crop or cut-off line. "
 )
 
 # Backward-compatible aliases (tests / imports).
@@ -191,17 +273,57 @@ def is_openai_flux_stack(model: str) -> bool:
     return any(token in mid for token in ("flux", "gpt-image", "openai"))
 
 
+def user_allows_hair_crop(user_intent_en: str) -> bool:
+    """Обрезка волос допустима только если пользователь явно просит в intent."""
+    low = (user_intent_en or "").lower()
+    return any(keyword in low for keyword in _ALLOW_HAIR_CROP_INTENT_KEYWORDS)
+
+
+def resolve_selfie_hair_directive(user_intent_en: str) -> str:
+    if user_allows_hair_crop(user_intent_en):
+        return SELFIE_I2I_HAIR_CROP_ALLOWED_DIRECTIVE
+    return SELFIE_I2I_HAIR_PROTECT_DIRECTIVE
+
+
+def build_selfie_i2i_negative_prompt(user_intent_en: str) -> str:
+    negative = SELFIE_I2I_NEGATIVE_PROMPT
+    if not user_allows_hair_crop(user_intent_en):
+        negative = f"{negative}, {SELFIE_I2I_HAIR_CROP_NEGATIVE}"
+    return negative
+
+
+def resolve_selfie_framing_directive(user_intent_en: str) -> str:
+    """По умолчанию — шире референса; close-up только если пользователь явно просит."""
+    low = (user_intent_en or "").lower()
+    if any(keyword in low for keyword in _TIGHT_FRAMING_INTENT_KEYWORDS):
+        return SELFIE_I2I_TIGHT_FRAMING_DIRECTIVE
+    if any(keyword in low for keyword in _WIDER_FRAMING_INTENT_KEYWORDS):
+        return SELFIE_I2I_CUSTOM_FRAMING_DIRECTIVE
+    return SELFIE_I2I_DEFAULT_FRAMING_DIRECTIVE
+
+
 def build_selfie_i2i_prompt_for_model(model: str, user_intent_en: str) -> str:
     """Склейка английского intent + единый i2i-шаблон (без non-JSON полей OR)."""
     intent = (user_intent_en or DEFAULT_PHOTO_USER_INTENT).strip()
     model_id = (model or "").strip()
+    framing = resolve_selfie_framing_directive(intent)
+    hair = resolve_selfie_hair_directive(intent)
+    negative = build_selfie_i2i_negative_prompt(intent)
 
     if model_id == OPENROUTER_GPT_IMAGE2_MODEL:
-        base = OPENAI_INPAINT_I2I_PREFIX + SELFIE_I2I_PROMPT_TEMPLATE.format(user_intent=intent)
+        base = OPENAI_INPAINT_I2I_PREFIX + SELFIE_I2I_PROMPT_TEMPLATE.format(
+            framing_directive=framing,
+            hair_directive=hair,
+            user_intent=intent,
+        )
     else:
-        base = SELFIE_I2I_PROMPT_TEMPLATE.format(user_intent=intent)
+        base = SELFIE_I2I_PROMPT_TEMPLATE.format(
+            framing_directive=framing,
+            hair_directive=hair,
+            user_intent=intent,
+        )
 
-    return append_negative_prompt_directive(base, negative=SELFIE_I2I_NEGATIVE_PROMPT)
+    return append_negative_prompt_directive(base, negative=negative)
 
 
 def build_plain_t2i_prompt(user_intent_en: str) -> str:
