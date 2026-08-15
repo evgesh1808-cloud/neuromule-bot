@@ -11,6 +11,7 @@ from PIL import Image
 
 from config import Settings
 from services.openrouter_images import (
+    GOOGLE_IDENTITY_LOCK,
     GOOGLE_SELFIE_I2I_PROMPT_TEMPLATE,
     OPENAI_INPAINT_I2I_PROMPT_TEMPLATE,
     OPENROUTER_FLUX_PAID_MODEL,
@@ -76,9 +77,12 @@ def test_build_google_selfie_prompt_template() -> None:
         OPENROUTER_NANO_BANANA2_MODEL,
         "sunset in paris",
     )
-    assert GOOGLE_SELFIE_I2I_PROMPT_TEMPLATE.format(user_intent="sunset in paris") in prompt
-    assert "character identity reference" in prompt
+    assert "STRICTLY as character identity reference" in prompt
+    assert "CRITICAL: Completely override the camera distance" in prompt
+    assert "identical eye shape" in prompt
+    assert "sunset in paris" in prompt
     assert "[Negative prompt:" in prompt
+    assert "waist-up crop" in prompt
 
 
 def test_build_openai_inpaint_prompt_template() -> None:
@@ -86,8 +90,10 @@ def test_build_openai_inpaint_prompt_template() -> None:
         OPENROUTER_GPT_IMAGE2_MODEL,
         "studio headshot",
     )
-    assert prompt == OPENAI_INPAINT_I2I_PROMPT_TEMPLATE.format(user_intent="studio headshot")
-    assert "Inpaint and seamlessly integrate" in prompt
+    assert prompt.startswith("Inpaint and seamlessly integrate")
+    assert "studio headshot" in prompt
+    assert "STRICTLY as character identity reference" in prompt
+    assert "[Negative prompt:" in prompt
 
 
 @pytest.mark.asyncio
@@ -100,7 +106,8 @@ async def test_resolve_flux_uses_png_image_url_ref() -> None:
         reference_data_url=_TG_URL,
         user_intent_en="sunset in paris",
     )
-    assert "face identity reference" in prompt
+    assert "strictly as character identity reference" in prompt.lower()
+    assert "override the camera distance" in prompt.lower()
     assert refs == [{"type": "image_url", "image_url": {"url": _PNG_DATA_URL}}]
     assert extras == {}
 
@@ -115,8 +122,8 @@ async def test_resolve_nano_google_prompt_and_png_ref() -> None:
         reference_data_url=_TG_URL,
         user_intent_en="sunset in paris",
     )
-    assert "character identity reference" in prompt
-    assert "ignore the background" in prompt.lower()
+    assert "character identity reference" in prompt.lower()
+    assert "override the camera distance" in prompt.lower()
     assert "[Negative prompt:" in prompt
     assert refs == [{"type": "image_url", "image_url": {"url": _PNG_DATA_URL}}]
     assert extras == {}

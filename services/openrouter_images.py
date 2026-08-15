@@ -48,47 +48,68 @@ GPT_IMAGE2_FALLBACKS: tuple[str, ...] = (
 DEFAULT_OPENROUTER_IMAGES_TIMEOUT_SEC = 180.0
 DEFAULT_PHOTO_USER_INTENT = "professional portrait"
 
-# Google Nano / Gemini Images — identity i2i (команды только в тексте prompt).
-GOOGLE_SELFIE_I2I_PROMPT_TEMPLATE = (
-    "Using the attached image strictly as a character identity reference only, "
-    "generate a cinematic raw photo of this exact young woman, {user_intent}. "
-    "Completely ignore the background, clothing, pose, and lighting from the reference — "
-    "extract only facial identity and bone structure. "
-    "Shot on 35mm film, natural skin texture, realistic facial features, "
-    "cinematic lighting, highly detailed."
+# Единый i2i-шаблон (Nano Banano / GPT inpaint / Flux fallback) — Chatcom-style.
+SELFIE_I2I_PROMPT_TEMPLATE = (
+    "Using the attached image STRICTLY as character identity reference only. "
+    "CRITICAL: Completely override the camera distance, framing, body pose, and original crop "
+    "of the reference image. Do not copy the waist-up or medium shot composition. "
+    "Maintain the exact same facial identity as the reference: identical eye shape, nose bridge, "
+    "jawline, lip proportions, skin tone, and apparent age. "
+    "Do not age, rejuvenate, or add freckles/spots not in the reference. "
+    "Generate an upper-body editorial portrait or close-up headshot (unless specified otherwise) "
+    "of this exact person: {user_intent}. "
+    "High-end editorial photography, soft beauty lighting, healthy rested appearance, "
+    "clean luminous skin, sharp focus, balanced colors, 85mm lens. "
+    "Ignore reference background, clothing, and pose entirely — "
+    "create a completely new scene and composition."
 )
 
-# OpenAI gpt-image-2 — inpaint-логика (лицо из image layer → новая сцена).
+SELFIE_I2I_NEGATIVE_PROMPT = (
+    "aging, wrinkles, freckles, age spots, blemishes, hyperpigmentation, "
+    "detailed skin pores, skin imperfections, raw photo, 35mm film, red face, "
+    "tired eyes, sunburn, alcoholic flush, dark circles, tired face, haggard, "
+    "plastic skin, deformed, duplicate background, copying reference clothing, "
+    "waist-up crop, medium shot, CGI, 3d render, digital art, illustration"
+)
+
+OPENAI_INPAINT_I2I_PREFIX = (
+    "Inpaint and seamlessly integrate the face from the provided image layer into a completely "
+    "new scene. "
+)
+
+# Backward-compatible aliases (tests / imports).
+GOOGLE_IDENTITY_LOCK = (
+    "Maintain the exact same facial identity as the reference: identical eye shape, "
+    "nose bridge, jawline, lip proportions, skin tone, and apparent age. "
+    "Do not age, rejuvenate, or add freckles/spots not in the reference."
+)
+GOOGLE_SELFIE_I2I_PROMPT_TEMPLATE = SELFIE_I2I_PROMPT_TEMPLATE
 OPENAI_INPAINT_I2I_PROMPT_TEMPLATE = (
-    "Inpaint and seamlessly integrate the face from the provided image layer "
-    "into a completely new scene. A beautiful young woman, {user_intent}. "
-    "Do not copy the reference background, outfit, or composition — face identity only. "
-    "Maintain exact facial morphology, proportions, and features. "
-    "Photorealistic, crisp details, raw texture."
+    OPENAI_INPAINT_I2I_PREFIX + SELFIE_I2I_PROMPT_TEMPLATE
+)
+FLUX_SELFIE_I2I_PROMPT_TEMPLATE = SELFIE_I2I_PROMPT_TEMPLATE
+
+# T2I без референса — чистая сцена без identity-lock.
+PLAIN_T2I_QUALITY_SUFFIX = (
+    ", high-end editorial photography, soft natural lighting, photorealistic, "
+    "sharp focus, balanced colors, 85mm lens"
 )
 
-FLUX_SELFIE_I2I_PROMPT_TEMPLATE = (
-    "Using the attached image as a face identity reference only, generate a new cinematic photo "
-    "of this exact young woman, {user_intent}. Preserve facial identity exactly; "
-    "ignore reference background, clothing, and pose — new scene only.{film_suffix}"
+FLUX_EDITORIAL_SUFFIX = (
+    ", high-end editorial portrait photography, soft diffused beauty lighting, "
+    "healthy rested appearance, clean natural skin, 85mm lens, shallow depth of field"
 )
 
-FLUX_OPENAI_FILM_SUFFIX = (
-    ", raw photo, shot on 35mm film, natural skin texture with micro-imperfections, "
-    "authentic candid photography, cinematic lighting, subtle bokeh"
-)
-FLUX_OPENAI_NEGATIVE_IN_PROMPT = (
-    "ugly, deformed, tired face, dark circles under eyes, puffy face, "
-    "bad skin, old, expressionless, distorted lips"
-)
+# Убраны «micro-imperfections» и «raw film» — они давали веснушки и «усталое» лицо.
+FLUX_OPENAI_FILM_SUFFIX = FLUX_EDITORIAL_SUFFIX
 
-NANO_BANANO_NEGATIVE_PROMPT = (
-    "CGI, 3d render, airbrushed, plastic skin, smooth face, digital art, illustration"
-)
+IDENTITY_NEGATIVE_IN_PROMPT = SELFIE_I2I_NEGATIVE_PROMPT
+NANO_BANANO_NEGATIVE_PROMPT = SELFIE_I2I_NEGATIVE_PROMPT
+FLUX_OPENAI_NEGATIVE_IN_PROMPT = SELFIE_I2I_NEGATIVE_PROMPT
 NANO_CHARACTER_IDENTITY_WEIGHT = 1.0
 
 REFERENCE_QUALITY_SUFFIX = FLUX_OPENAI_FILM_SUFFIX
-IDENTITY_NEGATIVE_PROMPT = FLUX_OPENAI_NEGATIVE_IN_PROMPT
+IDENTITY_NEGATIVE_PROMPT = IDENTITY_NEGATIVE_IN_PROMPT
 
 SELFIE_WOMAN_PROMPT_PREFIX = "A professional photo of a beautiful young woman, "
 
@@ -171,31 +192,24 @@ def is_openai_flux_stack(model: str) -> bool:
 
 
 def build_selfie_i2i_prompt_for_model(model: str, user_intent_en: str) -> str:
-    """Склейка английского intent + stack-specific шаблон (без non-JSON полей OR)."""
+    """Склейка английского intent + единый i2i-шаблон (без non-JSON полей OR)."""
     intent = (user_intent_en or DEFAULT_PHOTO_USER_INTENT).strip()
     model_id = (model or "").strip()
 
     if model_id == OPENROUTER_GPT_IMAGE2_MODEL:
-        return OPENAI_INPAINT_I2I_PROMPT_TEMPLATE.format(user_intent=intent)
+        base = OPENAI_INPAINT_I2I_PREFIX + SELFIE_I2I_PROMPT_TEMPLATE.format(user_intent=intent)
+    else:
+        base = SELFIE_I2I_PROMPT_TEMPLATE.format(user_intent=intent)
 
-    if is_google_image_face_stack(model_id):
-        prompt = GOOGLE_SELFIE_I2I_PROMPT_TEMPLATE.format(user_intent=intent)
-        return append_negative_prompt_directive(
-            prompt,
-            negative=(
-                f"{NANO_BANANO_NEGATIVE_PROMPT}, copied background, duplicate scene, "
-                "same outfit as reference"
-            ),
-        )
+    return append_negative_prompt_directive(base, negative=SELFIE_I2I_NEGATIVE_PROMPT)
 
-    if is_openai_flux_stack(model_id):
-        base = FLUX_SELFIE_I2I_PROMPT_TEMPLATE.format(
-            user_intent=intent,
-            film_suffix=FLUX_OPENAI_FILM_SUFFIX,
-        )
-        return append_negative_prompt_directive(base, negative=FLUX_OPENAI_NEGATIVE_IN_PROMPT)
 
-    return format_identity_photo_prompt(intent)
+def build_plain_t2i_prompt(user_intent_en: str) -> str:
+    """T2I без референса: сцена + editorial quality (без identity-lock)."""
+    intent = (user_intent_en or DEFAULT_PHOTO_USER_INTENT).strip()
+    if PLAIN_T2I_QUALITY_SUFFIX.strip(", ") in intent:
+        return intent
+    return f"{intent}{PLAIN_T2I_QUALITY_SUFFIX}"
 
 
 async def translate_photo_user_intent(settings: Settings, user_prompt: str) -> str:
@@ -509,7 +523,10 @@ async def resolve_openrouter_photo_prompt_and_refs(
     cleaned = (user_prompt or "").strip() or DEFAULT_PHOTO_USER_INTENT
     raw_ref = (reference_input_url or reference_data_url or "").strip()
     if not raw_ref:
-        return cleaned, None, {}
+        intent_en = (user_intent_en or "").strip()
+        if not intent_en:
+            intent_en = await translate_photo_user_intent(settings, cleaned)
+        return build_plain_t2i_prompt(intent_en), None, {}
 
     model_id = (model or "").strip()
     intent_en = (user_intent_en or "").strip()
