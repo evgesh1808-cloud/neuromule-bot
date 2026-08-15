@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from services.gemini_image_client import GeminiImageResult
-from services.openrouter_images import OPENROUTER_NANO_BANANA2_MODEL
+from services.openrouter_images import OPENROUTER_NANO_BANANA_PRO_MODEL
 
 
 @pytest.mark.asyncio
@@ -37,11 +37,11 @@ async def test_nano_banana2_i2i_from_reference_image_url() -> None:
     assert result.url == "https://cdn.example/vk-i2i.png"
     mock_ref.assert_awaited_once()
     mock_or.assert_awaited_once_with(
-        OPENROUTER_NANO_BANANA2_MODEL,
+        OPENROUTER_NANO_BANANA_PRO_MODEL,
         "make it cinematic",
         aspect_ratio="1:1",
         reference_data_url="https://sun9.userapi.com/photo.jpg",
-        fallback_models=("google/gemini-3.1-flash-image",),
+        fallback_models=("google/gemini-3-pro-image-preview",),
     )
 
 

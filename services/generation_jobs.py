@@ -191,6 +191,84 @@ def _normalize_photo_model_id(model_id: str, model_label: str = "") -> str:
     return aliases.get(raw, raw)
 
 
+_TEXT_DESIGN_INTENT_KEYWORDS: tuple[str, ...] = (
+    "архитектур",
+    "architecture",
+    "дизайн",
+    "design",
+    "логотип",
+    "logo",
+    "typography",
+    "типограф",
+    "текст на",
+    "text on",
+    "надпись",
+    "poster",
+    "infographic",
+    "blueprint",
+    "interior",
+    "building",
+    "чертёж",
+    "чертеж",
+    "макет",
+)
+
+
+def _photo_has_reference(
+    file_id: str | None,
+    reference_image_url: str | None,
+    reference_image_bytes: bytes | None,
+) -> bool:
+    if reference_image_bytes:
+        return True
+    if (reference_image_url or "").strip():
+        return True
+    return bool((file_id or "").strip())
+
+
+def _is_text_design_intent(prompt: str) -> bool:
+    low = (prompt or "").strip().lower()
+    if not low:
+        return False
+    return any(keyword in low for keyword in _TEXT_DESIGN_INTENT_KEYWORDS)
+
+
+def resolve_smart_photo_model_key(
+    model_key: str,
+    *,
+    has_reference: bool,
+    prompt: str,
+) -> str:
+    """
+    Chatcom-style роутинг: селфи → Nano Banano Pro (Google face swap);
+    чистый текст / дизайн → Flux или gpt-image (OpenAI stack).
+    """
+    key = (model_key or "").strip().lower()
+    if has_reference:
+        if key != "nano_banana_pro":
+            logger.info(
+                "smart photo routing: model=%s + reference → nano_banana_pro",
+                key,
+            )
+            return "nano_banana_pro"
+        return key
+
+    if key in ("nano_banana2", "nano_banana_pro"):
+        if _is_text_design_intent(prompt):
+            logger.info(
+                "smart photo routing: model=%s text/design intent → flux_schnell",
+                key,
+            )
+            return "flux_schnell"
+        logger.info(
+            "smart photo routing: model=%s t2i without reference → flux_schnell",
+            key,
+        )
+        return "flux_schnell"
+
+    return model_key
+
+
 async def _load_reference_image_bytes(
     *,
     bot: "Bot | None",
@@ -561,6 +639,12 @@ async def _generate_photo_result(
 ) -> GeminiImageResult | str:
     """Возвращает GeminiImageResult (url/bytes) или прямой URL строки (Replicate)."""
     ar = normalize_photo_aspect_ratio(aspect_ratio)
+    has_reference = _photo_has_reference(file_id, reference_image_url, reference_image_bytes)
+    model_key = resolve_smart_photo_model_key(
+        model_key,
+        has_reference=has_reference,
+        prompt=prompt,
+    )
     reference_data_url = await _resolve_reference_data_url(
         bot,
         file_id,

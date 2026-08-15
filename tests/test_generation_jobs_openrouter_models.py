@@ -10,7 +10,6 @@ from services.gemini_image_client import GeminiImageResult
 from services.openrouter_images import (
     OPENROUTER_FLUX_PAID_MODEL,
     OPENROUTER_GPT_IMAGE2_MODEL,
-    OPENROUTER_NANO_BANANA2_MODEL,
     OPENROUTER_NANO_BANANA_PRO_MODEL,
 )
 
@@ -21,14 +20,15 @@ from services.openrouter_images import (
     [
         ("flux_schnell", OPENROUTER_FLUX_PAID_MODEL),
         ("dalle_3", OPENROUTER_GPT_IMAGE2_MODEL),
-        ("nano_banana2", OPENROUTER_NANO_BANANA2_MODEL),
-        ("nano_banana_pro", OPENROUTER_NANO_BANANA_PRO_MODEL),
+        ("nano_banana2", OPENROUTER_FLUX_PAID_MODEL),
+        ("nano_banana_pro", OPENROUTER_FLUX_PAID_MODEL),
     ],
 )
-async def test_paid_google_models_use_openrouter_images(
+async def test_paid_models_use_openrouter_images_with_smart_routing_t2i(
     model_key: str,
     or_model: str,
 ) -> None:
+    """Без референса Nano → Flux (Chatcom-style text routing)."""
     from services import generation_jobs
 
     with patch.object(
@@ -49,16 +49,10 @@ async def test_paid_google_models_use_openrouter_images(
     assert call.args[1] == "a red apple on white table"
     assert call.kwargs.get("reference_data_url") is None
     assert call.kwargs.get("aspect_ratio") == "1:1"
-    if model_key == "nano_banana2":
-        assert call.kwargs["fallback_models"] == ("google/gemini-3.1-flash-image",)
-    elif model_key == "nano_banana_pro":
-        assert call.kwargs["fallback_models"] == ("google/gemini-3-pro-image-preview",)
-    else:
-        assert call.kwargs.get("fallback_models", ()) == ()
 
 
 @pytest.mark.asyncio
-async def test_nano_banana2_i2i_passes_identity_input_references() -> None:
+async def test_selfie_routes_to_nano_banana_pro_openrouter() -> None:
     from services import generation_jobs
 
     bot = MagicMock()
@@ -85,9 +79,9 @@ async def test_nano_banana2_i2i_passes_identity_input_references() -> None:
 
     assert result.url == "https://cdn.example/i2i.png"
     mock_or.assert_awaited_once_with(
-        OPENROUTER_NANO_BANANA2_MODEL,
+        OPENROUTER_NANO_BANANA_PRO_MODEL,
         "make it cinematic",
         aspect_ratio="1:1",
         reference_data_url="data:image/jpeg;base64,abc",
-        fallback_models=("google/gemini-3.1-flash-image",),
+        fallback_models=("google/gemini-3-pro-image-preview",),
     )
