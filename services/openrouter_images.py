@@ -183,7 +183,7 @@ def append_reference_prompt_modifiers(user_prompt: str, model: str, *, has_refer
     if is_google_image_face_stack(model_id):
         if _NANO_FACE_PROMPT_SUFFIX not in base:
             base = f"{base}{_NANO_FACE_PROMPT_SUFFIX}"
-        return base
+        return append_negative_prompt_directive(base, negative=NANO_BANANO_NEGATIVE_PROMPT)
 
     if is_openai_flux_stack(model_id):
         if FLUX_OPENAI_FILM_SUFFIX not in base:
@@ -207,11 +207,8 @@ def openrouter_input_reference(image_url: str) -> dict[str, Any]:
 
 
 def openrouter_face_reference(image_url: str) -> dict[str, Any]:
-    """Google Nano / Gemini Images: face reference для вклейки лица."""
-    url = (image_url or "").strip()
-    if not url:
-        raise ExternalApiError("OpenRouter", "empty face reference URL")
-    return {"type": "face", "image_url": {"url": url}}
+    """Alias → strict ``image_url`` (OpenRouter Images не принимает type face)."""
+    return openrouter_input_reference(image_url)
 
 
 def openrouter_character_reference(image_url: str) -> dict[str, Any]:
@@ -241,14 +238,6 @@ def append_face_description_to_prompt(user_prompt: str, face_description: str) -
     if not face:
         return base
     return f"{base}. Subject face: {face}"
-
-
-def build_nano_banano_body_extensions() -> dict[str, Any]:
-    return {
-        "identity": True,
-        "identity_weight": NANO_CHARACTER_IDENTITY_WEIGHT,
-        "negative_prompt": NANO_BANANO_NEGATIVE_PROMPT,
-    }
 
 
 async def resolve_openrouter_reference_url(
@@ -397,16 +386,7 @@ async def resolve_openrouter_photo_prompt_and_refs(
         return append_face_description_to_prompt(cleaned, face_desc), None, body_extensions
 
     cleaned = append_reference_prompt_modifiers(cleaned, model_id, has_reference=True)
-
-    if is_google_image_face_stack(model_id):
-        body_extensions = build_nano_banano_body_extensions()
-        return cleaned, [openrouter_face_reference(ref_b64)], body_extensions
-
-    if is_openai_flux_stack(model_id):
-        return cleaned, [openrouter_input_reference(ref_b64)], body_extensions
-
-    # Неизвестный fallback slug — сохраняем ref как image_url (base64).
-    logger.warning("openrouter photo: unknown stack for %s — using image_url ref", model_id)
+    # OpenRouter Images API: только type image_url; identity/negative_prompt → в prompt.
     return cleaned, [openrouter_input_reference(ref_b64)], body_extensions
 
 

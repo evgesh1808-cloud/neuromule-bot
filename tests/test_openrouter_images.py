@@ -57,7 +57,7 @@ def test_is_google_image_face_stack_includes_fallbacks() -> None:
 
 def test_openrouter_face_reference_schema() -> None:
     ref = openrouter_face_reference(_DATA_URL)
-    assert ref == {"type": "face", "image_url": {"url": _DATA_URL}}
+    assert ref == {"type": "image_url", "image_url": {"url": _DATA_URL}}
 
 
 @pytest.mark.asyncio
@@ -86,9 +86,9 @@ async def test_resolve_nano_face_ref_and_body_extensions() -> None:
     )
     assert prompt.startswith(SELFIE_WOMAN_PROMPT_PREFIX)
     assert "face reference" in prompt
-    assert refs == [{"type": "face", "image_url": {"url": _DATA_URL}}]
-    assert extras["identity"] is True
-    assert extras["negative_prompt"] == NANO_BANANO_NEGATIVE_PROMPT
+    assert "[Negative prompt:" in prompt
+    assert refs == [{"type": "image_url", "image_url": {"url": _DATA_URL}}]
+    assert extras == {}
 
 
 @pytest.mark.asyncio
@@ -100,8 +100,9 @@ async def test_resolve_gemini_fallback_keeps_face_ref() -> None:
         user_prompt="portrait",
         reference_input_url=_DATA_URL,
     )
-    assert refs == [{"type": "face", "image_url": {"url": _DATA_URL}}]
-    assert extras["identity"] is True
+    assert refs == [{"type": "image_url", "image_url": {"url": _DATA_URL}}]
+    assert extras == {}
+    assert "[Negative prompt:" in prompt
 
 
 @pytest.mark.asyncio
@@ -158,8 +159,10 @@ async def test_generate_openrouter_photo_fallback_preserves_base64_ref() -> None
 
     assert result.url == "https://cdn.example/fallback.webp"
     second_body = mock_client.post.await_args_list[1].kwargs["json"]
-    assert second_body["input_references"][0]["type"] == "face"
+    assert second_body["input_references"][0]["type"] == "image_url"
     assert second_body["input_references"][0]["image_url"]["url"].startswith("data:")
+    assert "identity" not in second_body
+    assert "negative_prompt" not in second_body
 
 
 @pytest.mark.asyncio
