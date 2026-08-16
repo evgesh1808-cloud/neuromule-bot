@@ -140,6 +140,69 @@ def get_photo_edit_session(user_id: int, *, peer_id: int | None = None) -> Photo
     return sess
 
 
+@dataclass(frozen=True, slots=True)
+class SessionResultReference:
+    """Источник последнего сгенерированного результата (не исходного селфи)."""
+
+    telegram_file_id: str | None
+    media_url: str | None
+    reference_image_bytes: bytes | None
+    reference_mime: str = "image/jpeg"
+
+
+def resolve_session_result_reference(sess: PhotoEditSession) -> SessionResultReference:
+    tg_id = (sess.telegram_file_id or "").strip() or None
+    url = (sess.media_url or "").strip() or None
+    raw = sess.reference_image_bytes
+    if isinstance(raw, memoryview):
+        raw = raw.tobytes()
+    elif isinstance(raw, bytearray):
+        raw = bytes(raw)
+    elif raw is not None and not isinstance(raw, bytes):
+        raw = None
+    if tg_id:
+        return SessionResultReference(
+            telegram_file_id=tg_id,
+            media_url=url,
+            reference_image_bytes=None,
+            reference_mime=sess.reference_mime,
+        )
+    if url:
+        return SessionResultReference(
+            telegram_file_id=None,
+            media_url=url,
+            reference_image_bytes=None,
+            reference_mime=sess.reference_mime,
+        )
+    return SessionResultReference(
+        telegram_file_id=None,
+        media_url=None,
+        reference_image_bytes=raw,
+        reference_mime=sess.reference_mime,
+    )
+
+
+def session_has_result_image(sess: PhotoEditSession | None) -> bool:
+    if sess is None:
+        return False
+    ref = resolve_session_result_reference(sess)
+    return bool(ref.telegram_file_id or ref.media_url or ref.reference_image_bytes)
+
+
+def build_format_change_prompt(original_prompt: str, aspect_ratio: str) -> str:
+    """i2i: сохранить кадр/ракурс, сменить только aspect ratio."""
+    base = (original_prompt or "").strip()
+    preserve = (
+        "Using the attached image as the exact visual reference, preserve the same subject, "
+        "pose, face angle, expression, clothing, lighting, background, and composition. "
+        f"Change only the output aspect ratio to {aspect_ratio}. "
+        "Do not recreate from scratch or change the camera angle."
+    )
+    if base:
+        return f"{preserve} Original scene context: {base}"
+    return preserve
+
+
 def clear_photo_edit_session(user_id: int) -> None:
     _sessions.pop(user_id, None)
 

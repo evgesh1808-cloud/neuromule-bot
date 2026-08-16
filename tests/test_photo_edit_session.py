@@ -39,6 +39,37 @@ def test_edit_session_ttl() -> None:
 
 
 @pytest.mark.asyncio
+async def test_photo_refine_callback_prefers_generated_result_over_selfie() -> None:
+    from platforms.handlers import generation_cb
+
+    save_photo_edit_session(
+        42,
+        image_model_id="flux_schnell",
+        image_model_label="Flux 2 Pro",
+        aspect_ratio="1:1",
+        telegram_file_id="AgAC_result",
+        reference_file_id="AgAC_selfie",
+    )
+
+    callback = MagicMock()
+    callback.from_user.id = 42
+    callback.message = MagicMock()
+    callback.message.chat.id = 42
+    callback.message.answer = AsyncMock()
+    callback.answer = AsyncMock()
+
+    state = MagicMock()
+    state.update_data = AsyncMock()
+    state.set_state = AsyncMock()
+
+    await generation_cb.photo_refine_start(callback, state)
+
+    kwargs = state.update_data.await_args.kwargs
+    assert kwargs["pending_reference_file_id"] == "AgAC_result"
+    assert kwargs["refine_from_result"] is True
+
+
+@pytest.mark.asyncio
 async def test_photo_refine_callback_sets_pending_reference() -> None:
     from platforms.handlers import generation_cb
 

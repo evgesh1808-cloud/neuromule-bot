@@ -363,6 +363,8 @@ async def process_photo_prompt_message(
     auto_flux: bool = False,
     telegram_file_id: str | None = None,
     reference_image_url: str | None = None,
+    reference_image_bytes: bytes | None = None,
+    reference_mime: str = "image/jpeg",
     aspect_ratio: str | None = None,
     skip_status_message: bool = False,
 ) -> None:
@@ -410,6 +412,8 @@ async def process_photo_prompt_message(
                     body or prompt,
                     telegram_file_id=telegram_file_id,
                     reference_image_url=reference_image_url,
+                    reference_image_bytes=reference_image_bytes,
+                    reference_mime=reference_mime,
                     aspect_ratio=ar,
                 )
     except Exception:
@@ -580,7 +584,12 @@ async def photo_process_during_model_setup(message: Message, state: FSMContext) 
 async def photo_process(message: Message, state: FSMContext) -> None:
     if await _dispatch_nav_or_none(message, state):
         return
-    from services.photo_edit_session import update_photo_edit_session_aspect_ratio
+    from services.photo_edit_session import (
+        get_photo_edit_session,
+        resolve_session_result_reference,
+        session_has_result_image,
+        update_photo_edit_session_aspect_ratio,
+    )
     from services.photo_intent_parser import resolve_photo_edit_prompt
 
     data = await state.get_data()
@@ -589,8 +598,9 @@ async def photo_process(message: Message, state: FSMContext) -> None:
     aspect = normalize_photo_aspect_ratio(data.get("image_aspect_ratio"))
     prompt = (message.text or "").strip()
     pending_file_id = str(data.get("pending_reference_file_id") or "").strip()
+    refine_from_result = bool(data.get("refine_from_result"))
 
-    if pending_file_id:
+    if pending_file_id or refine_from_result:
         aspect, prompt, aspect_changed = await resolve_photo_edit_prompt(
             prompt,
             current_aspect=aspect,
@@ -598,14 +608,36 @@ async def photo_process(message: Message, state: FSMContext) -> None:
         if aspect_changed and message.from_user is not None:
             await state.update_data(image_aspect_ratio=aspect)
             update_photo_edit_session_aspect_ratio(message.from_user.id, aspect)
-        await state.update_data(pending_reference_file_id=None)
+
+        file_id = pending_file_id or None
+        ref_url: str | None = None
+        ref_bytes: bytes | None = None
+        ref_mime = "image/jpeg"
+        if message.from_user is not None:
+            session = get_photo_edit_session(message.from_user.id, peer_id=message.chat.id)
+            if session and session_has_result_image(session):
+                result_ref = resolve_session_result_reference(session)
+                file_id = file_id or result_ref.telegram_file_id
+                if not file_id:
+                    ref_url = result_ref.media_url
+                    ref_bytes = result_ref.reference_image_bytes
+                    ref_mime = result_ref.reference_mime
+
+        if not file_id and not ref_url and not ref_bytes:
+            await message.answer(msg.TXT_PHOTO_REFINE_EXPIRED)
+            return
+
+        await state.update_data(pending_reference_file_id=None, refine_from_result=None)
         await process_photo_prompt_message(
             message,
             state,
             model_id=model_id,
             label=label,
             prompt=prompt,
-            telegram_file_id=pending_file_id,
+            telegram_file_id=file_id,
+            reference_image_url=ref_url,
+            reference_image_bytes=ref_bytes,
+            reference_mime=ref_mime,
             aspect_ratio=aspect,
         )
         return

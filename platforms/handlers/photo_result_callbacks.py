@@ -20,11 +20,18 @@ from platforms.telegram_states import UserFlow
 from services import payments_catalog as paycat
 from services.openrouter_images import (
     openrouter_images_configured,
+    resolve_openrouter_reference_url,
     upscale_openrouter_image_url,
 )
 from services.generation_jobs import fire_photo_job
 from services.photo_aspect_ratio import aspect_ratio_from_callback_suffix, normalize_photo_aspect_ratio
-from services.photo_edit_session import get_photo_edit_session, update_photo_edit_session_aspect_ratio
+from services.photo_edit_session import (
+    build_format_change_prompt,
+    get_photo_edit_session,
+    resolve_session_result_reference,
+    session_has_result_image,
+    update_photo_edit_session_aspect_ratio,
+)
 from services.photo_gen_status import send_photo_gen_status_message
 from services.repository import get_user_row, try_consume_crystals
 from services.use_cases.photo_generation_turn import PhotoGenOutcome, run_photo_generation_turn
@@ -46,11 +53,32 @@ async def _restore_result_keyboard(callback: CallbackQuery) -> None:
         pass
 
 
+async def _resolve_session_upscale_source(session: object) -> str | None:
+    from services.photo_edit_session import PhotoEditSession
+
+    if not isinstance(session, PhotoEditSession):
+        return None
+    ref = resolve_session_result_reference(session)
+    bot = deps.bot()
+    try:
+        return await resolve_openrouter_reference_url(
+            bot=bot,
+            file_id=ref.telegram_file_id,
+            reference_image_url=ref.media_url,
+            reference_image_bytes=ref.reference_image_bytes,
+            reference_mime=ref.reference_mime,
+        )
+    except Exception:
+        logger.warning("upscale: failed to resolve session image ref uid=%s", session.user_id, exc_info=True)
+        return None
+
+
 async def _rerun_from_session(
     callback: CallbackQuery,
     state: FSMContext,
     *,
     aspect_ratio: str | None = None,
+    format_only: bool = False,
 ) -> None:
     user = callback.from_user
     if user is None or callback.message is None:
@@ -61,15 +89,34 @@ async def _rerun_from_session(
         await callback.message.answer(msg.TXT_PHOTO_REFINE_EXPIRED)
         return
 
-    ref_file_id = session.reference_file_id
-    if not ref_file_id and not session.reference_image_bytes and not session.media_url:
+    if not session_has_result_image(session):
         await callback.message.answer(msg.TXT_PHOTO_REFINE_EXPIRED)
         return
 
+    result_ref = resolve_session_result_reference(session)
     ar = normalize_photo_aspect_ratio(aspect_ratio or session.aspect_ratio)
     model_id = session.image_model_id
     label = session.image_model_label
-    prompt = session.user_prompt or ""
+
+    if format_only:
+        ref_file_id = result_ref.telegram_file_id
+        ref_url = result_ref.media_url if not ref_file_id else None
+        ref_bytes = result_ref.reference_image_bytes if not ref_file_id and not ref_url else None
+        ref_mime = result_ref.reference_mime
+        prompt = build_format_change_prompt(session.user_prompt or "", ar)
+        seed = session.generation_seed
+    else:
+        ref_file_id = session.reference_file_id
+        ref_url = session.media_url if not ref_file_id else None
+        ref_bytes = None
+        ref_mime = session.reference_mime
+        prompt = session.user_prompt or ""
+        seed = session.generation_seed
+        if not ref_file_id and not ref_url:
+            ref_file_id = result_ref.telegram_file_id
+            ref_url = result_ref.media_url if not ref_file_id else None
+            ref_bytes = result_ref.reference_image_bytes if not ref_file_id and not ref_url else None
+            ref_mime = result_ref.reference_mime
 
     bot = deps.bot()
     chat_id = callback.message.chat.id
@@ -91,7 +138,9 @@ async def _rerun_from_session(
             label,
             prompt,
             telegram_file_id=ref_file_id,
-            reference_image_url=session.media_url if not ref_file_id else None,
+            reference_image_url=ref_url,
+            reference_image_bytes=ref_bytes,
+            reference_mime=ref_mime,
             aspect_ratio=ar,
         )
     except Exception:
@@ -136,12 +185,12 @@ async def _rerun_from_session(
         priority=eq.priority,
         billing_charge_id=eq.billing_charge_id,
         telegram_file_id=eq.telegram_file_id or ref_file_id,
-        reference_image_url=eq.reference_image_url,
-        reference_image_bytes=eq.reference_image_bytes,
-        reference_mime=eq.reference_mime,
+        reference_image_url=eq.reference_image_url or ref_url,
+        reference_image_bytes=eq.reference_image_bytes or ref_bytes,
+        reference_mime=eq.reference_mime or ref_mime,
         aspect_ratio=eq.aspect_ratio,
         status_message_id=status_msg.message_id if status_msg is not None else None,
-        generation_seed=random.randint(1, 2_000_000_000),
+        generation_seed=seed or random.randint(1, 2_000_000_000),
     )
     await state.update_data(
         image_model_id=model_id,
@@ -210,7 +259,7 @@ async def result_pick_format(callback: CallbackQuery, state: FSMContext) -> None
 
     await callback.answer()
     await _restore_result_keyboard(callback)
-    await _rerun_from_session(callback, state, aspect_ratio=aspect)
+    await _rerun_from_session(callback, state, aspect_ratio=aspect, format_only=True)
 
 
 async def _run_upscale(callback: CallbackQuery, *, scale: int, cost: int, alert_text: str) -> None:
@@ -224,8 +273,7 @@ async def _run_upscale(callback: CallbackQuery, *, scale: int, cost: int, alert_
         return
 
     session = get_photo_edit_session(user.id, peer_id=callback.message.chat.id)
-    image_url = (session.media_url or "").strip() if session else ""
-    if not image_url or not image_url.startswith("http"):
+    if session is None or not session_has_result_image(session):
         await callback.answer(msg.TXT_PHOTO_REFINE_EXPIRED, show_alert=True)
         return
 
@@ -236,6 +284,14 @@ async def _run_upscale(callback: CallbackQuery, *, scale: int, cost: int, alert_
 
     if not await try_consume_crystals(user.id, cost):
         await callback.answer(alert_text, show_alert=True)
+        return
+
+    image_url = await _resolve_session_upscale_source(session)
+    if not image_url:
+        from services.billing.crystals_balance import refund_crystals_to_buy
+
+        await refund_crystals_to_buy(user.id, cost)
+        await callback.answer(msg.TXT_PHOTO_REFINE_EXPIRED, show_alert=True)
         return
 
     await callback.answer(msg.TXT_UPSCALE_IN_PROGRESS)

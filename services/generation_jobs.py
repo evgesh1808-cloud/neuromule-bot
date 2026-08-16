@@ -493,7 +493,12 @@ async def _deliver_photo_url_chatcom(task: GenTask, final_image_url: str) -> Non
     await _safe_delete_cleanup_messages(task)
 
 
-async def _deliver_photo_bytes_chatcom(task: GenTask, photo_bytes: bytes) -> None:
+async def _deliver_photo_bytes_chatcom(
+    task: GenTask,
+    photo_bytes: bytes,
+    *,
+    source_url: str | None = None,
+) -> None:
     """Fallback: document + photo из байтов (когда провайдер вернул b64_json)."""
     bot, chat_id = task.bot, task.chat_id
     if bot is None:
@@ -529,6 +534,7 @@ async def _deliver_photo_bytes_chatcom(task: GenTask, photo_bytes: bytes) -> Non
         image_model_label=task.model_label or task.image_model_id,
         aspect_ratio=task.aspect_ratio,
         telegram_file_id=tg_file_id,
+        media_url=(source_url or "").strip() or None,
         reference_image_bytes=raw,
         message_id=sent.message_id,
         chat_id=chat_id,
@@ -803,7 +809,7 @@ async def _send_generated_photo(
     if photo_url and str(photo_url).startswith(("http://", "https://")):
         downloaded = await _download_result_image_bytes(str(photo_url))
         if downloaded:
-            await _deliver_photo_bytes_chatcom(task, downloaded)
+            await _deliver_photo_bytes_chatcom(task, downloaded, source_url=str(photo_url))
             return
         logger.warning(
             "photo delivery: CDN download failed task=%s, fallback to URL send",

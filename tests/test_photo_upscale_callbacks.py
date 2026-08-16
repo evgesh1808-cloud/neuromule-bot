@@ -43,6 +43,52 @@ async def test_upscale_x2_insufficient_shows_alert() -> None:
 
 
 @pytest.mark.asyncio
+async def test_upscale_x2_works_with_bytes_only_session() -> None:
+    callback = MagicMock()
+    callback.from_user.id = 9004
+    callback.message.chat.id = 9004
+    callback.answer = AsyncMock()
+
+    save_photo_edit_session(
+        9004,
+        image_model_id="flux_schnell",
+        image_model_label="Flux",
+        telegram_file_id="AgAC_result",
+        reference_image_bytes=b"jpeg-bytes",
+        user_prompt="portrait",
+    )
+
+    bot = MagicMock()
+    bot.send_document = AsyncMock()
+
+    with (
+        patch.object(handlers, "openrouter_images_configured", return_value=True),
+        patch.object(
+            handlers,
+            "get_user_row",
+            AsyncMock(return_value=SimpleNamespace(crystals=5)),
+        ),
+        patch.object(handlers, "try_consume_crystals", AsyncMock(return_value=True)),
+        patch.object(
+            handlers,
+            "_resolve_session_upscale_source",
+            AsyncMock(return_value="data:image/jpeg;base64,abc"),
+        ) as resolve_src,
+        patch.object(
+            handlers,
+            "upscale_openrouter_image_url",
+            AsyncMock(return_value="https://cdn.openrouter.ai/upscaled-x2.png"),
+        ),
+        patch.object(handlers.deps, "bot", return_value=bot),
+        patch.object(handlers, "chat_action_loop", lambda *a, **kw: _noop_ctx()),
+    ):
+        await handlers.result_upscale_x2(callback)
+
+    resolve_src.assert_awaited_once()
+    bot.send_document.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_upscale_x2_charges_before_openrouter_and_sends_document() -> None:
     callback = MagicMock()
     callback.from_user.id = 9002

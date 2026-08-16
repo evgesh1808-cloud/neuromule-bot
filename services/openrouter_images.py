@@ -795,14 +795,17 @@ async def upscale_openrouter_image_url(
     scale_value: int,
 ) -> str:
     src = (image_url or "").strip()
-    if not src.startswith(("http://", "https://")):
-        raise ExternalApiError("OpenRouter", "upscale requires http(s) image URL")
+    if not src.startswith(("http://", "https://", "data:")):
+        raise ExternalApiError("OpenRouter", "upscale requires http(s) or data image URL")
 
     scale = int(scale_value)
     if scale not in (2, 4):
         raise ExternalApiError("OpenRouter", f"unsupported scale_value={scale}")
 
-    ref_b64 = await reference_url_to_data_url(src)
+    if src.startswith("data:"):
+        ref_b64 = src
+    else:
+        ref_b64 = await reference_url_to_data_url(src)
     resolution = "2K" if scale == 2 else "4K"
     result = await generate_openrouter_image(
         settings,

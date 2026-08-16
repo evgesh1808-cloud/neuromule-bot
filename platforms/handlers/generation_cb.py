@@ -594,26 +594,35 @@ async def pick_image_aspect_ratio(callback: CallbackQuery, state: FSMContext) ->
 @router.callback_query(F.data == msg.CB_PHOTO_REFINE)
 async def photo_refine_start(callback: CallbackQuery, state: FSMContext) -> None:
     from platforms.telegram_throttling import mark_photo_flow
-    from services.photo_edit_session import get_photo_edit_session
+    from services.photo_edit_session import (
+        get_photo_edit_session,
+        resolve_session_result_reference,
+        session_has_result_image,
+    )
 
     user = callback.from_user
     if user is None:
         await callback.answer()
         return
 
-    session = get_photo_edit_session(user.id)
-    if session is None:
+    session = get_photo_edit_session(
+        user.id,
+        peer_id=callback.message.chat.id if callback.message else None,
+    )
+    if session is None or not session_has_result_image(session):
         await callback.answer(msg.TXT_PHOTO_REFINE_EXPIRED, show_alert=True)
         return
 
     mark_photo_flow(user.id)
-    pending_file_id = session.reference_file_id or session.telegram_file_id
+    result_ref = resolve_session_result_reference(session)
+    pending_file_id = result_ref.telegram_file_id
     try:
         await state.update_data(
             image_model_id=session.image_model_id,
             image_model_label=session.image_model_label,
             image_aspect_ratio=session.aspect_ratio,
             pending_reference_file_id=pending_file_id,
+            refine_from_result=True,
         )
         await state.set_state(UserFlow.waiting_for_photo)
     except Exception:
