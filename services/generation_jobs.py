@@ -1118,6 +1118,19 @@ async def _photo_stub_worker(task: GenTask) -> None:
             log_msg="photo job failed",
             exc=exc,
         )
+        if task.composite_refine and task.bot is not None and task.platform == "telegram":
+            from content.inline_keyboards import composite_retry_keyboard
+            from services.api_resilience import notify_user_safe
+
+            try:
+                await notify_user_safe(task.bot, task.chat_id, msg.TXT_COMPOSITE_RETRY_HINT)
+                await task.bot.send_message(
+                    task.chat_id,
+                    "👇",
+                    reply_markup=composite_retry_keyboard(),
+                )
+            except Exception:
+                logger.debug("composite retry keyboard send failed", exc_info=True)
     finally:
         # status_msg остаётся на ошибке (отредактирован) или уже удалён на успехе.
         pass

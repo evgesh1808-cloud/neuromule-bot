@@ -249,6 +249,16 @@ COMPOSITE_REFINE_FALLBACKS: tuple[str, ...] = (
     "google/gemini-3-pro-image-preview",
 )
 
+CREATIVE_COMPOSITE_FALLBACKS: tuple[str, ...] = (
+    OPENROUTER_GPT_IMAGE2_MODEL,
+    OPENROUTER_NANO_BANANA_PRO_MODEL,
+    OPENROUTER_NANO_BANANA2_MODEL,
+    "google/gemini-3-pro-image-preview",
+)
+
+COMPOSITE_API_REF_MAX_SIDE_PX = 1280
+COMPOSITE_PROMPT_MAX_CHARS = 5500
+
 MULTI_REF_GROUP_NEGATIVE_PROMPT = (
     "blended faces, merged identities, averaged facial features, duplicate faces, "
     "face morphing, unrecognizable subjects, deformed group portrait"
@@ -421,6 +431,29 @@ async def prepare_composite_user_intent(
     return intent_en.strip() or DEFAULT_PHOTO_USER_INTENT, creative
 
 
+def build_minimal_child_print_composite_intent(user_intent_en: str) -> str:
+    """Короткий fallback после сбоя длинного creative composite."""
+    tail = (user_intent_en or "").strip()
+    if len(tail) > 400:
+        tail = f"{tail[:397]}…"
+    base = (
+        "Photorealistic cozy indoor selfie of the adult woman from Image 1 — preserve her "
+        "exact adult facial identity, skin tone, and age. White oversize t-shirt. "
+        "Place Image 2 childhood photo as a faded vintage rectangular print on the t-shirt chest "
+        "(fabric folds, retro look). Warm soft indoor lighting, natural skin, no second person."
+    )
+    if tail:
+        return f"{base} Scene notes: {tail}"
+    return base
+
+
+def _clip_composite_prompt(prompt: str) -> str:
+    text = (prompt or "").strip()
+    if len(text) <= COMPOSITE_PROMPT_MAX_CHARS:
+        return text
+    return f"{text[: COMPOSITE_PROMPT_MAX_CHARS - 1].rstrip()}…"
+
+
 def build_composite_refine_prompt(
     user_intent: str,
     *,
@@ -457,6 +490,7 @@ def build_composite_refine_prompt(
         prompt,
         negative=negative,
     )
+    prompt = _clip_composite_prompt(prompt)
     return {
         "prompt": prompt,
         "input_references": [
@@ -502,43 +536,62 @@ async def generate_openrouter_composite_photo(
 ) -> GeminiImageResult:
     """Dual-reference composite refine via OpenRouter Images API."""
     intent_en, creative_scene = await prepare_composite_user_intent(settings, user_prompt)
-    base_png = await ensure_png_reference_data_url(base_image_data_url)
-    object_png = await ensure_png_reference_data_url(object_image_data_url)
+    base_png = resize_png_data_url_for_api(await ensure_png_reference_data_url(base_image_data_url))
+    object_png = resize_png_data_url_for_api(await ensure_png_reference_data_url(object_image_data_url))
+    fallbacks = CREATIVE_COMPOSITE_FALLBACKS if creative_scene else fallback_models
 
-    last_exc: ExternalApiError | None = None
-    candidates = ((model or "").strip(), *fallback_models)
-    for idx, slug in enumerate(candidates):
-        if not slug:
-            continue
-        try:
-            payload = build_composite_refine_prompt(
-                intent_en,
-                base_image_url=base_png,
-                object_image_url=object_png,
-                creative_scene=creative_scene,
-            )
-            return await generate_openrouter_image(
-                settings,
-                model=slug,
-                prompt=str(payload["prompt"]),
-                aspect_ratio=aspect_ratio,
-                input_references=payload["input_references"],
-                timeout_sec=timeout_sec,
-            )
-        except ExternalApiError as exc:
-            last_exc = exc
-            if idx + 1 < len(candidates):
-                logger.warning(
-                    "openrouter composite model %s failed (%s), trying %s",
-                    slug,
-                    exc,
-                    candidates[idx + 1],
-                )
+    async def _attempt(intent: str, *, creative: bool, models: tuple[str, ...]) -> GeminiImageResult:
+        last_exc: ExternalApiError | None = None
+        candidates = ((model or "").strip(), *models)
+        for idx, slug in enumerate(candidates):
+            if not slug:
                 continue
-            raise
-    if last_exc is not None:
-        raise last_exc
-    raise ExternalApiError("OpenRouter", "no composite model candidates")
+            try:
+                payload = build_composite_refine_prompt(
+                    intent,
+                    base_image_url=base_png,
+                    object_image_url=object_png,
+                    creative_scene=creative,
+                )
+                return await generate_openrouter_image(
+                    settings,
+                    model=slug,
+                    prompt=str(payload["prompt"]),
+                    aspect_ratio=aspect_ratio,
+                    input_references=payload["input_references"],
+                    timeout_sec=timeout_sec,
+                )
+            except ExternalApiError as exc:
+                last_exc = exc
+                if idx + 1 < len(candidates):
+                    logger.warning(
+                        "openrouter composite model %s failed (%s), trying %s",
+                        slug,
+                        exc,
+                        candidates[idx + 1],
+                    )
+                    continue
+                raise
+        if last_exc is not None:
+            raise last_exc
+        raise ExternalApiError("OpenRouter", "no composite model candidates")
+
+    try:
+        return await _attempt(intent_en, creative=creative_scene, models=fallbacks)
+    except ExternalApiError as first_exc:
+        minimal = build_minimal_child_print_composite_intent(intent_en)
+        logger.warning(
+            "composite full prompt failed (%s), retrying minimal child-print intent",
+            first_exc,
+        )
+        try:
+            return await _attempt(
+                minimal,
+                creative=True,
+                models=(OPENROUTER_NANO_BANANA_PRO_MODEL, OPENROUTER_GPT_IMAGE2_MODEL),
+            )
+        except ExternalApiError:
+            raise first_exc from None
 
 
 def _build_multi_ref_identity_lines(num_refs: int) -> str:
@@ -752,6 +805,33 @@ def _image_bytes_to_png_data_url(image_bytes: bytes) -> str:
 
     encoded = base64.standard_b64encode(png_bytes).decode("ascii")
     return f"data:image/png;base64,{encoded}"
+
+
+def resize_png_data_url_for_api(data_url: str, *, max_side: int = COMPOSITE_API_REF_MAX_SIDE_PX) -> str:
+    """Уменьшает PNG data-URL для OpenRouter (dual-ref payload)."""
+    ref = (data_url or "").strip()
+    if not ref.startswith("data:"):
+        return ref
+    try:
+        raw = base64.b64decode(ref.split(",", 1)[1], validate=False)
+    except Exception as exc:
+        raise ExternalApiError("OpenRouter", "invalid reference data URL") from exc
+    from PIL import Image
+
+    with Image.open(BytesIO(raw)) as img:
+        if img.mode not in ("RGB", "RGBA"):
+            img = img.convert("RGBA" if "A" in img.getbands() else "RGB")
+        width, height = img.size
+        longest = max(width, height)
+        if longest > max_side:
+            scale = max_side / float(longest)
+            img = img.resize(
+                (max(1, int(width * scale)), max(1, int(height * scale))),
+                Image.Resampling.LANCZOS,
+            )
+        out = BytesIO()
+        img.save(out, format="PNG", optimize=True)
+        return _image_bytes_to_png_data_url(out.getvalue())
 
 
 async def reference_url_to_png_data_url(reference_url: str) -> str:

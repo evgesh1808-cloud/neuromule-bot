@@ -65,7 +65,7 @@ async def test_photo_refine_callback_prefers_generated_result_over_selfie() -> N
     await generation_cb.photo_refine_start(callback, state)
 
     kwargs = state.update_data.await_args.kwargs
-    assert kwargs["pending_reference_file_id"] == "AgAC_result"
+    assert kwargs["pending_reference_file_id"] is None
     assert kwargs["refine_from_result"] is True
 
 
@@ -95,7 +95,9 @@ async def test_photo_refine_callback_sets_pending_reference() -> None:
 
     state.update_data.assert_awaited()
     kwargs = state.update_data.await_args.kwargs
-    assert kwargs["pending_reference_file_id"] == "AgAC_refine"
+    assert kwargs["pending_reference_file_id"] is None
+    assert kwargs["pending_object_file_id"] is None
+    assert kwargs["refine_from_result"] is True
     assert kwargs["image_model_id"] == "flux_schnell"
     callback.message.answer.assert_awaited()
 

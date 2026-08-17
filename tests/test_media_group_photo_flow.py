@@ -193,7 +193,7 @@ async def test_photo_refine_restores_from_db_when_memory_expired() -> None:
         await generation_cb.photo_refine_start(callback, state)
 
     kwargs = state.update_data.await_args.kwargs
-    assert kwargs["pending_reference_file_id"] == "AgAC_db"
+    assert kwargs["pending_reference_file_id"] is None
     assert kwargs["refine_from_result"] is True
     callback.message.answer.assert_awaited()
     assert "Режим доработки активирован" in callback.message.answer.await_args.args[0]

@@ -59,6 +59,14 @@ def group_photo_collector_keyboard(*, can_generate: bool) -> InlineKeyboardMarku
     )
 
 
+def composite_retry_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=msg.BTN_COMPOSITE_RETRY, callback_data=msg.CB_COMPOSITE_RETRY)],
+        ]
+    )
+
+
 def result_photo_keyboard(
     task_id: str | None = None,
     *,

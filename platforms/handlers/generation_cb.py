@@ -612,14 +612,13 @@ async def photo_refine_start(callback: CallbackQuery, state: FSMContext) -> None
         return
 
     mark_photo_flow(user.id)
-    result_ref = resolve_session_result_reference(session)
-    pending_file_id = result_ref.telegram_file_id
     try:
         await state.update_data(
             image_model_id=session.image_model_id,
             image_model_label=session.image_model_label,
             image_aspect_ratio=session.aspect_ratio,
-            pending_reference_file_id=pending_file_id,
+            pending_reference_file_id=None,
+            pending_object_file_id=None,
             refine_from_result=True,
         )
         await state.set_state(UserFlow.waiting_for_photo)
@@ -636,6 +635,49 @@ async def photo_refine_start(callback: CallbackQuery, state: FSMContext) -> None
             msg.TXT_PHOTO_REFINE_PROMPT,
             parse_mode=ParseMode.HTML,
         )
+
+
+@router.callback_query(F.data == msg.CB_COMPOSITE_RETRY)
+async def composite_retry(callback: CallbackQuery, state: FSMContext) -> None:
+    from platforms.handlers.generation_fsm import _dispatch_composite_photo_message
+    from platforms.telegram_throttling import mark_photo_flow
+
+    user = callback.from_user
+    if user is None or callback.message is None:
+        await callback.answer()
+        return
+
+    data = await state.get_data()
+    base_id = str(data.get("composite_retry_base_id") or "").strip()
+    object_id = str(data.get("composite_retry_object_id") or "").strip()
+    prompt = str(data.get("composite_retry_prompt") or "").strip()
+    model_id = str(data.get("image_model_id") or "nano_banana_pro").strip()
+    label = str(data.get("image_model_label") or "Nano Banana Pro")
+    aspect = str(data.get("image_aspect_ratio") or "1:1")
+
+    if not base_id or not object_id or not prompt:
+        await callback.answer(
+            "Нет сохранённых фото. Отправьте альбом из 2 фото с подписью заново.",
+            show_alert=True,
+        )
+        return
+
+    await callback.answer("🔄 Повторяю…")
+    mark_photo_flow(user.id)
+    await state.set_state(UserFlow.waiting_for_photo)
+    await _dispatch_composite_photo_message(
+        callback.message,
+        state,
+        object_file_id=object_id,
+        prompt=prompt,
+        model_id=model_id,
+        label=label,
+        aspect=aspect,
+        base_file_id=base_id,
+        base_url=None,
+        base_bytes=None,
+        base_mime="image/jpeg",
+    )
 
 @router.callback_query(F.data == msg.CB_CREATE_ANIMATE)
 async def create_animate_start(callback: CallbackQuery, state: FSMContext) -> None:

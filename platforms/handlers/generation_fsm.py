@@ -241,11 +241,17 @@ async def _dispatch_composite_photo_message(
     base_bytes: bytes | None,
     base_mime: str,
 ) -> None:
+    data = await state.get_data()
+    keep_refine = bool(data.get("refine_from_result"))
     await state.update_data(
+        composite_retry_base_id=base_file_id,
+        composite_retry_object_id=object_file_id,
+        composite_retry_prompt=prompt,
         pending_reference_file_id=None,
         pending_object_file_id=None,
-        refine_from_result=None,
     )
+    if not keep_refine:
+        await state.update_data(refine_from_result=None)
     await process_photo_prompt_message(
         message,
         state,
@@ -864,6 +870,13 @@ async def process_photo_prompt_message(
         clear_photo_flow(user_id)
         return
 
+    if eq.composite_refine:
+        await state.update_data(
+            composite_retry_base_id=eq.composite_base_file_id,
+            composite_retry_object_id=eq.telegram_file_id,
+            composite_retry_prompt=eq.prompt,
+        )
+
     data = await state.get_data()
     cleanup_ids = tuple(int(x) for x in (data.get("photo_service_message_ids") or []) if x)
     await state.update_data(photo_service_message_ids=[])
@@ -898,7 +911,11 @@ async def process_photo_prompt_message(
     from platforms.image_menu_flow import clear_image_model_menu_pending
 
     await clear_image_model_menu_pending(state)
-    await state.update_data(pending_reference_file_id=None, image_aspect_ratio=ar)
+    await state.update_data(
+        pending_reference_file_id=None,
+        pending_object_file_id=None,
+        image_aspect_ratio=ar,
+    )
     await state.set_state(UserFlow.waiting_for_photo)
     mark_photo_flow(user_id)
 

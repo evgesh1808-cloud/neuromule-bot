@@ -384,6 +384,15 @@ def test_build_composite_creative_scene_template() -> None:
     assert "Childhood / Print Photo Reference ONLY" in payload["prompt"]
 
 
+def test_build_minimal_child_print_composite_intent() -> None:
+    from services.openrouter_images import build_minimal_child_print_composite_intent
+
+    text = build_minimal_child_print_composite_intent("cozy selfie warm light tiara")
+    assert "Image 1" in text
+    assert "Image 2 childhood" in text
+    assert "tiara" in text
+
+
 def test_resolve_composite_refine_model_key_routes_multi_image_stacks() -> None:
     assert resolve_composite_refine_model_key("nano_banana_pro") == OPENROUTER_NANO_BANANA_PRO_MODEL
     assert resolve_composite_refine_model_key("dalle_3") == OPENROUTER_GPT_IMAGE2_MODEL

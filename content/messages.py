@@ -320,6 +320,8 @@ CB_GROUP_PHOTO_GENERATE = "grp_photo_gen"
 CB_GROUP_PHOTO_PROMPT = "grp_photo_prompt"
 CB_GROUP_PHOTO_CLEAR = "grp_photo_clear"
 CB_GROUP_PHOTO_CANCEL = "grp_photo_cancel"
+CB_COMPOSITE_RETRY = "composite_retry"
+BTN_COMPOSITE_RETRY = "🔄 Повторить (2 фото + промпт)"
 BTN_GROUP_PHOTO = "👨‍👩‍👧‍👦 Групповое фото (до 10 лиц)"
 BTN_GROUP_PHOTO_GENERATE = "🚀 Сгенерировать"
 BTN_GROUP_PHOTO_PROMPT = "📝 Написать/Изменить промпт"
@@ -1029,9 +1031,11 @@ TXT_PHOTO_COMPOSITE_FAILED = (
 TXT_PHOTO_COMPOSITE_API_FAILED = (
     "Нейросеть не смогла совместить два фото.\n\n"
     "Проверьте порядок в альбоме: <b>1-е фото — взрослая (лицо)</b>, "
-    "<b>2-е — детское/принт</b>. Модель: <b>Nano Banana Pro</b> или <b>GPT Image 2</b>.\n"
-    "Если промпт очень длинный — сократите до сути: сцена + «детское фото как винтажный принт на футболке»."
+    "<b>2-е — детское/принт</b>. Модель: <b>Nano Banana Pro</b>.\n"
+    "Нажмите «🔄 Повторить» ниже — фото и промпт сохранены.\n"
+    "Либо: «✏️ Доработать» работает только после <b>успешной</b> генерации одного фото."
 )
+TXT_COMPOSITE_RETRY_HINT = "Можно повторить композит без повторной загрузки фото:"
 TXT_GROUP_PHOTO_WELCOME = (
     "👨‍👩‍👧‍👦 <b>Режим группового фото активирован!</b>\n\n"
     "Отправьте от <b>2 до 10</b> портретов участников <b>одним альбомом</b> или поочерёдно. "
