@@ -1026,9 +1026,13 @@ async def _photo_stub_worker(task: GenTask) -> None:
             exc,
         )
         fail_msg = (
-            msg.TXT_FREE_IMAGE_CASCADE_FAILED
-            if is_free
-            else msg.TXT_GEN_JOB_FAILED
+            msg.TXT_PHOTO_COMPOSITE_FAILED
+            if task.composite_refine
+            else (
+                msg.TXT_FREE_IMAGE_CASCADE_FAILED
+                if is_free
+                else msg.TXT_GEN_JOB_FAILED
+            )
         )
         await fail_generation_task(
             task,

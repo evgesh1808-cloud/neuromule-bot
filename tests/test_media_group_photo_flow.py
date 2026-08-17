@@ -87,6 +87,40 @@ async def test_album_rejected_in_refine_mode() -> None:
 
 
 @pytest.mark.asyncio
+async def test_second_photo_without_caption_becomes_pending_object() -> None:
+    from platforms.handlers import generation_fsm
+
+    message = MagicMock()
+    message.photo = [MagicMock(file_id="AgAC_print")]
+    message.caption = None
+    message.from_user.id = 503
+    message.answer = AsyncMock()
+
+    state = MagicMock()
+    state.get_data = AsyncMock(
+        return_value={
+            "image_model_id": "nano_banana_pro",
+            "image_model_label": "Nano Pro",
+            "pending_reference_file_id": "AgAC_face",
+        }
+    )
+    state.update_data = AsyncMock()
+    state.set_state = AsyncMock()
+
+    with patch.object(
+        generation_fsm,
+        "_photo_reference_from_message",
+        return_value=("AgAC_print", ""),
+    ):
+        handled = await generation_fsm._dispatch_photo_reference_message(message, state)
+
+    assert handled is True
+    kwargs = state.update_data.await_args.kwargs
+    assert kwargs["pending_object_file_id"] == "AgAC_print"
+    assert "pending_reference_file_id" not in kwargs
+
+
+@pytest.mark.asyncio
 async def test_photo_refine_restores_from_db_when_memory_expired() -> None:
     from platforms.handlers import generation_cb
     from services.photo_edit_session import reset_photo_edit_sessions_for_tests

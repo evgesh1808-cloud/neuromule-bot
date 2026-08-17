@@ -506,6 +506,19 @@ async def _dispatch_photo_reference_message(message: Message, state: FSMContext)
         await state.set_state(UserFlow.waiting_for_photo)
         return True
 
+    pending_base = str(data.get("pending_reference_file_id") or "").strip()
+    pending_object = str(data.get("pending_object_file_id") or "").strip()
+    if pending_base and pending_base != file_id and not pending_object:
+        hint = await message.answer(msg.TXT_PHOTO_ALBUM_WAIT_CAPTION, parse_mode=ParseMode.HTML)
+        service_ids = list(data.get("photo_service_message_ids") or [])
+        service_ids.append(hint.message_id)
+        await state.update_data(
+            pending_object_file_id=file_id,
+            photo_service_message_ids=service_ids,
+        )
+        await state.set_state(UserFlow.waiting_for_photo)
+        return True
+
     hint = await message.answer(msg.TXT_CREATE_IMAGE_WAIT_PROMPT, parse_mode=ParseMode.HTML)
     service_ids = list(data.get("photo_service_message_ids") or [])
     service_ids.append(hint.message_id)
@@ -906,6 +919,13 @@ async def photo_process(message: Message, state: FSMContext) -> None:
     label = data.get("image_model_label", "модель")
     aspect = normalize_photo_aspect_ratio(data.get("image_aspect_ratio"))
     prompt = (message.text or "").strip()
+    if message.from_user is not None:
+        from platforms.media_group_middleware import album_collection_pending
+
+        if album_collection_pending(message.from_user.id):
+            await asyncio.sleep(1.15)
+            data = await state.get_data()
+
     pending_file_id = str(data.get("pending_reference_file_id") or "").strip()
     pending_object_id = str(data.get("pending_object_file_id") or "").strip()
     refine_from_result = bool(data.get("refine_from_result"))
