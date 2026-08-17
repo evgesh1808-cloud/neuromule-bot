@@ -309,9 +309,9 @@ FACE_DESCRIBE_SYSTEM_PROMPT = (
 )
 
 OPENROUTER_MODEL_BY_MENU_KEY: dict[str, str] = {
-    "flux_schnell": OPENROUTER_FLUX_PAID_MODEL,
-    "dalle_3": OPENROUTER_GPT_IMAGE2_MODEL,
-    "nano_banana2": OPENROUTER_NANO_BANANA2_MODEL,
+    "flux_2_pro": OPENROUTER_FLUX_PAID_MODEL,
+    "gpt_image_2": OPENROUTER_GPT_IMAGE2_MODEL,
+    "nano_banana_2": OPENROUTER_NANO_BANANA2_MODEL,
     "nano_banana_pro": OPENROUTER_NANO_BANANA_PRO_MODEL,
 }
 
@@ -348,7 +348,9 @@ def openrouter_images_configured(settings: Settings) -> bool:
 
 
 def resolve_openrouter_model_for_menu_key(model_key: str) -> str:
-    normalized = (model_key or "").strip().lower().replace("-", "_")
+    from services.billing.image_pipeline import normalize_image_model
+
+    normalized = normalize_image_model(model_key)
     slug = OPENROUTER_MODEL_BY_MENU_KEY.get(normalized)
     if not slug:
         raise ExternalApiError("OpenRouter", f"unknown image model key: {model_key}")
@@ -369,7 +371,9 @@ def _dedupe_model_slugs(*chains: tuple[str, ...]) -> tuple[str, ...]:
 
 def resolve_composite_refine_model_key(model_key: str) -> str:
     """Dual-reference composite → OpenRouter stack выбранной модели меню."""
-    normalized = (model_key or "").strip().lower().replace("-", "_")
+    from services.billing.image_pipeline import normalize_image_model
+
+    normalized = normalize_image_model(model_key)
     if normalized in OPENROUTER_MODEL_BY_MENU_KEY:
         return resolve_openrouter_model_for_menu_key(normalized)
     return OPENROUTER_NANO_BANANA_PRO_MODEL
@@ -377,22 +381,24 @@ def resolve_composite_refine_model_key(model_key: str) -> str:
 
 def resolve_composite_refine_fallbacks(model_key: str) -> tuple[str, ...]:
     """Fallback-цепочка composite после primary slug (без дубликата primary)."""
-    normalized = (model_key or "").strip().lower().replace("-", "_")
+    from services.billing.image_pipeline import normalize_image_model
+
+    normalized = normalize_image_model(model_key)
     primary = resolve_composite_refine_model_key(normalized)
-    if normalized == "flux_schnell":
+    if normalized == "flux_2_pro":
         chain = _dedupe_model_slugs(
             OPENROUTER_FLUX_STACK_FALLBACKS,
             GPT_IMAGE2_FALLBACKS,
             (OPENROUTER_NANO_BANANA_PRO_MODEL, OPENROUTER_NANO_BANANA2_MODEL),
             COMPOSITE_REFINE_FALLBACKS,
         )
-    elif normalized == "dalle_3":
+    elif normalized == "gpt_image_2":
         chain = _dedupe_model_slugs(
             GPT_IMAGE2_FALLBACKS,
             (OPENROUTER_NANO_BANANA_PRO_MODEL, OPENROUTER_NANO_BANANA2_MODEL),
             COMPOSITE_REFINE_FALLBACKS,
         )
-    elif normalized == "nano_banana2":
+    elif normalized == "nano_banana_2":
         chain = _dedupe_model_slugs(
             NANO_BANANO2_FALLBACKS,
             (OPENROUTER_GPT_IMAGE2_MODEL, OPENROUTER_NANO_BANANA_PRO_MODEL),
@@ -411,7 +417,9 @@ def resolve_composite_refine_fallbacks(model_key: str) -> tuple[str, ...]:
 
 def resolve_creative_composite_fallbacks(model_key: str) -> tuple[str, ...]:
     """Fallback для creative composite (длинный scene + 2 фото)."""
-    normalized = (model_key or "").strip().lower().replace("-", "_")
+    from services.billing.image_pipeline import normalize_image_model
+
+    normalized = normalize_image_model(model_key)
     primary = resolve_composite_refine_model_key(normalized)
     chain = _dedupe_model_slugs(
         resolve_composite_refine_fallbacks(normalized),
@@ -590,7 +598,9 @@ async def generate_openrouter_composite_photo(
     timeout_sec: float = DEFAULT_OPENROUTER_IMAGES_TIMEOUT_SEC,
 ) -> GeminiImageResult:
     """Dual-reference composite refine via OpenRouter Images API."""
-    menu_key = (model_key or "").strip().lower().replace("-", "_")
+    from services.billing.image_pipeline import normalize_image_model
+
+    menu_key = normalize_image_model(model_key or "")
     intent_en, creative_scene = await prepare_composite_user_intent(settings, user_prompt)
     base_png = resize_png_data_url_for_api(await ensure_png_reference_data_url(base_image_data_url))
     object_png = resize_png_data_url_for_api(await ensure_png_reference_data_url(object_image_data_url))

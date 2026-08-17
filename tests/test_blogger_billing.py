@@ -20,7 +20,7 @@ from services.billing.types import ChargeBreakdown, UserBillingState, TariffTier
 
 def test_blogger_pricing_constants() -> None:
     assert BLOGGER_ADAPT_COST == 3
-    assert BLOGGER_COVER_IMAGE_MODEL == "flux_schnell"
+    assert BLOGGER_COVER_IMAGE_MODEL == "flux_2_pro"
 
 
 def _billing_user(
@@ -97,7 +97,7 @@ async def test_spend_blogger_cover_delegates_to_image_pipeline() -> None:
     ) as mock_spend:
         result = await spend_blogger_cover(42)
     assert result.ok is True
-    mock_spend.assert_awaited_once_with(42, "flux_schnell")
+    mock_spend.assert_awaited_once_with(42, "flux_2_pro")
 
 
 @pytest.mark.asyncio

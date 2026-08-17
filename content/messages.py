@@ -457,10 +457,10 @@ TXT_NEUROTEXT_CLEAR_BTN = "🔔 Новый диалог"
 TXT_NEUROTEXT_CLEAR_DONE = "🧹 <b>Контекст очищен.</b> Можно стартовать новую тему."
 
 IMAGE_MODELS: tuple[tuple[str, str], ...] = (
-    ("Flux FREE", "free_photo"),
-    ("Flux 2 Pro", "flux-schnell"),
-    ("GPT Image 2", "dalle_3"),
-    ("Nano Banana 2", "nano_banana2"),
+    ("Flux FREE", "flux_free"),
+    ("Flux 2 Pro", "flux_2_pro"),
+    ("GPT Image 2", "gpt_image_2"),
+    ("Nano Banana 2", "nano_banana_2"),
     ("Nano Banana Pro", "nano_banana_pro"),
 )
 

@@ -20,13 +20,13 @@ FREE_IMAGEN_OVERLIMIT_COST = catalog.free_imagen_overlimit_cost
 FREE_PRO_IMAGE_COST = catalog.free_pro_image_cost
 
 _paid = catalog.paid_image_models
-PAID_FLUX_ENERGY_COST = _paid["flux_schnell"].energy
-PAID_FLUX_CRYSTAL_COST = _paid["flux_schnell"].crystals
-PAID_BANANA2_ENERGY_COST = _paid["nano_banana2"].energy
-PAID_BANANA2_CRYSTAL_COST = _paid["nano_banana2"].crystals
+PAID_FLUX_ENERGY_COST = _paid["flux_2_pro"].energy
+PAID_FLUX_CRYSTAL_COST = _paid["flux_2_pro"].crystals
+PAID_BANANA2_ENERGY_COST = _paid["nano_banana_2"].energy
+PAID_BANANA2_CRYSTAL_COST = _paid["nano_banana_2"].crystals
 PAID_BANANA_PRO_ENERGY_COST = _paid["nano_banana_pro"].energy
 PAID_BANANA_PRO_CRYSTAL_COST = _paid["nano_banana_pro"].crystals
-GLOBAL_GPT_IMAGE2_COST = _paid["dalle_3"].crystals
+GLOBAL_GPT_IMAGE2_COST = _paid["gpt_image_2"].crystals
 
 # --- Видео / музыка ---
 _v = catalog.video_tiers

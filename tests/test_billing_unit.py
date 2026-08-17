@@ -86,8 +86,11 @@ def test_video_route_ultra_priority() -> None:
 
 
 def test_image_model_aliases() -> None:
-    assert normalize_image_model("flux-schnell") == "flux_schnell"
-    assert normalize_image_model("free_photo") == "free_photo"
+    assert normalize_image_model("flux-schnell") == "flux_2_pro"
+    assert normalize_image_model("flux_2_pro") == "flux_2_pro"
+    assert normalize_image_model("free_photo") == "flux_free"
+    assert normalize_image_model("dalle_3") == "gpt_image_2"
+    assert normalize_image_model("nano_banana2") == "nano_banana_2"
 
 
 @pytest.mark.asyncio

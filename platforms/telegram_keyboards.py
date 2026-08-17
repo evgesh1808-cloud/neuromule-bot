@@ -242,8 +242,8 @@ def image_model_menu(
         )
         # Premium-lock: не дублируем callback той же модели, что уже в FREE-слоте.
         locked: list[tuple[str, str]] = [
-            ("🔒 Flux 2 Pro (Premium)", "flux-schnell"),
-            ("🔒 Nano Banana 2 (Premium)", "nano_banana2"),
+            ("🔒 Flux 2 Pro (Premium)", "flux_2_pro"),
+            ("🔒 Nano Banana 2 (Premium)", "nano_banana_2"),
             ("🔒 Nano Banana Pro (Premium)", "nano_banana_pro"),
         ]
         rows = [
@@ -257,9 +257,9 @@ def image_model_menu(
         ]
     else:
         rows = [
-            [InlineKeyboardButton(text="⚡ Flux 2 Pro (30 ⚡ / 3 💎)", callback_data=f"{prefix}flux-schnell")],
-            [InlineKeyboardButton(text="🖼 GPT Image 2 (5 💎)", callback_data=f"{prefix}dalle_3")],
-            [InlineKeyboardButton(text="🍌 Nano Banana 2 (15 ⚡)", callback_data=f"{prefix}nano_banana2")],
+            [InlineKeyboardButton(text="⚡ Flux 2 Pro (30 ⚡ / 3 💎)", callback_data=f"{prefix}flux_2_pro")],
+            [InlineKeyboardButton(text="🖼 GPT Image 2 (5 💎)", callback_data=f"{prefix}gpt_image_2")],
+            [InlineKeyboardButton(text="🍌 Nano Banana 2 (15 ⚡)", callback_data=f"{prefix}nano_banana_2")],
             [InlineKeyboardButton(text="🚀 Nano Banana Pro (35 ⚡)", callback_data=f"{prefix}nano_banana_pro")],
             [back],
         ]

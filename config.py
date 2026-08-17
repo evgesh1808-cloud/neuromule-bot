@@ -521,7 +521,7 @@ class Settings(BaseSettings):
         str,
         _openrouter_model_id(_DEFAULT_GEMINI_FLASH),
     ] = _DEFAULT_GEMINI_FLASH
-    free_image_model: Annotated[str, _nonempty_str("free_photo")] = "free_photo"
+    free_image_model: Annotated[str, _nonempty_str("flux_free")] = "flux_free"
     # Скрытый суточный предохранитель FREE Nano Banana на весь бот (.env).
     global_free_image_daily_cap: Annotated[int, _coerce_int(1500)] = Field(
         default=1500,

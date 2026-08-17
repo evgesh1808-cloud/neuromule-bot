@@ -38,7 +38,7 @@ def test_cost_defaults_match_pricelist(monkeypatch) -> None:
     assert s.cost_video == 20
     assert s.cost_music == 15
     assert s.referral_bonus_energy == 5
-    assert s.free_image_model == "free_photo"
+    assert s.free_image_model == "flux_free"
 
 
 def test_dynamic_cta_tuesday_uses_env_video_cost(monkeypatch) -> None:

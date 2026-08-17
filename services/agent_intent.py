@@ -21,27 +21,26 @@ INTENT_TIMEOUT_SEC = 8.0
 
 TRIGGER_IMAGE_GENERATION = "trigger_image_generation"
 
-MODEL_KEY_ALIASES: dict[str, str] = {
-    "nano_banana2": "nano_banana2",
-    "flux-schnell": "flux_schnell",
-    "flux_schnell": "flux_schnell",
-    "gpt_image2": "dalle_3",
-    "dalle_3": "dalle_3",
-}
+from business_catalog import (
+    FLUX_2_PRO_MODEL_KEY,
+    GPT_IMAGE_2_MODEL_KEY,
+    NANO_BANANA_2_MODEL_KEY,
+)
 
-DEFAULT_MODEL_KEY = "nano_banana2"
+DEFAULT_MODEL_KEY = NANO_BANANA_2_MODEL_KEY
 DEFAULT_ASPECT_RATIO = "1:1"
 
 _ASPECT_ENUM = ("1:1", "3:4", "4:5", "9:16", "16:9")
-_MODEL_ENUM = ("nano_banana2", "flux-schnell", "gpt_image2")
+_MODEL_ENUM = (NANO_BANANA_2_MODEL_KEY, FLUX_2_PRO_MODEL_KEY, GPT_IMAGE_2_MODEL_KEY)
 
 _SYSTEM_PROMPT = (
     "You route user messages for an AI bot. "
     "If the user asks to draw, paint, create, generate, depict, or visualize an image — "
     "call trigger_image_generation. "
     "Translate prompt to English. "
-    "Pick model_key: flux-schnell for Flux/premium requests; gpt_image2 for DALL-E/OpenAI; "
-    "otherwise nano_banana2. "
+    f"Pick model_key: {FLUX_2_PRO_MODEL_KEY} for Flux/premium requests; "
+    f"{GPT_IMAGE_2_MODEL_KEY} for GPT Image 2/OpenAI; "
+    f"otherwise {NANO_BANANA_2_MODEL_KEY}. "
     "Pick aspect_ratio when user mentions vertical, horizontal, wallpaper, stories, 16:9, etc. "
     "Do NOT call the tool for normal chat unrelated to image generation."
 )
@@ -109,15 +108,9 @@ def _model_label(model_id: str) -> str:
 
 
 def _resolve_model_from_key(model_key: str | None) -> tuple[str, str, str]:
-    """Returns (model_key enum, model_id, model_label)."""
-    raw = (model_key or DEFAULT_MODEL_KEY).strip().lower().replace("_", "-")
-    if raw in ("flux-schnell", "flux"):
-        enum_key, model_id = "flux-schnell", "flux_schnell"
-    elif raw in ("gpt_image2", "gpt-image2", "dalle", "dalle-3", "openai"):
-        enum_key, model_id = "gpt_image2", "dalle_3"
-    else:
-        enum_key, model_id = "nano_banana2", "nano_banana2"
-    return enum_key, model_id, _model_label(model_id)
+    """Returns (model_key enum, canonical model_id, model_label)."""
+    model_id = normalize_image_model(model_key or DEFAULT_MODEL_KEY)
+    return model_id, model_id, _model_label(model_id)
 
 
 def parse_trigger_image_generation_args(

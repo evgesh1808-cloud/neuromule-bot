@@ -208,31 +208,45 @@ def build_video_scenario_entries() -> tuple[VideoScenarioEntry, ...]:
 VIDEO_SCENARIO_ENTRIES: tuple[VideoScenarioEntry, ...] = build_video_scenario_entries()
 
 
-# Канонический ключ меню / биллинга → OpenRouter ``openai/gpt-image-2`` (UI: GPT Image 2).
-DALLE3_MODEL_KEY = "dalle_3"
+# Канонические ключи моделей — совпадают с подписями кнопок в меню «🎨 Фото».
+FLUX_FREE_MODEL_KEY = "flux_free"
+FLUX_2_PRO_MODEL_KEY = "flux_2_pro"
+GPT_IMAGE_2_MODEL_KEY = "gpt_image_2"
+NANO_BANANA_2_MODEL_KEY = "nano_banana_2"
+NANO_BANANA_PRO_MODEL_KEY = "nano_banana_pro"
 
-# Алиасы id меню → ключ модели
+# Deprecated aliases (старый код / БД / callback_data).
+DALLE3_MODEL_KEY = GPT_IMAGE_2_MODEL_KEY
+FREE_PHOTO_MODEL_KEY = FLUX_FREE_MODEL_KEY
+
+# Алиасы id меню / callback / legacy → канонический ключ
 IMAGE_MODEL_ALIASES: dict[str, str] = {
-    "flux-schnell": "flux_schnell",
-    "flux_schnell": "flux_schnell",
-    DALLE3_MODEL_KEY: DALLE3_MODEL_KEY,
-    "dalle3": DALLE3_MODEL_KEY,
-    "dalle_3": DALLE3_MODEL_KEY,
-    "gpt_image2": DALLE3_MODEL_KEY,  # legacy callback / .env
-    "free_photo": "free_photo",
-    "nano_banana2": "nano_banana2",
-    "nano_banana_pro": "nano_banana_pro",
+    FLUX_FREE_MODEL_KEY: FLUX_FREE_MODEL_KEY,
+    "free_photo": FLUX_FREE_MODEL_KEY,
+    FLUX_2_PRO_MODEL_KEY: FLUX_2_PRO_MODEL_KEY,
+    "flux-schnell": FLUX_2_PRO_MODEL_KEY,
+    "flux_schnell": FLUX_2_PRO_MODEL_KEY,
+    "fluxschnell": FLUX_2_PRO_MODEL_KEY,
+    GPT_IMAGE_2_MODEL_KEY: GPT_IMAGE_2_MODEL_KEY,
+    "gpt_image2": GPT_IMAGE_2_MODEL_KEY,
+    "gpt-image-2": GPT_IMAGE_2_MODEL_KEY,
+    DALLE3_MODEL_KEY: GPT_IMAGE_2_MODEL_KEY,
+    "dalle3": GPT_IMAGE_2_MODEL_KEY,
+    "dalle_3": GPT_IMAGE_2_MODEL_KEY,
+    NANO_BANANA_2_MODEL_KEY: NANO_BANANA_2_MODEL_KEY,
+    "nano_banana2": NANO_BANANA_2_MODEL_KEY,
+    NANO_BANANA_PRO_MODEL_KEY: NANO_BANANA_PRO_MODEL_KEY,
 }
 
 def build_paid_image_model_entries(cfg: "Settings") -> dict[str, ImageModelPrice]:
     """Матрица PRO-фото из ``config`` (без хардкода в пайплайне)."""
     return {
-        "flux_schnell": ImageModelPrice(cfg.paid_flux_energy_cost, cfg.paid_flux_crystal_cost),
-        "nano_banana2": ImageModelPrice(cfg.paid_banana2_energy_cost, cfg.paid_banana2_crystal_cost),
-        "nano_banana_pro": ImageModelPrice(
+        FLUX_2_PRO_MODEL_KEY: ImageModelPrice(cfg.paid_flux_energy_cost, cfg.paid_flux_crystal_cost),
+        NANO_BANANA_2_MODEL_KEY: ImageModelPrice(cfg.paid_banana2_energy_cost, cfg.paid_banana2_crystal_cost),
+        NANO_BANANA_PRO_MODEL_KEY: ImageModelPrice(
             cfg.paid_banana_pro_energy_cost, cfg.paid_banana_pro_crystal_cost
         ),
-        DALLE3_MODEL_KEY: ImageModelPrice(
+        GPT_IMAGE_2_MODEL_KEY: ImageModelPrice(
             0, cfg.cost_image_dalle_crystals, crystals_only=True
         ),
     }

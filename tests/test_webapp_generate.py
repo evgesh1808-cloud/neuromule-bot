@@ -90,7 +90,7 @@ def test_webapp_generate_telegram(mini_app_client, monkeypatch) -> None:
     assert body["status"] == "ok"
     assert pipeline_calls
     assert pipeline_calls[0]["aspect_ratio"] == "16:9"
-    assert pipeline_calls[0]["model_id"] == "flux_schnell"
+    assert pipeline_calls[0]["model_id"] == "flux_2_pro"
 
 
 def test_webapp_generate_rejects_user_mismatch(mini_app_client) -> None:

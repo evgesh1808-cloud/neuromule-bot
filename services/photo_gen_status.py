@@ -31,7 +31,9 @@ PHOTO_STATUS_PROGRESS_DELAYS_SEC: tuple[int, ...] = (45, 90)
 def photo_gen_eta_hint(*, model_id: str, used_daily_slot: bool = False) -> str:
     """Оценка времени в UI (не SLA)."""
     key = normalize_image_model(model_id)
-    if used_daily_slot or key in (FREE_PHOTO_MODEL_KEY, "flux_schnell"):
+    from business_catalog import FLUX_2_PRO_MODEL_KEY
+
+    if used_daily_slot or key in (FREE_PHOTO_MODEL_KEY, FLUX_2_PRO_MODEL_KEY):
         return "1–3 мин"
     return "30–90 сек"
 

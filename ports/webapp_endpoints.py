@@ -16,7 +16,12 @@ from ports.webapp_auth import (
     WebAppAuthContext,
     resolve_webapp_auth_from_headers,
 )
-from services.agent_intent import _resolve_model_from_key
+from business_catalog import (
+    FLUX_2_PRO_MODEL_KEY,
+    GPT_IMAGE_2_MODEL_KEY,
+    NANO_BANANA_2_MODEL_KEY,
+)
+from services.billing.image_pipeline import normalize_image_model
 from services.agent_intent_dispatch import run_webapp_image_pipeline
 from services.photo_aspect_ratio import openrouter_aspect_ratio
 from services.use_cases.photo_generation_turn import PhotoGenOutcome
@@ -37,7 +42,7 @@ class WebAppGenerateRequest(BaseModel):
     @model_validator(mode="after")
     def _require_model(self) -> WebAppGenerateRequest:
         if not (self.model_key or self.model):
-            self.model_key = "nano_banana2"
+            self.model_key = NANO_BANANA_2_MODEL_KEY
         return self
 
 
@@ -61,12 +66,14 @@ async def require_webapp_auth(
 
 
 def _resolve_model(raw_key: str | None, raw_legacy: str | None) -> tuple[str, str, str]:
-    source = (raw_key or raw_legacy or "nano_banana2").strip()
-    enum_key, model_id, model_label = _resolve_model_from_key(source)
-    allowed = {"nano_banana2", "flux_schnell", "dalle_3"}
+    from services.agent_intent import _resolve_model_from_key
+
+    source = (raw_key or raw_legacy or NANO_BANANA_2_MODEL_KEY).strip()
+    model_id, _, model_label = _resolve_model_from_key(source)
+    allowed = {NANO_BANANA_2_MODEL_KEY, FLUX_2_PRO_MODEL_KEY, GPT_IMAGE_2_MODEL_KEY}
     if model_id not in allowed:
         raise HTTPException(status_code=400, detail="Unsupported model_key")
-    return enum_key, model_id, model_label
+    return model_id, model_id, model_label
 
 
 def _outcome_to_http(outcome: PhotoGenOutcome, detail: str | None = None) -> HTTPException:

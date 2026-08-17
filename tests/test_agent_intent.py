@@ -26,16 +26,16 @@ def test_trigger_image_generation_tool_schema() -> None:
     fn = tool["function"]
     assert fn["name"] == TRIGGER_IMAGE_GENERATION
     props = fn["parameters"]["properties"]
-    assert props["model_key"]["default"] == "nano_banana2"
-    assert "gpt_image2" in props["model_key"]["enum"]
+    assert props["model_key"]["default"] == "nano_banana_2"
+    assert "gpt_image_2" in props["model_key"]["enum"]
 
 
 def test_parse_trigger_defaults_to_nano_banana2() -> None:
     raw = json.dumps({"prompt": "A cat on the moon"})
     parsed = parse_trigger_image_generation_args(raw)
     assert parsed is not None
-    assert parsed["model_id"] == "nano_banana2"
-    assert parsed["model_key"] == "nano_banana2"
+    assert parsed["model_id"] == "nano_banana_2"
+    assert parsed["model_key"] == "nano_banana_2"
 
 
 def test_parse_trigger_flux_and_gpt() -> None:
@@ -43,13 +43,13 @@ def test_parse_trigger_flux_and_gpt() -> None:
         json.dumps({"prompt": "Epic landscape", "model_key": "flux-schnell", "aspect_ratio": "16:9"})
     )
     assert flux is not None
-    assert flux["model_id"] == "flux_schnell"
+    assert flux["model_id"] == "flux_2_pro"
 
     gpt = parse_trigger_image_generation_args(
         json.dumps({"prompt": "Logo design", "model_key": "gpt_image2"})
     )
     assert gpt is not None
-    assert gpt["model_id"] == "dalle_3"
+    assert gpt["model_id"] == "gpt_image_2"
 
 
 @pytest.mark.asyncio

@@ -15,7 +15,7 @@ ASPECT_RATIO_STORIES = "9:16"
 ASPECT_RATIO_WIDE = "16:9"
 
 # Модели с inline-меню формата (нормализованные ключи из ``normalize_image_model``).
-_ASPECT_RATIO_MENU_MODELS: frozenset[str] = frozenset({"flux_schnell", "nano_banana_pro"})
+_ASPECT_RATIO_MENU_MODELS: frozenset[str] = frozenset({"flux_2_pro", "nano_banana_pro"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,8 +58,9 @@ def format_aspect_ratio_picker_html() -> str:
 
 def model_shows_aspect_ratio_menu(model_id: str | None) -> bool:
     """True для Flux 2 Pro / Nano Banana Pro — показываем выбор формата."""
-    key = (model_id or "").strip().lower().replace("-", "_")
-    return key in _ASPECT_RATIO_MENU_MODELS
+    from services.billing.image_pipeline import normalize_image_model
+
+    return normalize_image_model(model_id or "") in _ASPECT_RATIO_MENU_MODELS
 
 
 def normalize_photo_aspect_ratio(value: str | None) -> str:

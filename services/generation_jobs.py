@@ -51,7 +51,7 @@ from services.photo_aspect_ratio import (
     openrouter_aspect_ratio,
 )
 from services.photo_edit_session import persist_photo_edit_session, save_photo_edit_session
-from services.billing.image_pipeline import FREE_PHOTO_MODEL_KEY, free_tier_image_model
+from services.billing.image_pipeline import FREE_PHOTO_MODEL_KEY, normalize_image_model, free_tier_image_model
 from services.free_image_cascade import FreeImageCascadeExhausted, generate_free_tier_image
 from services.openrouter_images import (
     resolve_composite_refine_fallbacks,
@@ -198,10 +198,8 @@ def _remember_share(
 
 
 def _normalize_photo_model_id(model_id: str, model_label: str = "") -> str:
-    """ID модели из меню (flux-schnell, dalle_3) + алиасы из ``business_catalog``."""
-    raw = (model_id or model_label or "").strip().lower().replace("-", "_")
-    aliases = {**catalog.image_aliases, "fluxschnell": "flux_schnell"}
-    return aliases.get(raw, raw)
+    """Канонический ключ модели из меню / FSM / legacy callback."""
+    return normalize_image_model(model_id or model_label)
 
 
 _TEXT_DESIGN_INTENT_KEYWORDS: tuple[str, ...] = (
@@ -256,9 +254,9 @@ def resolve_smart_photo_model_key(
     Chatcom-style роутинг: селфи → identity-модель по выбору пользователя;
     GPT Image 2 и Nano сохраняют свой стек; прочие модели → nano_banana_pro.
     """
-    key = (model_key or "").strip().lower()
+    key = normalize_image_model(model_key)
     if has_reference:
-        if key in ("dalle_3", "nano_banana2", "nano_banana_pro"):
+        if key in ("gpt_image_2", "nano_banana_2", "nano_banana_pro"):
             return key
         if key != "nano_banana_pro":
             logger.info(
@@ -268,20 +266,20 @@ def resolve_smart_photo_model_key(
             return "nano_banana_pro"
         return key
 
-    if key in ("nano_banana2", "nano_banana_pro"):
+    if key in ("nano_banana_2", "nano_banana_pro"):
         if _is_text_design_intent(prompt):
             logger.info(
-                "smart photo routing: model=%s text/design intent → flux_schnell",
+                "smart photo routing: model=%s text/design intent → flux_2_pro",
                 key,
             )
-            return "flux_schnell"
+            return "flux_2_pro"
         logger.info(
-            "smart photo routing: model=%s t2i without reference → flux_schnell",
+            "smart photo routing: model=%s t2i without reference → flux_2_pro",
             key,
         )
-        return "flux_schnell"
+        return "flux_2_pro"
 
-    return model_key
+    return key
 
 
 async def _load_reference_image_bytes(
@@ -592,7 +590,7 @@ async def _generate_free_tier_photo(
 
 async def _free_tier_flux_uses_pollinations(user_id: int | None, model_key: str) -> bool:
     """FREE + Flux Schnell → Pollinations (без платных API-ключей)."""
-    if model_key != "flux_schnell" or user_id is None:
+    if model_key != "flux_2_pro" or user_id is None:
         return False
     row = await get_user_row(user_id)
     return normalize_tariff(row.tariff) is TariffName.FREE
@@ -745,6 +743,7 @@ async def _generate_photo_result(
 ) -> GeminiImageResult | str:
     """Возвращает GeminiImageResult (url/bytes) или прямой URL строки."""
     ar = normalize_photo_aspect_ratio(aspect_ratio)
+    model_key = normalize_image_model(model_key)
 
     if group_multi_ref:
         logger.info(
@@ -816,7 +815,7 @@ async def _generate_photo_result(
     )
 
     try:
-        if model_key == "flux_schnell":
+        if model_key == "flux_2_pro":
             if await _free_tier_flux_uses_pollinations(user_id, model_key):
                 return await generate_flux_schnell_image(prompt)
             return await _generate_flux_schnell_paid(
@@ -825,10 +824,10 @@ async def _generate_photo_result(
                 reference_data_url=reference_data_url,
             )
 
-        if model_key == "free_photo":
-            raise ExternalApiError("FreePhoto", "free_photo requires task worker context")
+        if model_key == FREE_PHOTO_MODEL_KEY:
+            raise ExternalApiError("FreePhoto", "flux_free requires task worker context")
 
-        if model_key == "dalle_3":
+        if model_key == "gpt_image_2":
             return await _generate_openrouter_photo_model(
                 OPENROUTER_GPT_IMAGE2_MODEL,
                 prompt,
@@ -837,7 +836,7 @@ async def _generate_photo_result(
                 fallback_models=GPT_IMAGE2_FALLBACKS,
             )
 
-        if model_key == "nano_banana2":
+        if model_key == "nano_banana_2":
             return await _generate_openrouter_photo_model(
                 OPENROUTER_NANO_BANANA2_MODEL,
                 prompt,
@@ -862,7 +861,7 @@ async def _generate_photo_result(
         provider = (
             "OpenRouter"
             if model_key
-            in ("nano_banana2", "nano_banana_pro", "flux_schnell", "dalle_3")
+            in ("nano_banana_2", "nano_banana_pro", "flux_2_pro", "gpt_image_2")
             else "ExternalApi"
         )
         raise wrap_http_error(provider, exc) from exc

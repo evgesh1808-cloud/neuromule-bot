@@ -11,15 +11,19 @@ from services.billing.daily_quotas import (
     get_global_free_image_snapshot,
     quota_day,
 )
+from business_catalog import (
+    FLUX_FREE_MODEL_KEY,
+    FREE_PHOTO_MODEL_KEY,
+    IMAGE_MODEL_ALIASES,
+)
 from services.billing.pricing import (
     FREE_IMAGEN_DAILY_LIMIT,
     FREE_PRO_IMAGE_COST,
-    IMAGE_MODEL_ALIASES,
     PAID_IMAGE_MATRIX,
 )
 from services.billing.types import ImageSpendPlan, SpendFeature, SpendResult, TariffTier
 
-FREE_PHOTO_MODEL_KEY = "free_photo"
+FREE_PHOTO_MODEL_KEY = FLUX_FREE_MODEL_KEY
 
 
 def normalize_image_model(model_name: str) -> str:

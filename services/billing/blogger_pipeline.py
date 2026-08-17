@@ -12,7 +12,9 @@ from services.billing.pricing_constants import BLOGGER_ADAPT_COST
 from services.billing.types import SpendFeature, SpendResult, TariffTier
 from services.god_mode import billing_bypass
 
-BLOGGER_COVER_IMAGE_MODEL = "flux_schnell"
+from business_catalog import FLUX_2_PRO_MODEL_KEY
+
+BLOGGER_COVER_IMAGE_MODEL = FLUX_2_PRO_MODEL_KEY
 
 
 def _cover_model_for_tariff(tariff: TariffTier) -> str:
