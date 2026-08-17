@@ -49,6 +49,8 @@ class PhotoEnqueueSpec:
     composite_base_file_id: str | None = None
     composite_base_reference_url: str | None = None
     composite_base_reference_bytes: bytes | None = None
+    group_multi_ref: bool = False
+    group_ref_file_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -78,6 +80,8 @@ async def run_photo_generation_turn(
     composite_base_file_id: str | None = None,
     composite_base_reference_url: str | None = None,
     composite_base_reference_bytes: bytes | None = None,
+    group_multi_ref: bool = False,
+    group_ref_file_ids: list[str] | tuple[str, ...] | None = None,
 ) -> PhotoGenResult:
     # bot/chat_id/settings — контракт call-site; списание через billing store.
     _ = (settings, bot, chat_id)
@@ -106,7 +110,20 @@ async def run_photo_generation_turn(
     object_sources = sum(x is not None for x in (tg_ref, url_ref, bytes_ref))
     base_sources = sum(x is not None for x in (base_file_id, base_url, base_bytes))
 
-    if composite_refine:
+    group_refs = tuple(
+        (fid or "").strip()
+        for fid in (group_ref_file_ids or ())
+        if (fid or "").strip()
+    )
+
+    if group_multi_ref:
+        if len(group_refs) < 2 or len(group_refs) > 10:
+            raise ValueError(
+                "photo_generation_turn: group multi-ref requires 2–10 reference file_ids"
+            )
+        if not (prompt or "").strip():
+            return PhotoGenResult(outcome=PhotoGenOutcome.NEED_PROMPT)
+    elif composite_refine:
         if object_sources != 1 or base_sources != 1:
             raise ValueError(
                 "photo_generation_turn: composite refine requires exactly one object "
@@ -121,6 +138,8 @@ async def run_photo_generation_turn(
         return PhotoGenResult(outcome=PhotoGenOutcome.NEED_PROMPT)
 
     model_id = image_model_id or free_tier_image_model()
+    if group_multi_ref:
+        model_id = "nano_banana_pro"
     spend = await billing.spend_image_resource(user_id, model_id)
     if not spend.ok:
         if spend.error == "global_free_image_cap":
@@ -161,5 +180,7 @@ async def run_photo_generation_turn(
             composite_base_file_id=base_file_id,
             composite_base_reference_url=base_url,
             composite_base_reference_bytes=base_bytes,
+            group_multi_ref=group_multi_ref,
+            group_ref_file_ids=group_refs if group_multi_ref else (),
         ),
     )

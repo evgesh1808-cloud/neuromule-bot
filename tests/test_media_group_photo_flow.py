@@ -87,6 +87,44 @@ async def test_album_rejected_in_refine_mode() -> None:
 
 
 @pytest.mark.asyncio
+async def test_album_pending_pair_plus_text_triggers_composite_not_refine() -> None:
+    """Альбом без подписи → текст: не путаем с refine-сессией."""
+    from platforms.handlers import generation_fsm
+
+    message = MagicMock()
+    message.text = "надень принт на футболку"
+    message.from_user.id = 504
+    message.chat.id = 504
+    message.answer = AsyncMock()
+
+    state = MagicMock()
+    state.get_data = AsyncMock(
+        return_value={
+            "image_model_id": "nano_banana_pro",
+            "image_model_label": "Nano Pro",
+            "image_aspect_ratio": "1:1",
+            "pending_reference_file_id": "AgAC_face",
+            "pending_object_file_id": "AgAC_print",
+            "refine_from_result": False,
+        }
+    )
+    state.update_data = AsyncMock()
+
+    with patch.object(generation_fsm, "process_photo_prompt_message", new_callable=AsyncMock) as proc, patch(
+        "services.photo_intent_parser.resolve_photo_edit_prompt",
+        new_callable=AsyncMock,
+        return_value=("1:1", "надень принт на футболку", False),
+    ):
+        await generation_fsm.photo_process(message, state)
+
+    proc.assert_awaited_once()
+    assert proc.await_args.kwargs["composite_refine"] is True
+    assert proc.await_args.kwargs["composite_base_file_id"] == "AgAC_face"
+    assert proc.await_args.kwargs["telegram_file_id"] == "AgAC_print"
+    message.answer.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_second_photo_without_caption_becomes_pending_object() -> None:
     from platforms.handlers import generation_fsm
 

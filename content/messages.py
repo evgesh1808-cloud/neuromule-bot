@@ -315,6 +315,16 @@ CB_IMG_PREFIX = "img:"
 CB_IMG_AR_PREFIX = "img_ar:"
 CB_PHOTO_REFINE = "photo_refine"
 BTN_PHOTO_REFINE = "✏️ Доработать"
+CB_GROUP_PHOTO_START = "grp_photo_start"
+CB_GROUP_PHOTO_GENERATE = "grp_photo_gen"
+CB_GROUP_PHOTO_PROMPT = "grp_photo_prompt"
+CB_GROUP_PHOTO_CLEAR = "grp_photo_clear"
+CB_GROUP_PHOTO_CANCEL = "grp_photo_cancel"
+BTN_GROUP_PHOTO = "👨‍👩‍👧‍👦 Групповое фото (до 10 лиц)"
+BTN_GROUP_PHOTO_GENERATE = "🚀 Сгенерировать"
+BTN_GROUP_PHOTO_PROMPT = "📝 Написать/Изменить промпт"
+BTN_GROUP_PHOTO_CLEAR = "🧹 Очистить фото"
+BTN_GROUP_PHOTO_CANCEL = "❌ Отмена"
 IMAGE_ASPECT_OPTIONS: tuple[tuple[str, str], ...] = (
     ("▢ 1:1", "1x1"),
     ("▮ 3:4", "3x4"),
@@ -1001,9 +1011,54 @@ TXT_PHOTO_REFINE_OBJECT_WAIT = (
     "(например: «надеть принт на футболку»)."
 )
 TXT_PHOTO_COMPOSITE_FAILED = (
-    "Не удалось собрать композит из двух фото. Попробуй ещё раз: "
-    "«✏️ Доработать» → фото для принта <b>с подписью</b> (что изменить)."
+    "Не удалось собрать композит из двух фото.\n\n"
+    "Попробуйте так:\n"
+    "• <b>Первая генерация</b> — альбом из 2 фото с подписью "
+    "(1-е вы, 2-е принт) или два фото подряд, потом текст.\n"
+    "• <b>Доработка</b> — «✏️ Доработать» → одно фото принта <b>с подписью</b>."
 )
+TXT_PHOTO_COMPOSITE_API_FAILED = (
+    "Нейросеть не смогла совместить два фото. Попробуйте упростить запрос "
+    "или сменить модель (Nano Pro / GPT Image 2 лучше справляются с принтом)."
+)
+TXT_GROUP_PHOTO_WELCOME = (
+    "👨‍👩‍👧‍👦 <b>Режим группового фото активирован!</b>\n\n"
+    "Отправьте от <b>2 до 10</b> портретов участников <b>одним альбомом</b> или поочерёдно. "
+    "Модель <b>Nano Banana Pro</b> объединит их на одном снимке.\n\n"
+    "Начните отправку:"
+)
+TXT_GROUP_PHOTO_TOO_MANY = (
+    "⚠️ Принято только первые <b>10</b> фото. Лишние отброшены — можно продолжать сбор."
+)
+TXT_GROUP_PHOTO_NEED_MORE = (
+    "Нужно минимум <b>2</b> портрета. Отправьте ещё фото участников."
+)
+TXT_GROUP_PHOTO_PROMPT_WAIT = (
+    "📝 Опишите расстановку и сцену одним сообщением.\n\n"
+    "Например: «все стоят в ряд на фоне заката, улыбаются в камеру»."
+)
+TXT_GROUP_PHOTO_CLEARED = "🧹 Список фото очищен. Отправьте новые портреты (от 2 до 10)."
+TXT_GROUP_PHOTO_CANCELLED = "❌ Режим группового фото отменён."
+TXT_GROUP_PHOTO_NEED_PROMPT = (
+    "Сначала укажите промпт — кнопкой «📝 Написать/Изменить промпт» или подписью к альбому."
+)
+TXT_GROUP_PHOTO_API_FAILED = (
+    "⚠️ Сервер Nano Banana временно перегружен или не смог распознать расстановку. "
+    "Мы сохранили все {refs_count} фото и ваш промпт! "
+    "Нажмите кнопку «🚀 Сгенерировать» ещё раз, чтобы повторить попытку."
+)
+
+
+def format_group_photo_status_html(*, refs_count: int, group_prompt: str) -> str:
+    from html import escape
+
+    prompt = (group_prompt or "").strip()
+    prompt_line = escape(prompt) if prompt else "❌ Не указан (напишите текстом)"
+    return (
+        f"📥 Успешно загружено референсов: <b>{refs_count}</b> / 10\n"
+        f"📝 Ваш промпт: {prompt_line}\n\n"
+        "Управляйте сборкой с помощью кнопок ниже:"
+    )
 TXT_PHOTO_RESULT_DOCUMENT_CAPTION = "📥 Оригинальный файл (HD качество без сжатия)"
 TXT_UPSCALE_X2_NEED_CRYSTAL = "💎 Нужен 1 кристалл"
 TXT_UPSCALE_X4_NEED_CRYSTAL = "💎 Нужно 3 кристалла"

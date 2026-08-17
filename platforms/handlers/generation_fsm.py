@@ -292,11 +292,10 @@ async def _try_dispatch_composite_from_context(
     pending_object_id = str(data.get("pending_object_file_id") or "").strip()
     pending_base = str(data.get("pending_reference_file_id") or "").strip()
 
-    in_refine_flow = refine_from_result or bool(pending_object_id)
     session = get_photo_edit_session(user.id, peer_id=message.chat.id)
     has_session = session is not None and session_has_result_image(session)
 
-    if in_refine_flow and not has_session:
+    if refine_from_result and not has_session:
         from services.photo_edit_session import get_or_restore_photo_edit_session
 
         try:
@@ -311,7 +310,7 @@ async def _try_dispatch_composite_from_context(
     base_bytes: bytes | None = None
     base_mime = "image/jpeg"
 
-    if in_refine_flow:
+    if refine_from_result:
         if not has_session:
             return False
         result_ref = resolve_session_result_reference(session)

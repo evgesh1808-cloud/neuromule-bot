@@ -186,6 +186,13 @@ COMPOSITE_REFINE_FALLBACKS: tuple[str, ...] = (
     "google/gemini-3-pro-image-preview",
 )
 
+MULTI_REF_GROUP_NEGATIVE_PROMPT = (
+    "blended faces, merged identities, averaged facial features, duplicate faces, "
+    "face morphing, unrecognizable subjects, deformed group portrait"
+)
+
+MULTI_REF_GROUP_FALLBACKS: tuple[str, ...] = NANO_BANANO_PRO_FALLBACKS
+
 COMPOSITE_REFINE_MENU_KEYS: frozenset[str] = frozenset(
     {"dalle_3", "nano_banana2", "nano_banana_pro"}
 )
@@ -386,6 +393,108 @@ async def generate_openrouter_composite_photo(
     if last_exc is not None:
         raise last_exc
     raise ExternalApiError("OpenRouter", "no composite model candidates")
+
+
+def _build_multi_ref_identity_lines(num_refs: int) -> str:
+    lines: list[str] = []
+    for idx in range(max(1, num_refs)):
+        lines.append(
+            f"- Persona {idx + 1} in the final image MUST look exactly like "
+            f"input_references[{idx}]. Preserve bone geometry, expressions, and traits strictly."
+        )
+    return "\n".join(lines)
+
+
+def build_multi_banana_prompt(user_intent_en: str, num_refs: int) -> str:
+    """Composite prompt for multi-reference group portrait (Nano Banana Pro)."""
+    count = max(2, min(int(num_refs or 0), 10))
+    intent = (user_intent_en or DEFAULT_PHOTO_USER_INTENT).strip()
+    identity_block = _build_multi_ref_identity_lines(count)
+    prompt = (
+        "CRITICAL MULTI-SUBJECT IDENTITY DIRECTIVE:\n"
+        f"You are provided with exactly {count} individual face images in the input_references array.\n"
+        f"{identity_block}\n"
+        "STRICTLY FORBIDDEN to blend, merge, or average facial features between references. "
+        "Each character must remain completely distinct and 100% recognizable. "
+        "Deep crisp focus on ALL faces.\n\n"
+        f"Scene and placement request: {intent}"
+    )
+    return append_negative_prompt_directive(
+        prompt,
+        negative=MULTI_REF_GROUP_NEGATIVE_PROMPT,
+    )
+
+
+async def build_multi_banana_prompt_from_ru(
+    settings: Settings,
+    user_prompt_ru: str,
+    num_refs: int,
+) -> str:
+    intent_en = await translate_photo_user_intent(settings, user_prompt_ru)
+    return build_multi_banana_prompt(intent_en, num_refs)
+
+
+def build_multi_ref_group_payload(
+    user_intent_en: str,
+    reference_image_urls: list[str],
+) -> dict[str, Any]:
+    urls = [(url or "").strip() for url in reference_image_urls if (url or "").strip()]
+    if len(urls) < 2:
+        raise ExternalApiError("OpenRouter", "multi-ref group requires at least 2 references")
+    if len(urls) > 10:
+        urls = urls[:10]
+    prompt = build_multi_banana_prompt(user_intent_en, len(urls))
+    return {
+        "prompt": prompt,
+        "input_references": [openrouter_input_reference(url) for url in urls],
+    }
+
+
+async def generate_openrouter_multi_ref_group_photo(
+    settings: Settings,
+    *,
+    model: str,
+    user_prompt: str,
+    reference_image_data_urls: list[str],
+    aspect_ratio: str = "1:1",
+    fallback_models: tuple[str, ...] = MULTI_REF_GROUP_FALLBACKS,
+    timeout_sec: float = DEFAULT_OPENROUTER_IMAGES_TIMEOUT_SEC,
+) -> GeminiImageResult:
+    """Multi-reference group portrait via OpenRouter Images API."""
+    intent_en = await translate_photo_user_intent(settings, user_prompt)
+    png_refs: list[str] = []
+    for raw_url in reference_image_data_urls:
+        png_refs.append(await ensure_png_reference_data_url(raw_url))
+
+    last_exc: ExternalApiError | None = None
+    candidates = ((model or "").strip(), *fallback_models)
+    for idx, slug in enumerate(candidates):
+        if not slug:
+            continue
+        try:
+            payload = build_multi_ref_group_payload(intent_en, png_refs)
+            return await generate_openrouter_image(
+                settings,
+                model=slug,
+                prompt=str(payload["prompt"]),
+                aspect_ratio=aspect_ratio,
+                input_references=payload["input_references"],
+                timeout_sec=timeout_sec,
+            )
+        except ExternalApiError as exc:
+            last_exc = exc
+            if idx + 1 < len(candidates):
+                logger.warning(
+                    "openrouter multi-ref group model %s failed (%s), trying %s",
+                    slug,
+                    exc,
+                    candidates[idx + 1],
+                )
+                continue
+            raise
+    if last_exc is not None:
+        raise last_exc
+    raise ExternalApiError("OpenRouter", "no multi-ref group model candidates")
 
 
 def is_nano_banano_stack(model: str) -> bool:

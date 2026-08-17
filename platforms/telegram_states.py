@@ -85,3 +85,10 @@ class OneCAuditingStates(StatesGroup):
     """Ожидание выгрузки 1С / МойСклад."""
 
     wait_for_xlsx = State()
+
+
+class GroupGenerationStates(StatesGroup):
+    """Многореференсная групповая генерация (до 10 лиц, Nano Banana Pro)."""
+
+    WAIT_ALBUM_OR_PHOTOS = State()
+    WAIT_GROUP_PROMPT = State()

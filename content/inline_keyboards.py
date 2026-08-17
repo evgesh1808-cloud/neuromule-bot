@@ -43,6 +43,22 @@ def result_format_submenu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def group_photo_collector_keyboard(*, can_generate: bool) -> InlineKeyboardMarkup:
+    """Клавиатура сборщика группового фото (GPTron-style)."""
+    generate_btn = InlineKeyboardButton(
+        text=msg.BTN_GROUP_PHOTO_GENERATE,
+        callback_data=msg.CB_GROUP_PHOTO_GENERATE if can_generate else "grp_photo_gen_locked",
+    )
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [generate_btn],
+            [InlineKeyboardButton(text=msg.BTN_GROUP_PHOTO_PROMPT, callback_data=msg.CB_GROUP_PHOTO_PROMPT)],
+            [InlineKeyboardButton(text=msg.BTN_GROUP_PHOTO_CLEAR, callback_data=msg.CB_GROUP_PHOTO_CLEAR)],
+            [InlineKeyboardButton(text=msg.BTN_GROUP_PHOTO_CANCEL, callback_data=msg.CB_GROUP_PHOTO_CANCEL)],
+        ]
+    )
+
+
 def result_photo_keyboard(
     task_id: str | None = None,
     *,

@@ -64,6 +64,7 @@ from services.openrouter_images import (
     OPENROUTER_NANO_BANANA2_MODEL,
     OPENROUTER_NANO_BANANA_PRO_MODEL,
     generate_openrouter_composite_photo,
+    generate_openrouter_multi_ref_group_photo,
     generate_openrouter_photo,
     openrouter_images_configured,
     resolve_composite_refine_model_key,
@@ -125,6 +126,8 @@ class GenTask:
     composite_base_file_id: str | None = None
     composite_base_reference_url: str | None = None
     composite_base_reference_bytes: bytes | None = None
+    group_multi_ref: bool = False
+    group_ref_file_ids: tuple[str, ...] = ()
 
     @property
     def kind(self) -> JobKind:
@@ -658,6 +661,40 @@ async def _generate_openrouter_composite_photo_model(
     )
 
 
+async def _generate_openrouter_multi_ref_group_model(
+    model_key: str,
+    prompt: str,
+    *,
+    aspect_ratio: str = "1:1",
+    bot: "Bot | None" = None,
+    group_ref_file_ids: tuple[str, ...] = (),
+) -> GeminiImageResult:
+    if not openrouter_images_configured(app_settings):
+        raise ExternalApiError("OpenRouter", "OPENROUTER_API_KEY не задан")
+
+    refs = tuple((fid or "").strip() for fid in group_ref_file_ids if (fid or "").strip())
+    if len(refs) < 2:
+        raise ExternalApiError("OpenRouter", "group multi-ref requires at least 2 references")
+
+    or_model = OPENROUTER_NANO_BANANA_PRO_MODEL
+    data_urls: list[str] = []
+    for file_id in refs:
+        data_urls.append(
+            await resolve_reference_to_png_data_url(
+                bot=bot,
+                file_id=file_id,
+            )
+        )
+    return await generate_openrouter_multi_ref_group_photo(
+        app_settings,
+        model=or_model,
+        user_prompt=prompt,
+        reference_image_data_urls=data_urls,
+        aspect_ratio=openrouter_aspect_ratio(aspect_ratio),
+        timeout_sec=float(EXTERNAL_API_TIMEOUT_SEC),
+    )
+
+
 async def _generate_openrouter_photo_model(
     model: str,
     prompt: str,
@@ -702,9 +739,25 @@ async def _generate_photo_result(
     composite_base_reference_url: str | None = None,
     composite_base_reference_bytes: bytes | None = None,
     composite_base_reference_mime: str = "image/jpeg",
+    group_multi_ref: bool = False,
+    group_ref_file_ids: tuple[str, ...] = (),
 ) -> GeminiImageResult | str:
     """Возвращает GeminiImageResult (url/bytes) или прямой URL строки."""
     ar = normalize_photo_aspect_ratio(aspect_ratio)
+
+    if group_multi_ref:
+        logger.info(
+            "group multi-ref routing: model=%s refs=%s",
+            model_key,
+            len(group_ref_file_ids),
+        )
+        return await _generate_openrouter_multi_ref_group_model(
+            model_key,
+            prompt,
+            aspect_ratio=ar,
+            bot=bot,
+            group_ref_file_ids=group_ref_file_ids,
+        )
 
     if composite_refine:
         composite_key = resolve_composite_refine_model_key(model_key)
@@ -959,7 +1012,7 @@ async def _photo_stub_worker(task: GenTask) -> None:
                 raw: GeminiImageResult | str | None = None
 
                 try:
-                    if is_free and not task.composite_refine:
+                    if is_free and not task.composite_refine and not task.group_multi_ref:
                         async with asyncio.timeout(FREE_PHOTO_HARD_TIMEOUT_SEC):
                             raw = await _generate_free_tier_photo(
                                 user_prompt,
@@ -985,6 +1038,8 @@ async def _photo_stub_worker(task: GenTask) -> None:
                             composite_base_reference_url=task.composite_base_reference_url,
                             composite_base_reference_bytes=task.composite_base_reference_bytes,
                             composite_base_reference_mime=task.reference_mime,
+                            group_multi_ref=task.group_multi_ref,
+                            group_ref_file_ids=task.group_ref_file_ids,
                         )
                 except TimeoutError as err:
                     logger.error(
@@ -1026,12 +1081,16 @@ async def _photo_stub_worker(task: GenTask) -> None:
             exc,
         )
         fail_msg = (
-            msg.TXT_PHOTO_COMPOSITE_FAILED
-            if task.composite_refine
+            msg.TXT_GROUP_PHOTO_API_FAILED.format(refs_count=len(task.group_ref_file_ids))
+            if task.group_multi_ref
             else (
-                msg.TXT_FREE_IMAGE_CASCADE_FAILED
-                if is_free
-                else msg.TXT_GEN_JOB_FAILED
+                msg.TXT_PHOTO_COMPOSITE_API_FAILED
+                if task.composite_refine
+                else (
+                    msg.TXT_FREE_IMAGE_CASCADE_FAILED
+                    if is_free
+                    else msg.TXT_GEN_JOB_FAILED
+                )
             )
         )
         await fail_generation_task(
@@ -1392,6 +1451,8 @@ def fire_photo_job(
     composite_base_file_id: str | None = None,
     composite_base_reference_url: str | None = None,
     composite_base_reference_bytes: bytes | None = None,
+    group_multi_ref: bool = False,
+    group_ref_file_ids: tuple[str, ...] | list[str] | None = None,
 ) -> None:
     ref_url = (reference_image_url or "").strip() or None
     ref_bytes: bytes | None = None
@@ -1409,6 +1470,11 @@ def fire_photo_job(
             base_bytes = None
     else:
         base_bytes = None
+    group_refs = tuple(
+        (fid or "").strip()
+        for fid in (group_ref_file_ids or ())
+        if (fid or "").strip()
+    )
     seed = generation_seed if generation_seed is not None else random.randint(1, 2_000_000_000)
     cleanup_ids = tuple(int(x) for x in (cleanup_message_ids or ()) if x)
     _enqueue(
@@ -1438,6 +1504,8 @@ def fire_photo_job(
             composite_base_file_id=(composite_base_file_id or "").strip() or None,
             composite_base_reference_url=(composite_base_reference_url or "").strip() or None,
             composite_base_reference_bytes=base_bytes,
+            group_multi_ref=group_multi_ref,
+            group_ref_file_ids=group_refs,
         ),
     )
 
