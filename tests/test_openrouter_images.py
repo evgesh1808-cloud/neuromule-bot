@@ -346,6 +346,25 @@ def test_build_composite_refine_prompt_dual_refs_and_intent() -> None:
     assert refs[1]["image_url"]["url"] == object_url
 
 
+def test_build_composite_refine_prompt_mirror_suffix() -> None:
+    payload = build_composite_refine_prompt(
+        "покажи второе фото как отражение в зеркале",
+        base_image_url="data:image/png;base64,base123",
+        object_image_url="data:image/png;base64,object456",
+    )
+    assert "MIRROR PLACEMENT" in payload["prompt"]
+
+
+def test_build_composite_refine_prompt_child_print_suffix() -> None:
+    payload = build_composite_refine_prompt(
+        "перенеси маленькую меня на футболку как принт",
+        base_image_url="data:image/png;base64,base123",
+        object_image_url="data:image/png;base64,object456",
+    )
+    assert "PHOTO PRINT PLACEMENT" in payload["prompt"]
+    assert "younger/child" in payload["prompt"]
+
+
 def test_resolve_composite_refine_model_key_routes_multi_image_stacks() -> None:
     assert resolve_composite_refine_model_key("nano_banana_pro") == OPENROUTER_NANO_BANANA_PRO_MODEL
     assert resolve_composite_refine_model_key("dalle_3") == OPENROUTER_GPT_IMAGE2_MODEL

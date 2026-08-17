@@ -168,16 +168,30 @@ COMPOSITE_REFINE_PROMPT_TEMPLATE = (
     "precise body pose, framing, and background environment. DO NOT alter, age, or change "
     "the person's face or the background from Image 1.\n\n"
     "Image 2 (Object & Graphic Reference Only): Use this image STRICTLY as a visual graphic, "
-    "logo, or photo print to be embedded or placed onto the clothing (e.g., t-shirt) or "
-    "environment of the person from Image 1. Do not blend, morph, or inject the facial "
-    "features, age, or identity of Image 2 into the main character.\n\n"
+    "photo print, logo, or mirror reflection element — NOT as a second living person standing "
+    "in the scene. Image 2 may be a photograph (including a younger/child version of the same "
+    "person) to print on clothing, or to show as a realistic mirror/glass reflection. "
+    "Do not blend, morph, or inject the facial features, age, or identity of Image 2 into "
+    "the main character's face in Image 1.\n\n"
     "User Modification Request: {user_intent}"
 )
 
 COMPOSITE_REFINE_NEGATIVE_PROMPT = (
     "changing main facial identity, blending image 2 features into the face, "
     "altering background of image 1, shifting body pose, changing character proportions, "
-    "deforming the graphic print"
+    "deforming the graphic print, second person standing next to subject, age morphing"
+)
+
+COMPOSITE_MIRROR_PLACEMENT_SUFFIX = (
+    "\n\nMIRROR PLACEMENT (mandatory when requested): Image 2 must appear ONLY as a realistic "
+    "mirror or glass reflection, preserving Image 2 subject age and appearance exactly. "
+    "The reflection must not replace or alter the main person in Image 1."
+)
+
+COMPOSITE_PHOTO_PRINT_PLACEMENT_SUFFIX = (
+    "\n\nPHOTO PRINT PLACEMENT (mandatory when requested): Image 2 must appear as a flat "
+    "photographic print on fabric (natural folds and perspective) — including a younger/child "
+    "photo of the same person — not as a second living person in the scene."
 )
 
 COMPOSITE_REFINE_FALLBACKS: tuple[str, ...] = (
@@ -308,6 +322,15 @@ def build_composite_refine_prompt(
 
     intent = (user_intent or DEFAULT_PHOTO_USER_INTENT).strip()
     prompt = COMPOSITE_REFINE_PROMPT_TEMPLATE.format(user_intent=intent)
+    from services.photo_multi_ref_routing import (
+        is_composite_print_intent,
+        is_mirror_reflection_intent,
+    )
+
+    if is_mirror_reflection_intent(intent):
+        prompt = f"{prompt}{COMPOSITE_MIRROR_PLACEMENT_SUFFIX}"
+    elif is_composite_print_intent(intent):
+        prompt = f"{prompt}{COMPOSITE_PHOTO_PRINT_PLACEMENT_SUFFIX}"
     prompt = append_negative_prompt_directive(
         prompt,
         negative=COMPOSITE_REFINE_NEGATIVE_PROMPT,

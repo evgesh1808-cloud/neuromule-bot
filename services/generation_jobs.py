@@ -766,20 +766,39 @@ async def _generate_photo_result(
             model_key,
             composite_key,
         )
-        return await _generate_openrouter_composite_photo_model(
-            model_key,
-            prompt,
-            aspect_ratio=ar,
-            bot=bot,
-            object_file_id=file_id,
-            object_reference_url=reference_image_url,
-            object_reference_bytes=reference_image_bytes,
-            object_reference_mime=reference_mime,
-            base_file_id=composite_base_file_id,
-            base_reference_url=composite_base_reference_url,
-            base_reference_bytes=composite_base_reference_bytes,
-            base_reference_mime=composite_base_reference_mime,
-        )
+        try:
+            return await _generate_openrouter_composite_photo_model(
+                model_key,
+                prompt,
+                aspect_ratio=ar,
+                bot=bot,
+                object_file_id=file_id,
+                object_reference_url=reference_image_url,
+                object_reference_bytes=reference_image_bytes,
+                object_reference_mime=reference_mime,
+                base_file_id=composite_base_file_id,
+                base_reference_url=composite_base_reference_url,
+                base_reference_bytes=composite_base_reference_bytes,
+                base_reference_mime=composite_base_reference_mime,
+            )
+        except ExternalApiError as exc:
+            from services.photo_multi_ref_routing import is_composite_print_intent
+
+            base_id = (composite_base_file_id or "").strip()
+            object_id = (file_id or "").strip()
+            if is_composite_print_intent(prompt) or not base_id or not object_id:
+                raise
+            logger.warning(
+                "composite failed for group-like prompt, retrying as multi-ref group: %s",
+                exc,
+            )
+            return await _generate_openrouter_multi_ref_group_model(
+                model_key,
+                prompt,
+                aspect_ratio=ar,
+                bot=bot,
+                group_ref_file_ids=(base_id, object_id),
+            )
 
     has_reference = _photo_has_reference(file_id, reference_image_url, reference_image_bytes)
     model_key = resolve_smart_photo_model_key(

@@ -262,6 +262,36 @@ async def _dispatch_composite_photo_message(
     )
 
 
+async def _dispatch_group_multi_ref_photo_message(
+    message: Message,
+    state: FSMContext,
+    *,
+    ref_file_ids: list[str],
+    prompt: str,
+    model_id: str,
+    label: str,
+    aspect: str,
+) -> None:
+    from services.photo_multi_ref_routing import MAX_GROUP_REFS
+
+    refs = [(fid or "").strip() for fid in ref_file_ids if (fid or "").strip()][:MAX_GROUP_REFS]
+    await state.update_data(
+        pending_reference_file_id=None,
+        pending_object_file_id=None,
+        refine_from_result=None,
+    )
+    await process_photo_prompt_message(
+        message,
+        state,
+        model_id=model_id,
+        label=label,
+        prompt=prompt,
+        aspect_ratio=aspect,
+        group_multi_ref=True,
+        group_ref_file_ids=refs,
+    )
+
+
 async def _try_dispatch_composite_from_context(
     message: Message,
     state: FSMContext,
@@ -392,7 +422,13 @@ async def _dispatch_photo_album_message(
     state: FSMContext,
     album_messages: list[Message],
 ) -> bool:
-    """Альбом: composite (2 фото + подпись) или отказ в refine."""
+    """Альбом: group multi-ref, composite (2 фото + print) или отказ в refine."""
+    from services.photo_multi_ref_routing import (
+        MAX_GROUP_REFS,
+        should_route_album_as_composite,
+        should_route_album_as_group,
+    )
+
     entries = _album_image_entries(album_messages)
     file_ids = [fid for fid, _ in entries]
     caption = _album_caption(album_messages)
@@ -413,7 +449,19 @@ async def _dispatch_photo_album_message(
             return True
         return await _dispatch_photo_reference_message(message, state)
 
-    if len(file_ids) == 2 and caption:
+    if should_route_album_as_group(num_refs=len(file_ids), prompt=caption):
+        await _dispatch_group_multi_ref_photo_message(
+            message,
+            state,
+            ref_file_ids=file_ids[:MAX_GROUP_REFS],
+            prompt=caption,
+            model_id=model_id,
+            label=label,
+            aspect=aspect,
+        )
+        return True
+
+    if should_route_album_as_composite(num_refs=len(file_ids), prompt=caption):
         await _dispatch_composite_photo_message(
             message,
             state,
@@ -442,7 +490,18 @@ async def _dispatch_photo_album_message(
         return True
 
     if len(file_ids) > 2:
-        await message.answer(msg.TXT_PHOTO_ALBUM_TOO_MANY, parse_mode=ParseMode.HTML)
+        if caption:
+            await _dispatch_group_multi_ref_photo_message(
+                message,
+                state,
+                ref_file_ids=file_ids[:MAX_GROUP_REFS],
+                prompt=caption,
+                model_id=model_id,
+                label=label,
+                aspect=aspect,
+            )
+        else:
+            await message.answer(msg.TXT_PHOTO_ALBUM_GROUP_HINT, parse_mode=ParseMode.HTML)
         return True
 
     return await _dispatch_photo_reference_message(message, state)
@@ -657,6 +716,8 @@ async def process_photo_prompt_message(
     composite_base_reference_url: str | None = None,
     composite_base_reference_bytes: bytes | None = None,
     composite_base_reference_mime: str = "image/jpeg",
+    group_multi_ref: bool = False,
+    group_ref_file_ids: list[str] | None = None,
 ) -> None:
     from platforms.image_menu_flow import normalize_image_prompt_text
     from platforms.telegram_throttling import clear_photo_flow, mark_photo_flow
@@ -672,7 +733,7 @@ async def process_photo_prompt_message(
 
     mark_photo_flow(user_id)
 
-    if not body and not telegram_file_id and not composite_refine:
+    if not body and not telegram_file_id and not composite_refine and not group_multi_ref:
         await message.answer(msg.TXT_CREATE_IMAGE_AFTER_MODEL)
         return
 
@@ -709,6 +770,8 @@ async def process_photo_prompt_message(
                     composite_base_file_id=composite_base_file_id,
                     composite_base_reference_url=composite_base_reference_url,
                     composite_base_reference_bytes=composite_base_reference_bytes,
+                    group_multi_ref=group_multi_ref,
+                    group_ref_file_ids=group_ref_file_ids,
                 )
     except ValueError as exc:
         logger.warning("photo prompt: invalid reference wiring uid=%s: %s", user_id, exc)
@@ -827,6 +890,8 @@ async def process_photo_prompt_message(
         composite_base_file_id=eq.composite_base_file_id,
         composite_base_reference_url=eq.composite_base_reference_url,
         composite_base_reference_bytes=eq.composite_base_reference_bytes,
+        group_multi_ref=eq.group_multi_ref,
+        group_ref_file_ids=eq.group_ref_file_ids,
     )
     if pr.vip_priority:
         await message.answer(msg.TXT_GEN_STATUS_VIP)
@@ -935,6 +1000,8 @@ async def photo_process(message: Message, state: FSMContext) -> None:
         and prompt
         and not refine_from_result
     ):
+        from services.photo_multi_ref_routing import should_route_album_as_composite
+
         aspect, prompt, aspect_changed = await resolve_photo_edit_prompt(
             prompt,
             current_aspect=aspect,
@@ -942,18 +1009,30 @@ async def photo_process(message: Message, state: FSMContext) -> None:
         if aspect_changed and message.from_user is not None:
             await state.update_data(image_aspect_ratio=aspect)
 
-        dispatched = await _try_dispatch_composite_from_context(
+        if should_route_album_as_composite(num_refs=2, prompt=prompt):
+            dispatched = await _try_dispatch_composite_from_context(
+                message,
+                state,
+                object_file_id=pending_object_id,
+                prompt=prompt,
+                model_id=str(model_id),
+                label=str(label),
+                aspect=aspect,
+            )
+            if dispatched:
+                return
+            await message.answer(msg.TXT_PHOTO_COMPOSITE_FAILED, parse_mode=ParseMode.HTML)
+            return
+
+        await _dispatch_group_multi_ref_photo_message(
             message,
             state,
-            object_file_id=pending_object_id,
+            ref_file_ids=[pending_file_id, pending_object_id],
             prompt=prompt,
             model_id=str(model_id),
             label=str(label),
             aspect=aspect,
         )
-        if dispatched:
-            return
-        await message.answer(msg.TXT_PHOTO_COMPOSITE_FAILED, parse_mode=ParseMode.HTML)
         return
 
     if refine_from_result and pending_object_id and prompt:
