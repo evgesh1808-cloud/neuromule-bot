@@ -407,3 +407,97 @@ async def test_dispatch_composite_refine_photo_uses_session_base_and_upload_obje
     assert proc.await_args.kwargs["composite_base_file_id"] == "AgAC_base"
     assert proc.await_args.kwargs["prompt"] == "put this on my t-shirt"
     reset_photo_edit_sessions_for_tests()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_dual_initial_upload_uses_pending_base_as_image1() -> None:
+    """Первое фото без подписи + второе с подписью → composite без сессии доработки."""
+    from platforms.handlers import generation_fsm
+
+    message_photo = MagicMock()
+    message_photo.from_user.id = 77
+    message_photo.chat.id = 77
+    message_photo.photo = [MagicMock(file_id="AgAC_print")]
+    message_photo.document = None
+    message_photo.caption = "надеть принт на футболку"
+
+    state = MagicMock()
+    state.get_data = AsyncMock(
+        return_value={
+            "image_model_id": "nano_banana_pro",
+            "image_model_label": "Nano Pro",
+            "image_aspect_ratio": "1:1",
+            "pending_reference_file_id": "AgAC_person",
+        }
+    )
+    state.update_data = AsyncMock()
+    state.set_state = AsyncMock()
+
+    with patch.object(
+        generation_fsm,
+        "_photo_reference_from_message",
+        return_value=("AgAC_print", "надеть принт на футболку"),
+    ), patch.object(
+        generation_fsm,
+        "process_photo_prompt_message",
+        new_callable=AsyncMock,
+    ) as proc:
+        handled = await generation_fsm._dispatch_photo_reference_message(
+            message_photo,
+            state,
+        )
+
+    assert handled is True
+    proc.assert_awaited_once()
+    assert proc.await_args.kwargs["composite_refine"] is True
+    assert proc.await_args.kwargs["telegram_file_id"] == "AgAC_print"
+    assert proc.await_args.kwargs["composite_base_file_id"] == "AgAC_person"
+
+
+@pytest.mark.asyncio
+async def test_refine_composite_failure_does_not_fallback_to_single_i2i() -> None:
+    """Сессия доработки пропала — не подменяем composite одним рефом."""
+    from platforms.handlers import generation_fsm
+    from services.photo_edit_session import reset_photo_edit_sessions_for_tests
+
+    reset_photo_edit_sessions_for_tests()
+
+    message_photo = MagicMock()
+    message_photo.from_user.id = 88
+    message_photo.chat.id = 88
+    message_photo.photo = [MagicMock(file_id="AgAC_object")]
+    message_photo.document = None
+    message_photo.caption = "принт на футболку"
+    message_photo.answer = AsyncMock()
+
+    state = MagicMock()
+    state.get_data = AsyncMock(
+        return_value={
+            "image_model_id": "nano_banana_pro",
+            "image_model_label": "Nano Pro",
+            "image_aspect_ratio": "1:1",
+            "refine_from_result": True,
+        }
+    )
+    state.update_data = AsyncMock()
+    state.set_state = AsyncMock()
+
+    with patch.object(
+        generation_fsm,
+        "_photo_reference_from_message",
+        return_value=("AgAC_object", "принт на футболку"),
+    ), patch.object(
+        generation_fsm,
+        "process_photo_prompt_message",
+        new_callable=AsyncMock,
+    ) as proc:
+        handled = await generation_fsm._dispatch_photo_reference_message(
+            message_photo,
+            state,
+        )
+
+    assert handled is True
+    proc.assert_not_called()
+    message_photo.answer.assert_awaited_once()
+    assert "двух фото" in message_photo.answer.await_args.args[0].lower()
+    reset_photo_edit_sessions_for_tests()

@@ -111,3 +111,47 @@ async def test_text_only_still_triggers_t2i() -> None:
         prompt="red apple on table",
         aspect_ratio="1:1",
     )
+
+
+@pytest.mark.asyncio
+async def test_pending_person_then_print_text_triggers_composite() -> None:
+    """Фото человека → фото принта без подписи → текст = composite refine."""
+    from platforms.handlers import generation_fsm
+    from services.photo_edit_session import reset_photo_edit_sessions_for_tests, save_photo_edit_session
+
+    reset_photo_edit_sessions_for_tests()
+    save_photo_edit_session(
+        99,
+        image_model_id="nano_banana_pro",
+        image_model_label="Nano Pro",
+        aspect_ratio="1:1",
+        telegram_file_id="AgAC_result",
+        user_prompt="portrait",
+    )
+
+    message = MagicMock()
+    message.text = "надеть принт на футболку"
+    message.from_user.id = 99
+    message.chat.id = 99
+    message.answer = AsyncMock()
+
+    state = MagicMock()
+    state.get_data = AsyncMock(
+        return_value={
+            "image_model_id": "nano_banana_pro",
+            "image_model_label": "Nano Pro",
+            "image_aspect_ratio": "1:1",
+            "refine_from_result": True,
+            "pending_object_file_id": "AgAC_print",
+        }
+    )
+    state.update_data = AsyncMock()
+
+    with patch.object(generation_fsm, "process_photo_prompt_message", new_callable=AsyncMock) as proc:
+        await generation_fsm.photo_process(message, state)
+
+    proc.assert_awaited_once()
+    assert proc.await_args.kwargs["composite_refine"] is True
+    assert proc.await_args.kwargs["telegram_file_id"] == "AgAC_print"
+    assert proc.await_args.kwargs["composite_base_file_id"] == "AgAC_result"
+    reset_photo_edit_sessions_for_tests()
