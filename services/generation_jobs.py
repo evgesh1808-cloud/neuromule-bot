@@ -54,7 +54,7 @@ from services.photo_edit_session import persist_photo_edit_session, save_photo_e
 from services.billing.image_pipeline import FREE_PHOTO_MODEL_KEY, free_tier_image_model
 from services.free_image_cascade import FreeImageCascadeExhausted, generate_free_tier_image
 from services.openrouter_images import (
-    COMPOSITE_REFINE_FALLBACKS,
+    resolve_composite_refine_fallbacks,
     GPT_IMAGE2_FALLBACKS,
     NANO_BANANO2_FALLBACKS,
     NANO_BANANO_PRO_FALLBACKS,
@@ -652,11 +652,12 @@ async def _generate_openrouter_composite_photo_model(
     return await generate_openrouter_composite_photo(
         app_settings,
         model=or_model,
+        model_key=model_key,
         user_prompt=prompt,
         base_image_data_url=base_data_url,
         object_image_data_url=object_data_url,
         aspect_ratio=openrouter_aspect_ratio(aspect_ratio),
-        fallback_models=COMPOSITE_REFINE_FALLBACKS,
+        fallback_models=resolve_composite_refine_fallbacks(model_key),
         timeout_sec=float(EXTERNAL_API_TIMEOUT_SEC),
     )
 

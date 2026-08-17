@@ -29,6 +29,7 @@ from services.openrouter_images import (
     prepend_selfie_woman_prompt,
     reference_url_to_data_url,
     reference_url_to_png_data_url,
+    resolve_composite_refine_fallbacks,
     resolve_composite_refine_model_key,
     resolve_openrouter_photo_prompt_and_refs,
 )
@@ -393,10 +394,18 @@ def test_build_minimal_child_print_composite_intent() -> None:
     assert "tiara" in text
 
 
-def test_resolve_composite_refine_model_key_routes_multi_image_stacks() -> None:
+def test_resolve_composite_refine_model_key_uses_selected_menu_model() -> None:
     assert resolve_composite_refine_model_key("nano_banana_pro") == OPENROUTER_NANO_BANANA_PRO_MODEL
     assert resolve_composite_refine_model_key("dalle_3") == OPENROUTER_GPT_IMAGE2_MODEL
-    assert resolve_composite_refine_model_key("flux_schnell") == OPENROUTER_NANO_BANANA_PRO_MODEL
+    assert resolve_composite_refine_model_key("flux_schnell") == OPENROUTER_FLUX_PAID_MODEL
+    assert resolve_composite_refine_model_key("nano_banana2") == OPENROUTER_NANO_BANANA2_MODEL
+
+
+def test_resolve_composite_refine_fallbacks_respects_primary_model() -> None:
+    flux_primary = resolve_composite_refine_model_key("flux_schnell")
+    flux_fb = resolve_composite_refine_fallbacks("flux_schnell")
+    assert flux_primary not in flux_fb
+    assert OPENROUTER_GPT_IMAGE2_MODEL in flux_fb or OPENROUTER_NANO_BANANA_PRO_MODEL in flux_fb
 
 
 @pytest.mark.asyncio

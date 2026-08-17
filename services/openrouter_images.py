@@ -266,10 +266,6 @@ MULTI_REF_GROUP_NEGATIVE_PROMPT = (
 
 MULTI_REF_GROUP_FALLBACKS: tuple[str, ...] = NANO_BANANO_PRO_FALLBACKS
 
-COMPOSITE_REFINE_MENU_KEYS: frozenset[str] = frozenset(
-    {"dalle_3", "nano_banana2", "nano_banana_pro"}
-)
-
 GOOGLE_IDENTITY_LOCK = (
     "Maintain the exact same facial identity as the reference: identical eye shape, "
     "nose bridge, jawline, lip proportions, skin tone, and apparent age. "
@@ -359,12 +355,70 @@ def resolve_openrouter_model_for_menu_key(model_key: str) -> str:
     return slug
 
 
+def _dedupe_model_slugs(*chains: tuple[str, ...]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for chain in chains:
+        for slug in chain:
+            s = (slug or "").strip()
+            if s and s not in seen:
+                seen.add(s)
+                out.append(s)
+    return tuple(out)
+
+
 def resolve_composite_refine_model_key(model_key: str) -> str:
-    """Multi-image composite → Nano / GPT / Gemini stacks."""
+    """Dual-reference composite → OpenRouter stack выбранной модели меню."""
     normalized = (model_key or "").strip().lower().replace("-", "_")
-    if normalized in COMPOSITE_REFINE_MENU_KEYS:
+    if normalized in OPENROUTER_MODEL_BY_MENU_KEY:
         return resolve_openrouter_model_for_menu_key(normalized)
     return OPENROUTER_NANO_BANANA_PRO_MODEL
+
+
+def resolve_composite_refine_fallbacks(model_key: str) -> tuple[str, ...]:
+    """Fallback-цепочка composite после primary slug (без дубликата primary)."""
+    normalized = (model_key or "").strip().lower().replace("-", "_")
+    primary = resolve_composite_refine_model_key(normalized)
+    if normalized == "flux_schnell":
+        chain = _dedupe_model_slugs(
+            OPENROUTER_FLUX_STACK_FALLBACKS,
+            GPT_IMAGE2_FALLBACKS,
+            (OPENROUTER_NANO_BANANA_PRO_MODEL, OPENROUTER_NANO_BANANA2_MODEL),
+            COMPOSITE_REFINE_FALLBACKS,
+        )
+    elif normalized == "dalle_3":
+        chain = _dedupe_model_slugs(
+            GPT_IMAGE2_FALLBACKS,
+            (OPENROUTER_NANO_BANANA_PRO_MODEL, OPENROUTER_NANO_BANANA2_MODEL),
+            COMPOSITE_REFINE_FALLBACKS,
+        )
+    elif normalized == "nano_banana2":
+        chain = _dedupe_model_slugs(
+            NANO_BANANO2_FALLBACKS,
+            (OPENROUTER_GPT_IMAGE2_MODEL, OPENROUTER_NANO_BANANA_PRO_MODEL),
+            COMPOSITE_REFINE_FALLBACKS,
+        )
+    elif normalized == "nano_banana_pro":
+        chain = _dedupe_model_slugs(
+            NANO_BANANO_PRO_FALLBACKS,
+            (OPENROUTER_GPT_IMAGE2_MODEL, OPENROUTER_NANO_BANANA2_MODEL),
+            COMPOSITE_REFINE_FALLBACKS,
+        )
+    else:
+        chain = COMPOSITE_REFINE_FALLBACKS
+    return tuple(slug for slug in chain if slug != primary)
+
+
+def resolve_creative_composite_fallbacks(model_key: str) -> tuple[str, ...]:
+    """Fallback для creative composite (длинный scene + 2 фото)."""
+    normalized = (model_key or "").strip().lower().replace("-", "_")
+    primary = resolve_composite_refine_model_key(normalized)
+    chain = _dedupe_model_slugs(
+        resolve_composite_refine_fallbacks(normalized),
+        CREATIVE_COMPOSITE_FALLBACKS,
+        (OPENROUTER_FLUX_PAID_MODEL, *OPENROUTER_FLUX_STACK_FALLBACKS),
+    )
+    return tuple(slug for slug in chain if slug != primary)
 
 
 def should_use_creative_composite_template(user_intent: str) -> bool:
@@ -531,14 +585,21 @@ async def generate_openrouter_composite_photo(
     base_image_data_url: str,
     object_image_data_url: str,
     aspect_ratio: str = "1:1",
-    fallback_models: tuple[str, ...] = COMPOSITE_REFINE_FALLBACKS,
+    model_key: str | None = None,
+    fallback_models: tuple[str, ...] | None = None,
     timeout_sec: float = DEFAULT_OPENROUTER_IMAGES_TIMEOUT_SEC,
 ) -> GeminiImageResult:
     """Dual-reference composite refine via OpenRouter Images API."""
+    menu_key = (model_key or "").strip().lower().replace("-", "_")
     intent_en, creative_scene = await prepare_composite_user_intent(settings, user_prompt)
     base_png = resize_png_data_url_for_api(await ensure_png_reference_data_url(base_image_data_url))
     object_png = resize_png_data_url_for_api(await ensure_png_reference_data_url(object_image_data_url))
-    fallbacks = CREATIVE_COMPOSITE_FALLBACKS if creative_scene else fallback_models
+    base_fallbacks = fallback_models or resolve_composite_refine_fallbacks(menu_key)
+    fallbacks = (
+        resolve_creative_composite_fallbacks(menu_key)
+        if creative_scene
+        else base_fallbacks
+    )
 
     async def _attempt(intent: str, *, creative: bool, models: tuple[str, ...]) -> GeminiImageResult:
         last_exc: ExternalApiError | None = None
@@ -588,7 +649,7 @@ async def generate_openrouter_composite_photo(
             return await _attempt(
                 minimal,
                 creative=True,
-                models=(OPENROUTER_NANO_BANANA_PRO_MODEL, OPENROUTER_GPT_IMAGE2_MODEL),
+                models=resolve_creative_composite_fallbacks(menu_key),
             )
         except ExternalApiError:
             raise first_exc from None
