@@ -68,8 +68,30 @@ _COMPOSITE_SAME_PERSON_VARIANT_KEYWORDS: tuple[str, ...] = (
     "past self",
 )
 
+# Явный групповой портрет (2 человека в кадре) — не composite «лицо + принт».
+_GROUP_PORTRAIT_KEYWORDS: tuple[str, ...] = (
+    "вместе",
+    "рядом",
+    "семейн",
+    "family photo",
+    "group photo",
+    "group portrait",
+    "все вместе",
+    "оба человека",
+    "двое",
+    "стоят в ряд",
+    "улыбаются в камеру",
+    "together",
+    "side by side",
+)
+
 MIN_GROUP_REFS = 2
 MAX_GROUP_REFS = 10
+
+
+def is_group_portrait_intent(prompt: str) -> bool:
+    low = (prompt or "").strip().lower()
+    return any(keyword in low for keyword in _GROUP_PORTRAIT_KEYWORDS)
 
 
 def is_mirror_reflection_intent(prompt: str) -> bool:
@@ -111,14 +133,25 @@ def is_composite_print_intent(prompt: str) -> bool:
 
 
 def should_route_album_as_composite(*, num_refs: int, prompt: str) -> bool:
-    """Ровно 2 фото + composite-intent → dual composite refine."""
-    return num_refs == 2 and bool((prompt or "").strip()) and is_composite_print_intent(prompt)
+    """Ровно 2 фото + промпт → dual composite (лицо + принт/сцена)."""
+    text = (prompt or "").strip()
+    if num_refs != 2 or not text:
+        return False
+    if is_composite_print_intent(text):
+        return True
+    if is_group_portrait_intent(text):
+        return False
+    from services.openrouter_images import should_use_creative_composite_template
+
+    return should_use_creative_composite_template(text)
 
 
 def should_route_album_as_group(*, num_refs: int, prompt: str) -> bool:
-    """2–10 фото + промпт без composite-intent → group multi-ref (Nano Banana Pro)."""
+    """3–10 фото или 2 фото с явным group-intent → group multi-ref."""
     if not (prompt or "").strip():
         return False
     if num_refs < MIN_GROUP_REFS or num_refs > MAX_GROUP_REFS:
         return False
-    return not is_composite_print_intent(prompt)
+    if should_route_album_as_composite(num_refs=num_refs, prompt=prompt):
+        return False
+    return True

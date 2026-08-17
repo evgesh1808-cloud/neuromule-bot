@@ -585,6 +585,89 @@ async def resolve_reference_to_png_data_url(
     return await ensure_png_reference_data_url(resolved)
 
 
+async def gemini_image_result_to_png_data_url(
+    settings: Settings,
+    result: GeminiImageResult,
+) -> str:
+    """URL/bytes из OR Images → PNG data-URL для следующего шага composite."""
+    if result.data:
+        encoded = base64.b64encode(result.data).decode("ascii")
+        return f"data:image/png;base64,{encoded}"
+    url = (result.url or "").strip()
+    if not url:
+        raise ExternalApiError("OpenRouter", "empty image result for composite step")
+    return await ensure_png_reference_data_url(url)
+
+
+COMPOSITE_TWO_STEP_SCENE_MODELS: tuple[str, ...] = (
+    OPENROUTER_NANO_BANANA_PRO_MODEL,
+    OPENROUTER_GPT_IMAGE2_MODEL,
+    OPENROUTER_NANO_BANANA2_MODEL,
+)
+
+COMPOSITE_TWO_STEP_PRINT_MODELS: tuple[str, ...] = (
+    OPENROUTER_GPT_IMAGE2_MODEL,
+    OPENROUTER_NANO_BANANA_PRO_MODEL,
+    OPENROUTER_NANO_BANANA2_MODEL,
+)
+
+
+async def _composite_two_step_scene_then_print(
+    settings: Settings,
+    *,
+    user_prompt: str,
+    base_png: str,
+    object_png: str,
+    aspect_ratio: str,
+    intent_en: str,
+    timeout_sec: float,
+) -> GeminiImageResult:
+    """Fallback: Image 1 → новая сцена, затем Image 2 как принт на результат."""
+    last_exc: ExternalApiError | None = None
+    scene_png: str | None = None
+    for slug in COMPOSITE_TWO_STEP_SCENE_MODELS:
+        try:
+            scene = await generate_openrouter_photo(
+                settings,
+                model=slug,
+                user_prompt=user_prompt,
+                aspect_ratio=aspect_ratio,
+                reference_data_url=base_png,
+                timeout_sec=timeout_sec,
+            )
+            scene_png = resize_png_data_url_for_api(
+                await gemini_image_result_to_png_data_url(settings, scene)
+            )
+            break
+        except ExternalApiError as exc:
+            last_exc = exc
+            logger.warning("composite two-step scene via %s failed: %s", slug, exc)
+    if not scene_png:
+        raise last_exc or ExternalApiError("OpenRouter", "two-step scene failed")
+
+    minimal = build_minimal_child_print_composite_intent(intent_en)
+    payload = build_composite_refine_prompt(
+        minimal,
+        base_image_url=scene_png,
+        object_image_url=object_png,
+        creative_scene=True,
+    )
+    for slug in COMPOSITE_TWO_STEP_PRINT_MODELS:
+        try:
+            return await generate_openrouter_image(
+                settings,
+                model=slug,
+                prompt=str(payload["prompt"]),
+                aspect_ratio=aspect_ratio,
+                input_references=payload["input_references"],
+                timeout_sec=timeout_sec,
+            )
+        except ExternalApiError as exc:
+            last_exc = exc
+            logger.warning("composite two-step print via %s failed: %s", slug, exc)
+    raise last_exc or ExternalApiError("OpenRouter", "two-step print failed")
+
+
 async def generate_openrouter_composite_photo(
     settings: Settings,
     *,
@@ -661,8 +744,23 @@ async def generate_openrouter_composite_photo(
                 creative=True,
                 models=resolve_creative_composite_fallbacks(menu_key),
             )
-        except ExternalApiError:
-            raise first_exc from None
+        except ExternalApiError as minimal_exc:
+            logger.warning(
+                "composite minimal failed (%s), trying two-step scene+print",
+                minimal_exc,
+            )
+            try:
+                return await _composite_two_step_scene_then_print(
+                    settings,
+                    user_prompt=user_prompt,
+                    base_png=base_png,
+                    object_png=object_png,
+                    aspect_ratio=aspect_ratio,
+                    intent_en=intent_en,
+                    timeout_sec=timeout_sec,
+                )
+            except ExternalApiError:
+                raise first_exc from None
 
 
 def _build_multi_ref_identity_lines(num_refs: int) -> str:

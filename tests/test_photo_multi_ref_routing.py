@@ -35,6 +35,19 @@ def test_should_route_album_as_composite_only_for_print() -> None:
     assert not should_route_album_as_composite(num_refs=3, prompt="надень принт")
 
 
+def test_long_scene_two_photos_routes_to_composite_not_group() -> None:
+    long_scene = (
+        "Фотореалистичное уютное селфи женщины в интерьере, мягкий свет, "
+        "белая oversize футболка, тиара, сидит на диване, "
+        "на груди винтажный принт с детского фото, 8k, детальная кожа, "
+        "теплые тона, естественный макияж, прямой взгляд в камеру, "
+        "ракурс чуть сверху, уютная гостиная на фоне, "
+        "добавь детское фото как faded print на футболке"
+    )
+    assert should_route_album_as_composite(num_refs=2, prompt=long_scene)
+    assert not should_route_album_as_group(num_refs=2, prompt=long_scene)
+
+
 @pytest.mark.asyncio
 async def test_album_two_portraits_routes_to_group_multi_ref() -> None:
     from platforms.handlers import generation_fsm
