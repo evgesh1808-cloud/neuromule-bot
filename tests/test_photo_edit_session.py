@@ -208,6 +208,58 @@ async def test_reply_to_bot_photo_updates_aspect_from_intent() -> None:
     assert sess.aspect_ratio == "9:16"
 
 
+@pytest.mark.asyncio
+async def test_save_last_generated_image_roundtrip(repo_module, tmp_path) -> None:
+    from services.repository import get_last_generated_image, save_last_generated_image
+
+    user_id = 4242
+    await save_last_generated_image(
+        user_id,
+        telegram_file_id="AgAC_persist",
+        media_url="https://cdn.example/x.jpg",
+        image_model_id="nano_banana_pro",
+        image_model_label="Nano Pro",
+        aspect_ratio="3:4",
+        user_prompt="test prompt",
+    )
+    row = await get_last_generated_image(user_id)
+    assert row is not None
+    assert row["telegram_file_id"] == "AgAC_persist"
+    assert row["image_model_id"] == "nano_banana_pro"
+    assert row["aspect_ratio"] == "3:4"
+
+
+@pytest.mark.asyncio
+async def test_get_or_restore_photo_edit_session_from_db() -> None:
+    from services.photo_edit_session import (
+        get_or_restore_photo_edit_session,
+        reset_photo_edit_sessions_for_tests,
+    )
+
+    reset_photo_edit_sessions_for_tests()
+
+    persisted = {
+        "telegram_file_id": "AgAC_anchor",
+        "media_url": None,
+        "image_model_id": "flux_schnell",
+        "image_model_label": "Flux 2 Pro",
+        "aspect_ratio": "16:9",
+        "user_prompt": "scene",
+    }
+
+    with patch(
+        "services.repository.get_last_generated_image",
+        new_callable=AsyncMock,
+        return_value=persisted,
+    ):
+        sess = await get_or_restore_photo_edit_session(900, peer_id=900)
+
+    assert sess is not None
+    assert sess.telegram_file_id == "AgAC_anchor"
+    assert sess.image_model_id == "flux_schnell"
+    assert sess.aspect_ratio == "16:9"
+
+
 def test_result_keyboard_has_refine_button() -> None:
     from content.inline_keyboards import result_photo_keyboard
 

@@ -296,6 +296,16 @@ async def _try_dispatch_composite_from_context(
     session = get_photo_edit_session(user.id, peer_id=message.chat.id)
     has_session = session is not None and session_has_result_image(session)
 
+    if in_refine_flow and not has_session:
+        from services.photo_edit_session import get_or_restore_photo_edit_session
+
+        try:
+            session = await get_or_restore_photo_edit_session(user.id, peer_id=message.chat.id)
+        except Exception:
+            logger.debug("composite refine: DB restore failed uid=%s", user.id, exc_info=True)
+            session = None
+        has_session = session is not None and session_has_result_image(session)
+
     base_file_id: str | None = None
     base_url: str | None = None
     base_bytes: bytes | None = None
@@ -357,6 +367,86 @@ async def _dispatch_composite_refine_photo(
         label=label,
         aspect=aspect,
     )
+
+
+def _album_image_entries(album_messages: list[Message]) -> list[tuple[str, str]]:
+    """(file_id, caption) для каждого изображения в альбоме, по порядку message_id."""
+    ordered = sorted(album_messages, key=lambda item: item.message_id or 0)
+    entries: list[tuple[str, str]] = []
+    for item in ordered:
+        file_id, caption = _photo_reference_from_message(item)
+        if file_id:
+            entries.append((file_id, caption))
+    return entries
+
+
+def _album_caption(album_messages: list[Message]) -> str:
+    for item in sorted(album_messages, key=lambda m: m.message_id or 0):
+        caption = (item.caption or "").strip()
+        if caption:
+            return caption
+    return ""
+
+
+async def _dispatch_photo_album_message(
+    message: Message,
+    state: FSMContext,
+    album_messages: list[Message],
+) -> bool:
+    """Альбом: composite (2 фото + подпись) или отказ в refine."""
+    entries = _album_image_entries(album_messages)
+    file_ids = [fid for fid, _ in entries]
+    caption = _album_caption(album_messages)
+
+    data = await state.get_data()
+    model_id = str(data.get("image_model_id") or "").strip()
+    if not model_id:
+        await message.answer(msg.TXT_IMAGE_PICK_MODEL_FIRST, parse_mode=ParseMode.HTML)
+        return True
+
+    label = str(data.get("image_model_label") or "модель")
+    aspect = normalize_photo_aspect_ratio(data.get("image_aspect_ratio"))
+    refine_from_result = bool(data.get("refine_from_result"))
+
+    if refine_from_result:
+        if len(file_ids) > 1:
+            await message.answer(msg.TXT_PHOTO_REFINE_ALBUM_REJECT, parse_mode=ParseMode.HTML)
+            return True
+        return await _dispatch_photo_reference_message(message, state)
+
+    if len(file_ids) == 2 and caption:
+        await _dispatch_composite_photo_message(
+            message,
+            state,
+            object_file_id=file_ids[1],
+            prompt=caption,
+            model_id=model_id,
+            label=label,
+            aspect=aspect,
+            base_file_id=file_ids[0],
+            base_url=None,
+            base_bytes=None,
+            base_mime="image/jpeg",
+        )
+        return True
+
+    if len(file_ids) == 2 and not caption:
+        hint = await message.answer(msg.TXT_PHOTO_ALBUM_WAIT_CAPTION, parse_mode=ParseMode.HTML)
+        service_ids = list(data.get("photo_service_message_ids") or [])
+        service_ids.append(hint.message_id)
+        await state.update_data(
+            pending_reference_file_id=file_ids[0],
+            pending_object_file_id=file_ids[1],
+            photo_service_message_ids=service_ids,
+        )
+        await state.set_state(UserFlow.waiting_for_photo)
+        return True
+
+    if len(file_ids) > 2:
+        await message.answer(msg.TXT_PHOTO_ALBUM_TOO_MANY, parse_mode=ParseMode.HTML)
+        return True
+
+    return await _dispatch_photo_reference_message(message, state)
 
 
 async def _dispatch_photo_reference_message(message: Message, state: FSMContext) -> bool:
@@ -427,11 +517,35 @@ async def _dispatch_photo_reference_message(message: Message, state: FSMContext)
     return True
 
 
-async def try_handle_photo_for_image_generation(message: Message, state: FSMContext) -> bool:
+async def try_handle_photo_for_image_generation(
+    message: Message,
+    state: FSMContext,
+    *,
+    album_messages: list[Message] | None = None,
+) -> bool:
     """
     Перехват фото вне waiting_for_photo (idle / aspect / model pick),
     чтобы caption+i2i не уходили в Нейротекст.
     """
+    if album_messages and len(album_messages) > 1:
+        file_ids = [fid for fid, _ in _album_image_entries(album_messages)]
+        if not file_ids or message.from_user is None:
+            return False
+        from platforms.telegram_throttling import is_photo_flow_active
+
+        current = await state.get_state()
+        photo_states = {
+            UserFlow.waiting_for_photo.state,
+            UserFlow.waiting_for_image_model_pick.state,
+            UserFlow.waiting_for_image_aspect_ratio.state,
+        }
+        data = await state.get_data()
+        model_id = str(data.get("image_model_id") or "").strip()
+        in_photo_flow = current in photo_states or is_photo_flow_active(message.from_user.id)
+        if not in_photo_flow and not model_id:
+            return False
+        return await _dispatch_photo_album_message(message, state, album_messages)
+
     file_id, _caption = _photo_reference_from_message(message)
     if not file_id or message.from_user is None:
         return False
@@ -746,17 +860,31 @@ async def image_menu_pending_text(message: Message, state: FSMContext) -> None:
 
 
 @router.message(UserFlow.waiting_for_photo, F.photo | F.document)
-async def photo_process_with_image(message: Message, state: FSMContext) -> None:
+async def photo_process_with_image(
+    message: Message,
+    state: FSMContext,
+    album_messages: list[Message] | None = None,
+) -> None:
     if await _dispatch_nav_or_none(message, state):
         return
+    if album_messages and len(album_messages) > 1:
+        if await _dispatch_photo_album_message(message, state, album_messages):
+            return
     if not await _dispatch_photo_reference_message(message, state):
         await message.answer(msg.TXT_CREATE_IMAGE_AFTER_MODEL, parse_mode=ParseMode.HTML)
 
 
 @router.message(UserFlow.waiting_for_image_model_pick, F.photo | F.document)
 @router.message(UserFlow.waiting_for_image_aspect_ratio, F.photo | F.document)
-async def photo_process_during_model_setup(message: Message, state: FSMContext) -> None:
+async def photo_process_during_model_setup(
+    message: Message,
+    state: FSMContext,
+    album_messages: list[Message] | None = None,
+) -> None:
     if await _dispatch_nav_or_none(message, state):
+        return
+    if album_messages and len(album_messages) > 1:
+        await _dispatch_photo_album_message(message, state, album_messages)
         return
     await _dispatch_photo_reference_message(message, state)
 
@@ -781,6 +909,33 @@ async def photo_process(message: Message, state: FSMContext) -> None:
     pending_file_id = str(data.get("pending_reference_file_id") or "").strip()
     pending_object_id = str(data.get("pending_object_file_id") or "").strip()
     refine_from_result = bool(data.get("refine_from_result"))
+
+    if (
+        pending_object_id
+        and pending_file_id
+        and prompt
+        and not refine_from_result
+    ):
+        aspect, prompt, aspect_changed = await resolve_photo_edit_prompt(
+            prompt,
+            current_aspect=aspect,
+        )
+        if aspect_changed and message.from_user is not None:
+            await state.update_data(image_aspect_ratio=aspect)
+
+        dispatched = await _try_dispatch_composite_from_context(
+            message,
+            state,
+            object_file_id=pending_object_id,
+            prompt=prompt,
+            model_id=str(model_id),
+            label=str(label),
+            aspect=aspect,
+        )
+        if dispatched:
+            return
+        await message.answer(msg.TXT_PHOTO_COMPOSITE_FAILED, parse_mode=ParseMode.HTML)
+        return
 
     if refine_from_result and pending_object_id and prompt:
         if message.from_user is None:
@@ -821,7 +976,16 @@ async def photo_process(message: Message, state: FSMContext) -> None:
         ref_bytes: bytes | None = None
         ref_mime = "image/jpeg"
         if message.from_user is not None:
-            session = get_photo_edit_session(message.from_user.id, peer_id=message.chat.id)
+            session = None
+            if refine_from_result:
+                from services.photo_edit_session import get_or_restore_photo_edit_session
+
+                session = await get_or_restore_photo_edit_session(
+                    message.from_user.id,
+                    peer_id=message.chat.id,
+                )
+            else:
+                session = get_photo_edit_session(message.from_user.id, peer_id=message.chat.id)
             if session and session_has_result_image(session):
                 result_ref = resolve_session_result_reference(session)
                 file_id = file_id or result_ref.telegram_file_id

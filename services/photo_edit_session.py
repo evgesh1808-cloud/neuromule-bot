@@ -236,3 +236,94 @@ def update_photo_edit_session_aspect_ratio(user_id: int, aspect_ratio: str) -> N
 
 def reset_photo_edit_sessions_for_tests() -> None:
     _sessions.clear()
+
+
+async def persist_photo_edit_session(
+    user_id: int,
+    *,
+    image_model_id: str,
+    image_model_label: str,
+    aspect_ratio: str | None = None,
+    telegram_file_id: str | None = None,
+    media_url: str | None = None,
+    reference_image_bytes: bytes | None = None,
+    reference_mime: str = "image/jpeg",
+    message_id: int | None = None,
+    chat_id: int | None = None,
+    platform: PlatformKind = "telegram",
+    user_prompt: str | None = None,
+    reference_file_id: str | None = None,
+    generation_seed: int | None = None,
+    ttl_sec: float = DEFAULT_EDIT_SESSION_TTL_SEC,
+) -> PhotoEditSession | None:
+    """In-memory сессия + долговременный якорь в БД (Telegram)."""
+    sess = save_photo_edit_session(
+        user_id,
+        image_model_id=image_model_id,
+        image_model_label=image_model_label,
+        aspect_ratio=aspect_ratio,
+        telegram_file_id=telegram_file_id,
+        media_url=media_url,
+        reference_image_bytes=reference_image_bytes,
+        reference_mime=reference_mime,
+        message_id=message_id,
+        chat_id=chat_id,
+        platform=platform,
+        user_prompt=user_prompt,
+        reference_file_id=reference_file_id,
+        generation_seed=generation_seed,
+        ttl_sec=ttl_sec,
+    )
+    if sess is None or platform != "telegram":
+        return sess
+    from services.repository import save_last_generated_image
+
+    await save_last_generated_image(
+        user_id,
+        telegram_file_id=sess.telegram_file_id,
+        media_url=sess.media_url,
+        image_model_id=sess.image_model_id,
+        image_model_label=sess.image_model_label,
+        aspect_ratio=sess.aspect_ratio,
+        user_prompt=sess.user_prompt,
+    )
+    return sess
+
+
+async def get_or_restore_photo_edit_session(
+    user_id: int,
+    *,
+    peer_id: int | None = None,
+) -> PhotoEditSession | None:
+    """Активная in-memory сессия или восстановление из БД («вечный якорь»)."""
+    sess = get_photo_edit_session(user_id, peer_id=peer_id)
+    if sess is not None and session_has_result_image(sess):
+        return sess
+
+    from services.repository import get_last_generated_image
+
+    persisted = await get_last_generated_image(user_id)
+    if not persisted:
+        return None
+
+    tg_id = persisted.get("telegram_file_id")
+    url = persisted.get("media_url")
+    if not tg_id and not url:
+        return None
+
+    restored = save_photo_edit_session(
+        user_id,
+        image_model_id=str(persisted.get("image_model_id") or "").strip(),
+        image_model_label=str(persisted.get("image_model_label") or "модель").strip(),
+        aspect_ratio=str(persisted.get("aspect_ratio") or DEFAULT_PHOTO_ASPECT_RATIO),
+        telegram_file_id=tg_id,
+        media_url=url,
+        chat_id=peer_id,
+        platform="telegram",
+        user_prompt=persisted.get("user_prompt"),
+    )
+    if restored is None:
+        return None
+    if peer_id is not None and restored.chat_id is not None and restored.chat_id != peer_id:
+        return None
+    return restored

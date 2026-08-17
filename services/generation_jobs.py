@@ -50,7 +50,7 @@ from services.photo_aspect_ratio import (
     normalize_photo_aspect_ratio,
     openrouter_aspect_ratio,
 )
-from services.photo_edit_session import save_photo_edit_session
+from services.photo_edit_session import persist_photo_edit_session, save_photo_edit_session
 from services.billing.image_pipeline import FREE_PHOTO_MODEL_KEY, free_tier_image_model
 from services.free_image_cascade import FreeImageCascadeExhausted, generate_free_tier_image
 from services.openrouter_images import (
@@ -482,7 +482,7 @@ async def _deliver_photo_url_chatcom(task: GenTask, final_image_url: str) -> Non
     tg_file_id = sent.photo[-1].file_id if sent.photo else None
     _remember_share(task, file_id=tg_file_id, media_url=final_url)
 
-    save_photo_edit_session(
+    await persist_photo_edit_session(
         task.user_id,
         image_model_id=task.image_model_id,
         image_model_label=task.model_label or task.image_model_id,
@@ -536,7 +536,7 @@ async def _deliver_photo_bytes_chatcom(
     tg_file_id = sent.photo[-1].file_id if sent.photo else None
     _remember_share(task, file_id=tg_file_id, media_url=None)
 
-    save_photo_edit_session(
+    await persist_photo_edit_session(
         task.user_id,
         image_model_id=task.image_model_id,
         image_model_label=task.model_label or task.image_model_id,

@@ -595,7 +595,7 @@ async def pick_image_aspect_ratio(callback: CallbackQuery, state: FSMContext) ->
 async def photo_refine_start(callback: CallbackQuery, state: FSMContext) -> None:
     from platforms.telegram_throttling import mark_photo_flow
     from services.photo_edit_session import (
-        get_photo_edit_session,
+        get_or_restore_photo_edit_session,
         resolve_session_result_reference,
         session_has_result_image,
     )
@@ -605,10 +605,8 @@ async def photo_refine_start(callback: CallbackQuery, state: FSMContext) -> None
         await callback.answer()
         return
 
-    session = get_photo_edit_session(
-        user.id,
-        peer_id=callback.message.chat.id if callback.message else None,
-    )
+    peer_id = callback.message.chat.id if callback.message else None
+    session = await get_or_restore_photo_edit_session(user.id, peer_id=peer_id)
     if session is None or not session_has_result_image(session):
         await callback.answer(msg.TXT_PHOTO_REFINE_EXPIRED, show_alert=True)
         return

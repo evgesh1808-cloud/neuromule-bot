@@ -83,6 +83,30 @@ async def _migrate_users(db: aiosqlite.Connection) -> None:
             "last_advice_message_id",
             "ALTER TABLE users ADD COLUMN last_advice_message_id INTEGER",
         ),
+        (
+            "last_generated_image_file_id",
+            "ALTER TABLE users ADD COLUMN last_generated_image_file_id TEXT",
+        ),
+        (
+            "last_generated_image_url",
+            "ALTER TABLE users ADD COLUMN last_generated_image_url TEXT",
+        ),
+        (
+            "last_generated_image_model_id",
+            "ALTER TABLE users ADD COLUMN last_generated_image_model_id TEXT",
+        ),
+        (
+            "last_generated_image_model_label",
+            "ALTER TABLE users ADD COLUMN last_generated_image_model_label TEXT",
+        ),
+        (
+            "last_generated_image_aspect",
+            "ALTER TABLE users ADD COLUMN last_generated_image_aspect TEXT",
+        ),
+        (
+            "last_generated_image_prompt",
+            "ALTER TABLE users ADD COLUMN last_generated_image_prompt TEXT",
+        ),
     ]
     for name, ddl in alters:
         if name not in cols:
@@ -1547,6 +1571,82 @@ async def set_blogger_object_file_id(user_id: int, file_id: str) -> None:
             (clean or None, user_id),
         )
         await db.commit()
+
+
+async def save_last_generated_image(
+    user_id: int,
+    *,
+    telegram_file_id: str | None = None,
+    media_url: str | None = None,
+    image_model_id: str,
+    image_model_label: str,
+    aspect_ratio: str,
+    user_prompt: str | None = None,
+) -> None:
+    """Долговременный якорь последнего результата для кнопки «✏️ Доработать»."""
+    await ensure_user(user_id)
+    tg_id = (telegram_file_id or "").strip() or None
+    url = (media_url or "").strip() or None
+    if not tg_id and not url:
+        return
+    prompt = (user_prompt or "").strip() or None
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            UPDATE users SET
+                last_generated_image_file_id = ?,
+                last_generated_image_url = ?,
+                last_generated_image_model_id = ?,
+                last_generated_image_model_label = ?,
+                last_generated_image_aspect = ?,
+                last_generated_image_prompt = ?
+            WHERE id = ?
+            """,
+            (
+                tg_id,
+                url,
+                (image_model_id or "").strip() or None,
+                (image_model_label or "модель").strip(),
+                (aspect_ratio or "1:1").strip(),
+                prompt,
+                user_id,
+            ),
+        )
+        await db.commit()
+
+
+async def get_last_generated_image(user_id: int) -> dict[str, str | None] | None:
+    """Последний успешный результат генерации из БД (без TTL)."""
+    await ensure_user(user_id)
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """
+            SELECT
+                last_generated_image_file_id,
+                last_generated_image_url,
+                last_generated_image_model_id,
+                last_generated_image_model_label,
+                last_generated_image_aspect,
+                last_generated_image_prompt
+            FROM users WHERE id = ?
+            """,
+            (user_id,),
+        ) as cur:
+            row = await cur.fetchone()
+    if not row:
+        return None
+    tg_id = str(row[0]).strip() if row[0] else None
+    url = str(row[1]).strip() if row[1] else None
+    if not tg_id and not url:
+        return None
+    return {
+        "telegram_file_id": tg_id,
+        "media_url": url,
+        "image_model_id": str(row[2]).strip() if row[2] else "",
+        "image_model_label": str(row[3]).strip() if row[3] else "модель",
+        "aspect_ratio": str(row[4]).strip() if row[4] else "1:1",
+        "user_prompt": str(row[5]).strip() if row[5] else None,
+    }
 
 
 async def has_blogger_object_photo(user_id: int) -> bool:
