@@ -45,6 +45,10 @@ class PhotoEnqueueSpec:
     reference_image_bytes: bytes | None = None
     reference_mime: str = "image/jpeg"
     aspect_ratio: str = "1:1"
+    composite_refine: bool = False
+    composite_base_file_id: str | None = None
+    composite_base_reference_url: str | None = None
+    composite_base_reference_bytes: bytes | None = None
 
 
 @dataclass(frozen=True)
@@ -70,6 +74,10 @@ async def run_photo_generation_turn(
     reference_image_bytes: bytes | None = None,
     reference_mime: str = "image/jpeg",
     aspect_ratio: str | None = None,
+    composite_refine: bool = False,
+    composite_base_file_id: str | None = None,
+    composite_base_reference_url: str | None = None,
+    composite_base_reference_bytes: bytes | None = None,
 ) -> PhotoGenResult:
     # bot/chat_id/settings — контракт call-site; списание через billing store.
     _ = (settings, bot, chat_id)
@@ -83,10 +91,33 @@ async def run_photo_generation_turn(
             bytes_ref = bytes(reference_image_bytes)
         else:
             raise TypeError("reference_image_bytes must be bytes")
-    sources = sum(x is not None for x in (tg_ref, url_ref, bytes_ref))
-    if sources > 1:
+
+    base_file_id = (composite_base_file_id or "").strip() or None
+    base_url = (composite_base_reference_url or "").strip() or None
+    base_bytes: bytes | None = None
+    if composite_base_reference_bytes is not None:
+        if isinstance(composite_base_reference_bytes, memoryview):
+            base_bytes = composite_base_reference_bytes.tobytes()
+        elif isinstance(composite_base_reference_bytes, (bytes, bytearray)):
+            base_bytes = bytes(composite_base_reference_bytes)
+        else:
+            raise TypeError("composite_base_reference_bytes must be bytes")
+
+    object_sources = sum(x is not None for x in (tg_ref, url_ref, bytes_ref))
+    base_sources = sum(x is not None for x in (base_file_id, base_url, base_bytes))
+
+    if composite_refine:
+        if object_sources != 1 or base_sources != 1:
+            raise ValueError(
+                "photo_generation_turn: composite refine requires exactly one object "
+                "and one base reference source"
+            )
+    elif object_sources > 1:
         raise ValueError("photo_generation_turn: only one reference source allowed")
-    if not prompt and sources == 0:
+
+    if not prompt and object_sources == 0 and not composite_refine:
+        return PhotoGenResult(outcome=PhotoGenOutcome.NEED_PROMPT)
+    if composite_refine and not prompt:
         return PhotoGenResult(outcome=PhotoGenOutcome.NEED_PROMPT)
 
     model_id = image_model_id or free_tier_image_model()
@@ -126,5 +157,9 @@ async def run_photo_generation_turn(
             reference_image_bytes=bytes_ref,
             reference_mime=reference_mime or "image/jpeg",
             aspect_ratio=normalize_photo_aspect_ratio(aspect_ratio),
+            composite_refine=composite_refine,
+            composite_base_file_id=base_file_id,
+            composite_base_reference_url=base_url,
+            composite_base_reference_bytes=base_bytes,
         ),
     )

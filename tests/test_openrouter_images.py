@@ -19,6 +19,7 @@ from services.openrouter_images import (
     OPENROUTER_NANO_BANANA2_MODEL,
     OPENROUTER_NANO_BANANA_PRO_MODEL,
     SELFIE_WOMAN_PROMPT_PREFIX,
+    build_composite_refine_prompt,
     build_selfie_i2i_prompt_for_model,
     generate_openrouter_image,
     generate_openrouter_photo,
@@ -28,6 +29,7 @@ from services.openrouter_images import (
     prepend_selfie_woman_prompt,
     reference_url_to_data_url,
     reference_url_to_png_data_url,
+    resolve_composite_refine_model_key,
     resolve_openrouter_photo_prompt_and_refs,
 )
 
@@ -316,3 +318,92 @@ async def test_generate_openrouter_image_no_zod_fields_for_flux() -> None:
     assert body["input_references"][0]["type"] == "image_url"
     assert "identity" not in body
     assert "negative_prompt" not in body
+
+
+def test_build_composite_refine_prompt_dual_refs_and_intent() -> None:
+    base_url = "data:image/png;base64,base123"
+    object_url = "data:image/png;base64,object456"
+    payload = build_composite_refine_prompt(
+        "place Image 2 as a crisp print on the t-shirt",
+        base_image_url=base_url,
+        object_image_url=object_url,
+    )
+
+    prompt = payload["prompt"]
+    refs = payload["input_references"]
+
+    assert "CRITICAL COMPOSITE EDITING DIRECTIVE" in prompt
+    assert "Image 1 (Base Context & Anchor)" in prompt
+    assert "Image 2 (Object & Graphic Reference Only)" in prompt
+    assert "place Image 2 as a crisp print on the t-shirt" in prompt
+    assert "changing main facial identity" in prompt
+    assert "[Negative prompt:" in prompt
+
+    assert len(refs) == 2
+    assert refs[0]["type"] == "image_url"
+    assert refs[0]["image_url"]["url"] == base_url
+    assert refs[1]["type"] == "image_url"
+    assert refs[1]["image_url"]["url"] == object_url
+
+
+def test_resolve_composite_refine_model_key_routes_multi_image_stacks() -> None:
+    assert resolve_composite_refine_model_key("nano_banana_pro") == OPENROUTER_NANO_BANANA_PRO_MODEL
+    assert resolve_composite_refine_model_key("dalle_3") == OPENROUTER_GPT_IMAGE2_MODEL
+    assert resolve_composite_refine_model_key("flux_schnell") == OPENROUTER_NANO_BANANA_PRO_MODEL
+
+
+@pytest.mark.asyncio
+async def test_dispatch_composite_refine_photo_uses_session_base_and_upload_object() -> None:
+    from platforms.handlers import generation_fsm
+    from services.photo_edit_session import reset_photo_edit_sessions_for_tests, save_photo_edit_session
+
+    reset_photo_edit_sessions_for_tests()
+    save_photo_edit_session(
+        55,
+        image_model_id="nano_banana_pro",
+        image_model_label="Nano Pro",
+        aspect_ratio="1:1",
+        telegram_file_id="AgAC_base",
+        user_prompt="portrait",
+    )
+
+    message_photo = MagicMock()
+    message_photo.from_user.id = 55
+    message_photo.chat.id = 55
+    message_photo.photo = [MagicMock(file_id="AgAC_object")]
+    message_photo.document = None
+    message_photo.caption = "put this on my t-shirt"
+
+    state = MagicMock()
+    state.get_data = AsyncMock(
+        return_value={
+            "image_model_id": "nano_banana_pro",
+            "image_model_label": "Nano Pro",
+            "image_aspect_ratio": "1:1",
+            "refine_from_result": True,
+        }
+    )
+    state.update_data = AsyncMock()
+    state.set_state = AsyncMock()
+
+    with patch.object(
+        generation_fsm,
+        "_photo_reference_from_message",
+        return_value=("AgAC_object", "put this on my t-shirt"),
+    ), patch.object(
+        generation_fsm,
+        "process_photo_prompt_message",
+        new_callable=AsyncMock,
+    ) as proc:
+        handled = await generation_fsm._dispatch_photo_reference_message(
+            message_photo,
+            state,
+        )
+
+    assert handled is True
+    proc.assert_awaited_once()
+    assert proc.await_args.kwargs["composite_refine"] is True
+    assert proc.await_args.kwargs["telegram_file_id"] == "AgAC_object"
+    assert proc.await_args.kwargs["composite_base_file_id"] == "AgAC_base"
+    assert proc.await_args.kwargs["prompt"] == "put this on my t-shirt"
+    reset_photo_edit_sessions_for_tests()

@@ -227,6 +227,64 @@ def _photo_reference_from_message(message: Message) -> tuple[str | None, str]:
     return None, caption
 
 
+async def _dispatch_composite_refine_photo(
+    message: Message,
+    state: FSMContext,
+    *,
+    object_file_id: str,
+    prompt: str,
+    model_id: str,
+    label: str,
+    aspect: str,
+) -> bool:
+    """Dual-ref refine: session result = Image 1, upload = Image 2."""
+    from services.photo_edit_session import (
+        get_photo_edit_session,
+        resolve_session_result_reference,
+        session_has_result_image,
+    )
+
+    user = message.from_user
+    if user is None:
+        return False
+
+    session = get_photo_edit_session(user.id, peer_id=message.chat.id)
+    if session is None or not session_has_result_image(session):
+        return False
+
+    result_ref = resolve_session_result_reference(session)
+    base_file_id = result_ref.telegram_file_id
+    base_url = result_ref.media_url if not base_file_id else None
+    base_bytes = (
+        result_ref.reference_image_bytes
+        if not base_file_id and not base_url
+        else None
+    )
+    if not base_file_id and not base_url and not base_bytes:
+        return False
+
+    await state.update_data(
+        pending_reference_file_id=None,
+        pending_object_file_id=None,
+        refine_from_result=None,
+    )
+    await process_photo_prompt_message(
+        message,
+        state,
+        model_id=model_id,
+        label=label,
+        prompt=prompt,
+        telegram_file_id=object_file_id,
+        aspect_ratio=aspect,
+        composite_refine=True,
+        composite_base_file_id=base_file_id,
+        composite_base_reference_url=base_url,
+        composite_base_reference_bytes=base_bytes,
+        composite_base_reference_mime=result_ref.reference_mime,
+    )
+    return True
+
+
 async def _dispatch_photo_reference_message(message: Message, state: FSMContext) -> bool:
     """
     Фото/файл-картинка в photo-flow: caption в том же сообщении → сразу i2i;
@@ -244,6 +302,20 @@ async def _dispatch_photo_reference_message(message: Message, state: FSMContext)
 
     label = str(data.get("image_model_label") or "модель")
     aspect = normalize_photo_aspect_ratio(data.get("image_aspect_ratio"))
+    refine_from_result = bool(data.get("refine_from_result"))
+
+    if caption and refine_from_result:
+        dispatched = await _dispatch_composite_refine_photo(
+            message,
+            state,
+            object_file_id=file_id,
+            prompt=caption,
+            model_id=model_id,
+            label=label,
+            aspect=aspect,
+        )
+        if dispatched:
+            return True
 
     if caption:
         await process_photo_prompt_message(
@@ -255,6 +327,17 @@ async def _dispatch_photo_reference_message(message: Message, state: FSMContext)
             telegram_file_id=file_id,
             aspect_ratio=aspect,
         )
+        return True
+
+    if refine_from_result:
+        hint = await message.answer(msg.TXT_PHOTO_REFINE_OBJECT_WAIT, parse_mode=ParseMode.HTML)
+        service_ids = list(data.get("photo_service_message_ids") or [])
+        service_ids.append(hint.message_id)
+        await state.update_data(
+            pending_object_file_id=file_id,
+            photo_service_message_ids=service_ids,
+        )
+        await state.set_state(UserFlow.waiting_for_photo)
         return True
 
     hint = await message.answer(msg.TXT_CREATE_IMAGE_WAIT_PROMPT, parse_mode=ParseMode.HTML)
@@ -367,6 +450,11 @@ async def process_photo_prompt_message(
     reference_mime: str = "image/jpeg",
     aspect_ratio: str | None = None,
     skip_status_message: bool = False,
+    composite_refine: bool = False,
+    composite_base_file_id: str | None = None,
+    composite_base_reference_url: str | None = None,
+    composite_base_reference_bytes: bytes | None = None,
+    composite_base_reference_mime: str = "image/jpeg",
 ) -> None:
     from platforms.image_menu_flow import normalize_image_prompt_text
     from platforms.telegram_throttling import clear_photo_flow, mark_photo_flow
@@ -382,7 +470,7 @@ async def process_photo_prompt_message(
 
     mark_photo_flow(user_id)
 
-    if not body and not telegram_file_id:
+    if not body and not telegram_file_id and not composite_refine:
         await message.answer(msg.TXT_CREATE_IMAGE_AFTER_MODEL)
         return
 
@@ -415,6 +503,10 @@ async def process_photo_prompt_message(
                     reference_image_bytes=reference_image_bytes,
                     reference_mime=reference_mime,
                     aspect_ratio=ar,
+                    composite_refine=composite_refine,
+                    composite_base_file_id=composite_base_file_id,
+                    composite_base_reference_url=composite_base_reference_url,
+                    composite_base_reference_bytes=composite_base_reference_bytes,
                 )
     except Exception:
         logger.exception("photo prompt: billing/enqueue failed uid=%s", user_id)
@@ -520,6 +612,10 @@ async def process_photo_prompt_message(
         aspect_ratio=eq.aspect_ratio,
         status_message_id=status_msg.message_id if status_msg is not None else None,
         cleanup_message_ids=cleanup_ids,
+        composite_refine=eq.composite_refine,
+        composite_base_file_id=eq.composite_base_file_id,
+        composite_base_reference_url=eq.composite_base_reference_url,
+        composite_base_reference_bytes=eq.composite_base_reference_bytes,
     )
     if pr.vip_priority:
         await message.answer(msg.TXT_GEN_STATUS_VIP)
@@ -598,7 +694,57 @@ async def photo_process(message: Message, state: FSMContext) -> None:
     aspect = normalize_photo_aspect_ratio(data.get("image_aspect_ratio"))
     prompt = (message.text or "").strip()
     pending_file_id = str(data.get("pending_reference_file_id") or "").strip()
+    pending_object_id = str(data.get("pending_object_file_id") or "").strip()
     refine_from_result = bool(data.get("refine_from_result"))
+
+    if refine_from_result and pending_object_id and prompt:
+        if message.from_user is None:
+            return
+        aspect, prompt, aspect_changed = await resolve_photo_edit_prompt(
+            prompt,
+            current_aspect=aspect,
+        )
+        if aspect_changed and message.from_user is not None:
+            await state.update_data(image_aspect_ratio=aspect)
+            update_photo_edit_session_aspect_ratio(message.from_user.id, aspect)
+
+        session = get_photo_edit_session(message.from_user.id, peer_id=message.chat.id)
+        if session is None or not session_has_result_image(session):
+            await message.answer(msg.TXT_PHOTO_REFINE_EXPIRED)
+            return
+
+        result_ref = resolve_session_result_reference(session)
+        base_file_id = result_ref.telegram_file_id
+        base_url = result_ref.media_url if not base_file_id else None
+        base_bytes = (
+            result_ref.reference_image_bytes
+            if not base_file_id and not base_url
+            else None
+        )
+        if not base_file_id and not base_url and not base_bytes:
+            await message.answer(msg.TXT_PHOTO_REFINE_EXPIRED)
+            return
+
+        await state.update_data(
+            pending_reference_file_id=None,
+            pending_object_file_id=None,
+            refine_from_result=None,
+        )
+        await process_photo_prompt_message(
+            message,
+            state,
+            model_id=model_id,
+            label=label,
+            prompt=prompt,
+            telegram_file_id=pending_object_id,
+            aspect_ratio=aspect,
+            composite_refine=True,
+            composite_base_file_id=base_file_id,
+            composite_base_reference_url=base_url,
+            composite_base_reference_bytes=base_bytes,
+            composite_base_reference_mime=result_ref.reference_mime,
+        )
+        return
 
     if pending_file_id or refine_from_result:
         aspect, prompt, aspect_changed = await resolve_photo_edit_prompt(

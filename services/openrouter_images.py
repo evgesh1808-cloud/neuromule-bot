@@ -159,7 +159,37 @@ OPENAI_INPAINT_I2I_PREFIX = (
     "Do not copy reference body crop or cut-off line. "
 )
 
-# Backward-compatible aliases (tests / imports).
+# Dual-reference composite refine (base result + object/graphic upload).
+COMPOSITE_REFINE_PROMPT_TEMPLATE = (
+    "CRITICAL COMPOSITE EDITING DIRECTIVE:\n"
+    "You are provided with two images in the input_references array.\n\n"
+    "Image 1 (Base Context & Anchor): This is the main base image. Use this image strictly "
+    "as the absolute anchor for the main character's facial identity, facial geometry, "
+    "precise body pose, framing, and background environment. DO NOT alter, age, or change "
+    "the person's face or the background from Image 1.\n\n"
+    "Image 2 (Object & Graphic Reference Only): Use this image STRICTLY as a visual graphic, "
+    "logo, or photo print to be embedded or placed onto the clothing (e.g., t-shirt) or "
+    "environment of the person from Image 1. Do not blend, morph, or inject the facial "
+    "features, age, or identity of Image 2 into the main character.\n\n"
+    "User Modification Request: {user_intent}"
+)
+
+COMPOSITE_REFINE_NEGATIVE_PROMPT = (
+    "changing main facial identity, blending image 2 features into the face, "
+    "altering background of image 1, shifting body pose, changing character proportions, "
+    "deforming the graphic print"
+)
+
+COMPOSITE_REFINE_FALLBACKS: tuple[str, ...] = (
+    OPENROUTER_GPT_IMAGE2_MODEL,
+    OPENROUTER_NANO_BANANA2_MODEL,
+    "google/gemini-3-pro-image-preview",
+)
+
+COMPOSITE_REFINE_MENU_KEYS: frozenset[str] = frozenset(
+    {"dalle_3", "nano_banana2", "nano_banana_pro"}
+)
+
 GOOGLE_IDENTITY_LOCK = (
     "Maintain the exact same facial identity as the reference: identical eye shape, "
     "nose bridge, jawline, lip proportions, skin tone, and apparent age. "
@@ -247,6 +277,115 @@ def resolve_openrouter_model_for_menu_key(model_key: str) -> str:
     if not slug:
         raise ExternalApiError("OpenRouter", f"unknown image model key: {model_key}")
     return slug
+
+
+def resolve_composite_refine_model_key(model_key: str) -> str:
+    """Multi-image composite → Nano / GPT / Gemini stacks."""
+    normalized = (model_key or "").strip().lower().replace("-", "_")
+    if normalized in COMPOSITE_REFINE_MENU_KEYS:
+        return resolve_openrouter_model_for_menu_key(normalized)
+    return OPENROUTER_NANO_BANANA_PRO_MODEL
+
+
+def build_composite_refine_prompt(
+    user_intent: str,
+    *,
+    base_image_url: str,
+    object_image_url: str,
+) -> dict[str, Any]:
+    """OpenRouter payload fragment: prompt + ordered dual ``input_references``."""
+    base_url = (base_image_url or "").strip()
+    object_url = (object_image_url or "").strip()
+    if not base_url or not object_url:
+        raise ExternalApiError("OpenRouter", "composite refine requires two image URLs")
+
+    intent = (user_intent or DEFAULT_PHOTO_USER_INTENT).strip()
+    prompt = COMPOSITE_REFINE_PROMPT_TEMPLATE.format(user_intent=intent)
+    prompt = append_negative_prompt_directive(
+        prompt,
+        negative=COMPOSITE_REFINE_NEGATIVE_PROMPT,
+    )
+    return {
+        "prompt": prompt,
+        "input_references": [
+            openrouter_input_reference(base_url),
+            openrouter_input_reference(object_url),
+        ],
+    }
+
+
+async def resolve_reference_to_png_data_url(
+    *,
+    bot: Any | None,
+    file_id: str | None = None,
+    reference_url: str | None = None,
+    reference_bytes: bytes | None = None,
+    reference_mime: str = "image/jpeg",
+) -> str:
+    """Telegram file_id / URL / bytes → PNG base64 data-URL для OpenRouter Images."""
+    resolved = await resolve_openrouter_reference_url(
+        bot=bot,
+        file_id=file_id,
+        reference_image_url=reference_url,
+        reference_image_bytes=reference_bytes,
+        reference_mime=reference_mime,
+    )
+    if not resolved:
+        raise ExternalApiError("OpenRouter", "empty composite reference")
+    if resolved.startswith("data:image/png;base64,"):
+        return resolved
+    return await ensure_png_reference_data_url(resolved)
+
+
+async def generate_openrouter_composite_photo(
+    settings: Settings,
+    *,
+    model: str,
+    user_prompt: str,
+    base_image_data_url: str,
+    object_image_data_url: str,
+    aspect_ratio: str = "1:1",
+    fallback_models: tuple[str, ...] = COMPOSITE_REFINE_FALLBACKS,
+    timeout_sec: float = DEFAULT_OPENROUTER_IMAGES_TIMEOUT_SEC,
+) -> GeminiImageResult:
+    """Dual-reference composite refine via OpenRouter Images API."""
+    intent_en = await translate_photo_user_intent(settings, user_prompt)
+    base_png = await ensure_png_reference_data_url(base_image_data_url)
+    object_png = await ensure_png_reference_data_url(object_image_data_url)
+
+    last_exc: ExternalApiError | None = None
+    candidates = ((model or "").strip(), *fallback_models)
+    for idx, slug in enumerate(candidates):
+        if not slug:
+            continue
+        try:
+            payload = build_composite_refine_prompt(
+                intent_en,
+                base_image_url=base_png,
+                object_image_url=object_png,
+            )
+            return await generate_openrouter_image(
+                settings,
+                model=slug,
+                prompt=str(payload["prompt"]),
+                aspect_ratio=aspect_ratio,
+                input_references=payload["input_references"],
+                timeout_sec=timeout_sec,
+            )
+        except ExternalApiError as exc:
+            last_exc = exc
+            if idx + 1 < len(candidates):
+                logger.warning(
+                    "openrouter composite model %s failed (%s), trying %s",
+                    slug,
+                    exc,
+                    candidates[idx + 1],
+                )
+                continue
+            raise
+    if last_exc is not None:
+        raise last_exc
+    raise ExternalApiError("OpenRouter", "no composite model candidates")
 
 
 def is_nano_banano_stack(model: str) -> bool:

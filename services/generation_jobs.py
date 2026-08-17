@@ -54,6 +54,7 @@ from services.photo_edit_session import save_photo_edit_session
 from services.billing.image_pipeline import FREE_PHOTO_MODEL_KEY, free_tier_image_model
 from services.free_image_cascade import FreeImageCascadeExhausted, generate_free_tier_image
 from services.openrouter_images import (
+    COMPOSITE_REFINE_FALLBACKS,
     GPT_IMAGE2_FALLBACKS,
     NANO_BANANO2_FALLBACKS,
     NANO_BANANO_PRO_FALLBACKS,
@@ -62,8 +63,11 @@ from services.openrouter_images import (
     OPENROUTER_GPT_IMAGE2_MODEL,
     OPENROUTER_NANO_BANANA2_MODEL,
     OPENROUTER_NANO_BANANA_PRO_MODEL,
+    generate_openrouter_composite_photo,
     generate_openrouter_photo,
     openrouter_images_configured,
+    resolve_composite_refine_model_key,
+    resolve_reference_to_png_data_url,
 )
 from services.pollinations_client import generate_flux_schnell_image
 from services.repository import get_user_row
@@ -117,6 +121,10 @@ class GenTask:
     music_continue_clip_id: str | None = None
     generation_seed: int | None = None
     cleanup_message_ids: tuple[int, ...] = ()
+    composite_refine: bool = False
+    composite_base_file_id: str | None = None
+    composite_base_reference_url: str | None = None
+    composite_base_reference_bytes: bytes | None = None
 
     @property
     def kind(self) -> JobKind:
@@ -605,6 +613,51 @@ async def _generate_flux_schnell_paid(
     )
 
 
+async def _generate_openrouter_composite_photo_model(
+    model_key: str,
+    prompt: str,
+    *,
+    aspect_ratio: str = "1:1",
+    bot: "Bot | None" = None,
+    object_file_id: str | None = None,
+    object_reference_url: str | None = None,
+    object_reference_bytes: bytes | None = None,
+    object_reference_mime: str = "image/jpeg",
+    base_file_id: str | None = None,
+    base_reference_url: str | None = None,
+    base_reference_bytes: bytes | None = None,
+    base_reference_mime: str = "image/jpeg",
+) -> GeminiImageResult:
+    if not openrouter_images_configured(app_settings):
+        raise ExternalApiError("OpenRouter", "OPENROUTER_API_KEY не задан")
+
+    or_model = resolve_composite_refine_model_key(model_key)
+    base_data_url = await resolve_reference_to_png_data_url(
+        bot=bot,
+        file_id=base_file_id,
+        reference_url=base_reference_url,
+        reference_bytes=base_reference_bytes,
+        reference_mime=base_reference_mime,
+    )
+    object_data_url = await resolve_reference_to_png_data_url(
+        bot=bot,
+        file_id=object_file_id,
+        reference_url=object_reference_url,
+        reference_bytes=object_reference_bytes,
+        reference_mime=object_reference_mime,
+    )
+    return await generate_openrouter_composite_photo(
+        app_settings,
+        model=or_model,
+        user_prompt=prompt,
+        base_image_data_url=base_data_url,
+        object_image_data_url=object_data_url,
+        aspect_ratio=openrouter_aspect_ratio(aspect_ratio),
+        fallback_models=COMPOSITE_REFINE_FALLBACKS,
+        timeout_sec=float(EXTERNAL_API_TIMEOUT_SEC),
+    )
+
+
 async def _generate_openrouter_photo_model(
     model: str,
     prompt: str,
@@ -644,9 +697,37 @@ async def _generate_photo_result(
     reference_image_url: str | None = None,
     reference_image_bytes: bytes | None = None,
     reference_mime: str = "image/jpeg",
+    composite_refine: bool = False,
+    composite_base_file_id: str | None = None,
+    composite_base_reference_url: str | None = None,
+    composite_base_reference_bytes: bytes | None = None,
+    composite_base_reference_mime: str = "image/jpeg",
 ) -> GeminiImageResult | str:
     """Возвращает GeminiImageResult (url/bytes) или прямой URL строки."""
     ar = normalize_photo_aspect_ratio(aspect_ratio)
+
+    if composite_refine:
+        composite_key = resolve_composite_refine_model_key(model_key)
+        logger.info(
+            "composite refine routing: model=%s → %s",
+            model_key,
+            composite_key,
+        )
+        return await _generate_openrouter_composite_photo_model(
+            model_key,
+            prompt,
+            aspect_ratio=ar,
+            bot=bot,
+            object_file_id=file_id,
+            object_reference_url=reference_image_url,
+            object_reference_bytes=reference_image_bytes,
+            object_reference_mime=reference_mime,
+            base_file_id=composite_base_file_id,
+            base_reference_url=composite_base_reference_url,
+            base_reference_bytes=composite_base_reference_bytes,
+            base_reference_mime=composite_base_reference_mime,
+        )
+
     has_reference = _photo_has_reference(file_id, reference_image_url, reference_image_bytes)
     model_key = resolve_smart_photo_model_key(
         model_key,
@@ -878,7 +959,7 @@ async def _photo_stub_worker(task: GenTask) -> None:
                 raw: GeminiImageResult | str | None = None
 
                 try:
-                    if is_free:
+                    if is_free and not task.composite_refine:
                         async with asyncio.timeout(FREE_PHOTO_HARD_TIMEOUT_SEC):
                             raw = await _generate_free_tier_photo(
                                 user_prompt,
@@ -899,6 +980,11 @@ async def _photo_stub_worker(task: GenTask) -> None:
                             reference_image_url=task.reference_image_url,
                             reference_image_bytes=task.reference_image_bytes,
                             reference_mime=task.reference_mime,
+                            composite_refine=task.composite_refine,
+                            composite_base_file_id=task.composite_base_file_id,
+                            composite_base_reference_url=task.composite_base_reference_url,
+                            composite_base_reference_bytes=task.composite_base_reference_bytes,
+                            composite_base_reference_mime=task.reference_mime,
                         )
                 except TimeoutError as err:
                     logger.error(
@@ -1298,6 +1384,10 @@ def fire_photo_job(
     platform: PlatformKind = "telegram",
     generation_seed: int | None = None,
     cleanup_message_ids: tuple[int, ...] | list[int] | None = None,
+    composite_refine: bool = False,
+    composite_base_file_id: str | None = None,
+    composite_base_reference_url: str | None = None,
+    composite_base_reference_bytes: bytes | None = None,
 ) -> None:
     ref_url = (reference_image_url or "").strip() or None
     ref_bytes: bytes | None = None
@@ -1306,6 +1396,15 @@ def fire_photo_job(
             ref_bytes = reference_image_bytes.tobytes()
         elif isinstance(reference_image_bytes, (bytes, bytearray)):
             ref_bytes = bytes(reference_image_bytes)
+    if composite_base_reference_bytes is not None:
+        if isinstance(composite_base_reference_bytes, memoryview):
+            base_bytes = composite_base_reference_bytes.tobytes()
+        elif isinstance(composite_base_reference_bytes, (bytes, bytearray)):
+            base_bytes = bytes(composite_base_reference_bytes)
+        else:
+            base_bytes = None
+    else:
+        base_bytes = None
     seed = generation_seed if generation_seed is not None else random.randint(1, 2_000_000_000)
     cleanup_ids = tuple(int(x) for x in (cleanup_message_ids or ()) if x)
     _enqueue(
@@ -1331,6 +1430,10 @@ def fire_photo_job(
             status_message_id=status_message_id,
             generation_seed=seed,
             cleanup_message_ids=cleanup_ids,
+            composite_refine=composite_refine,
+            composite_base_file_id=(composite_base_file_id or "").strip() or None,
+            composite_base_reference_url=(composite_base_reference_url or "").strip() or None,
+            composite_base_reference_bytes=base_bytes,
         ),
     )
 

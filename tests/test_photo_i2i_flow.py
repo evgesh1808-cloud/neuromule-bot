@@ -66,7 +66,10 @@ async def test_text_after_pending_photo_passes_file_id() -> None:
     with patch.object(generation_fsm, "process_photo_prompt_message", new_callable=AsyncMock) as proc:
         await generation_fsm.photo_process(message, state)
 
-    state.update_data.assert_awaited_once_with(pending_reference_file_id=None)
+    state.update_data.assert_awaited_once_with(
+        pending_reference_file_id=None,
+        refine_from_result=None,
+    )
     proc.assert_awaited_once_with(
         message,
         state,
@@ -74,6 +77,9 @@ async def test_text_after_pending_photo_passes_file_id() -> None:
         label="Flux 2 Pro",
         prompt="make sky purple",
         telegram_file_id="AgAC_ref",
+        reference_image_url=None,
+        reference_image_bytes=None,
+        reference_mime="image/jpeg",
         aspect_ratio="1:1",
     )
 
