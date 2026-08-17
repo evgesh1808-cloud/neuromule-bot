@@ -17,6 +17,7 @@ def test_is_composite_print_intent_detects_clothing_keywords() -> None:
     assert is_composite_print_intent("надень принт на худи")
     assert is_composite_print_intent("put logo on t-shirt")
     assert is_composite_print_intent("перенеси маленькую меня на футболку как принт")
+    assert is_composite_print_intent("Добавь с фотографии где я маленькая принт на футболке")
     assert is_composite_print_intent("покажи второе фото как отражение в зеркале")
     assert not is_composite_print_intent("все вместе на фоне заката")
 

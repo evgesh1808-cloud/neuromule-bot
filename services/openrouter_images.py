@@ -176,10 +176,59 @@ COMPOSITE_REFINE_PROMPT_TEMPLATE = (
     "User Modification Request: {user_intent}"
 )
 
+# Длинный промпт + 2 фото: Image 1 = identity, Image 2 = принт, сцена из текста.
+COMPOSITE_CREATIVE_SCENE_PROMPT_TEMPLATE = (
+    "CRITICAL DUAL-REFERENCE CREATIVE COMPOSITE:\n"
+    "You are provided with two images in input_references.\n\n"
+    "Image 1 (Adult Identity Reference ONLY): Extract the woman's facial identity, age, "
+    "skin tone, bone structure, and distinctive features. Generate a COMPLETELY NEW scene, "
+    "pose, camera angle, lighting, wardrobe details, and background exactly as described "
+    "below. DO NOT copy Image 1 background, pose, crop, or clothing.\n\n"
+    "Image 2 (Childhood / Print Photo Reference ONLY): Use strictly as a vintage faded "
+    "photographic print on the t-shirt chest (or placement requested). Preserve the child's "
+    "face, age, and likeness from Image 2 inside the fabric print only. Never render Image 2 "
+    "as a second living person in the scene.\n\n"
+    "Scene and styling request: {user_intent}"
+)
+
 COMPOSITE_REFINE_NEGATIVE_PROMPT = (
     "changing main facial identity, blending image 2 features into the face, "
     "altering background of image 1, shifting body pose, changing character proportions, "
     "deforming the graphic print, second person standing next to subject, age morphing"
+)
+
+COMPOSITE_CREATIVE_NEGATIVE_PROMPT = (
+    "changing adult facial identity from image 1, blending image 2 child features into adult face, "
+    "second living person in scene, age morphing the adult subject, deforming fabric print, "
+    "illustration, CGI, cartoon, plastic skin"
+)
+
+COMPOSITE_INTENT_COMPRESS_THRESHOLD = 1400
+COMPOSITE_INTENT_MAX_CHARS = 1200
+
+_COMPOSITE_CREATIVE_SCENE_MARKERS: tuple[str, ...] = (
+    "селфи",
+    "selfie",
+    "интерьер",
+    "interior",
+    "освещ",
+    "lighting",
+    "ракурс",
+    "pose",
+    "сидит",
+    "стоит",
+    "комнат",
+    "background",
+    "тиара",
+    "tiara",
+    "макияж",
+    "makeup",
+    "photorealistic",
+    "8k",
+    "8к",
+    "portrait",
+    "портрет",
+    "фотореал",
 )
 
 COMPOSITE_MIRROR_PLACEMENT_SUFFIX = (
@@ -308,11 +357,76 @@ def resolve_composite_refine_model_key(model_key: str) -> str:
     return OPENROUTER_NANO_BANANA_PRO_MODEL
 
 
+def should_use_creative_composite_template(user_intent: str) -> bool:
+    """Длинный scene-промпт: Image 1 только identity, сцена из текста."""
+    low = (user_intent or "").strip().lower()
+    if not low:
+        return False
+    if len(low) > 450:
+        return True
+    hits = sum(1 for marker in _COMPOSITE_CREATIVE_SCENE_MARKERS if marker in low)
+    return hits >= 3
+
+
+async def _summarize_composite_intent_for_api(settings: Settings, user_prompt: str) -> str:
+    """Сжимает очень длинный RU/EN промпт для dual-ref composite."""
+    from services.ai_text import ask_ai_messages
+    from services.billing.pricing import FREE_CHAT_MODEL
+
+    text = (user_prompt or "").strip()
+    if not text:
+        return DEFAULT_PHOTO_USER_INTENT
+    if not (settings.openrouter_key or "").strip():
+        return text[:COMPOSITE_INTENT_MAX_CHARS]
+
+    instruction = (
+        "Summarize this dual-reference image generation request into concise professional "
+        "English (max 900 characters) for an AI image API.\n"
+        "Rules:\n"
+        "- Image 1 = adult woman identity reference ONLY (preserve her face/age).\n"
+        "- Image 2 = childhood photo used ONLY as a vintage faded print on the t-shirt.\n"
+        "- Describe the NEW scene: pose, selfie angle, outfit, tiara, interior, warm lighting.\n"
+        "- Do NOT ask to copy Image 1 background or pose.\n"
+        "Output ONLY the English summary, no quotes.\n\n"
+        f"{text}"
+    )
+    try:
+        out = await ask_ai_messages(
+            settings,
+            [{"role": "user", "content": instruction}],
+            timeout=min(float(settings.openrouter_timeout_sec or 30), 45.0),
+            models=[FREE_CHAT_MODEL],
+        )
+        summary = (out.get("content") or "").strip()
+        if summary:
+            return summary[:COMPOSITE_INTENT_MAX_CHARS]
+    except Exception:
+        logger.warning("composite intent summarize failed, using truncated original", exc_info=True)
+    return text[:COMPOSITE_INTENT_MAX_CHARS]
+
+
+async def prepare_composite_user_intent(
+    settings: Settings,
+    user_prompt: str,
+) -> tuple[str, bool]:
+    """EN intent + whether to use creative composite template."""
+    raw = (user_prompt or "").strip() or DEFAULT_PHOTO_USER_INTENT
+    creative = should_use_creative_composite_template(raw)
+    if len(raw) > COMPOSITE_INTENT_COMPRESS_THRESHOLD:
+        intent_en = await _summarize_composite_intent_for_api(settings, raw)
+    else:
+        intent_en = await translate_photo_user_intent(settings, raw)
+    if not creative:
+        creative = should_use_creative_composite_template(intent_en)
+    return intent_en.strip() or DEFAULT_PHOTO_USER_INTENT, creative
+
+
 def build_composite_refine_prompt(
     user_intent: str,
     *,
     base_image_url: str,
     object_image_url: str,
+    creative_scene: bool = False,
 ) -> dict[str, Any]:
     """OpenRouter payload fragment: prompt + ordered dual ``input_references``."""
     base_url = (base_image_url or "").strip()
@@ -321,19 +435,27 @@ def build_composite_refine_prompt(
         raise ExternalApiError("OpenRouter", "composite refine requires two image URLs")
 
     intent = (user_intent or DEFAULT_PHOTO_USER_INTENT).strip()
-    prompt = COMPOSITE_REFINE_PROMPT_TEMPLATE.format(user_intent=intent)
+    template = (
+        COMPOSITE_CREATIVE_SCENE_PROMPT_TEMPLATE
+        if creative_scene
+        else COMPOSITE_REFINE_PROMPT_TEMPLATE
+    )
+    prompt = template.format(user_intent=intent)
     from services.photo_multi_ref_routing import (
         is_composite_print_intent,
         is_mirror_reflection_intent,
     )
 
-    if is_mirror_reflection_intent(intent):
+    if not creative_scene and is_mirror_reflection_intent(intent):
         prompt = f"{prompt}{COMPOSITE_MIRROR_PLACEMENT_SUFFIX}"
-    elif is_composite_print_intent(intent):
+    elif is_composite_print_intent(intent) or creative_scene:
         prompt = f"{prompt}{COMPOSITE_PHOTO_PRINT_PLACEMENT_SUFFIX}"
+    negative = (
+        COMPOSITE_CREATIVE_NEGATIVE_PROMPT if creative_scene else COMPOSITE_REFINE_NEGATIVE_PROMPT
+    )
     prompt = append_negative_prompt_directive(
         prompt,
-        negative=COMPOSITE_REFINE_NEGATIVE_PROMPT,
+        negative=negative,
     )
     return {
         "prompt": prompt,
@@ -379,7 +501,7 @@ async def generate_openrouter_composite_photo(
     timeout_sec: float = DEFAULT_OPENROUTER_IMAGES_TIMEOUT_SEC,
 ) -> GeminiImageResult:
     """Dual-reference composite refine via OpenRouter Images API."""
-    intent_en = await translate_photo_user_intent(settings, user_prompt)
+    intent_en, creative_scene = await prepare_composite_user_intent(settings, user_prompt)
     base_png = await ensure_png_reference_data_url(base_image_data_url)
     object_png = await ensure_png_reference_data_url(object_image_data_url)
 
@@ -393,6 +515,7 @@ async def generate_openrouter_composite_photo(
                 intent_en,
                 base_image_url=base_png,
                 object_image_url=object_png,
+                creative_scene=creative_scene,
             )
             return await generate_openrouter_image(
                 settings,

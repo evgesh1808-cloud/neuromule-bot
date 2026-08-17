@@ -365,6 +365,25 @@ def test_build_composite_refine_prompt_child_print_suffix() -> None:
     assert "younger/child" in payload["prompt"]
 
 
+def test_build_composite_creative_scene_template() -> None:
+    from services.openrouter_images import should_use_creative_composite_template
+
+    long_scene = (
+        "photorealistic selfie portrait young woman home interior warm lighting tiara "
+        "white t-shirt vintage print child photo faded retro 8k detailed"
+    )
+    assert should_use_creative_composite_template(long_scene)
+    payload = build_composite_refine_prompt(
+        long_scene,
+        base_image_url="data:image/png;base64,base123",
+        object_image_url="data:image/png;base64,object456",
+        creative_scene=True,
+    )
+    assert "DUAL-REFERENCE CREATIVE COMPOSITE" in payload["prompt"]
+    assert "DO NOT copy Image 1 background" in payload["prompt"]
+    assert "Childhood / Print Photo Reference ONLY" in payload["prompt"]
+
+
 def test_resolve_composite_refine_model_key_routes_multi_image_stacks() -> None:
     assert resolve_composite_refine_model_key("nano_banana_pro") == OPENROUTER_NANO_BANANA_PRO_MODEL
     assert resolve_composite_refine_model_key("dalle_3") == OPENROUTER_GPT_IMAGE2_MODEL
