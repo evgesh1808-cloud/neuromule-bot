@@ -138,8 +138,6 @@ async def run_photo_generation_turn(
         return PhotoGenResult(outcome=PhotoGenOutcome.NEED_PROMPT)
 
     model_id = image_model_id or free_tier_image_model()
-    if group_multi_ref:
-        model_id = "nano_banana_pro"
     spend = await billing.spend_image_resource(user_id, model_id)
     if not spend.ok:
         if spend.error == "global_free_image_cap":

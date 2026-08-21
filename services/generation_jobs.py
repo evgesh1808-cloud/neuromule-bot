@@ -78,6 +78,8 @@ from services.openrouter_images import (
     generate_openrouter_photo,
     openrouter_images_configured,
     resolve_composite_refine_model_key,
+    resolve_multi_ref_group_fallbacks,
+    resolve_multi_ref_group_model_key,
     resolve_reference_to_png_data_url,
 )
 from services.pollinations_client import generate_flux_schnell_image
@@ -685,7 +687,13 @@ async def _generate_openrouter_multi_ref_group_model(
     if len(refs) < 2:
         raise ExternalApiError("OpenRouter", "group multi-ref requires at least 2 references")
 
-    or_model = OPENROUTER_NANO_BANANA_PRO_MODEL
+    or_model = resolve_multi_ref_group_model_key(model_key)
+    logger.info(
+        "group multi-ref openrouter: menu=%s → %s refs=%s",
+        model_key,
+        or_model,
+        len(refs),
+    )
     data_urls: list[str] = []
     for file_id in refs:
         data_urls.append(
@@ -700,6 +708,7 @@ async def _generate_openrouter_multi_ref_group_model(
         user_prompt=prompt,
         reference_image_data_urls=data_urls,
         aspect_ratio=openrouter_aspect_ratio(aspect_ratio),
+        fallback_models=resolve_multi_ref_group_fallbacks(model_key),
         timeout_sec=float(EXTERNAL_API_TIMEOUT_SEC),
     )
 

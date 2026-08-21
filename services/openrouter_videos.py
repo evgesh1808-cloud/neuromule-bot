@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
+from io import BytesIO
 from typing import Any
 
 import httpx
@@ -11,7 +13,7 @@ import httpx
 from config import Settings
 from services.api_resilience import ExternalApiError, clip_error_text
 from services.openrouter_images import openrouter_images_configured
-from services.replicate_client import telegram_photo_download_url
+from services.streaming_download import DEFAULT_MAX_BYTES, stream_download_to_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +21,7 @@ OPENROUTER_VIDEOS_URL = "https://openrouter.ai/api/v1/videos"
 OPENROUTER_VIDEOS_ORIGIN = "https://openrouter.ai"
 
 OPENROUTER_ANIMATE_VIDEO_MODEL = "bytedance/seedance-2.0-mini"
+ANIMATE_FRAME_MAX_BYTES = DEFAULT_MAX_BYTES
 
 ANIMATE_DEFAULT_PROMPT = (
     "Cinematic subtle portrait movement, realistic eyes blinking, natural gentle breathing, "
@@ -27,6 +30,16 @@ ANIMATE_DEFAULT_PROMPT = (
 )
 
 _TERMINAL_FAILURE_STATUSES = frozenset({"failed", "cancelled", "expired"})
+_IMAGE_ERROR_MARKERS = (
+    "image",
+    "frame",
+    "url",
+    "download",
+    "fetch",
+    "invalid",
+    "unable to retrieve",
+    "could not",
+)
 
 
 def openrouter_videos_configured(settings: Settings) -> bool:
@@ -34,12 +47,17 @@ def openrouter_videos_configured(settings: Settings) -> bool:
     return openrouter_images_configured(settings)
 
 
-def build_frame_images(first_frame_url: str) -> list[dict[str, str]]:
-    """OpenRouter Video Cookbook: одна фотография как first frame."""
-    url = (first_frame_url or "").strip()
+def build_frame_images(image_url: str) -> list[dict[str, Any]]:
+    """Актуальный OpenRouter Video API: ``ContentPartImage`` в ``frame_images``."""
+    url = (image_url or "").strip()
     if not url:
         raise ExternalApiError("OpenRouter", "empty frame image URL")
-    return [{"first_frame": url}]
+    return [
+        {
+            "type": "image_url",
+            "image_url": {"url": url},
+        }
+    ]
 
 
 def _resolve_animate_model(settings: Settings) -> str:
@@ -54,6 +72,114 @@ def _auth_headers(api_key: str) -> dict[str, str]:
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
+
+
+def _is_telegram_bot_file_url(url: str) -> bool:
+    return "api.telegram.org/file/bot" in (url or "").lower()
+
+
+def _is_telegram_file_id(photo_ref: str) -> bool:
+    ref = (photo_ref or "").strip()
+    return bool(ref) and not ref.startswith(("http://", "https://", "data:"))
+
+
+def _should_use_data_url_first(photo_ref: str) -> bool:
+    ref = (photo_ref or "").strip()
+    if not ref:
+        return False
+    if ref.startswith("data:"):
+        return True
+    if _is_telegram_file_id(ref):
+        return True
+    return _is_telegram_bot_file_url(ref)
+
+
+def _mime_from_path(path: str) -> str:
+    low = (path or "").lower()
+    if low.endswith(".png"):
+        return "image/png"
+    if low.endswith(".webp"):
+        return "image/webp"
+    if low.endswith(".gif"):
+        return "image/gif"
+    return "image/jpeg"
+
+
+def _bytes_to_data_url(data: bytes, mime: str = "image/jpeg") -> str:
+    if not data:
+        raise ExternalApiError("OpenRouter", "empty image bytes")
+    if len(data) > ANIMATE_FRAME_MAX_BYTES:
+        raise ExternalApiError("OpenRouter", "frame image exceeds size limit")
+    encoded = base64.standard_b64encode(data).decode("ascii")
+    return f"data:{mime};base64,{encoded}"
+
+
+async def _download_telegram_file_id(bot: Any, file_id: str) -> str:
+    tg_file = await bot.get_file(file_id)
+    if not tg_file or not tg_file.file_path:
+        raise ExternalApiError("OpenRouter", "Telegram did not return file_path for photo")
+    buffer = BytesIO()
+    await bot.download_file(tg_file.file_path, buffer)
+    raw = buffer.getvalue()
+    return _bytes_to_data_url(raw, _mime_from_path(tg_file.file_path))
+
+
+async def _download_http_image_to_data_url(settings: Settings, url: str) -> str:
+    from services.openrouter_http import get_openrouter_http_client
+
+    client = await get_openrouter_http_client(settings)
+    data = await stream_download_to_bytes(
+        client,
+        url,
+        max_bytes=ANIMATE_FRAME_MAX_BYTES,
+        source="openrouter_video_frame",
+    )
+    if not data:
+        raise ExternalApiError("OpenRouter", "failed to download frame image")
+    mime = _mime_from_path(url)
+    return _bytes_to_data_url(data, mime)
+
+
+async def photo_ref_to_data_url(settings: Settings, bot: Any, photo_ref: str) -> str:
+    """Telegram file_id / TG CDN URL / https → inline ``data:*;base64,...``."""
+    ref = (photo_ref or "").strip()
+    if not ref:
+        raise ExternalApiError("OpenRouter", "empty photo reference")
+    if ref.startswith("data:"):
+        return ref
+    if _is_telegram_file_id(ref):
+        return await _download_telegram_file_id(bot, ref)
+    if ref.startswith(("http://", "https://")):
+        return await _download_http_image_to_data_url(settings, ref)
+    raise ExternalApiError("OpenRouter", "unsupported photo reference")
+
+
+async def resolve_frame_image_url(
+    settings: Settings,
+    bot: Any,
+    photo_ref: str,
+    *,
+    force_data_url: bool = False,
+) -> str:
+    """
+    URL для ``frame_images[].image_url.url``.
+
+    Telegram-источники всегда инлайним в data-URL — OpenRouter не скачивает
+    ``api.telegram.org/file/bot/...`` без нашего токена.
+    """
+    ref = (photo_ref or "").strip()
+    if force_data_url or _should_use_data_url_first(ref):
+        return await photo_ref_to_data_url(settings, bot, ref)
+    if ref.startswith(("http://", "https://", "data:")):
+        return ref
+    return await photo_ref_to_data_url(settings, bot, ref)
+
+
+def _response_looks_like_image_error(status_code: int, body: str) -> bool:
+    if status_code not in (400, 422):
+        return False
+    low = (body or "").lower()
+    return any(marker in low for marker in _IMAGE_ERROR_MARKERS)
 
 
 def _resolve_polling_url(job_payload: dict[str, Any]) -> str:
@@ -87,11 +213,19 @@ def _http_error_from_response(response: httpx.Response, *, phase: str) -> Extern
     return ExternalApiError("OpenRouter", f"{phase} HTTP {response.status_code}: {snippet}")
 
 
-async def _resolve_photo_url(bot: Any, photo_ref: str) -> str:
-    ref = (photo_ref or "").strip()
-    if ref.startswith(("http://", "https://")):
-        return ref
-    return await telegram_photo_download_url(bot, ref)
+async def _submit_video_job(
+    client: httpx.AsyncClient,
+    *,
+    api_key: str,
+    body: dict[str, Any],
+    submit_timeout: float,
+) -> httpx.Response:
+    return await client.post(
+        OPENROUTER_VIDEOS_URL,
+        headers=_auth_headers(api_key),
+        json=body,
+        timeout=httpx.Timeout(submit_timeout, connect=30.0),
+    )
 
 
 async def generate_openrouter_animate_video(
@@ -106,18 +240,15 @@ async def generate_openrouter_animate_video(
 ) -> str:
     """
     Image-to-video через OpenRouter: submit → poll (18s) → URL готового .mp4.
-    Модель по умолчанию: ``bytedance/seedance-2.0-mini``.
     """
     if not openrouter_videos_configured(settings):
         raise ExternalApiError("OpenRouter", "OPENROUTER_API_KEY не задан")
 
-    file_id = (telegram_file_id or "").strip()
-    if not file_id:
+    photo_ref = (telegram_file_id or "").strip()
+    if not photo_ref:
         raise ExternalApiError("OpenRouter", "empty telegram_file_id")
 
     cleaned_prompt = (prompt or ANIMATE_DEFAULT_PROMPT).strip()
-    image_url = await _resolve_photo_url(bot, file_id)
-    frame_images = build_frame_images(image_url)
 
     from services.billing.chat_pipeline import _collect_openrouter_keys
 
@@ -125,7 +256,7 @@ async def generate_openrouter_animate_video(
     if not api_keys:
         raise ExternalApiError("OpenRouter", "OPENROUTER_API_KEY не задан")
 
-    models = (_resolve_animate_model(settings),)
+    model_id = _resolve_animate_model(settings)
     poll_interval = float(getattr(settings, "openrouter_video_poll_interval_sec", 18.0) or 18.0)
     poll_timeout = float(getattr(settings, "openrouter_video_poll_timeout_sec", 600.0) or 600.0)
     submit_timeout = min(120.0, poll_timeout)
@@ -142,30 +273,48 @@ async def generate_openrouter_animate_video(
         "aspect_ratio": aspect_ratio,
         "resolution": resolution,
         "duration": duration,
-        "frame_images": frame_images,
         "generate_audio": False,
     }
 
+    force_data_modes = (
+        [True]
+        if _should_use_data_url_first(photo_ref)
+        else [False, True]
+    )
+
     last_exc: ExternalApiError | None = None
 
-    for model_id in models:
-        body = {**body_base, "model": model_id}
+    for force_data_url in force_data_modes:
+        frame_url = await resolve_frame_image_url(
+            settings,
+            bot,
+            photo_ref,
+            force_data_url=force_data_url,
+        )
+        if force_data_url:
+            logger.info(
+                "OpenRouter video frame inline data-url len=%s",
+                len(frame_url),
+            )
+
+        body = {
+            **body_base,
+            "model": model_id,
+            "frame_images": build_frame_images(frame_url),
+        }
+        retry_with_data_url = False
 
         for key_idx, api_key in enumerate(api_keys):
             try:
-                response = await client.post(
-                    OPENROUTER_VIDEOS_URL,
-                    headers=_auth_headers(api_key),
-                    json=body,
-                    timeout=httpx.Timeout(submit_timeout, connect=30.0),
+                response = await _submit_video_job(
+                    client,
+                    api_key=api_key,
+                    body=body,
+                    submit_timeout=submit_timeout,
                 )
             except httpx.HTTPError as exc:
                 last_exc = ExternalApiError("OpenRouter", clip_error_text(exc))
                 if key_idx + 1 < len(api_keys):
-                    logger.warning(
-                        "OpenRouter video submit HTTP error key=...%s — next key",
-                        api_key[-6:],
-                    )
                     continue
                 raise last_exc from exc
 
@@ -182,6 +331,15 @@ async def generate_openrouter_animate_video(
 
             if response.status_code >= 400:
                 last_exc = _http_error_from_response(response, phase="video submit")
+                if (
+                    not force_data_url
+                    and _response_looks_like_image_error(
+                        response.status_code,
+                        response.text or "",
+                    )
+                ):
+                    retry_with_data_url = True
+                    break
                 raise last_exc
 
             try:
@@ -192,9 +350,10 @@ async def generate_openrouter_animate_video(
                 raise ExternalApiError("OpenRouter", "video submit response is not an object")
 
             logger.info(
-                "OpenRouter video submitted model=%s job_id=%s key=...%s",
+                "OpenRouter video submitted model=%s job_id=%s inline=%s key=...%s",
                 model_id,
                 job.get("id"),
+                force_data_url,
                 api_key[-6:],
             )
             return await _poll_video_job(
@@ -204,6 +363,12 @@ async def generate_openrouter_animate_video(
                 poll_interval_sec=poll_interval,
                 poll_timeout_sec=poll_timeout,
             )
+
+        if retry_with_data_url:
+            continue
+        if last_exc is not None:
+            raise last_exc
+        break
 
     if last_exc is not None:
         raise last_exc

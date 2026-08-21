@@ -416,6 +416,16 @@ def resolve_composite_refine_fallbacks(model_key: str) -> tuple[str, ...]:
     return tuple(slug for slug in chain if slug != primary)
 
 
+def resolve_multi_ref_group_model_key(model_key: str) -> str:
+    """Multi-reference group (2–10 фото) → OpenRouter stack выбранной модели меню."""
+    return resolve_composite_refine_model_key(model_key)
+
+
+def resolve_multi_ref_group_fallbacks(model_key: str) -> tuple[str, ...]:
+    """Fallback-цепочка group multi-ref после primary slug (без дубликата primary)."""
+    return resolve_composite_refine_fallbacks(model_key)
+
+
 def resolve_creative_composite_fallbacks(model_key: str) -> tuple[str, ...]:
     """Fallback для creative composite (длинный scene + 2 фото)."""
     from services.billing.image_pipeline import normalize_image_model
@@ -567,6 +577,25 @@ async def resolve_reference_to_png_data_url(
     reference_mime: str = "image/jpeg",
 ) -> str:
     """Telegram file_id / URL / bytes → PNG base64 data-URL для OpenRouter Images."""
+    fid = (file_id or "").strip()
+    if (
+        fid
+        and bot is not None
+        and not (reference_url or "").strip()
+        and reference_bytes is None
+    ):
+        from io import BytesIO
+
+        tg_file = await bot.get_file(fid)
+        if not tg_file or not tg_file.file_path:
+            raise ExternalApiError("OpenRouter", "Telegram did not return file_path for reference")
+        buffer = BytesIO()
+        await bot.download_file(tg_file.file_path, buffer)
+        raw = buffer.getvalue()
+        if not raw:
+            raise ExternalApiError("OpenRouter", "empty reference download from Telegram")
+        return _image_bytes_to_png_data_url(raw)
+
     resolved = await resolve_openrouter_reference_url(
         bot=bot,
         file_id=file_id,
@@ -830,13 +859,19 @@ async def generate_openrouter_multi_ref_group_photo(
     for raw_url in reference_image_data_urls:
         png_refs.append(await ensure_png_reference_data_url(raw_url))
 
+    api_prompt = await build_multi_banana_prompt_from_ru(
+        settings,
+        scene_prompt,
+        len(png_refs),
+    )
+
     last_exc: ExternalApiError | None = None
     candidates = ((model or "").strip(), *fallback_models)
     for idx, slug in enumerate(candidates):
         if not slug:
             continue
         try:
-            payload = build_multi_ref_group_payload(scene_prompt, png_refs)
+            payload = build_multi_ref_group_payload(api_prompt, png_refs)
             return await generate_openrouter_image(
                 settings,
                 model=slug,
