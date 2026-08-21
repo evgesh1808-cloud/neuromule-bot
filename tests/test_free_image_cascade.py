@@ -384,3 +384,19 @@ async def test_failover_on_429_shifts_within_pool(monkeypatch: pytest.MonkeyPatc
     assert out.data == b"ok"
     assert seen == ["g1", "g2"]
     assert fic.global_provider_index == 2
+
+
+@pytest.mark.asyncio
+async def test_generate_paid_image_fallback_uses_pollinations(monkeypatch: pytest.MonkeyPatch) -> None:
+    from services.free_image_cascade import generate_paid_image_fallback
+
+    async def _pollinations(_prompt: str) -> GeminiImageResult:
+        return GeminiImageResult(data=b"paid-fallback")
+
+    monkeypatch.setattr(
+        "services.free_image_cascade.generate_flux_schnell_image",
+        _pollinations,
+    )
+
+    out = await generate_paid_image_fallback("sunset over mountains")
+    assert out.data == b"paid-fallback"

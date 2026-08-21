@@ -39,7 +39,7 @@ from services.replicate_client import (
 from services.suno_client import SunoTrack, generate_music_track, suno_configured
 from business_catalog import catalog
 from config import settings as app_settings
-from services.api_resilience import ExternalApiError, fail_generation_task, wrap_http_error
+from services.api_resilience import ExternalApiError, fail_generation_task, is_provider_quota_error, wrap_http_error
 from services.billing.translator import (
     enhance_music_style_prompt,
     enhance_video_prompt_for_replicate,
@@ -52,7 +52,11 @@ from services.photo_aspect_ratio import (
 )
 from services.photo_edit_session import persist_photo_edit_session, save_photo_edit_session
 from services.billing.image_pipeline import FREE_PHOTO_MODEL_KEY, normalize_image_model, free_tier_image_model
-from services.free_image_cascade import FreeImageCascadeExhausted, generate_free_tier_image
+from services.free_image_cascade import (
+    FreeImageCascadeExhausted,
+    generate_free_tier_image,
+    generate_paid_image_fallback,
+)
 from services.openrouter_images import (
     resolve_composite_refine_fallbacks,
     GPT_IMAGE2_FALLBACKS,
@@ -63,6 +67,7 @@ from services.openrouter_images import (
     OPENROUTER_GPT_IMAGE2_MODEL,
     OPENROUTER_NANO_BANANA2_MODEL,
     OPENROUTER_NANO_BANANA_PRO_MODEL,
+    data_url_to_reference_bytes,
     generate_openrouter_composite_photo,
     generate_openrouter_multi_ref_group_photo,
     generate_openrouter_photo,
@@ -711,15 +716,33 @@ async def _generate_openrouter_photo_model(
     if not openrouter_images_configured(app_settings):
         raise ExternalApiError("OpenRouter", "OPENROUTER_API_KEY не задан")
 
-    return await generate_openrouter_photo(
-        app_settings,
-        model=model,
-        user_prompt=prompt,
-        aspect_ratio=openrouter_aspect_ratio(aspect_ratio),
-        reference_data_url=reference_data_url,
-        fallback_models=fallback_models,
-        timeout_sec=float(EXTERNAL_API_TIMEOUT_SEC),
-    )
+    try:
+        return await generate_openrouter_photo(
+            app_settings,
+            model=model,
+            user_prompt=prompt,
+            aspect_ratio=openrouter_aspect_ratio(aspect_ratio),
+            reference_data_url=reference_data_url,
+            fallback_models=fallback_models,
+            timeout_sec=float(EXTERNAL_API_TIMEOUT_SEC),
+        )
+    except ExternalApiError as exc:
+        if not is_provider_quota_error(exc):
+            raise
+        logger.warning(
+            "OpenRouter Images quota/credits exhausted for model=%s, local fallback: %s",
+            model,
+            exc,
+        )
+        ref_bytes: bytes | None = None
+        ref_mime = "image/jpeg"
+        if (reference_data_url or "").strip():
+            ref_bytes, ref_mime = data_url_to_reference_bytes(reference_data_url.strip())
+        return await generate_paid_image_fallback(
+            prompt,
+            reference_image_bytes=ref_bytes,
+            reference_mime=ref_mime,
+        )
 
 
 async def _generate_photo_result(

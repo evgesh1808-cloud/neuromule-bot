@@ -46,6 +46,25 @@ class ExternalApiError(Exception):
         super().__init__(safe)
 
 
+def is_provider_quota_error(exc: BaseException) -> bool:
+    """True для 402/429/quota — можно пробовать другой ключ или локальный fallback."""
+    msg = str(exc).lower()
+    return any(
+        token in msg
+        for token in (
+            "http 402",
+            "http 429",
+            "402",
+            "429",
+            "insufficient credits",
+            "insufficient balance",
+            "resource_exhausted",
+            "quota exceeded",
+            "rate limit",
+        )
+    )
+
+
 async def refund_generation_task(task: GenTask) -> None:
     """Вернуть ⚡/💎 по ``billing_charge_id`` или legacy-полям задачи."""
     if task.billing_charge_id:

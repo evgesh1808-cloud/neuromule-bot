@@ -26,6 +26,20 @@ from services.use_cases.photo_generation_turn import PhotoGenOutcome, run_photo_
 logger = logging.getLogger(__name__)
 
 
+def _photo_gen_outcome_message(outcome: PhotoGenOutcome) -> str:
+    if outcome is PhotoGenOutcome.INSUFFICIENT_BALANCE:
+        return msg.TXT_INSUFFICIENT_BALANCE
+    if outcome is PhotoGenOutcome.DAILY_LIMIT_EXCEEDED:
+        return msg.TXT_PHOTO_DAILY_LIMIT.format(limit=FREE_IMAGEN_DAILY_LIMIT)
+    if outcome is PhotoGenOutcome.GLOBAL_FREE_IMAGE_CAP:
+        return msg.TXT_FREE_IMAGE_GLOBAL_CAP
+    if outcome is PhotoGenOutcome.FREE_IMAGE_MODEL_BLOCKED:
+        return msg.TXT_FREE_IMAGE_MODEL_BLOCKED
+    if outcome is PhotoGenOutcome.NEED_PROMPT:
+        return msg.TXT_CREATE_IMAGE_AFTER_MODEL
+    return msg.TXT_GEN_JOB_FAILED
+
+
 def format_agent_image_ack(model_label: str, aspect_ratio: str) -> str:
     return (
         f"🤖 Распознал команду на рисование! "
@@ -268,7 +282,10 @@ async def try_agent_image_intent_telegram(message: Message, state: FSMContext) -
         status_message_id=status_message_id,
     )
     if outcome is not PhotoGenOutcome.SUCCESS:
-        await message.answer(msg.TXT_GEN_JOB_FAILED, parse_mode=ParseMode.HTML)
+        await message.answer(
+            _photo_gen_outcome_message(outcome),
+            parse_mode=ParseMode.HTML,
+        )
     return True
 
 
@@ -312,5 +329,5 @@ async def try_agent_image_intent_vk(message: Any) -> bool:
         bot=None,
     )
     if outcome is not PhotoGenOutcome.SUCCESS:
-        await vk_answer(message, msg.TXT_GEN_JOB_FAILED)
+        await vk_answer(message, _photo_gen_outcome_message(outcome))
     return True

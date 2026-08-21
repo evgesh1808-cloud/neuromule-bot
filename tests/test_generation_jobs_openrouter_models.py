@@ -88,3 +88,35 @@ async def test_selfie_routes_to_nano_banana_pro_openrouter() -> None:
         reference_data_url="data:image/jpeg;base64,abc",
         fallback_models=NANO_BANANO2_FALLBACKS,
     )
+
+
+@pytest.mark.asyncio
+async def test_openrouter_photo_model_falls_back_on_402() -> None:
+    from services import generation_jobs
+    from services.api_resilience import ExternalApiError
+
+    with (
+        patch.object(
+            generation_jobs,
+            "generate_openrouter_photo",
+            new_callable=AsyncMock,
+            side_effect=ExternalApiError("OpenRouter", "HTTP 402: insufficient credits"),
+        ),
+        patch.object(
+            generation_jobs,
+            "generate_paid_image_fallback",
+            new_callable=AsyncMock,
+            return_value=GeminiImageResult(data=b"fallback-bytes"),
+        ) as mock_fallback,
+    ):
+        result = await generation_jobs._generate_openrouter_photo_model(
+            OPENROUTER_FLUX_PAID_MODEL,
+            "red apple",
+        )
+
+    assert result.data == b"fallback-bytes"
+    mock_fallback.assert_awaited_once_with(
+        "red apple",
+        reference_image_bytes=None,
+        reference_mime="image/jpeg",
+    )

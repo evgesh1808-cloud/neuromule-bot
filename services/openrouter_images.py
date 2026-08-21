@@ -22,7 +22,8 @@ OPENROUTER_FLUX_PAID_MODEL = "black-forest-labs/flux.2-pro"
 OPENROUTER_FLUX_SCHNELL_OR_MODEL = "black-forest-labs/flux-schnell"
 OPENROUTER_FLUX_DEV_OR_MODEL = "black-forest-labs/flux-1.1-pro"
 OPENROUTER_NANO_BANANA2_MODEL = "google/gemini-3.1-flash-image-preview"
-OPENROUTER_NANO_BANANA_PRO_MODEL = "google/gemini-3-pro-image"
+# OPENROUTER_NANO_BANANA_PRO_MODEL = "google/gemini-3-pro-image"
+OPENROUTER_NANO_BANANA_PRO_MODEL = "google/gemini-3-pro-image-preview"
 OPENROUTER_GPT_IMAGE2_MODEL = "openai/gpt-image-2"
 OPENROUTER_FLUX_SCHNELL_MODEL = OPENROUTER_FLUX_PAID_MODEL
 
@@ -1225,6 +1226,29 @@ def reference_bytes_to_png_data_url(image_bytes: bytes) -> str:
     return _image_bytes_to_png_data_url(image_bytes)
 
 
+def data_url_to_reference_bytes(data_url: str) -> tuple[bytes, str]:
+    """``data:*;base64,...`` → (bytes, mime) для Gemini i2i fallback."""
+    ref = (data_url or "").strip()
+    if not ref.startswith("data:"):
+        raise ExternalApiError("OpenRouter", "reference must be a data URL")
+    header, _, payload = ref.partition(",")
+    if not payload:
+        raise ExternalApiError("OpenRouter", "empty reference data URL")
+    mime = "image/jpeg"
+    meta = header[5:]
+    if ";" in meta:
+        mime = meta.split(";", 1)[0].strip() or mime
+    elif meta:
+        mime = meta.strip() or mime
+    try:
+        raw = base64.standard_b64decode(payload)
+    except ValueError as exc:
+        raise ExternalApiError("OpenRouter", "invalid reference base64") from exc
+    if not raw:
+        raise ExternalApiError("OpenRouter", "empty reference image bytes")
+    return raw, mime
+
+
 async def resolve_reference_input_url(reference_url: str | None) -> str | None:
     """Telegram/https/data → PNG base64 data-URL для ``input_references`` OpenRouter."""
     ref = (reference_url or "").strip()
@@ -1382,53 +1406,91 @@ async def generate_openrouter_image(
         body["resolution"] = resolution
     _merge_body_extensions(body, body_extensions)
 
-    api_key = (settings.openrouter_key or "").strip()
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
+    from services.billing.chat_pipeline import _collect_openrouter_keys
+
+    api_keys = _collect_openrouter_keys(settings)
+    if not api_keys:
+        raise ExternalApiError("OpenRouter", "OPENROUTER_API_KEY не задан")
 
     try:
         from services.openrouter_http import get_openrouter_http_client
 
         client = await get_openrouter_http_client(settings)
-        async with asyncio.timeout(timeout_sec):
-            response = await client.post(
-                OPENROUTER_IMAGES_URL,
-                headers=headers,
-                json=body,
-                timeout=httpx.Timeout(timeout_sec, connect=30.0),
-            )
-    except TimeoutError as exc:
-        raise ExternalApiError("OpenRouter", "timeout") from exc
     except httpx.HTTPError as exc:
         raise ExternalApiError("OpenRouter", clip_error_text(exc)) from exc
 
-    if response.status_code >= 400:
-        response_text = response.text or ""
-        logger.error(
-            "OpenRouter Images HTTP %s model=%s aspect_ratio=%s refs=%s response=%s",
-            response.status_code,
-            model_id,
-            aspect_ratio,
-            len(input_references or []),
-            response_text,
-        )
-        snippet = clip_error_text(response_text[:4000] or f"HTTP {response.status_code}")
-        raise ExternalApiError("OpenRouter", f"HTTP {response.status_code}: {snippet}")
+    last_exc: ExternalApiError | None = None
+    for key_idx, api_key in enumerate(api_keys):
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        try:
+            async with asyncio.timeout(timeout_sec):
+                response = await client.post(
+                    OPENROUTER_IMAGES_URL,
+                    headers=headers,
+                    json=body,
+                    timeout=httpx.Timeout(timeout_sec, connect=30.0),
+                )
+        except TimeoutError as exc:
+            last_exc = ExternalApiError("OpenRouter", "timeout")
+            if key_idx + 1 < len(api_keys):
+                logger.warning(
+                    "OpenRouter Images timeout on key ...%s, trying next key",
+                    api_key[-6:],
+                )
+                continue
+            raise last_exc from exc
+        except httpx.HTTPError as exc:
+            last_exc = ExternalApiError("OpenRouter", clip_error_text(exc))
+            if key_idx + 1 < len(api_keys):
+                logger.warning(
+                    "OpenRouter Images HTTP error on key ...%s, trying next key: %s",
+                    api_key[-6:],
+                    last_exc,
+                )
+                continue
+            raise last_exc from exc
 
-    try:
-        payload = response.json()
-    except ValueError as exc:
-        raise ExternalApiError("OpenRouter", "invalid JSON response") from exc
+        if response.status_code >= 400:
+            response_text = response.text or ""
+            logger.error(
+                "OpenRouter Images HTTP %s model=%s aspect_ratio=%s refs=%s key=...%s response=%s",
+                response.status_code,
+                model_id,
+                aspect_ratio,
+                len(input_references or []),
+                api_key[-6:],
+                response_text,
+            )
+            snippet = clip_error_text(response_text[:4000] or f"HTTP {response.status_code}")
+            last_exc = ExternalApiError("OpenRouter", f"HTTP {response.status_code}: {snippet}")
+            if response.status_code in (402, 429) and key_idx + 1 < len(api_keys):
+                logger.warning(
+                    "OpenRouter Images %s on key ...%s — rotate to next pool key",
+                    response.status_code,
+                    api_key[-6:],
+                )
+                continue
+            raise last_exc
 
-    if not isinstance(payload, dict):
-        raise ExternalApiError("OpenRouter", "response is not a JSON object")
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise ExternalApiError("OpenRouter", "invalid JSON response") from exc
 
-    try:
-        return parse_openrouter_image_payload(payload)
-    except RuntimeError as exc:
-        raise ExternalApiError("OpenRouter", clip_error_text(exc)) from exc
+        if not isinstance(payload, dict):
+            raise ExternalApiError("OpenRouter", "response is not a JSON object")
+
+        try:
+            return parse_openrouter_image_payload(payload)
+        except RuntimeError as exc:
+            raise ExternalApiError("OpenRouter", clip_error_text(exc)) from exc
+
+    if last_exc is not None:
+        raise last_exc
+    raise ExternalApiError("OpenRouter", "no API keys in pool")
 
 
 async def upscale_openrouter_image_url(

@@ -808,3 +808,55 @@ async def generate_free_tier_image(
 
     metrics.incr("free_image.cascade.exhausted")
     raise FreeImageCascadeExhausted("FluxFreeCascade", _clip_err(last_err))
+
+
+async def generate_paid_image_fallback(
+    prompt: str,
+    *,
+    reference_image_bytes: bytes | None = None,
+    reference_mime: str = "image/jpeg",
+) -> GeminiImageResult:
+    """Запасной путь для платных моделей, когда OpenRouter Images вернул 402/429.
+
+    Pollinations (t2i) → Gemini Flash/Imagen spare (t2i/i2i). OpenRouter не вызываем.
+    """
+    text = str(prompt or "").strip() or "Professional photo"
+    has_ref = bool(reference_image_bytes)
+    timeout = min(float(settings.free_image_cascade_timeout_sec or 90.0), 90.0)
+    last_err = "unknown"
+
+    if not has_ref:
+        try:
+            logger.info("Paid photo fallback → Pollinations")
+            return await _try_pollinations_flux(text)
+        except ExternalApiError as exc:
+            last_err = _clip_err(exc)
+            logger.warning("Paid fallback Pollinations failed: %s", last_err)
+
+    if has_ref and reference_image_bytes is not None:
+        try:
+            return await _run_keyed_api_step(
+                _try_gemini_i2i_spare_wheel(
+                    text,
+                    reference_image_bytes=reference_image_bytes,
+                    reference_mime=reference_mime,
+                    timeout=timeout,
+                )
+            )
+        except ExternalApiError as exc:
+            last_err = _clip_err(exc)
+            logger.warning("Paid fallback Gemini i2i failed: %s", last_err)
+    else:
+        try:
+            return await _run_keyed_api_step(
+                _try_gemini_spare_wheel(
+                    text,
+                    reference_mime=reference_mime,
+                    timeout=timeout,
+                )
+            )
+        except ExternalApiError as exc:
+            last_err = _clip_err(exc)
+            logger.warning("Paid fallback Gemini t2i failed: %s", last_err)
+
+    raise ExternalApiError("PaidPhotoFallback", f"exhausted: {last_err}")

@@ -321,6 +321,48 @@ async def test_generate_openrouter_image_no_zod_fields_for_flux() -> None:
     assert "negative_prompt" not in body
 
 
+@pytest.mark.asyncio
+async def test_generate_openrouter_image_rotates_key_on_402() -> None:
+    settings = Settings(tg_token="t", openrouter_key="key-one", openrouter_key_2="key-two")
+    fail_response = MagicMock()
+    fail_response.status_code = 402
+    fail_response.text = '{"error":{"message":"Insufficient credits"}}'
+    ok_response = MagicMock()
+    ok_response.status_code = 200
+    ok_response.text = ""
+    ok_response.json.return_value = {"data": [{"url": "https://cdn.example/out.webp"}]}
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(side_effect=[fail_response, ok_response])
+
+    with patch(
+        "services.openrouter_http.get_openrouter_http_client",
+        AsyncMock(return_value=mock_client),
+    ):
+        result = await generate_openrouter_image(
+            settings,
+            model=OPENROUTER_FLUX_PAID_MODEL,
+            prompt="test",
+        )
+
+    assert result.url == "https://cdn.example/out.webp"
+    assert mock_client.post.await_count == 2
+    assert mock_client.post.await_args_list[0].kwargs["headers"]["Authorization"] == "Bearer key-one"
+    assert mock_client.post.await_args_list[1].kwargs["headers"]["Authorization"] == "Bearer key-two"
+
+
+def test_data_url_to_reference_bytes_roundtrip() -> None:
+    from services.openrouter_images import data_url_to_reference_bytes, reference_bytes_to_png_data_url
+
+    buf = BytesIO()
+    Image.new("RGB", (4, 4), color=(10, 20, 30)).save(buf, format="PNG")
+    raw = buf.getvalue()
+    data_url = reference_bytes_to_png_data_url(raw)
+    decoded, mime = data_url_to_reference_bytes(data_url)
+    assert mime == "image/png"
+    assert decoded.startswith(b"\x89PNG\r\n\x1a\n")
+    assert len(decoded) > 32
+
+
 def test_build_composite_refine_prompt_dual_refs_and_intent() -> None:
     base_url = "data:image/png;base64,base123"
     object_url = "data:image/png;base64,object456"
