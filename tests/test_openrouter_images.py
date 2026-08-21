@@ -389,13 +389,13 @@ def test_build_composite_refine_prompt_dual_refs_and_intent() -> None:
     assert refs[1]["image_url"]["url"] == object_url
 
 
-def test_build_composite_refine_prompt_mirror_suffix() -> None:
+def test_build_composite_refine_prompt_merch_suffix() -> None:
     payload = build_composite_refine_prompt(
-        "покажи второе фото как отражение в зеркале",
+        "надень принт на футболке",
         base_image_url="data:image/png;base64,base123",
         object_image_url="data:image/png;base64,object456",
     )
-    assert "MIRROR PLACEMENT" in payload["prompt"]
+    assert "PRINT PLACEMENT" in payload["prompt"] or "print" in payload["prompt"].lower()
 
 
 def test_build_composite_refine_prompt_child_print_suffix() -> None:

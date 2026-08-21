@@ -8,7 +8,8 @@ import random
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramNetworkError
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery
+from aiogram.enums import ParseMode
+from aiogram.types import CallbackQuery, Message
 
 from config import settings
 from content import messages as msg
@@ -34,6 +35,7 @@ from services.photo_edit_session import (
 )
 from services.photo_gen_status import send_photo_gen_status_message
 from services.repository import get_user_row, try_consume_crystals
+from services.use_cases.animate_generation_turn import AnimateGenOutcome, run_animate_generation_turn
 from services.use_cases.photo_generation_turn import PhotoGenOutcome, run_photo_generation_turn
 
 logger = logging.getLogger(__name__)
@@ -42,6 +44,38 @@ router = Router()
 
 UPSCALE_X2_COST = 1
 UPSCALE_X4_COST = 3
+
+
+def _photo_file_id_from_message(message: Message) -> str | None:
+    if message.photo:
+        return message.photo[-1].file_id
+    doc = message.document
+    if doc and (doc.mime_type or "").startswith("image/"):
+        return doc.file_id
+    return None
+
+
+async def _notify_animate_turn_result(callback: CallbackQuery, outcome: AnimateGenOutcome) -> None:
+    if callback.message is None:
+        return
+    if outcome is AnimateGenOutcome.FORBIDDEN_BY_TARIFF:
+        await callback.message.answer(
+            msg.TXT_UPGRADE_TO_ULTRA,
+            reply_markup=paycat.shop_packages_keyboard(),
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    if outcome is AnimateGenOutcome.FREE_PREMIUM_BLOCKED:
+        from platforms.telegram_utils import send_free_create_blocked
+
+        await send_free_create_blocked(callback.message)
+        return
+    if outcome is AnimateGenOutcome.INSUFFICIENT_BALANCE:
+        await callback.message.answer(
+            msg.TXT_INSUFFICIENT_BALANCE,
+            reply_markup=paycat.shop_packages_keyboard(),
+            parse_mode=ParseMode.HTML,
+        )
 
 
 async def _restore_result_keyboard(callback: CallbackQuery) -> None:
@@ -198,6 +232,80 @@ async def _rerun_from_session(
         image_aspect_ratio=ar,
     )
     await state.set_state(UserFlow.waiting_for_photo)
+
+
+async def _resolve_animate_file_id(callback: CallbackQuery) -> str | None:
+    """file_id одной фотографии: из сообщения-результата или edit-сессии."""
+    if callback.message is None or callback.from_user is None:
+        return None
+
+    file_id = _photo_file_id_from_message(callback.message)
+    if file_id:
+        return file_id
+
+    session = get_photo_edit_session(
+        callback.from_user.id,
+        peer_id=callback.message.chat.id,
+    )
+    if session is None or not session_has_result_image(session):
+        return None
+
+    ref = resolve_session_result_reference(session)
+    if ref.telegram_file_id:
+        return ref.telegram_file_id
+
+    if ref.media_url:
+        bot = deps.bot()
+        try:
+            url = await resolve_openrouter_reference_url(
+                bot=bot,
+                file_id=None,
+                reference_image_url=ref.media_url,
+                reference_image_bytes=ref.reference_image_bytes,
+                reference_mime=ref.reference_mime,
+            )
+        except Exception:
+            logger.warning(
+                "animate: failed to resolve session media_url uid=%s",
+                callback.from_user.id,
+                exc_info=True,
+            )
+            return None
+        # OpenRouter принимает URL в frame_images; для billing/job нужен file_id —
+        # если есть только URL, кладём его в task.file_id (worker резолвит как URL).
+        if url.startswith(("http://", "https://")):
+            return url
+    return None
+
+
+@router.callback_query(F.data == msg.CB_RESULT_ANIMATE)
+async def result_animate_photo(callback: CallbackQuery) -> None:
+    """
+    Оживление одной фотографии (Image-to-Video) через OpenRouter Video API.
+
+    Billing + очередь: ``run_animate_generation_turn`` → ``fire_animate_job``
+    → ``generate_openrouter_animate_video`` (POST/GET ``/api/v1/videos``).
+    """
+    user = callback.from_user
+    if user is None or callback.message is None:
+        await callback.answer()
+        return
+
+    file_id = await _resolve_animate_file_id(callback)
+    if not file_id:
+        await callback.answer(msg.TXT_PHOTO_REFINE_EXPIRED, show_alert=True)
+        return
+
+    await callback.answer()
+    ar = await run_animate_generation_turn(
+        uid=user.id,
+        telegram_file_id=file_id,
+        bot=deps.bot(),
+        chat_id=callback.message.chat.id,
+        settings=settings,
+    )
+    if ar.outcome is not AnimateGenOutcome.SUCCESS:
+        await _notify_animate_turn_result(callback, ar.outcome)
 
 
 @router.callback_query(F.data == msg.CB_RESULT_UPSCALE)

@@ -103,6 +103,7 @@ async def test_album_pending_pair_plus_text_triggers_composite_not_refine() -> N
             "image_model_id": "nano_banana_pro",
             "image_model_label": "Nano Pro",
             "image_aspect_ratio": "1:1",
+            "pending_group_ref_file_ids": ["AgAC_face", "AgAC_print"],
             "pending_reference_file_id": "AgAC_face",
             "pending_object_file_id": "AgAC_print",
             "refine_from_result": False,
@@ -153,9 +154,11 @@ async def test_second_photo_without_caption_becomes_pending_object() -> None:
         handled = await generation_fsm._dispatch_photo_reference_message(message, state)
 
     assert handled is True
-    kwargs = state.update_data.await_args.kwargs
-    assert kwargs["pending_object_file_id"] == "AgAC_print"
-    assert "pending_reference_file_id" not in kwargs
+    merged: dict = {}
+    for call in state.update_data.await_args_list:
+        merged.update(call.kwargs)
+    assert merged["pending_group_ref_file_ids"] == ["AgAC_face", "AgAC_print"]
+    assert merged["pending_object_file_id"] == "AgAC_print"
 
 
 @pytest.mark.asyncio

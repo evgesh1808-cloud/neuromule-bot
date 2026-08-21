@@ -537,14 +537,9 @@ def build_composite_refine_prompt(
         else COMPOSITE_REFINE_PROMPT_TEMPLATE
     )
     prompt = template.format(user_intent=intent)
-    from services.photo_multi_ref_routing import (
-        is_composite_print_intent,
-        is_mirror_reflection_intent,
-    )
+    from services.photo_multi_ref_routing import is_composite_merch_intent
 
-    if not creative_scene and is_mirror_reflection_intent(intent):
-        prompt = f"{prompt}{COMPOSITE_MIRROR_PLACEMENT_SUFFIX}"
-    elif is_composite_print_intent(intent) or creative_scene:
+    if is_composite_merch_intent(intent) or creative_scene:
         prompt = f"{prompt}{COMPOSITE_PHOTO_PRINT_PLACEMENT_SUFFIX}"
     negative = (
         COMPOSITE_CREATIVE_NEGATIVE_PROMPT if creative_scene else COMPOSITE_REFINE_NEGATIVE_PROMPT
@@ -804,7 +799,7 @@ async def build_multi_banana_prompt_from_ru(
 
 
 def build_multi_ref_group_payload(
-    user_intent_en: str,
+    user_prompt: str,
     reference_image_urls: list[str],
 ) -> dict[str, Any]:
     urls = [(url or "").strip() for url in reference_image_urls if (url or "").strip()]
@@ -812,7 +807,7 @@ def build_multi_ref_group_payload(
         raise ExternalApiError("OpenRouter", "multi-ref group requires at least 2 references")
     if len(urls) > 10:
         urls = urls[:10]
-    prompt = build_multi_banana_prompt(user_intent_en, len(urls))
+    prompt = (user_prompt or "").strip() or DEFAULT_PHOTO_USER_INTENT
     return {
         "prompt": prompt,
         "input_references": [openrouter_input_reference(url) for url in urls],
@@ -830,7 +825,7 @@ async def generate_openrouter_multi_ref_group_photo(
     timeout_sec: float = DEFAULT_OPENROUTER_IMAGES_TIMEOUT_SEC,
 ) -> GeminiImageResult:
     """Multi-reference group portrait via OpenRouter Images API."""
-    intent_en = await translate_photo_user_intent(settings, user_prompt)
+    scene_prompt = (user_prompt or "").strip() or DEFAULT_PHOTO_USER_INTENT
     png_refs: list[str] = []
     for raw_url in reference_image_data_urls:
         png_refs.append(await ensure_png_reference_data_url(raw_url))
@@ -841,7 +836,7 @@ async def generate_openrouter_multi_ref_group_photo(
         if not slug:
             continue
         try:
-            payload = build_multi_ref_group_payload(intent_en, png_refs)
+            payload = build_multi_ref_group_payload(scene_prompt, png_refs)
             return await generate_openrouter_image(
                 settings,
                 model=slug,

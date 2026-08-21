@@ -34,7 +34,12 @@ from services.gemini_image_client import (
 from services.replicate_client import (
     call_replicate_model,
     replicate_configured,
+    build_image_to_video_inputs,
     telegram_photo_download_url,
+)
+from services.openrouter_videos import (
+    generate_openrouter_animate_video,
+    openrouter_videos_configured,
 )
 from services.suno_client import SunoTrack, generate_music_track, suno_configured
 from business_catalog import catalog
@@ -1192,7 +1197,13 @@ async def _video_stub_worker(task: GenTask) -> None:
                 inputs: dict = {"prompt": prompt_en, "aspect_ratio": "16:9"}
                 if task.file_id and spec and spec.needs_face:
                     image_url = await telegram_photo_download_url(bot, task.file_id)
-                    inputs["start_image_url"] = image_url
+                    inputs.update(
+                        build_image_to_video_inputs(
+                            prompt=prompt_en,
+                            image_url=image_url,
+                            aspect_ratio=str(inputs.get("aspect_ratio") or "16:9"),
+                        )
+                    )
                 # Жёсткий таймаут на Replicate — иначе зависший прокси
                 # лочит воркер навсегда, кошелёк юзера в подвешенном виде.
                 async with asyncio.timeout(EXTERNAL_API_TIMEOUT_SEC):
@@ -1392,59 +1403,58 @@ async def _animate_stub_worker(task: GenTask) -> None:
         )
         return
 
+    poll_timeout = float(
+        getattr(app_settings, "openrouter_video_poll_timeout_sec", 600.0) or 600.0
+    )
+
     try:
         logger.info(
-            "animate job %s file_id=%s user_id=%s replicate=%s",
+            "animate job %s file_id=%s user_id=%s openrouter=%s",
             task.task_id,
             file_id,
             user_id,
-            replicate_configured(),
+            openrouter_videos_configured(app_settings),
         )
         async with chat_action_loop(bot, chat_id, "upload_video"):
             row = await get_user_row(user_id)
-            animated_url: str | None = None
 
-            if replicate_configured():
-                image_url = await telegram_photo_download_url(bot, file_id)
-                inputs = {
-                    "prompt": "Мягкое кинематографичное движение, оживление кадра, реализм",
-                    "start_image_url": image_url,
-                    "aspect_ratio": "16:9",
-                }
-                async with asyncio.timeout(EXTERNAL_API_TIMEOUT_SEC):
-                    animated_url = await call_replicate_model(
-                        settings.replicate_animate_model, inputs
-                    )
+            if not openrouter_videos_configured(app_settings):
+                raise ExternalApiError("OpenRouter", "OPENROUTER_API_KEY не задан")
 
-            if animated_url:
-                cap = msg.TXT_ANIMATE_SUCCESS
-                cap += "\n\n" + msg.TXT_RESULT_ANIMATE_CAPTION.format(
-                    cost=settings.cost_animate,
-                    balance=row.crystals,
+            async with asyncio.timeout(poll_timeout + 30.0):
+                animated_url = await generate_openrouter_animate_video(
+                    app_settings,
+                    bot=bot,
+                    telegram_file_id=file_id,
                 )
-                cap += _balance_footer(row.crystals)
-                sent = await bot.send_video(chat_id, video=animated_url, caption=cap)
-                # Кэш для шеринга оживления (animate ~ video в VK/MAX).
-                tg_file_id = sent.video.file_id if sent.video else None
-                _remember_share(task, file_id=tg_file_id, media_url=animated_url)
-            elif not replicate_configured():
-                await asyncio.sleep(4.0)
-                await bot.send_message(chat_id, msg.TXT_ANIMATE_SUCCESS)
-                cap = msg.TXT_ANIMATE_SOURCE_CAPTION + " (демо: REPLICATE_API_TOKEN)"
-                cap += "\n\n" + msg.TXT_RESULT_ANIMATE_CAPTION.format(
-                    cost=settings.cost_animate,
-                    balance=row.crystals,
-                )
-                cap += _balance_footer(row.crystals)
-                await bot.send_photo(chat_id, photo=file_id, caption=cap)
-            else:
-                raise RuntimeError("Replicate returned empty animate URL")
+
+            cap = msg.TXT_ANIMATE_SUCCESS
+            cap += "\n\n" + msg.TXT_RESULT_ANIMATE_CAPTION.format(
+                cost=settings.cost_animate,
+                balance=row.crystals,
+            )
+            cap += _balance_footer(row.crystals)
+            sent = await bot.send_video(chat_id, video=animated_url, caption=cap)
+            tg_file_id = sent.video.file_id if sent.video else None
+            _remember_share(task, file_id=tg_file_id, media_url=animated_url)
 
         task.status = "completed"
+    except ExternalApiError as exc:
+        user_message = (
+            msg.TXT_ANIMATE_OPENROUTER_QUOTA_FAILED
+            if is_provider_quota_error(exc)
+            else msg.TXT_ANIMATE_OPENROUTER_FAILED
+        )
+        await fail_generation_task(
+            task,
+            user_message=user_message,
+            log_msg="animate job failed",
+            exc=exc,
+        )
     except Exception as exc:
         await fail_generation_task(
             task,
-            user_message=msg.TXT_ANIMATE_REPLICATE_FAILED,
+            user_message=msg.TXT_ANIMATE_OPENROUTER_FAILED,
             log_msg="animate job failed",
             exc=exc,
         )

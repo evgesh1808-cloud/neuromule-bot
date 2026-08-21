@@ -284,6 +284,7 @@ async def _dispatch_group_multi_ref_photo_message(
     await state.update_data(
         pending_reference_file_id=None,
         pending_object_file_id=None,
+        pending_group_ref_file_ids=[],
         refine_from_result=None,
     )
     await process_photo_prompt_message(
@@ -423,21 +424,69 @@ def _album_caption(album_messages: list[Message]) -> str:
     return ""
 
 
+def _pending_group_ref_ids(data: dict) -> list[str]:
+    """Собранные file_id референсов в photo-flow (альбом или по одному)."""
+    from services.photo_multi_ref_routing import MAX_GROUP_REFS
+
+    refs: list[str] = []
+    for raw in data.get("pending_group_ref_file_ids") or []:
+        fid = str(raw or "").strip()
+        if fid and fid not in refs:
+            refs.append(fid)
+    for key in ("pending_reference_file_id", "pending_object_file_id"):
+        fid = str(data.get(key) or "").strip()
+        if fid and fid not in refs:
+            refs.append(fid)
+    return refs[:MAX_GROUP_REFS]
+
+
+async def _store_pending_group_refs(state: FSMContext, file_ids: list[str]) -> list[str]:
+    from services.photo_multi_ref_routing import MAX_GROUP_REFS
+
+    refs = [(fid or "").strip() for fid in file_ids if (fid or "").strip()][:MAX_GROUP_REFS]
+    await state.update_data(
+        pending_group_ref_file_ids=refs,
+        pending_reference_file_id=refs[0] if refs else None,
+        pending_object_file_id=refs[1] if len(refs) >= 2 else None,
+    )
+    return refs
+
+
+async def _append_pending_group_ref(state: FSMContext, file_id: str) -> list[str]:
+    data = await state.get_data()
+    refs = _pending_group_ref_ids(data)
+    fid = (file_id or "").strip()
+    if fid and fid not in refs:
+        refs.append(fid)
+    return await _store_pending_group_refs(state, refs)
+
+
+async def _clear_pending_group_refs(state: FSMContext) -> None:
+    await state.update_data(
+        pending_group_ref_file_ids=[],
+        pending_reference_file_id=None,
+        pending_object_file_id=None,
+    )
+
+
 async def _dispatch_photo_album_message(
     message: Message,
     state: FSMContext,
     album_messages: list[Message],
 ) -> bool:
-    """Альбом: group multi-ref, composite (2 фото + print) или отказ в refine."""
+    """Альбом: 2+ фото → group multi-ref; composite только при merch-ключах в промпте."""
     from services.photo_multi_ref_routing import (
         MAX_GROUP_REFS,
+        MIN_GROUP_REFS,
         should_route_album_as_composite,
-        should_route_album_as_group,
     )
 
     entries = _album_image_entries(album_messages)
     file_ids = [fid for fid, _ in entries]
     caption = _album_caption(album_messages)
+
+    if len(file_ids) < MIN_GROUP_REFS:
+        return await _dispatch_photo_reference_message(message, state)
 
     data = await state.get_data()
     model_id = str(data.get("image_model_id") or "").strip()
@@ -455,19 +504,7 @@ async def _dispatch_photo_album_message(
             return True
         return await _dispatch_photo_reference_message(message, state)
 
-    if should_route_album_as_group(num_refs=len(file_ids), prompt=caption):
-        await _dispatch_group_multi_ref_photo_message(
-            message,
-            state,
-            ref_file_ids=file_ids[:MAX_GROUP_REFS],
-            prompt=caption,
-            model_id=model_id,
-            label=label,
-            aspect=aspect,
-        )
-        return True
-
-    if should_route_album_as_composite(num_refs=len(file_ids), prompt=caption):
+    if caption and should_route_album_as_composite(num_refs=len(file_ids), prompt=caption):
         await _dispatch_composite_photo_message(
             message,
             state,
@@ -481,36 +518,29 @@ async def _dispatch_photo_album_message(
             base_bytes=None,
             base_mime="image/jpeg",
         )
+        await _clear_pending_group_refs(state)
         return True
 
-    if len(file_ids) == 2 and not caption:
-        hint = await message.answer(msg.TXT_PHOTO_ALBUM_WAIT_CAPTION, parse_mode=ParseMode.HTML)
-        service_ids = list(data.get("photo_service_message_ids") or [])
-        service_ids.append(hint.message_id)
-        await state.update_data(
-            pending_reference_file_id=file_ids[0],
-            pending_object_file_id=file_ids[1],
-            photo_service_message_ids=service_ids,
+    if caption:
+        await _dispatch_group_multi_ref_photo_message(
+            message,
+            state,
+            ref_file_ids=file_ids[:MAX_GROUP_REFS],
+            prompt=caption,
+            model_id=model_id,
+            label=label,
+            aspect=aspect,
         )
-        await state.set_state(UserFlow.waiting_for_photo)
+        await _clear_pending_group_refs(state)
         return True
 
-    if len(file_ids) > 2:
-        if caption:
-            await _dispatch_group_multi_ref_photo_message(
-                message,
-                state,
-                ref_file_ids=file_ids[:MAX_GROUP_REFS],
-                prompt=caption,
-                model_id=model_id,
-                label=label,
-                aspect=aspect,
-            )
-        else:
-            await message.answer(msg.TXT_PHOTO_ALBUM_GROUP_HINT, parse_mode=ParseMode.HTML)
-        return True
-
-    return await _dispatch_photo_reference_message(message, state)
+    await _store_pending_group_refs(state, file_ids)
+    hint = await message.answer(msg.TXT_PHOTO_ALBUM_WAIT_CAPTION, parse_mode=ParseMode.HTML)
+    service_ids = list(data.get("photo_service_message_ids") or [])
+    service_ids.append(hint.message_id)
+    await state.update_data(photo_service_message_ids=service_ids)
+    await state.set_state(UserFlow.waiting_for_photo)
+    return True
 
 
 async def _dispatch_photo_reference_message(message: Message, state: FSMContext) -> bool:
@@ -572,24 +602,22 @@ async def _dispatch_photo_reference_message(message: Message, state: FSMContext)
 
     pending_base = str(data.get("pending_reference_file_id") or "").strip()
     pending_object = str(data.get("pending_object_file_id") or "").strip()
-    if pending_base and pending_base != file_id and not pending_object:
-        hint = await message.answer(msg.TXT_PHOTO_ALBUM_WAIT_CAPTION, parse_mode=ParseMode.HTML)
-        service_ids = list(data.get("photo_service_message_ids") or [])
-        service_ids.append(hint.message_id)
-        await state.update_data(
-            pending_object_file_id=file_id,
-            photo_service_message_ids=service_ids,
-        )
-        await state.set_state(UserFlow.waiting_for_photo)
-        return True
+    pending_refs = _pending_group_ref_ids(data)
+    if pending_refs and file_id and file_id not in pending_refs:
+        pending_refs = await _append_pending_group_ref(state, file_id)
+    elif not pending_refs and pending_base and pending_base != file_id and not pending_object:
+        pending_refs = await _append_pending_group_ref(state, pending_base)
+        pending_refs = await _append_pending_group_ref(state, file_id)
+    elif not pending_refs:
+        pending_refs = await _append_pending_group_ref(state, file_id)
 
-    hint = await message.answer(msg.TXT_CREATE_IMAGE_WAIT_PROMPT, parse_mode=ParseMode.HTML)
+    if len(pending_refs) >= 2:
+        hint = await message.answer(msg.TXT_PHOTO_ALBUM_WAIT_CAPTION, parse_mode=ParseMode.HTML)
+    else:
+        hint = await message.answer(msg.TXT_PHOTO_MULTI_REF_COLLECT, parse_mode=ParseMode.HTML)
     service_ids = list(data.get("photo_service_message_ids") or [])
     service_ids.append(hint.message_id)
-    await state.update_data(
-        pending_reference_file_id=file_id,
-        photo_service_message_ids=service_ids,
-    )
+    await state.update_data(photo_service_message_ids=service_ids)
     await state.set_state(UserFlow.waiting_for_photo)
     return True
 
@@ -1009,15 +1037,18 @@ async def photo_process(message: Message, state: FSMContext) -> None:
 
     pending_file_id = str(data.get("pending_reference_file_id") or "").strip()
     pending_object_id = str(data.get("pending_object_file_id") or "").strip()
+    pending_refs = _pending_group_ref_ids(data)
     refine_from_result = bool(data.get("refine_from_result"))
 
     if (
-        pending_object_id
-        and pending_file_id
+        len(pending_refs) >= 2
         and prompt
         and not refine_from_result
     ):
-        from services.photo_multi_ref_routing import should_route_album_as_composite
+        from services.photo_multi_ref_routing import (
+            MAX_GROUP_REFS,
+            should_route_album_as_composite,
+        )
 
         aspect, prompt, aspect_changed = await resolve_photo_edit_prompt(
             prompt,
@@ -1030,13 +1061,14 @@ async def photo_process(message: Message, state: FSMContext) -> None:
             dispatched = await _try_dispatch_composite_from_context(
                 message,
                 state,
-                object_file_id=pending_object_id,
+                object_file_id=pending_refs[1],
                 prompt=prompt,
                 model_id=str(model_id),
                 label=str(label),
                 aspect=aspect,
             )
             if dispatched:
+                await _clear_pending_group_refs(state)
                 return
             await message.answer(msg.TXT_PHOTO_COMPOSITE_FAILED, parse_mode=ParseMode.HTML)
             return
@@ -1044,12 +1076,13 @@ async def photo_process(message: Message, state: FSMContext) -> None:
         await _dispatch_group_multi_ref_photo_message(
             message,
             state,
-            ref_file_ids=[pending_file_id, pending_object_id],
+            ref_file_ids=pending_refs[:MAX_GROUP_REFS],
             prompt=prompt,
             model_id=str(model_id),
             label=str(label),
             aspect=aspect,
         )
+        await _clear_pending_group_refs(state)
         return
 
     if refine_from_result and pending_object_id and prompt:

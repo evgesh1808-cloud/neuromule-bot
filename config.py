@@ -243,13 +243,27 @@ class Settings(BaseSettings):
         default_factory=list,
         validation_alias=AliasChoices("OPENROUTER_API_KEYS", "openrouter_keys"),
     )
+    openrouter_animate_video_model: Annotated[
+        str, _nonempty_str("bytedance/seedance-2.0-mini")
+    ] = "bytedance/seedance-2.0-mini"
+    openrouter_animate_video_fallback_model: Annotated[
+        str, _nonempty_str("google/veo-3.1-lite")
+    ] = "google/veo-3.1-lite"
+    openrouter_video_poll_interval_sec: Annotated[float, _coerce_float(18.0)] = 18.0
+    openrouter_video_poll_timeout_sec: Annotated[float, _coerce_float(600.0)] = 600.0
     openrouter_chat_url: str = "https://openrouter.ai/api/v1/chat/completions"
     gemini_api_key: str = Field(default="", alias="GEMINI_API_KEY")
     # Второй ключ Google AI Studio Free Tier (failover / round-robin для Nano Banana).
     gemini_api_key_2: str = Field(default="", alias="GEMINI_API_KEY_2")
     replicate_api_token: str = Field(default="", alias="REPLICATE_API_TOKEN")
-    replicate_video_model: Annotated[str, _nonempty_str("luma/ray-flash")] = "luma/ray-flash"
-    replicate_animate_model: Annotated[str, _nonempty_str("luma/ray-flash")] = "luma/ray-flash"
+    # replicate_video_model: Annotated[str, _nonempty_str("luma/ray-flash")] = "luma/ray-flash"
+    replicate_video_model: Annotated[str, _nonempty_str("luma/ray-flash-2-720p")] = (
+        "luma/ray-flash-2-720p"
+    )
+    # replicate_animate_model: Annotated[str, _nonempty_str("luma/ray-flash")] = "luma/ray-flash"
+    replicate_animate_model: Annotated[str, _nonempty_str("luma/ray-flash-2-720p")] = (
+        "luma/ray-flash-2-720p"
+    )
     replicate_blogger_face_swap_model: Annotated[str, _nonempty_str("codeplugtech/face-swap")] = (
         "codeplugtech/face-swap"
     )

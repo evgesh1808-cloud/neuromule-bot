@@ -1,157 +1,40 @@
-"""Маршрутизация альбомов: composite (база + 2-е фото) vs group multi-ref (портреты)."""
+"""Маршрутизация альбомов: 2+ фото → group multi-ref; composite только для мерча."""
 
 from __future__ import annotations
-
-_COMPOSITE_PRINT_KEYWORDS: tuple[str, ...] = (
-    "принт",
-    "print",
-    "логотип",
-    "logo",
-    "футболк",
-    "t-shirt",
-    "tshirt",
-    "худи",
-    "hoodie",
-    "свитшот",
-    "sweatshirt",
-    "куртк",
-    "jacket",
-    "одежд",
-    "clothing",
-    "надень",
-    "надеть",
-    "одень",
-    "одеть",
-    "добавь",
-    "добавить",
-    "add ",
-    "вставь",
-    "вставить",
-    "помести",
-    "поместить",
-    "перенес",
-    "перенест",
-    "transfer",
-    "наложи",
-    "embed",
-    "place on",
-    "put on shirt",
-    "graphic on",
-    "фото на",
-    "photo on",
-    "на футбол",
-    "на худи",
-    "на одежд",
-)
-
-_COMPOSITE_MIRROR_KEYWORDS: tuple[str, ...] = (
-    "зеркал",
-    "mirror",
-    "reflection",
-    "reflect",
-    "отражен",
-    "отражени",
-    "отражение",
-)
-
-# Взрослая + детская версия одного человека (принт / отражение) — composite, не group.
-_COMPOSITE_SAME_PERSON_VARIANT_KEYWORDS: tuple[str, ...] = (
-    "маленьк",
-    "ребён",
-    "ребен",
-    "child",
-    "younger",
-    "young me",
-    "детск",
-    "в детстве",
-    "younger self",
-    "past self",
-)
-
-# Явный групповой портрет (2 человека в кадре) — не composite «лицо + принт».
-_GROUP_PORTRAIT_KEYWORDS: tuple[str, ...] = (
-    "вместе",
-    "рядом",
-    "семейн",
-    "family photo",
-    "group photo",
-    "group portrait",
-    "все вместе",
-    "оба человека",
-    "двое",
-    "стоят в ряд",
-    "улыбаются в камеру",
-    "together",
-    "side by side",
-)
 
 MIN_GROUP_REFS = 2
 MAX_GROUP_REFS = 10
 
-
-def is_group_portrait_intent(prompt: str) -> bool:
-    low = (prompt or "").strip().lower()
-    return any(keyword in low for keyword in _GROUP_PORTRAIT_KEYWORDS)
-
-
-def is_mirror_reflection_intent(prompt: str) -> bool:
-    low = (prompt or "").strip().lower()
-    return any(keyword in low for keyword in _COMPOSITE_MIRROR_KEYWORDS)
+# Composite (лицо + принт на одежде) — только при явном merch-intent в промпте.
+_COMPOSITE_MERCH_KEYWORDS: tuple[str, ...] = (
+    "принт",
+    "футболк",
+    "на одежду",
+    "мерч",
+)
 
 
-def is_same_person_variant_intent(prompt: str) -> bool:
-    low = (prompt or "").strip().lower()
-    return any(keyword in low for keyword in _COMPOSITE_SAME_PERSON_VARIANT_KEYWORDS)
-
-
-def is_composite_print_intent(prompt: str) -> bool:
-    """True — 2 фото: принт на одежде, зеркало, перенос детского фото и т.п."""
+def is_composite_merch_intent(prompt: str) -> bool:
+    """True — пользователь просит принт/мерч на одежде (не групповой портрет)."""
     low = (prompt or "").strip().lower()
     if not low:
         return False
-    if any(keyword in low for keyword in _COMPOSITE_PRINT_KEYWORDS):
-        return True
-    if is_mirror_reflection_intent(prompt):
-        return True
-    if is_same_person_variant_intent(prompt) and any(
-        token in low
-        for token in (
-            "футбол",
-            "принт",
-            "print",
-            "одеж",
-            "худи",
-            "зеркал",
-            "отраж",
-            "перенес",
-            "помест",
-            "встав",
-        )
-    ):
-        return True
-    return False
+    return any(keyword in low for keyword in _COMPOSITE_MERCH_KEYWORDS)
+
+
+# Backward-compatible alias для composite/OpenRouter call-sites.
+is_composite_print_intent = is_composite_merch_intent
 
 
 def should_route_album_as_composite(*, num_refs: int, prompt: str) -> bool:
-    """Ровно 2 фото + промпт → dual composite (лицо + принт/сцена)."""
-    text = (prompt or "").strip()
-    if num_refs != 2 or not text:
+    """Composite: ровно 2 фото + merch-ключи в промпте."""
+    if num_refs != 2:
         return False
-    if is_composite_print_intent(text):
-        return True
-    if is_group_portrait_intent(text):
-        return False
-    from services.openrouter_images import should_use_creative_composite_template
-
-    return should_use_creative_composite_template(text)
+    return is_composite_merch_intent(prompt)
 
 
-def should_route_album_as_group(*, num_refs: int, prompt: str) -> bool:
-    """3–10 фото или 2 фото с явным group-intent → group multi-ref."""
-    if not (prompt or "").strip():
+def should_route_as_group_multi_ref(*, num_refs: int, prompt: str) -> bool:
+    """2+ фото и не composite → group multi-ref (ChatGPT-style)."""
+    if num_refs < MIN_GROUP_REFS:
         return False
-    if num_refs < MIN_GROUP_REFS or num_refs > MAX_GROUP_REFS:
-        return False
-    if should_route_album_as_composite(num_refs=num_refs, prompt=prompt):
-        return False
-    return True
+    return not should_route_album_as_composite(num_refs=num_refs, prompt=prompt)

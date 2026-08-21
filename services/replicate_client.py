@@ -50,6 +50,21 @@ def extract_output_url(output: Any) -> str | None:
     return None
 
 
+def build_image_to_video_inputs(
+    *,
+    prompt: str,
+    image_url: str,
+    aspect_ratio: str = "16:9",
+) -> dict[str, Any]:
+    """Параметры image-to-video для Luma Ray и совместимых моделей на Replicate."""
+    return {
+        "prompt": prompt,
+        "start_image": image_url,
+        "start_image_url": image_url,
+        "aspect_ratio": aspect_ratio,
+    }
+
+
 async def call_replicate_model(
     model: str,
     inputs: dict[str, Any],

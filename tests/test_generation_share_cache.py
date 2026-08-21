@@ -279,19 +279,20 @@ async def test_animate_worker_caches_share_media(monkeypatch) -> None:
     user_id = 70_003
     last_share_media.clear(user_id)
 
-    monkeypatch.setattr(generation_jobs, "replicate_configured", lambda: True)
+    monkeypatch.setattr(generation_jobs, "openrouter_videos_configured", lambda _s: True)
 
-    async def _fake_dl(_bot, _file_id):
-        return "https://cdn.fake/selfie.jpg"
-
-    async def _fake_replicate(model: str, inputs: dict):
+    async def _fake_openrouter_animate(_settings, *, bot, telegram_file_id):
+        assert telegram_file_id == "src_selfie"
         return "https://cdn.fake/animate.mp4"
 
     async def _fake_row(_uid):
         return SimpleNamespace(crystals=80)
 
-    monkeypatch.setattr(generation_jobs, "telegram_photo_download_url", _fake_dl)
-    monkeypatch.setattr(generation_jobs, "call_replicate_model", _fake_replicate)
+    monkeypatch.setattr(
+        generation_jobs,
+        "generate_openrouter_animate_video",
+        _fake_openrouter_animate,
+    )
     monkeypatch.setattr(generation_jobs, "get_user_row", _fake_row)
 
     class _NoopAction:

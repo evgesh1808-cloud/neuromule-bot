@@ -497,7 +497,6 @@ def photo_tools_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="🎨 Сгенерировать фото", callback_data=msg.CB_CREATE_IMAGE)],
-            [InlineKeyboardButton(text=msg.BTN_GROUP_PHOTO, callback_data=msg.CB_GROUP_PHOTO_START)],
             [
                 InlineKeyboardButton(
                     text=f"🔍 UPSCALE фото — {settings.cost_upscale} 💎",
