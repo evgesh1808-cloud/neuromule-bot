@@ -34,6 +34,7 @@ from services.photo_edit_session import (
     update_photo_edit_session_aspect_ratio,
 )
 from services.photo_gen_status import send_photo_gen_status_message
+from services.god_mode import billing_bypass
 from services.repository import get_user_row, try_consume_crystals
 from services.use_cases.animate_generation_turn import AnimateGenOutcome, run_animate_generation_turn
 from services.use_cases.photo_generation_turn import PhotoGenOutcome, run_photo_generation_turn
@@ -370,6 +371,24 @@ async def result_pick_format(callback: CallbackQuery, state: FSMContext) -> None
     await _rerun_from_session(callback, state, aspect_ratio=aspect, format_only=True)
 
 
+async def _refund_upscale_charge(user_id: int, cost: int) -> None:
+    if cost <= 0 or billing_bypass(user_id):
+        return
+    from services.billing.crystals_balance import refund_crystals_to_buy
+
+    await refund_crystals_to_buy(user_id, cost)
+
+
+async def _charge_upscale_crystals(user_id: int, cost: int) -> bool:
+    """Списание 💎 за upscale; God Mode (ADMIN_IDS + GOD_MODE_ENABLED) — без списания."""
+    if billing_bypass(user_id):
+        return True
+    row = await get_user_row(user_id)
+    if int(row.crystals or 0) < cost:
+        return False
+    return await try_consume_crystals(user_id, cost)
+
+
 async def _run_upscale(callback: CallbackQuery, *, scale: int, cost: int, alert_text: str) -> None:
     user = callback.from_user
     if user is None or callback.message is None:
@@ -385,20 +404,13 @@ async def _run_upscale(callback: CallbackQuery, *, scale: int, cost: int, alert_
         await callback.answer(msg.TXT_PHOTO_REFINE_EXPIRED, show_alert=True)
         return
 
-    row = await get_user_row(user.id)
-    if int(row.crystals or 0) < cost:
-        await callback.answer(alert_text, show_alert=True)
-        return
-
-    if not await try_consume_crystals(user.id, cost):
+    if not await _charge_upscale_crystals(user.id, cost):
         await callback.answer(alert_text, show_alert=True)
         return
 
     image_url = await _resolve_session_upscale_source(session)
     if not image_url:
-        from services.billing.crystals_balance import refund_crystals_to_buy
-
-        await refund_crystals_to_buy(user.id, cost)
+        await _refund_upscale_charge(user.id, cost)
         await callback.answer(msg.TXT_PHOTO_REFINE_EXPIRED, show_alert=True)
         return
 
@@ -419,15 +431,11 @@ async def _run_upscale(callback: CallbackQuery, *, scale: int, cost: int, alert_
             caption=msg.TXT_UPSCALE_DONE,
         )
     except (TelegramBadRequest, TelegramForbiddenError, TelegramNetworkError) as exc:
-        from services.billing.crystals_balance import refund_crystals_to_buy
-
-        await refund_crystals_to_buy(user.id, cost)
+        await _refund_upscale_charge(user.id, cost)
         logger.warning("upscale delivery failed uid=%s: %s", user.id, exc)
         await callback.message.answer(msg.TXT_GEN_JOB_FAILED)
     except Exception:
-        from services.billing.crystals_balance import refund_crystals_to_buy
-
-        await refund_crystals_to_buy(user.id, cost)
+        await _refund_upscale_charge(user.id, cost)
         logger.exception("upscale openrouter failed uid=%s scale=%s", user.id, scale)
         await callback.message.answer(msg.TXT_GEN_JOB_FAILED)
 

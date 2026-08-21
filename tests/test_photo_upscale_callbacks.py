@@ -29,6 +29,7 @@ async def test_upscale_x2_insufficient_shows_alert() -> None:
 
     with (
         patch.object(handlers, "openrouter_images_configured", return_value=True),
+        patch.object(handlers, "billing_bypass", return_value=False),
         patch.object(
             handlers,
             "get_user_row",
@@ -63,6 +64,7 @@ async def test_upscale_x2_works_with_bytes_only_session() -> None:
 
     with (
         patch.object(handlers, "openrouter_images_configured", return_value=True),
+        patch.object(handlers, "billing_bypass", return_value=False),
         patch.object(
             handlers,
             "get_user_row",
@@ -89,6 +91,47 @@ async def test_upscale_x2_works_with_bytes_only_session() -> None:
 
 
 @pytest.mark.asyncio
+async def test_upscale_x2_god_mode_bypasses_zero_crystals() -> None:
+    callback = MagicMock()
+    callback.from_user.id = 424242
+    callback.message.chat.id = 424242
+    callback.answer = AsyncMock()
+
+    save_photo_edit_session(
+        424242,
+        image_model_id="flux_schnell",
+        image_model_label="Flux",
+        media_url="https://fal.media/base.png",
+        user_prompt="test",
+    )
+
+    bot = MagicMock()
+    bot.send_document = AsyncMock()
+
+    cfg = handlers.settings.model_copy(
+        update={"god_mode_enabled": True, "admin_ids": [424242]},
+    )
+
+    with (
+        patch.object(handlers, "settings", cfg),
+        patch.object(handlers, "openrouter_images_configured", return_value=True),
+        patch.object(handlers, "billing_bypass", return_value=True),
+        patch.object(handlers, "try_consume_crystals", AsyncMock()) as spend,
+        patch.object(
+            handlers,
+            "upscale_openrouter_image_url",
+            AsyncMock(return_value="https://cdn.openrouter.ai/upscaled-x2.png"),
+        ),
+        patch.object(handlers.deps, "bot", return_value=bot),
+        patch.object(handlers, "chat_action_loop", lambda *a, **kw: _noop_ctx()),
+    ):
+        await handlers.result_upscale_x2(callback)
+
+    spend.assert_not_awaited()
+    bot.send_document.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_upscale_x2_charges_before_openrouter_and_sends_document() -> None:
     callback = MagicMock()
     callback.from_user.id = 9002
@@ -108,6 +151,7 @@ async def test_upscale_x2_charges_before_openrouter_and_sends_document() -> None
 
     with (
         patch.object(handlers, "openrouter_images_configured", return_value=True),
+        patch.object(handlers, "billing_bypass", return_value=False),
         patch.object(
             handlers,
             "get_user_row",
@@ -147,6 +191,7 @@ async def test_upscale_x4_needs_three_crystals() -> None:
 
     with (
         patch.object(handlers, "openrouter_images_configured", return_value=True),
+        patch.object(handlers, "billing_bypass", return_value=False),
         patch.object(
             handlers,
             "get_user_row",

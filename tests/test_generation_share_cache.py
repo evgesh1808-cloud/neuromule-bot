@@ -288,10 +288,19 @@ async def test_animate_worker_caches_share_media(monkeypatch) -> None:
     async def _fake_row(_uid):
         return SimpleNamespace(crystals=80)
 
+    async def _fake_download_video(_settings, mp4_url: str) -> bytes:
+        assert mp4_url == "https://cdn.fake/animate.mp4"
+        return b"fake-mp4-bytes"
+
     monkeypatch.setattr(
         generation_jobs,
         "generate_openrouter_animate_video",
         _fake_openrouter_animate,
+    )
+    monkeypatch.setattr(
+        generation_jobs,
+        "download_animate_video_bytes",
+        _fake_download_video,
     )
     monkeypatch.setattr(generation_jobs, "get_user_row", _fake_row)
 

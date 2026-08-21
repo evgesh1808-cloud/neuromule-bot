@@ -22,6 +22,7 @@ OPENROUTER_VIDEOS_ORIGIN = "https://openrouter.ai"
 
 OPENROUTER_ANIMATE_VIDEO_MODEL = "bytedance/seedance-2.0-mini"
 ANIMATE_FRAME_MAX_BYTES = DEFAULT_MAX_BYTES
+ANIMATE_VIDEO_MAX_BYTES = 50 * 1024 * 1024
 
 ANIMATE_DEFAULT_PROMPT = (
     "Cinematic subtle portrait movement, realistic eyes blinking, natural gentle breathing, "
@@ -48,7 +49,7 @@ def openrouter_videos_configured(settings: Settings) -> bool:
 
 
 def build_frame_images(image_url: str) -> list[dict[str, Any]]:
-    """Актуальный OpenRouter Video API: ``ContentPartImage`` в ``frame_images``."""
+    """OpenRouter Video API: ``FrameImage`` с обязательным ``frame_type``."""
     url = (image_url or "").strip()
     if not url:
         raise ExternalApiError("OpenRouter", "empty frame image URL")
@@ -56,6 +57,7 @@ def build_frame_images(image_url: str) -> list[dict[str, Any]]:
         {
             "type": "image_url",
             "image_url": {"url": url},
+            "frame_type": "first_frame",
         }
     ]
 
@@ -65,6 +67,19 @@ def _resolve_animate_model(settings: Settings) -> str:
         getattr(settings, "openrouter_animate_video_model", None)
         or OPENROUTER_ANIMATE_VIDEO_MODEL
     ).strip() or OPENROUTER_ANIMATE_VIDEO_MODEL
+
+
+def _resolve_animate_model_candidates(settings: Settings) -> tuple[str, ...]:
+    """Primary + fallback из настроек (без дубликатов)."""
+    primary = _resolve_animate_model(settings)
+    fallback = (
+        getattr(settings, "openrouter_animate_video_fallback_model", None) or ""
+    ).strip()
+    out: list[str] = []
+    for slug in (primary, fallback):
+        if slug and slug not in out:
+            out.append(slug)
+    return tuple(out)
 
 
 def _auth_headers(api_key: str) -> dict[str, str]:
@@ -213,6 +228,26 @@ def _http_error_from_response(response: httpx.Response, *, phase: str) -> Extern
     return ExternalApiError("OpenRouter", f"{phase} HTTP {response.status_code}: {snippet}")
 
 
+async def download_animate_video_bytes(settings: Settings, mp4_url: str) -> bytes:
+    """Скачивает готовый mp4 для ``send_video`` (OpenRouter CDN может быть недоступен TG)."""
+    from services.openrouter_http import get_openrouter_http_client
+
+    url = (mp4_url or "").strip()
+    if not url.startswith(("http://", "https://")):
+        raise ExternalApiError("OpenRouter", "invalid animate video URL")
+
+    client = await get_openrouter_http_client(settings)
+    data = await stream_download_to_bytes(
+        client,
+        url,
+        max_bytes=ANIMATE_VIDEO_MAX_BYTES,
+        source="openrouter_animate_video",
+    )
+    if not data:
+        raise ExternalApiError("OpenRouter", "failed to download animate video")
+    return data
+
+
 async def _submit_video_job(
     client: httpx.AsyncClient,
     *,
@@ -256,7 +291,7 @@ async def generate_openrouter_animate_video(
     if not api_keys:
         raise ExternalApiError("OpenRouter", "OPENROUTER_API_KEY не задан")
 
-    model_id = _resolve_animate_model(settings)
+    model_candidates = _resolve_animate_model_candidates(settings)
     poll_interval = float(getattr(settings, "openrouter_video_poll_interval_sec", 18.0) or 18.0)
     poll_timeout = float(getattr(settings, "openrouter_video_poll_timeout_sec", 600.0) or 600.0)
     submit_timeout = min(120.0, poll_timeout)
@@ -284,91 +319,111 @@ async def generate_openrouter_animate_video(
 
     last_exc: ExternalApiError | None = None
 
-    for force_data_url in force_data_modes:
-        frame_url = await resolve_frame_image_url(
-            settings,
-            bot,
-            photo_ref,
-            force_data_url=force_data_url,
-        )
-        if force_data_url:
-            logger.info(
-                "OpenRouter video frame inline data-url len=%s",
-                len(frame_url),
+    for model_idx, model_id in enumerate(model_candidates):
+        for force_data_url in force_data_modes:
+            frame_url = await resolve_frame_image_url(
+                settings,
+                bot,
+                photo_ref,
+                force_data_url=force_data_url,
             )
+            if force_data_url:
+                logger.info(
+                    "OpenRouter video frame inline data-url len=%s model=%s",
+                    len(frame_url),
+                    model_id,
+                )
 
-        body = {
-            **body_base,
-            "model": model_id,
-            "frame_images": build_frame_images(frame_url),
-        }
-        retry_with_data_url = False
+            body = {
+                **body_base,
+                "model": model_id,
+                "frame_images": build_frame_images(frame_url),
+            }
+            retry_with_data_url = False
+            try_next_model = False
 
-        for key_idx, api_key in enumerate(api_keys):
-            try:
-                response = await _submit_video_job(
+            for key_idx, api_key in enumerate(api_keys):
+                try:
+                    response = await _submit_video_job(
+                        client,
+                        api_key=api_key,
+                        body=body,
+                        submit_timeout=submit_timeout,
+                    )
+                except httpx.HTTPError as exc:
+                    last_exc = ExternalApiError("OpenRouter", clip_error_text(exc))
+                    if key_idx + 1 < len(api_keys):
+                        continue
+                    try_next_model = model_idx + 1 < len(model_candidates)
+                    if try_next_model:
+                        break
+                    raise last_exc from exc
+
+                if response.status_code in (402, 429):
+                    last_exc = _http_error_from_response(response, phase="video submit")
+                    if key_idx + 1 < len(api_keys):
+                        logger.warning(
+                            "OpenRouter video %s on key ...%s — next key",
+                            response.status_code,
+                            api_key[-6:],
+                        )
+                        continue
+                    try_next_model = model_idx + 1 < len(model_candidates)
+                    if try_next_model:
+                        break
+                    raise last_exc
+
+                if response.status_code >= 400:
+                    last_exc = _http_error_from_response(response, phase="video submit")
+                    if (
+                        not force_data_url
+                        and _response_looks_like_image_error(
+                            response.status_code,
+                            response.text or "",
+                        )
+                    ):
+                        retry_with_data_url = True
+                        break
+                    try_next_model = model_idx + 1 < len(model_candidates)
+                    if try_next_model:
+                        logger.warning(
+                            "OpenRouter animate model %s failed (%s), trying %s",
+                            model_id,
+                            last_exc,
+                            model_candidates[model_idx + 1],
+                        )
+                        break
+                    raise last_exc
+
+                try:
+                    job = response.json()
+                except ValueError as exc:
+                    raise ExternalApiError("OpenRouter", "invalid JSON on video submit") from exc
+                if not isinstance(job, dict):
+                    raise ExternalApiError("OpenRouter", "video submit response is not an object")
+
+                logger.info(
+                    "OpenRouter video submitted model=%s job_id=%s inline=%s key=...%s",
+                    model_id,
+                    job.get("id"),
+                    force_data_url,
+                    api_key[-6:],
+                )
+                return await _poll_video_job(
                     client,
                     api_key=api_key,
-                    body=body,
-                    submit_timeout=submit_timeout,
+                    job_payload=job,
+                    poll_interval_sec=poll_interval,
+                    poll_timeout_sec=poll_timeout,
                 )
-            except httpx.HTTPError as exc:
-                last_exc = ExternalApiError("OpenRouter", clip_error_text(exc))
-                if key_idx + 1 < len(api_keys):
-                    continue
-                raise last_exc from exc
 
-            if response.status_code in (402, 429):
-                last_exc = _http_error_from_response(response, phase="video submit")
-                if key_idx + 1 < len(api_keys):
-                    logger.warning(
-                        "OpenRouter video %s on key ...%s — next key",
-                        response.status_code,
-                        api_key[-6:],
-                    )
-                    continue
+            if retry_with_data_url:
+                continue
+            if try_next_model:
+                break
+            if last_exc is not None:
                 raise last_exc
-
-            if response.status_code >= 400:
-                last_exc = _http_error_from_response(response, phase="video submit")
-                if (
-                    not force_data_url
-                    and _response_looks_like_image_error(
-                        response.status_code,
-                        response.text or "",
-                    )
-                ):
-                    retry_with_data_url = True
-                    break
-                raise last_exc
-
-            try:
-                job = response.json()
-            except ValueError as exc:
-                raise ExternalApiError("OpenRouter", "invalid JSON on video submit") from exc
-            if not isinstance(job, dict):
-                raise ExternalApiError("OpenRouter", "video submit response is not an object")
-
-            logger.info(
-                "OpenRouter video submitted model=%s job_id=%s inline=%s key=...%s",
-                model_id,
-                job.get("id"),
-                force_data_url,
-                api_key[-6:],
-            )
-            return await _poll_video_job(
-                client,
-                api_key=api_key,
-                job_payload=job,
-                poll_interval_sec=poll_interval,
-                poll_timeout_sec=poll_timeout,
-            )
-
-        if retry_with_data_url:
-            continue
-        if last_exc is not None:
-            raise last_exc
-        break
+            break
 
     if last_exc is not None:
         raise last_exc

@@ -38,6 +38,7 @@ from services.replicate_client import (
     telegram_photo_download_url,
 )
 from services.openrouter_videos import (
+    download_animate_video_bytes,
     generate_openrouter_animate_video,
     openrouter_videos_configured,
 )
@@ -1436,6 +1437,10 @@ async def _animate_stub_worker(task: GenTask) -> None:
                     bot=bot,
                     telegram_file_id=file_id,
                 )
+                video_bytes = await download_animate_video_bytes(
+                    app_settings,
+                    animated_url,
+                )
 
             cap = msg.TXT_ANIMATE_SUCCESS
             cap += "\n\n" + msg.TXT_RESULT_ANIMATE_CAPTION.format(
@@ -1443,7 +1448,8 @@ async def _animate_stub_worker(task: GenTask) -> None:
                 balance=row.crystals,
             )
             cap += _balance_footer(row.crystals)
-            sent = await bot.send_video(chat_id, video=animated_url, caption=cap)
+            video_file = BufferedInputFile(video_bytes, filename="neuromule_animate.mp4")
+            sent = await bot.send_video(chat_id, video=video_file, caption=cap)
             tg_file_id = sent.video.file_id if sent.video else None
             _remember_share(task, file_id=tg_file_id, media_url=animated_url)
 

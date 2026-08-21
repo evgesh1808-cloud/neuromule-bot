@@ -21,6 +21,7 @@ def test_build_frame_images_uses_openrouter_content_part_schema() -> None:
         {
             "type": "image_url",
             "image_url": {"url": "https://cdn.example/photo.jpg"},
+            "frame_type": "first_frame",
         }
     ]
 
@@ -97,6 +98,7 @@ async def test_generate_openrouter_animate_video_polls_until_completed() -> None
     assert body["model"] == "bytedance/seedance-2.0-mini"
     frame = body["frame_images"][0]
     assert frame["type"] == "image_url"
+    assert frame["frame_type"] == "first_frame"
     assert frame["image_url"]["url"].startswith("data:image/jpeg;base64,")
     assert "realistic eyes blinking" in body["prompt"]
 
