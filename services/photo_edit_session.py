@@ -203,6 +203,19 @@ def build_format_change_prompt(original_prompt: str, aspect_ratio: str) -> str:
     return preserve
 
 
+def build_photo_refine_edit_prompt(user_intent_en: str) -> str:
+    """i2i «Доработать текстом»: правки к уже сгенерированному кадру, не новая сцена."""
+    intent = (user_intent_en or "").strip() or "subtle quality improvements"
+    return (
+        "Using the attached image as the exact visual reference, preserve the same subjects, "
+        "faces, pose, clothing, lighting, background, and overall composition unless the edit "
+        f"request explicitly asks to change them. Apply only these edits: {intent}. "
+        "Do not regenerate from scratch, do not replace with an unrelated scene, "
+        "and do not invent new people or objects unless requested. "
+        "Photorealistic, sharp focus, consistent colors."
+    )
+
+
 def clear_photo_edit_session(user_id: int) -> None:
     _sessions.pop(user_id, None)
 

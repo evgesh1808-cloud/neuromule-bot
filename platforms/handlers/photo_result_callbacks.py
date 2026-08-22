@@ -177,6 +177,7 @@ async def _rerun_from_session(
             reference_image_bytes=ref_bytes,
             reference_mime=ref_mime,
             aspect_ratio=ar,
+            i2i_reference_mode="preserve" if format_only else "selfie",
         )
     except Exception:
         logger.exception("photo repeat: billing failed uid=%s", user.id)
@@ -226,6 +227,7 @@ async def _rerun_from_session(
         aspect_ratio=eq.aspect_ratio,
         status_message_id=status_msg.message_id if status_msg is not None else None,
         generation_seed=seed or random.randint(1, 2_000_000_000),
+        i2i_reference_mode="preserve" if format_only else "selfie",
     )
     await state.update_data(
         image_model_id=model_id,

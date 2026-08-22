@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 
@@ -14,8 +14,11 @@ from io import BytesIO
 from config import Settings
 from services.api_resilience import ExternalApiError, clip_error_text
 from services.gemini_image_client import GeminiImageResult
+from services.multi_ref_scene_parser import SceneLayout
 
 logger = logging.getLogger(__name__)
+
+I2iReferenceMode = Literal["selfie", "edit", "preserve"]
 
 OPENROUTER_IMAGES_URL = "https://openrouter.ai/api/v1/images"
 OPENROUTER_FLUX_PAID_MODEL = "black-forest-labs/flux.2-pro"
@@ -42,6 +45,35 @@ NANO_BANANO_PRO_FALLBACKS: tuple[str, ...] = (
     OPENROUTER_FLUX_PAID_MODEL,
     *OPENROUTER_FLUX_STACK_FALLBACKS,
 )
+
+_FLUX_IDENTITY_WEAK_MODELS: frozenset[str] = frozenset(
+    {
+        OPENROUTER_FLUX_PAID_MODEL,
+        *OPENROUTER_FLUX_STACK_FALLBACKS,
+    }
+)
+
+_IDENTITY_I2I_FALLBACK_CHAIN: tuple[str, ...] = (
+    OPENROUTER_GPT_IMAGE2_MODEL,
+    OPENROUTER_NANO_BANANA_PRO_MODEL,
+    OPENROUTER_NANO_BANANA2_MODEL,
+    "google/gemini-3-pro-image-preview",
+    "google/gemini-3.1-flash-image",
+)
+
+
+def resolve_identity_i2i_fallback_models(primary_model: str) -> tuple[str, ...]:
+    """Fallback для i2i identity: GPT / Nano / Gemini, без Flux (слабый перенос лица)."""
+    primary_id = (primary_model or "").strip()
+    seen: set[str] = {primary_id} if primary_id else set()
+    out: list[str] = []
+    for slug in _IDENTITY_I2I_FALLBACK_CHAIN:
+        s = (slug or "").strip()
+        if not s or s in seen or s in _FLUX_IDENTITY_WEAK_MODELS:
+            continue
+        seen.add(s)
+        out.append(s)
+    return tuple(out)
 GPT_IMAGE2_FALLBACKS: tuple[str, ...] = (
     OPENROUTER_FLUX_PAID_MODEL,
     *OPENROUTER_FLUX_STACK_FALLBACKS,
@@ -104,7 +136,8 @@ SELFIE_I2I_PROMPT_TEMPLATE = (
     "Preserve the exact hairstyle, hair length, and hair color from the reference. "
     "Do not age, rejuvenate, or add freckles/spots not in the reference. "
     "Generate this exact person in a new scene: {user_intent}. "
-    "High-end editorial photography, soft beauty lighting, healthy rested appearance, "
+    "High-end fashion editorial photography, flawless smooth glowing skin, "
+    "soft beauty studio lighting, professional retouching look, healthy rested appearance, "
     "clean luminous skin, sharp focus, balanced colors, 85mm lens. "
     "Ignore reference background, clothing, and pose entirely — "
     "create a completely new scene and composition."
@@ -265,7 +298,9 @@ MULTI_REF_GROUP_NEGATIVE_PROMPT = (
     "face morphing, unrecognizable subjects, deformed group portrait"
 )
 
-MULTI_REF_GROUP_FALLBACKS: tuple[str, ...] = NANO_BANANO_PRO_FALLBACKS
+# Group multi-ref: Nano Pro primary, Nano 2 only — Flux excluded (identity loss on 2+ faces).
+MULTI_REF_GROUP_PRIMARY_MODEL = OPENROUTER_NANO_BANANA_PRO_MODEL
+MULTI_REF_GROUP_FALLBACKS: tuple[str, ...] = (OPENROUTER_NANO_BANANA2_MODEL,)
 
 GOOGLE_IDENTITY_LOCK = (
     "Maintain the exact same facial identity as the reference: identical eye shape, "
@@ -304,9 +339,12 @@ SELFIE_WOMAN_PROMPT_PREFIX = "A professional photo of a beautiful young woman, "
 
 FACE_DESCRIBE_VISION_MODEL = "google/gemini-2.5-flash"
 FACE_DESCRIBE_SYSTEM_PROMPT = (
-    "Ты обязан определить пол человека на фото и начать описание строго со слов "
-    "'A photo of a young woman...' или 'A female portrait...'. "
-    "Далее опиши только анатомические черты лица, полностью игнорируя фон, эмоции и одежду."
+    "Describe the person's face in English for AI image generation (max 80 words). "
+    "State gender first, then eye shape, nose bridge, jawline, lip proportions, and hair. "
+    "Describe skin with complimentary markers: fresh, healthy, smooth, and well-rested appearance. "
+    "NEVER output specific age numbers, digits, or numeric age estimates — use qualitative "
+    "descriptors only (e.g. young adult, middle-aged). "
+    "Ignore background, clothing, expression, and pose."
 )
 
 OPENROUTER_MODEL_BY_MENU_KEY: dict[str, str] = {
@@ -417,13 +455,15 @@ def resolve_composite_refine_fallbacks(model_key: str) -> tuple[str, ...]:
 
 
 def resolve_multi_ref_group_model_key(model_key: str) -> str:
-    """Multi-reference group (2–10 фото) → OpenRouter stack выбранной модели меню."""
-    return resolve_composite_refine_model_key(model_key)
+    """Multi-reference group (2–10 фото) → hard-routed Nano Banana Pro (identity-safe)."""
+    _ = model_key  # billing/UI may still show menu model; generation uses Nano Pro.
+    return MULTI_REF_GROUP_PRIMARY_MODEL
 
 
 def resolve_multi_ref_group_fallbacks(model_key: str) -> tuple[str, ...]:
-    """Fallback-цепочка group multi-ref после primary slug (без дубликата primary)."""
-    return resolve_composite_refine_fallbacks(model_key)
+    """Fallback for group multi-ref — Nano Banana 2 only, no Flux/GPT cascade."""
+    _ = model_key
+    return MULTI_REF_GROUP_FALLBACKS
 
 
 def resolve_creative_composite_fallbacks(model_key: str) -> tuple[str, ...]:
@@ -798,6 +838,62 @@ def _build_multi_ref_identity_lines(num_refs: int) -> str:
     return "\n".join(lines)
 
 
+def build_structured_multi_ref_prompt(
+    layout: SceneLayout,
+    face_descriptions: list[str],
+) -> str:
+    """Slot-aware multi-ref prompt: each reference locked to role, placement, and identity."""
+    refs_count = len(face_descriptions)
+    intent = (layout.scene_description_en or DEFAULT_PHOTO_USER_INTENT).strip()
+    identity_lines: list[str] = []
+    used_indices: set[int] = set()
+
+    for character in layout.characters:
+        ref_idx = int(character.ref_index)
+        if ref_idx < 0 or ref_idx >= refs_count:
+            continue
+        used_indices.add(ref_idx)
+        face_desc = (face_descriptions[ref_idx] or "").strip()
+        anchor = (character.appearance_anchor or face_desc or character.label).strip()
+        label = (character.label or f"Person {ref_idx + 1}").strip()
+        placement = (character.placement or "in the scene as described").strip()
+        identity_lines.append(
+            f"- {label} → input_references[{ref_idx}] ({placement}): "
+            f"Identity anchor: {anchor}. "
+            f"MUST preserve exact facial identity from input_references[{ref_idx}] — "
+            f"identical eye shape, nose bridge, jawline, lip proportions, skin tone, "
+            f"and apparent age. Do not age, rejuvenate, or alter skin texture. "
+            f"STRICTLY FORBIDDEN to swap or blend features with any other reference."
+        )
+
+    for idx in range(refs_count):
+        if idx in used_indices:
+            continue
+        face_desc = (face_descriptions[idx] or "").strip()
+        identity_lines.append(
+            f"- Person {idx + 1} → input_references[{idx}]: "
+            f"Identity anchor: {face_desc or 'match reference exactly'}. "
+            f"MUST preserve exact facial identity from input_references[{idx}]. "
+            f"STRICTLY FORBIDDEN to swap or blend features with any other reference."
+        )
+
+    identity_block = "\n".join(identity_lines)
+    prompt = (
+        "CRITICAL MULTI-SUBJECT IDENTITY DIRECTIVE:\n"
+        f"You are provided with exactly {refs_count} individual face images in input_references.\n"
+        f"{identity_block}\n"
+        "STRICTLY FORBIDDEN to blend, merge, average, or swap facial features between references. "
+        "Each character must remain completely distinct and 100% recognizable. "
+        "Deep crisp focus on ALL faces. Preserve each subject's apparent age exactly — "
+        "no aging, de-aging, or skin alteration.\n\n"
+        f"Scene and cinematic composition: {intent}"
+    )
+    return append_negative_prompt_directive(
+        prompt,
+        negative=MULTI_REF_GROUP_NEGATIVE_PROMPT,
+    )
+
+
 def build_multi_banana_prompt(user_intent_en: str, num_refs: int) -> str:
     """Composite prompt for multi-reference group portrait (Nano Banana Pro)."""
     count = max(2, min(int(num_refs or 0), 10))
@@ -852,6 +948,7 @@ async def generate_openrouter_multi_ref_group_photo(
     aspect_ratio: str = "1:1",
     fallback_models: tuple[str, ...] = MULTI_REF_GROUP_FALLBACKS,
     timeout_sec: float = DEFAULT_OPENROUTER_IMAGES_TIMEOUT_SEC,
+    api_prompt: str | None = None,
 ) -> GeminiImageResult:
     """Multi-reference group portrait via OpenRouter Images API."""
     scene_prompt = (user_prompt or "").strip() or DEFAULT_PHOTO_USER_INTENT
@@ -859,11 +956,14 @@ async def generate_openrouter_multi_ref_group_photo(
     for raw_url in reference_image_data_urls:
         png_refs.append(await ensure_png_reference_data_url(raw_url))
 
-    api_prompt = await build_multi_banana_prompt_from_ru(
-        settings,
-        scene_prompt,
-        len(png_refs),
-    )
+    if not (api_prompt or "").strip():
+        api_prompt = await build_multi_banana_prompt_from_ru(
+            settings,
+            scene_prompt,
+            len(png_refs),
+        )
+    else:
+        api_prompt = api_prompt.strip()
 
     last_exc: ExternalApiError | None = None
     candidates = ((model or "").strip(), *fallback_models)
@@ -1334,10 +1434,15 @@ async def resolve_openrouter_photo_prompt_and_refs(
     reference_data_url: str | None = None,
     reference_input_url: str | None = None,
     user_intent_en: str | None = None,
+    i2i_reference_mode: I2iReferenceMode = "selfie",
 ) -> tuple[str, list[dict[str, Any]] | None, dict[str, Any]]:
     """
     Промпт, input_references (PNG base64 data-URL) и body extensions по стеку модели.
-    ``reference_input_url`` — уже закодированный ref (для fallback без повторной загрузки).
+
+    ``i2i_reference_mode``:
+    - ``selfie`` — identity i2i с новой сценой (селфи + промпт);
+    - ``edit`` — «Доработать текстом» к последнему результату;
+    - ``preserve`` — промпт уже собран (format change), без selfie-шаблона.
     """
     cleaned = (user_prompt or "").strip() or DEFAULT_PHOTO_USER_INTENT
     raw_ref = (reference_input_url or reference_data_url or "").strip()
@@ -1348,16 +1453,32 @@ async def resolve_openrouter_photo_prompt_and_refs(
         return build_plain_t2i_prompt(intent_en), None, {}
 
     model_id = (model or "").strip()
-    intent_en = (user_intent_en or "").strip()
-    if not intent_en:
-        intent_en = await translate_photo_user_intent(settings, cleaned)
-
     ref_png = await ensure_png_reference_data_url(
         reference_data_url or raw_ref,
         reference_input_url=reference_input_url,
     )
-    prompt = build_selfie_i2i_prompt_for_model(model_id, intent_en)
-    # OpenRouter Images API: только type image_url; identity/inpaint → в prompt.
+
+    if i2i_reference_mode == "preserve":
+        prompt = cleaned
+    else:
+        intent_en = (user_intent_en or "").strip()
+        if not intent_en:
+            intent_en = await translate_photo_user_intent(settings, cleaned)
+        if i2i_reference_mode == "edit":
+            from services.photo_edit_session import build_photo_refine_edit_prompt
+
+            prompt = build_photo_refine_edit_prompt(intent_en)
+        else:
+            try:
+                face_desc = await describe_reference_face_for_prompt(settings, ref_png)
+                intent_en = append_face_description_to_prompt(intent_en, face_desc)
+            except ExternalApiError:
+                logger.warning(
+                    "face description skipped for identity i2i model=%s",
+                    model_id,
+                )
+            prompt = build_selfie_i2i_prompt_for_model(model_id, intent_en)
+
     return prompt, [openrouter_input_reference(ref_png)], {}
 
 
@@ -1567,6 +1688,7 @@ async def generate_openrouter_photo(
     reference_data_url: str | None = None,
     fallback_models: tuple[str, ...] = (),
     timeout_sec: float = DEFAULT_OPENROUTER_IMAGES_TIMEOUT_SEC,
+    i2i_reference_mode: I2iReferenceMode = "selfie",
 ) -> GeminiImageResult:
     ref_png: str | None = None
     user_intent_en: str | None = None
@@ -1591,6 +1713,7 @@ async def generate_openrouter_photo(
                 reference_data_url=reference_data_url,
                 reference_input_url=ref_png,
                 user_intent_en=user_intent_en,
+                i2i_reference_mode=i2i_reference_mode,
             )
             return await generate_openrouter_image(
                 settings,

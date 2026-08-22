@@ -1,23 +1,49 @@
-"""Tests for multi-reference group photo payload and billing turn."""
+"""Tests for multi-reference group photo payload, scene parser, and billing turn."""
 
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock, patch
 from types import SimpleNamespace
 
 import pytest
 
 from config import Settings
+from services.multi_ref_scene_parser import (
+    SceneCharacter,
+    SceneLayout,
+    parse_multi_ref_scene,
+    strip_json_markdown_fence,
+)
 from services.openrouter_images import (
+    FACE_DESCRIBE_SYSTEM_PROMPT,
     OPENROUTER_FLUX_PAID_MODEL,
-    OPENROUTER_GPT_IMAGE2_MODEL,
+    OPENROUTER_NANO_BANANA2_MODEL,
     OPENROUTER_NANO_BANANA_PRO_MODEL,
+    SELFIE_I2I_PROMPT_TEMPLATE,
     build_multi_ref_group_payload,
+    build_structured_multi_ref_prompt,
     generate_openrouter_multi_ref_group_photo,
     resolve_multi_ref_group_fallbacks,
     resolve_multi_ref_group_model_key,
 )
 from services.use_cases.photo_generation_turn import PhotoGenOutcome, run_photo_generation_turn
+
+
+def test_face_describe_prompt_forbids_numeric_age() -> None:
+    assert "NEVER output specific age numbers" in FACE_DESCRIBE_SYSTEM_PROMPT
+    assert "fresh, healthy, smooth, and well-rested appearance" in FACE_DESCRIBE_SYSTEM_PROMPT
+
+
+def test_selfie_i2i_template_has_editorial_beauty_triggers() -> None:
+    assert "high-end fashion editorial photography" in SELFIE_I2I_PROMPT_TEMPLATE.lower()
+    assert "flawless smooth glowing skin" in SELFIE_I2I_PROMPT_TEMPLATE.lower()
+    assert "professional retouching look" in SELFIE_I2I_PROMPT_TEMPLATE.lower()
+
+
+def test_strip_json_markdown_fence() -> None:
+    raw = '```json\n{"a": 1}\n```'
+    assert strip_json_markdown_fence(raw) == '{"a": 1}'
 
 
 def test_build_multi_ref_group_payload_passes_prompt_unchanged() -> None:
@@ -33,10 +59,120 @@ def test_build_multi_ref_group_payload_passes_prompt_unchanged() -> None:
     assert "CRITICAL MULTI-SUBJECT" not in payload["prompt"]
 
 
+def test_build_structured_multi_ref_prompt_husband_wife_unordered_album() -> None:
+    layout = SceneLayout(
+        characters=[
+            SceneCharacter(
+                ref_index=1,
+                label="wife",
+                placement="right side, leaning on husband's shoulder",
+                appearance_anchor="woman with soft brown eyes and wavy dark hair",
+            ),
+            SceneCharacter(
+                ref_index=0,
+                label="husband",
+                placement="left foreground, holding vintage photo album",
+                appearance_anchor="man with strong jawline and short beard",
+            ),
+        ],
+        scene_description_en=(
+            "Couple on a sofa reviewing an unordered family photo album, warm window light"
+        ),
+    )
+    face_descriptions = [
+        "Adult man, strong jawline, short beard, fresh healthy skin",
+        "Adult woman, soft brown eyes, wavy dark hair, smooth well-rested appearance",
+    ]
+    prompt = build_structured_multi_ref_prompt(layout, face_descriptions)
+
+    assert "input_references[0]" in prompt
+    assert "input_references[1]" in prompt
+    assert "husband" in prompt.lower()
+    assert "wife" in prompt.lower()
+    assert "left foreground" in prompt
+    assert "right side" in prompt
+    assert "STRICTLY FORBIDDEN to swap or blend" in prompt
+    assert "Do not age, rejuvenate" in prompt
+    assert "photo album" in prompt.lower()
+
+
+def test_build_structured_multi_ref_prompt_past_present_self() -> None:
+    layout = SceneLayout(
+        characters=[
+            SceneCharacter(
+                ref_index=0,
+                label="present self",
+                placement="center foreground, adult portrait",
+                appearance_anchor="same person as reference, current appearance",
+            ),
+            SceneCharacter(
+                ref_index=1,
+                label="past self",
+                placement="as a printed childhood photo held in hands",
+                appearance_anchor="younger version of the same person on photo print",
+            ),
+        ],
+        scene_description_en="Adult holding an old childhood photo of themselves, soft studio light",
+    )
+    face_descriptions = [
+        "Middle-aged woman, oval face, calm expression, healthy smooth skin",
+        "Young girl, same bone structure, bright eyes, childhood photo",
+    ]
+    prompt = build_structured_multi_ref_prompt(layout, face_descriptions)
+
+    assert "present self" in prompt.lower()
+    assert "past self" in prompt.lower()
+    assert "input_references[0]" in prompt
+    assert "input_references[1]" in prompt
+    assert "printed childhood photo" in prompt
+    assert "Preserve each subject's apparent age exactly" in prompt
+
+
 @pytest.mark.asyncio
-async def test_generate_multi_ref_group_uses_structured_prompt() -> None:
+async def test_parse_multi_ref_scene_maps_roles_from_face_descriptions() -> None:
+    settings = Settings(tg_token="t", openrouter_key="k")
+    llm_json = json.dumps(
+        {
+            "characters": [
+                {
+                    "ref_index": 1,
+                    "label": "wife",
+                    "placement": "right",
+                    "appearance_anchor": "woman with wavy hair",
+                },
+                {
+                    "ref_index": 0,
+                    "label": "husband",
+                    "placement": "left",
+                    "appearance_anchor": "man with beard",
+                },
+            ],
+            "scene_description_en": "Couple on a couch with a photo album",
+        }
+    )
+
+    with patch(
+        "services.ai_text.ask_ai_messages",
+        AsyncMock(return_value=SimpleNamespace(content=f"```json\n{llm_json}\n```")),
+    ):
+        layout = await parse_multi_ref_scene(
+            settings,
+            "на диване с фотоальбомом, муж слева, жена справа",
+            ["man with beard", "woman with wavy hair"],
+        )
+
+    assert layout.characters[0].ref_index == 1
+    assert layout.characters[0].label == "wife"
+    assert layout.characters[1].ref_index == 0
+    assert layout.characters[1].label == "husband"
+    assert "photo album" in layout.scene_description_en.lower()
+
+
+@pytest.mark.asyncio
+async def test_generate_multi_ref_group_uses_prebuilt_structured_prompt() -> None:
     settings = Settings(tg_token="t", openrouter_key="k")
     refs = ["data:image/png;base64,aaa", "data:image/png;base64,bbb"]
+    structured = "CRITICAL MULTI-SUBJECT structured prompt with input_references[0]"
 
     with (
         patch(
@@ -45,8 +181,8 @@ async def test_generate_multi_ref_group_uses_structured_prompt() -> None:
         ),
         patch(
             "services.openrouter_images.build_multi_banana_prompt_from_ru",
-            AsyncMock(return_value="CRITICAL MULTI-SUBJECT structured prompt"),
-        ) as build_prompt,
+            AsyncMock(side_effect=AssertionError("should not build legacy prompt")),
+        ),
         patch(
             "services.openrouter_images.generate_openrouter_image",
             AsyncMock(return_value=type("R", (), {"url": "https://cdn/out.png", "data": None})()),
@@ -54,26 +190,25 @@ async def test_generate_multi_ref_group_uses_structured_prompt() -> None:
     ):
         await generate_openrouter_multi_ref_group_photo(
             settings,
-            model="google/gemini-3-pro-image-preview",
+            model=OPENROUTER_NANO_BANANA_PRO_MODEL,
             user_prompt="мама и дочка на пляже",
             reference_image_data_urls=refs,
+            api_prompt=structured,
         )
 
-    build_prompt.assert_awaited_once_with(settings, "мама и дочка на пляже", 2)
     assert "CRITICAL MULTI-SUBJECT" in gen_image.await_args.kwargs["prompt"]
 
 
-def test_resolve_multi_ref_group_model_key_uses_selected_menu_model() -> None:
+def test_resolve_multi_ref_group_model_key_hard_routes_nano_pro() -> None:
     assert resolve_multi_ref_group_model_key("nano_banana_pro") == OPENROUTER_NANO_BANANA_PRO_MODEL
-    assert resolve_multi_ref_group_model_key("gpt_image_2") == OPENROUTER_GPT_IMAGE2_MODEL
-    assert resolve_multi_ref_group_model_key("flux_2_pro") == OPENROUTER_FLUX_PAID_MODEL
+    assert resolve_multi_ref_group_model_key("gpt_image_2") == OPENROUTER_NANO_BANANA_PRO_MODEL
+    assert resolve_multi_ref_group_model_key("flux_2_pro") == OPENROUTER_NANO_BANANA_PRO_MODEL
 
 
-def test_resolve_multi_ref_group_fallbacks_respects_primary_model() -> None:
-    flux_primary = resolve_multi_ref_group_model_key("flux_2_pro")
+def test_resolve_multi_ref_group_fallbacks_excludes_flux() -> None:
     flux_fb = resolve_multi_ref_group_fallbacks("flux_2_pro")
-    assert flux_primary not in flux_fb
-    assert OPENROUTER_GPT_IMAGE2_MODEL in flux_fb or OPENROUTER_NANO_BANANA_PRO_MODEL in flux_fb
+    assert OPENROUTER_FLUX_PAID_MODEL not in flux_fb
+    assert flux_fb == (OPENROUTER_NANO_BANANA2_MODEL,)
 
 
 @pytest.mark.asyncio

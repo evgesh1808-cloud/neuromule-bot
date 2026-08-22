@@ -9,10 +9,17 @@ import pytest
 from config import Settings
 from services.api_resilience import ExternalApiError
 from services.openrouter_videos import (
+    OpenRouterAnimateResult,
     build_frame_images,
     generate_openrouter_animate_video,
     photo_ref_to_data_url,
+    resolve_animate_duration_for_model,
 )
+
+
+def test_resolve_animate_duration_for_veo() -> None:
+    assert resolve_animate_duration_for_model("google/veo-3.1-lite") == 4
+    assert resolve_animate_duration_for_model("bytedance/seedance-2.0-mini") == 5
 
 
 def test_build_frame_images_uses_openrouter_content_part_schema() -> None:
@@ -86,16 +93,20 @@ async def test_generate_openrouter_animate_video_polls_until_completed() -> None
         ),
         patch("services.openrouter_videos.asyncio.sleep", AsyncMock()),
     ):
-        url = await generate_openrouter_animate_video(
+        result = await generate_openrouter_animate_video(
             settings,
             bot=bot,
             telegram_file_id="AgAC_photo",
         )
 
-    assert url == "https://cdn.openrouter.ai/video.mp4"
+    assert result == OpenRouterAnimateResult(
+        url="https://cdn.openrouter.ai/video.mp4",
+        api_key="or-key",
+    )
     client.post.assert_awaited_once()
     body = client.post.await_args.kwargs["json"]
     assert body["model"] == "bytedance/seedance-2.0-mini"
+    assert body["duration"] == 5
     frame = body["frame_images"][0]
     assert frame["type"] == "image_url"
     assert frame["frame_type"] == "first_frame"
@@ -150,13 +161,13 @@ async def test_generate_openrouter_animate_video_retries_with_data_url_on_image_
         ),
         patch("services.openrouter_videos.asyncio.sleep", AsyncMock()),
     ):
-        url = await generate_openrouter_animate_video(
+        result = await generate_openrouter_animate_video(
             settings,
             bot=bot,
             telegram_file_id="https://cdn.example/photo.jpg",
         )
 
-    assert url == "https://cdn.openrouter.ai/video2.mp4"
+    assert result.url == "https://cdn.openrouter.ai/video2.mp4"
     assert client.post.await_count == 2
     second_body = client.post.await_args_list[1].kwargs["json"]
     assert second_body["frame_images"][0]["image_url"]["url"].startswith("data:")

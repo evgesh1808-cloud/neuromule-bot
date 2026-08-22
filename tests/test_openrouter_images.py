@@ -31,6 +31,7 @@ from services.openrouter_images import (
     reference_url_to_png_data_url,
     resolve_composite_refine_fallbacks,
     resolve_composite_refine_model_key,
+    resolve_identity_i2i_fallback_models,
     resolve_openrouter_photo_prompt_and_refs,
 )
 
@@ -55,6 +56,23 @@ def _mock_translate() -> AsyncMock:
         AsyncMock(return_value="sunset in paris"),
     ):
         yield
+
+
+@pytest.fixture(autouse=True)
+def _mock_face_describe() -> AsyncMock:
+    with patch(
+        "services.openrouter_images.describe_reference_face_for_prompt",
+        AsyncMock(return_value="young woman, oval face, brown eyes"),
+    ) as mock:
+        yield mock
+
+
+def test_resolve_identity_i2i_fallback_models_excludes_flux() -> None:
+    fallbacks = resolve_identity_i2i_fallback_models(OPENROUTER_NANO_BANANA_PRO_MODEL)
+    assert OPENROUTER_FLUX_PAID_MODEL not in fallbacks
+    assert OPENROUTER_GPT_IMAGE2_MODEL in fallbacks
+    assert OPENROUTER_NANO_BANANA2_MODEL in fallbacks
+    assert OPENROUTER_NANO_BANANA_PRO_MODEL not in fallbacks
 
 
 def test_prepend_selfie_woman_prompt() -> None:
@@ -147,6 +165,44 @@ def test_build_openai_inpaint_prompt_template() -> None:
 
 
 @pytest.mark.asyncio
+async def test_resolve_edit_mode_preserves_scene_not_selfie_template() -> None:
+    settings = Settings(tg_token="t", openrouter_key="test-key")
+    prompt, refs, extras = await resolve_openrouter_photo_prompt_and_refs(
+        settings,
+        model=OPENROUTER_NANO_BANANA_PRO_MODEL,
+        user_prompt="добавь мягкий закатный свет",
+        reference_input_url=_PNG_DATA_URL,
+        user_intent_en="add soft sunset light",
+        i2i_reference_mode="edit",
+    )
+    assert refs == [{"type": "image_url", "image_url": {"url": _PNG_DATA_URL}}]
+    assert extras == {}
+    assert "preserve the same subjects" in prompt.lower()
+    assert "apply only these edits" in prompt.lower()
+    assert "do not regenerate from scratch" in prompt.lower()
+    assert "character identity reference" not in prompt.lower()
+    assert "completely new scene" not in prompt.lower()
+
+
+@pytest.mark.asyncio
+async def test_resolve_preserve_mode_uses_prompt_unchanged() -> None:
+    settings = Settings(tg_token="t", openrouter_key="test-key")
+    preserve_prompt = (
+        "Using the attached image as the exact visual reference, preserve the same subject. "
+        "Change only the output aspect ratio to 9:16."
+    )
+    prompt, refs, _extras = await resolve_openrouter_photo_prompt_and_refs(
+        settings,
+        model=OPENROUTER_NANO_BANANA_PRO_MODEL,
+        user_prompt=preserve_prompt,
+        reference_input_url=_PNG_DATA_URL,
+        i2i_reference_mode="preserve",
+    )
+    assert prompt == preserve_prompt
+    assert refs is not None
+
+
+@pytest.mark.asyncio
 async def test_resolve_flux_uses_png_image_url_ref() -> None:
     settings = Settings(tg_token="t", openrouter_key="test-key")
     prompt, refs, extras = await resolve_openrouter_photo_prompt_and_refs(
@@ -157,6 +213,8 @@ async def test_resolve_flux_uses_png_image_url_ref() -> None:
         user_intent_en="sunset in paris",
     )
     assert "strictly as character identity reference" in prompt.lower()
+    assert "Subject face:" in prompt
+    assert "young woman, oval face" in prompt
     assert "override the camera distance" in prompt.lower()
     assert refs == [{"type": "image_url", "image_url": {"url": _PNG_DATA_URL}}]
     assert extras == {}

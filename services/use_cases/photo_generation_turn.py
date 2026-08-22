@@ -51,6 +51,7 @@ class PhotoEnqueueSpec:
     composite_base_reference_bytes: bytes | None = None
     group_multi_ref: bool = False
     group_ref_file_ids: tuple[str, ...] = ()
+    i2i_reference_mode: str = "selfie"
 
 
 @dataclass(frozen=True)
@@ -82,6 +83,7 @@ async def run_photo_generation_turn(
     composite_base_reference_bytes: bytes | None = None,
     group_multi_ref: bool = False,
     group_ref_file_ids: list[str] | tuple[str, ...] | None = None,
+    i2i_reference_mode: str = "selfie",
 ) -> PhotoGenResult:
     # bot/chat_id/settings — контракт call-site; списание через billing store.
     _ = (settings, bot, chat_id)
@@ -180,5 +182,6 @@ async def run_photo_generation_turn(
             composite_base_reference_bytes=base_bytes,
             group_multi_ref=group_multi_ref,
             group_ref_file_ids=group_refs if group_multi_ref else (),
+            i2i_reference_mode=(i2i_reference_mode or "selfie").strip() or "selfie",
         ),
     )

@@ -19,6 +19,7 @@ import pytest
 from content import messages as msg
 from services import generation_jobs, last_share_media
 from services.generation_jobs import GenTask
+from services.openrouter_videos import OpenRouterAnimateResult
 
 
 # ─── helpers ────────────────────────────────────────────────────────────────
@@ -283,14 +284,18 @@ async def test_animate_worker_caches_share_media(monkeypatch) -> None:
 
     async def _fake_openrouter_animate(_settings, *, bot, telegram_file_id):
         assert telegram_file_id == "src_selfie"
-        return "https://cdn.fake/animate.mp4"
+        return OpenRouterAnimateResult(
+            url="https://cdn.fake/animate.mp4",
+            api_key="or-key",
+        )
 
     async def _fake_row(_uid):
         return SimpleNamespace(crystals=80)
 
-    async def _fake_download_video(_settings, mp4_url: str) -> bytes:
+    async def _fake_download_video(_settings, mp4_url: str, *, api_key: str | None = None) -> bytes:
         assert mp4_url == "https://cdn.fake/animate.mp4"
-        return b"fake-mp4-bytes"
+        assert api_key == "or-key"
+        return b"\x00\x00\x00\x18ftypmp42" + b"fake-mp4-bytes"
 
     monkeypatch.setattr(
         generation_jobs,

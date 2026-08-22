@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+from dataclasses import dataclass
 from io import BytesIO
 from typing import Any
 
@@ -29,6 +30,32 @@ ANIMATE_DEFAULT_PROMPT = (
     "slight lifelike facial expression, high-quality rendering, "
     "maintain original skin texture and lighting"
 )
+
+DEFAULT_ANIMATE_DURATION_SEC = 5
+VEO_ANIMATE_DURATION_SEC = 4
+
+
+@dataclass(frozen=True, slots=True)
+class OpenRouterAnimateResult:
+    """URL готового mp4 и ключ OpenRouter, которым job был создан."""
+
+    url: str
+    api_key: str
+
+
+def resolve_animate_duration_for_model(model_id: str) -> int:
+    """Veo принимает 4/6/8 с; Seedance — 4–15. Безопасный дефолт — 4 для Veo, 5 для остальных."""
+    mid = (model_id or "").strip().lower()
+    if "veo" in mid:
+        return VEO_ANIMATE_DURATION_SEC
+    return DEFAULT_ANIMATE_DURATION_SEC
+
+
+def _looks_like_mp4(data: bytes) -> bool:
+    raw = bytes(data or b"")
+    if len(raw) < 12:
+        return False
+    return raw[4:8] == b"ftyp"
 
 _TERMINAL_FAILURE_STATUSES = frozenset({"failed", "cancelled", "expired"})
 _IMAGE_ERROR_MARKERS = (
@@ -228,8 +255,13 @@ def _http_error_from_response(response: httpx.Response, *, phase: str) -> Extern
     return ExternalApiError("OpenRouter", f"{phase} HTTP {response.status_code}: {snippet}")
 
 
-async def download_animate_video_bytes(settings: Settings, mp4_url: str) -> bytes:
-    """Скачивает готовый mp4 для ``send_video`` (OpenRouter CDN может быть недоступен TG)."""
+async def download_animate_video_bytes(
+    settings: Settings,
+    mp4_url: str,
+    *,
+    api_key: str | None = None,
+) -> bytes:
+    """Скачивает готовый mp4 для ``send_video`` (OpenRouter CDN может требовать Bearer)."""
     from services.openrouter_http import get_openrouter_http_client
 
     url = (mp4_url or "").strip()
@@ -237,14 +269,26 @@ async def download_animate_video_bytes(settings: Settings, mp4_url: str) -> byte
         raise ExternalApiError("OpenRouter", "invalid animate video URL")
 
     client = await get_openrouter_http_client(settings)
+    auth_headers = {"Authorization": f"Bearer {api_key}"} if (api_key or "").strip() else None
     data = await stream_download_to_bytes(
         client,
         url,
         max_bytes=ANIMATE_VIDEO_MAX_BYTES,
         source="openrouter_animate_video",
+        headers=auth_headers,
     )
+    if not data and auth_headers:
+        logger.warning("OpenRouter animate video download without auth fallback url=%s", url[:80])
+        data = await stream_download_to_bytes(
+            client,
+            url,
+            max_bytes=ANIMATE_VIDEO_MAX_BYTES,
+            source="openrouter_animate_video",
+        )
     if not data:
         raise ExternalApiError("OpenRouter", "failed to download animate video")
+    if not _looks_like_mp4(data):
+        raise ExternalApiError("OpenRouter", "downloaded animate payload is not mp4")
     return data
 
 
@@ -271,8 +315,8 @@ async def generate_openrouter_animate_video(
     prompt: str | None = None,
     aspect_ratio: str = "16:9",
     resolution: str = "720p",
-    duration: int = 5,
-) -> str:
+    duration: int | None = None,
+) -> OpenRouterAnimateResult:
     """
     Image-to-video через OpenRouter: submit → poll (18s) → URL готового .mp4.
     """
@@ -307,7 +351,6 @@ async def generate_openrouter_animate_video(
         "prompt": cleaned_prompt,
         "aspect_ratio": aspect_ratio,
         "resolution": resolution,
-        "duration": duration,
         "generate_audio": False,
     }
 
@@ -320,6 +363,11 @@ async def generate_openrouter_animate_video(
     last_exc: ExternalApiError | None = None
 
     for model_idx, model_id in enumerate(model_candidates):
+        body_duration = (
+            int(duration)
+            if duration is not None
+            else resolve_animate_duration_for_model(model_id)
+        )
         for force_data_url in force_data_modes:
             frame_url = await resolve_frame_image_url(
                 settings,
@@ -337,6 +385,7 @@ async def generate_openrouter_animate_video(
             body = {
                 **body_base,
                 "model": model_id,
+                "duration": body_duration,
                 "frame_images": build_frame_images(frame_url),
             }
             retry_with_data_url = False
@@ -409,13 +458,14 @@ async def generate_openrouter_animate_video(
                     force_data_url,
                     api_key[-6:],
                 )
-                return await _poll_video_job(
+                mp4_url = await _poll_video_job(
                     client,
                     api_key=api_key,
                     job_payload=job,
                     poll_interval_sec=poll_interval,
                     poll_timeout_sec=poll_timeout,
                 )
+                return OpenRouterAnimateResult(url=mp4_url, api_key=api_key)
 
             if retry_with_data_url:
                 continue

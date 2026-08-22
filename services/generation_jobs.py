@@ -73,16 +73,21 @@ from services.openrouter_images import (
     OPENROUTER_GPT_IMAGE2_MODEL,
     OPENROUTER_NANO_BANANA2_MODEL,
     OPENROUTER_NANO_BANANA_PRO_MODEL,
+    MULTI_REF_GROUP_FALLBACKS,
+    MULTI_REF_GROUP_PRIMARY_MODEL,
+    build_structured_multi_ref_prompt,
     data_url_to_reference_bytes,
+    describe_reference_face_for_prompt,
     generate_openrouter_composite_photo,
     generate_openrouter_multi_ref_group_photo,
     generate_openrouter_photo,
     openrouter_images_configured,
     resolve_composite_refine_model_key,
-    resolve_multi_ref_group_fallbacks,
-    resolve_multi_ref_group_model_key,
+    resolve_identity_i2i_fallback_models,
+    resolve_openrouter_photo_prompt_and_refs,
     resolve_reference_to_png_data_url,
 )
+from services.multi_ref_scene_parser import parse_multi_ref_scene
 from services.pollinations_client import generate_flux_schnell_image
 from services.repository import get_user_row
 
@@ -141,6 +146,7 @@ class GenTask:
     composite_base_reference_bytes: bytes | None = None
     group_multi_ref: bool = False
     group_ref_file_ids: tuple[str, ...] = ()
+    i2i_reference_mode: str = "selfie"
 
     @property
     def kind(self) -> JobKind:
@@ -614,16 +620,24 @@ async def _generate_flux_schnell_paid(
     *,
     aspect_ratio: str = "1:1",
     reference_data_url: str | None = None,
+    i2i_reference_mode: str = "selfie",
 ) -> GeminiImageResult:
     """Платный Flux: только OpenRouter Images (+ внутренние OR-fallback)."""
     if not openrouter_images_configured(app_settings):
         raise ExternalApiError("OpenRouter", "OPENROUTER_API_KEY не задан")
+    has_ref = bool((reference_data_url or "").strip())
+    fallback_models = (
+        resolve_identity_i2i_fallback_models(OPENROUTER_FLUX_PAID_MODEL)
+        if has_ref and i2i_reference_mode in ("selfie", "edit")
+        else OPENROUTER_FLUX_STACK_FALLBACKS
+    )
     return await _generate_openrouter_photo_model(
         OPENROUTER_FLUX_PAID_MODEL,
         prompt,
         aspect_ratio=aspect_ratio,
         reference_data_url=reference_data_url,
-        fallback_models=OPENROUTER_FLUX_STACK_FALLBACKS,
+        fallback_models=fallback_models,
+        i2i_reference_mode=i2i_reference_mode,
     )
 
 
@@ -688,29 +702,39 @@ async def _generate_openrouter_multi_ref_group_model(
     if len(refs) < 2:
         raise ExternalApiError("OpenRouter", "group multi-ref requires at least 2 references")
 
-    or_model = resolve_multi_ref_group_model_key(model_key)
+    or_model = MULTI_REF_GROUP_PRIMARY_MODEL
     logger.info(
-        "group multi-ref openrouter: menu=%s → %s refs=%s",
+        "group multi-ref openrouter: menu=%s → hard-route %s refs=%s",
         model_key,
         or_model,
         len(refs),
     )
-    data_urls: list[str] = []
-    for file_id in refs:
-        data_urls.append(
-            await resolve_reference_to_png_data_url(
-                bot=bot,
-                file_id=file_id,
-            )
+
+    data_urls = await asyncio.gather(
+        *(
+            resolve_reference_to_png_data_url(bot=bot, file_id=file_id)
+            for file_id in refs
         )
+    )
+    face_descriptions = await asyncio.gather(
+        *(
+            describe_reference_face_for_prompt(app_settings, data_url)
+            for data_url in data_urls
+        )
+    )
+
+    layout = await parse_multi_ref_scene(app_settings, prompt, list(face_descriptions))
+    api_prompt = build_structured_multi_ref_prompt(layout, list(face_descriptions))
+
     return await generate_openrouter_multi_ref_group_photo(
         app_settings,
         model=or_model,
         user_prompt=prompt,
-        reference_image_data_urls=data_urls,
+        reference_image_data_urls=list(data_urls),
         aspect_ratio=openrouter_aspect_ratio(aspect_ratio),
-        fallback_models=resolve_multi_ref_group_fallbacks(model_key),
+        fallback_models=MULTI_REF_GROUP_FALLBACKS,
         timeout_sec=float(EXTERNAL_API_TIMEOUT_SEC),
+        api_prompt=api_prompt,
     )
 
 
@@ -721,6 +745,7 @@ async def _generate_openrouter_photo_model(
     aspect_ratio: str = "1:1",
     reference_data_url: str | None = None,
     fallback_models: tuple[str, ...] = (),
+    i2i_reference_mode: str = "selfie",
 ) -> GeminiImageResult:
     """Платные модели через OpenRouter Images.
 
@@ -731,6 +756,13 @@ async def _generate_openrouter_photo_model(
     if not openrouter_images_configured(app_settings):
         raise ExternalApiError("OpenRouter", "OPENROUTER_API_KEY не задан")
 
+    has_ref = bool((reference_data_url or "").strip())
+    effective_fallbacks = (
+        resolve_identity_i2i_fallback_models(model)
+        if has_ref and i2i_reference_mode in ("selfie", "edit")
+        else fallback_models
+    )
+
     try:
         return await generate_openrouter_photo(
             app_settings,
@@ -738,8 +770,9 @@ async def _generate_openrouter_photo_model(
             user_prompt=prompt,
             aspect_ratio=openrouter_aspect_ratio(aspect_ratio),
             reference_data_url=reference_data_url,
-            fallback_models=fallback_models,
+            fallback_models=effective_fallbacks,
             timeout_sec=float(EXTERNAL_API_TIMEOUT_SEC),
+            i2i_reference_mode=i2i_reference_mode,  # type: ignore[arg-type]
         )
     except ExternalApiError as exc:
         if not is_provider_quota_error(exc):
@@ -751,10 +784,27 @@ async def _generate_openrouter_photo_model(
         )
         ref_bytes: bytes | None = None
         ref_mime = "image/jpeg"
-        if (reference_data_url or "").strip():
+        if has_ref:
             ref_bytes, ref_mime = data_url_to_reference_bytes(reference_data_url.strip())
+        fallback_prompt = prompt
+        if has_ref:
+            try:
+                resolved_prompt, _, _ = await resolve_openrouter_photo_prompt_and_refs(
+                    app_settings,
+                    model=model,
+                    user_prompt=prompt,
+                    reference_data_url=reference_data_url,
+                    i2i_reference_mode=i2i_reference_mode,  # type: ignore[arg-type]
+                )
+                fallback_prompt = resolved_prompt
+            except ExternalApiError:
+                logger.warning(
+                    "identity fallback prompt build failed for model=%s, using raw prompt",
+                    model,
+                    exc_info=True,
+                )
         return await generate_paid_image_fallback(
-            prompt,
+            fallback_prompt,
             reference_image_bytes=ref_bytes,
             reference_mime=ref_mime,
         )
@@ -778,6 +828,7 @@ async def _generate_photo_result(
     composite_base_reference_mime: str = "image/jpeg",
     group_multi_ref: bool = False,
     group_ref_file_ids: tuple[str, ...] = (),
+    i2i_reference_mode: str = "selfie",
 ) -> GeminiImageResult | str:
     """Возвращает GeminiImageResult (url/bytes) или прямой URL строки."""
     ar = normalize_photo_aspect_ratio(aspect_ratio)
@@ -860,6 +911,7 @@ async def _generate_photo_result(
                 prompt,
                 aspect_ratio=ar,
                 reference_data_url=reference_data_url,
+                i2i_reference_mode=i2i_reference_mode,
             )
 
         if model_key == FREE_PHOTO_MODEL_KEY:
@@ -872,6 +924,7 @@ async def _generate_photo_result(
                 aspect_ratio=ar,
                 reference_data_url=reference_data_url,
                 fallback_models=GPT_IMAGE2_FALLBACKS,
+                i2i_reference_mode=i2i_reference_mode,
             )
 
         if model_key == "nano_banana_2":
@@ -881,6 +934,7 @@ async def _generate_photo_result(
                 aspect_ratio=ar,
                 reference_data_url=reference_data_url,
                 fallback_models=NANO_BANANO2_FALLBACKS,
+                i2i_reference_mode=i2i_reference_mode,
             )
 
         if model_key == "nano_banana_pro":
@@ -890,6 +944,7 @@ async def _generate_photo_result(
                 aspect_ratio=ar,
                 reference_data_url=reference_data_url,
                 fallback_models=NANO_BANANO_PRO_FALLBACKS,
+                i2i_reference_mode=i2i_reference_mode,
             )
 
         raise RuntimeError(f"Неизвестная модель изображения: {model_key}")
@@ -1097,6 +1152,7 @@ async def _photo_stub_worker(task: GenTask) -> None:
                             composite_base_reference_mime=task.reference_mime,
                             group_multi_ref=task.group_multi_ref,
                             group_ref_file_ids=task.group_ref_file_ids,
+                            i2i_reference_mode=task.i2i_reference_mode,
                         )
                 except TimeoutError as err:
                     logger.error(
@@ -1432,14 +1488,15 @@ async def _animate_stub_worker(task: GenTask) -> None:
                 raise ExternalApiError("OpenRouter", "OPENROUTER_API_KEY не задан")
 
             async with asyncio.timeout(poll_timeout + 30.0):
-                animated_url = await generate_openrouter_animate_video(
+                animate_result = await generate_openrouter_animate_video(
                     app_settings,
                     bot=bot,
                     telegram_file_id=file_id,
                 )
                 video_bytes = await download_animate_video_bytes(
                     app_settings,
-                    animated_url,
+                    animate_result.url,
+                    api_key=animate_result.api_key,
                 )
 
             cap = msg.TXT_ANIMATE_SUCCESS
@@ -1451,7 +1508,7 @@ async def _animate_stub_worker(task: GenTask) -> None:
             video_file = BufferedInputFile(video_bytes, filename="neuromule_animate.mp4")
             sent = await bot.send_video(chat_id, video=video_file, caption=cap)
             tg_file_id = sent.video.file_id if sent.video else None
-            _remember_share(task, file_id=tg_file_id, media_url=animated_url)
+            _remember_share(task, file_id=tg_file_id, media_url=animate_result.url)
 
         task.status = "completed"
     except ExternalApiError as exc:
@@ -1533,6 +1590,7 @@ def fire_photo_job(
     composite_base_reference_bytes: bytes | None = None,
     group_multi_ref: bool = False,
     group_ref_file_ids: tuple[str, ...] | list[str] | None = None,
+    i2i_reference_mode: str = "selfie",
 ) -> None:
     ref_url = (reference_image_url or "").strip() or None
     ref_bytes: bytes | None = None
@@ -1586,6 +1644,7 @@ def fire_photo_job(
             composite_base_reference_bytes=base_bytes,
             group_multi_ref=group_multi_ref,
             group_ref_file_ids=group_refs,
+            i2i_reference_mode=(i2i_reference_mode or "selfie").strip() or "selfie",
         ),
     )
 

@@ -59,6 +59,7 @@ async def stream_download_to_bytes(
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     source: str = "unknown",
     timeout: float | None = None,
+    headers: dict[str, str] | None = None,
 ) -> bytes | None:
     """Скачать ``url`` поточно, накапливая в RAM до ``max_bytes``.
 
@@ -85,6 +86,8 @@ async def stream_download_to_bytes(
     kwargs: dict = {}
     if timeout is not None:
         kwargs["timeout"] = float(timeout)
+    if headers:
+        kwargs["headers"] = headers
 
     try:
         async with client.stream("GET", url, **kwargs) as response:

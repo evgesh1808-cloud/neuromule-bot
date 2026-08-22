@@ -727,6 +727,7 @@ async def try_start_photo_edit_from_reply(message: Message, state: FSMContext) -
         prompt=prompt,
         telegram_file_id=file_id,
         aspect_ratio=aspect,
+        i2i_reference_mode="edit",
     )
     return True
 
@@ -752,6 +753,7 @@ async def process_photo_prompt_message(
     composite_base_reference_mime: str = "image/jpeg",
     group_multi_ref: bool = False,
     group_ref_file_ids: list[str] | None = None,
+    i2i_reference_mode: str = "selfie",
 ) -> None:
     from platforms.image_menu_flow import normalize_image_prompt_text
     from platforms.telegram_throttling import clear_photo_flow, mark_photo_flow
@@ -806,6 +808,7 @@ async def process_photo_prompt_message(
                     composite_base_reference_bytes=composite_base_reference_bytes,
                     group_multi_ref=group_multi_ref,
                     group_ref_file_ids=group_ref_file_ids,
+                    i2i_reference_mode=i2i_reference_mode,
                 )
     except ValueError as exc:
         logger.warning("photo prompt: invalid reference wiring uid=%s: %s", user_id, exc)
@@ -933,6 +936,7 @@ async def process_photo_prompt_message(
         composite_base_reference_bytes=eq.composite_base_reference_bytes,
         group_multi_ref=eq.group_multi_ref,
         group_ref_file_ids=eq.group_ref_file_ids,
+        i2i_reference_mode=eq.i2i_reference_mode,
     )
     if pr.vip_priority:
         await message.answer(msg.TXT_GEN_STATUS_VIP)
@@ -1158,6 +1162,7 @@ async def photo_process(message: Message, state: FSMContext) -> None:
             reference_image_bytes=ref_bytes,
             reference_mime=ref_mime,
             aspect_ratio=aspect,
+            i2i_reference_mode="edit",
         )
         return
 
