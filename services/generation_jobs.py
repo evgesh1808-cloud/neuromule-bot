@@ -710,21 +710,29 @@ async def _generate_openrouter_multi_ref_group_model(
         len(refs),
     )
 
-    data_urls = await asyncio.gather(
-        *(
-            resolve_reference_to_png_data_url(bot=bot, file_id=file_id)
-            for file_id in refs
-        )
-    )
-    face_descriptions = await asyncio.gather(
-        *(
-            describe_reference_face_for_prompt(app_settings, data_url)
-            for data_url in data_urls
-        )
-    )
+    async def _resolve_group_ref_with_face(file_id: str) -> tuple[str, str]:
+        data_url = await resolve_reference_to_png_data_url(bot=bot, file_id=file_id)
+        try:
+            face_desc = await describe_reference_face_for_prompt(app_settings, data_url)
+        except ExternalApiError as exc:
+            logger.warning(
+                "group multi-ref face describe skipped ref=%s: %s",
+                file_id[:24],
+                exc,
+            )
+            face_desc = ""
+        return data_url, face_desc
 
-    layout = await parse_multi_ref_scene(app_settings, prompt, list(face_descriptions))
-    api_prompt = build_structured_multi_ref_prompt(layout, list(face_descriptions))
+    pairs = await asyncio.gather(*(_resolve_group_ref_with_face(file_id) for file_id in refs))
+    data_urls = [pair[0] for pair in pairs]
+    face_descriptions = [pair[1] for pair in pairs]
+
+    api_prompt: str | None = None
+    try:
+        layout = await parse_multi_ref_scene(app_settings, prompt, list(face_descriptions))
+        api_prompt = build_structured_multi_ref_prompt(layout, list(face_descriptions))
+    except Exception:
+        logger.exception("structured group prompt failed, using legacy multi-ref builder")
 
     return await generate_openrouter_multi_ref_group_photo(
         app_settings,

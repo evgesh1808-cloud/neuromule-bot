@@ -124,3 +124,87 @@ async def test_pending_refs_plus_text_routes_to_group_without_keywords() -> None
     assert proc.await_args.kwargs["group_multi_ref"] is True
     assert proc.await_args.kwargs["group_ref_file_ids"] == ["AgAC_p1", "AgAC_p2"]
     message.answer.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_second_photo_with_caption_routes_to_group_not_composite() -> None:
+    """Фото1 без текста → фото2 с промптом: group multi-ref, не composite."""
+    from platforms.handlers import generation_fsm
+
+    message = MagicMock()
+    message.from_user.id = 603
+    message.chat.id = 603
+    message.message_id = 31
+    message.photo = [MagicMock(file_id="AgAC_p2")]
+    message.caption = "мама и дочка на пляже"
+    message.document = None
+    message.answer = AsyncMock()
+
+    state = MagicMock()
+    state.get_data = AsyncMock(
+        return_value={
+            "image_model_id": "nano_banana_pro",
+            "image_model_label": "Nano Pro",
+            "image_aspect_ratio": "1:1",
+            "pending_group_ref_file_ids": ["AgAC_p1"],
+            "pending_reference_file_id": "AgAC_p1",
+            "refine_from_result": False,
+        }
+    )
+    state.update_data = AsyncMock()
+    state.set_state = AsyncMock()
+
+    with patch.object(
+        generation_fsm,
+        "process_photo_prompt_message",
+        new_callable=AsyncMock,
+    ) as proc:
+        handled = await generation_fsm._dispatch_photo_reference_message(message, state)
+
+    assert handled is True
+    proc.assert_awaited_once()
+    assert proc.await_args.kwargs["group_multi_ref"] is True
+    assert proc.await_args.kwargs["group_ref_file_ids"] == ["AgAC_p1", "AgAC_p2"]
+    assert proc.await_args.kwargs.get("composite_refine") is not True
+
+
+@pytest.mark.asyncio
+async def test_second_photo_with_merch_caption_routes_to_composite() -> None:
+    from platforms.handlers import generation_fsm
+
+    message = MagicMock()
+    message.from_user.id = 604
+    message.chat.id = 604
+    message.message_id = 41
+    message.photo = [MagicMock(file_id="AgAC_print")]
+    message.caption = "надень принт на футболку"
+    message.document = None
+    message.answer = AsyncMock()
+
+    state = MagicMock()
+    state.get_data = AsyncMock(
+        return_value={
+            "image_model_id": "nano_banana_pro",
+            "image_model_label": "Nano Pro",
+            "image_aspect_ratio": "1:1",
+            "pending_group_ref_file_ids": ["AgAC_face"],
+            "pending_reference_file_id": "AgAC_face",
+            "refine_from_result": False,
+        }
+    )
+    state.update_data = AsyncMock()
+    state.set_state = AsyncMock()
+
+    with patch.object(
+        generation_fsm,
+        "process_photo_prompt_message",
+        new_callable=AsyncMock,
+    ) as proc:
+        handled = await generation_fsm._dispatch_photo_reference_message(message, state)
+
+    assert handled is True
+    proc.assert_awaited_once()
+    assert proc.await_args.kwargs["composite_refine"] is True
+    assert proc.await_args.kwargs["composite_base_file_id"] == "AgAC_face"
+    assert proc.await_args.kwargs["telegram_file_id"] == "AgAC_print"
+

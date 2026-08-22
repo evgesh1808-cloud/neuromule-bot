@@ -326,6 +326,11 @@ async def _try_dispatch_composite_from_context(
 
     data = await state.get_data()
     refine_from_result = bool(data.get("refine_from_result"))
+    if not refine_from_result:
+        from services.photo_multi_ref_routing import is_composite_merch_intent
+
+        if not is_composite_merch_intent(prompt):
+            return False
     pending_object_id = str(data.get("pending_object_file_id") or "").strip()
     pending_base = str(data.get("pending_reference_file_id") or "").strip()
 
@@ -563,6 +568,42 @@ async def _dispatch_photo_reference_message(message: Message, state: FSMContext)
     refine_from_result = bool(data.get("refine_from_result"))
 
     if caption:
+        if not refine_from_result:
+            from services.photo_multi_ref_routing import (
+                MAX_GROUP_REFS,
+                should_route_album_as_composite,
+            )
+
+            pending_refs = _pending_group_ref_ids(data)
+            ref_ids = list(pending_refs)
+            if file_id and file_id not in ref_ids:
+                ref_ids.append(file_id)
+            if len(ref_ids) >= 2:
+                if should_route_album_as_composite(num_refs=2, prompt=caption):
+                    dispatched = await _try_dispatch_composite_from_context(
+                        message,
+                        state,
+                        object_file_id=file_id,
+                        prompt=caption,
+                        model_id=model_id,
+                        label=label,
+                        aspect=aspect,
+                    )
+                    if dispatched:
+                        return True
+                    await message.answer(msg.TXT_PHOTO_COMPOSITE_FAILED, parse_mode=ParseMode.HTML)
+                    return True
+                await _dispatch_group_multi_ref_photo_message(
+                    message,
+                    state,
+                    ref_file_ids=ref_ids[:MAX_GROUP_REFS],
+                    prompt=caption,
+                    model_id=model_id,
+                    label=label,
+                    aspect=aspect,
+                )
+                return True
+
         dispatched = await _try_dispatch_composite_from_context(
             message,
             state,
