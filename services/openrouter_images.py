@@ -878,6 +878,14 @@ def build_structured_multi_ref_prompt(
         )
 
     identity_block = "\n".join(identity_lines)
+    edit_suffix = ""
+    if "EDIT REQUEST" in intent.upper():
+        edit_suffix = (
+            "\n\nTARGETED EDIT RULE: Apply the edit request ONLY to the named subject(s). "
+            "All other people must remain identical to their input_references. "
+            "Do not replace anyone with a new person. Hair/clothing/expression changes "
+            "apply only where explicitly requested."
+        )
     prompt = (
         "CRITICAL MULTI-SUBJECT IDENTITY DIRECTIVE:\n"
         f"You are provided with exactly {refs_count} individual face images in input_references.\n"
@@ -886,7 +894,7 @@ def build_structured_multi_ref_prompt(
         "Each character must remain completely distinct and 100% recognizable. "
         "Deep crisp focus on ALL faces. Preserve each subject's apparent age exactly — "
         "no aging, de-aging, or skin alteration.\n\n"
-        f"Scene and cinematic composition: {intent}"
+        f"Scene and cinematic composition: {intent}{edit_suffix}"
     )
     return append_negative_prompt_directive(
         prompt,

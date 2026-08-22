@@ -36,7 +36,9 @@ _SCENE_DIRECTOR_SYSTEM = (
     "Rules: ref_index must be unique per character; cover all references when possible; "
     "appearance_anchor is a short English identity cue from the matching face description; "
     "scene_description_en is a photorealistic cinematic scene in English; "
-    "never invent numeric ages."
+    "never invent numeric ages. "
+    "If the user prompt contains EDIT REQUEST, map the edit to the correct character by "
+    "role (e.g. mother/mom/мама) and keep all other characters unchanged."
 )
 
 

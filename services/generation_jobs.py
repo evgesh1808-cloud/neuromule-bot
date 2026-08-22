@@ -146,6 +146,7 @@ class GenTask:
     composite_base_reference_bytes: bytes | None = None
     group_multi_ref: bool = False
     group_ref_file_ids: tuple[str, ...] = ()
+    group_base_prompt: str | None = None
     i2i_reference_mode: str = "selfie"
 
     @property
@@ -473,6 +474,40 @@ async def _safe_delete_cleanup_messages(task: GenTask) -> None:
     task.cleanup_message_ids = ()
 
 
+async def _persist_task_photo_edit_session(
+    task: GenTask,
+    *,
+    telegram_file_id: str | None,
+    media_url: str | None,
+    reference_image_bytes: bytes | None = None,
+    message_id: int | None,
+    chat_id: int,
+) -> None:
+    group_refs = task.group_ref_file_ids if task.group_multi_ref else ()
+    group_base = (
+        (task.group_base_prompt or task.prompt or "").strip() or None
+        if task.group_multi_ref
+        else None
+    )
+    await persist_photo_edit_session(
+        task.user_id,
+        image_model_id=task.image_model_id,
+        image_model_label=task.model_label or task.image_model_id,
+        aspect_ratio=task.aspect_ratio,
+        telegram_file_id=telegram_file_id,
+        media_url=media_url,
+        reference_image_bytes=reference_image_bytes,
+        message_id=message_id,
+        chat_id=chat_id,
+        platform="telegram",
+        user_prompt=task.prompt,
+        reference_file_id=task.file_id,
+        generation_seed=task.generation_seed,
+        group_ref_file_ids=group_refs,
+        group_base_prompt=group_base,
+    )
+
+
 async def _deliver_photo_url_chatcom(task: GenTask, final_image_url: str) -> None:
     """@chatcom UX: document(HD) + photo с клавиатурой — только URL, без байтов на VDSina."""
     bot, chat_id = task.bot, task.chat_id
@@ -502,19 +537,12 @@ async def _deliver_photo_url_chatcom(task: GenTask, final_image_url: str) -> Non
     tg_file_id = sent.photo[-1].file_id if sent.photo else None
     _remember_share(task, file_id=tg_file_id, media_url=final_url)
 
-    await persist_photo_edit_session(
-        task.user_id,
-        image_model_id=task.image_model_id,
-        image_model_label=task.model_label or task.image_model_id,
-        aspect_ratio=task.aspect_ratio,
+    await _persist_task_photo_edit_session(
+        task,
         telegram_file_id=tg_file_id,
         media_url=final_url,
         message_id=sent.message_id,
         chat_id=chat_id,
-        platform="telegram",
-        user_prompt=task.prompt,
-        reference_file_id=task.file_id,
-        generation_seed=task.generation_seed,
     )
 
     await _safe_delete_status_message(task)
@@ -556,20 +584,13 @@ async def _deliver_photo_bytes_chatcom(
     tg_file_id = sent.photo[-1].file_id if sent.photo else None
     _remember_share(task, file_id=tg_file_id, media_url=None)
 
-    await persist_photo_edit_session(
-        task.user_id,
-        image_model_id=task.image_model_id,
-        image_model_label=task.model_label or task.image_model_id,
-        aspect_ratio=task.aspect_ratio,
+    await _persist_task_photo_edit_session(
+        task,
         telegram_file_id=tg_file_id,
         media_url=(source_url or "").strip() or None,
         reference_image_bytes=raw,
         message_id=sent.message_id,
         chat_id=chat_id,
-        platform="telegram",
-        user_prompt=task.prompt,
-        reference_file_id=task.file_id,
-        generation_seed=task.generation_seed,
     )
 
     await _safe_delete_status_message(task)
@@ -1598,6 +1619,7 @@ def fire_photo_job(
     composite_base_reference_bytes: bytes | None = None,
     group_multi_ref: bool = False,
     group_ref_file_ids: tuple[str, ...] | list[str] | None = None,
+    group_base_prompt: str | None = None,
     i2i_reference_mode: str = "selfie",
 ) -> None:
     ref_url = (reference_image_url or "").strip() or None
@@ -1652,6 +1674,7 @@ def fire_photo_job(
             composite_base_reference_bytes=base_bytes,
             group_multi_ref=group_multi_ref,
             group_ref_file_ids=group_refs,
+            group_base_prompt=(group_base_prompt or "").strip() or None,
             i2i_reference_mode=(i2i_reference_mode or "selfie").strip() or "selfie",
         ),
     )

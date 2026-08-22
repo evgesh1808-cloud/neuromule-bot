@@ -714,11 +714,48 @@ async def try_handle_photo_for_image_generation(
     return await _dispatch_photo_reference_message(message, state)
 
 
+from services.photo_edit_session import PhotoEditSession
+
+
+async def _dispatch_group_refine_from_session(
+    message: Message,
+    state: FSMContext,
+    *,
+    session: PhotoEditSession,
+    edit_prompt: str,
+    model_id: str,
+    label: str,
+    aspect: str,
+) -> None:
+    from services.photo_edit_session import build_group_refine_user_prompt
+
+    combined = build_group_refine_user_prompt(
+        session.group_base_prompt or session.user_prompt or "",
+        edit_prompt,
+    )
+    await state.update_data(pending_reference_file_id=None, refine_from_result=None)
+    await process_photo_prompt_message(
+        message,
+        state,
+        model_id=model_id,
+        label=label,
+        prompt=combined,
+        aspect_ratio=aspect,
+        group_multi_ref=True,
+        group_ref_file_ids=list(session.group_ref_file_ids),
+        group_base_prompt=session.group_base_prompt or session.user_prompt,
+    )
+
+
 async def try_start_photo_edit_from_reply(message: Message, state: FSMContext) -> bool:
     """Reply на сообщение бота с фото → i2i по last_generated_image (15 мин)."""
     from platforms.telegram_quote import is_reply_to_bot_message
     from services.billing.image_pipeline import free_tier_image_model
-    from services.photo_edit_session import update_photo_edit_session_aspect_ratio
+    from services.photo_edit_session import (
+        get_photo_edit_session,
+        session_has_group_refs,
+        update_photo_edit_session_aspect_ratio,
+    )
     from services.photo_intent_parser import resolve_photo_edit_prompt
 
     if not is_reply_to_bot_message(message):
@@ -760,6 +797,17 @@ async def try_start_photo_edit_from_reply(message: Message, state: FSMContext) -
         image_aspect_ratio=aspect,
     )
     await state.set_state(UserFlow.waiting_for_photo)
+    if session and session_has_group_refs(session):
+        await _dispatch_group_refine_from_session(
+            message,
+            state,
+            session=session,
+            edit_prompt=prompt,
+            model_id=str(model_id),
+            label=str(label),
+            aspect=aspect,
+        )
+        return True
     await process_photo_prompt_message(
         message,
         state,
@@ -794,6 +842,7 @@ async def process_photo_prompt_message(
     composite_base_reference_mime: str = "image/jpeg",
     group_multi_ref: bool = False,
     group_ref_file_ids: list[str] | None = None,
+    group_base_prompt: str | None = None,
     i2i_reference_mode: str = "selfie",
 ) -> None:
     from platforms.image_menu_flow import normalize_image_prompt_text
@@ -849,6 +898,7 @@ async def process_photo_prompt_message(
                     composite_base_reference_bytes=composite_base_reference_bytes,
                     group_multi_ref=group_multi_ref,
                     group_ref_file_ids=group_ref_file_ids,
+                    group_base_prompt=group_base_prompt,
                     i2i_reference_mode=i2i_reference_mode,
                 )
     except ValueError as exc:
@@ -977,6 +1027,7 @@ async def process_photo_prompt_message(
         composite_base_reference_bytes=eq.composite_base_reference_bytes,
         group_multi_ref=eq.group_multi_ref,
         group_ref_file_ids=eq.group_ref_file_ids,
+        group_base_prompt=eq.group_base_prompt,
         i2i_reference_mode=eq.i2i_reference_mode,
     )
     if pr.vip_priority:
@@ -1063,6 +1114,7 @@ async def photo_process(message: Message, state: FSMContext) -> None:
     from services.photo_edit_session import (
         get_photo_edit_session,
         resolve_session_result_reference,
+        session_has_group_refs,
         session_has_result_image,
         update_photo_edit_session_aspect_ratio,
     )
@@ -1168,8 +1220,8 @@ async def photo_process(message: Message, state: FSMContext) -> None:
         ref_url: str | None = None
         ref_bytes: bytes | None = None
         ref_mime = "image/jpeg"
+        session = None
         if message.from_user is not None:
-            session = None
             if refine_from_result:
                 from services.photo_edit_session import get_or_restore_photo_edit_session
 
@@ -1189,6 +1241,18 @@ async def photo_process(message: Message, state: FSMContext) -> None:
 
         if not file_id and not ref_url and not ref_bytes:
             await message.answer(msg.TXT_PHOTO_REFINE_EXPIRED)
+            return
+
+        if session and session_has_group_refs(session):
+            await _dispatch_group_refine_from_session(
+                message,
+                state,
+                session=session,
+                edit_prompt=prompt,
+                model_id=str(model_id),
+                label=str(label),
+                aspect=aspect,
+            )
             return
 
         await state.update_data(pending_reference_file_id=None, refine_from_result=None)

@@ -41,6 +41,8 @@ class PhotoEditSession:
     user_prompt: str | None = None
     reference_file_id: str | None = None
     generation_seed: int | None = None
+    group_ref_file_ids: tuple[str, ...] = ()
+    group_base_prompt: str | None = None
 
 
 def _evict_expired(now: float | None = None) -> None:
@@ -77,6 +79,8 @@ def save_photo_edit_session(
     user_prompt: str | None = None,
     reference_file_id: str | None = None,
     generation_seed: int | None = None,
+    group_ref_file_ids: tuple[str, ...] | list[str] | None = None,
+    group_base_prompt: str | None = None,
     ttl_sec: float = DEFAULT_EDIT_SESSION_TTL_SEC,
 ) -> PhotoEditSession | None:
     """Сохраняет контекст последней генерации; нужен хотя бы один источник изображения."""
@@ -98,6 +102,12 @@ def save_photo_edit_session(
 
     ref_id = (reference_file_id or "").strip() or None
     prompt = (user_prompt or "").strip() or None
+    group_refs = tuple(
+        (fid or "").strip()
+        for fid in (group_ref_file_ids or ())
+        if (fid or "").strip()
+    )
+    base_prompt = (group_base_prompt or "").strip() or None
 
     sess = PhotoEditSession(
         user_id=user_id,
@@ -115,6 +125,8 @@ def save_photo_edit_session(
         user_prompt=prompt,
         reference_file_id=ref_id,
         generation_seed=generation_seed,
+        group_ref_file_ids=group_refs,
+        group_base_prompt=base_prompt,
     )
     _sessions[user_id] = sess
     _trim_if_needed()
@@ -216,6 +228,28 @@ def build_photo_refine_edit_prompt(user_intent_en: str) -> str:
     )
 
 
+GROUP_REFINE_EDIT_MARKER = "EDIT REQUEST"
+
+
+def session_has_group_refs(sess: PhotoEditSession | None) -> bool:
+    return bool(sess and len(sess.group_ref_file_ids) >= 2)
+
+
+def build_group_refine_user_prompt(base_scene_prompt: str, edit_request: str) -> str:
+    """Group multi-ref text refine: keep original scene + all input_references identities."""
+    base = (base_scene_prompt or "").strip()
+    edit = (edit_request or "").strip()
+    if not edit:
+        return base
+    if not base:
+        return edit
+    return (
+        f"{base}\n\n"
+        f"{GROUP_REFINE_EDIT_MARKER} (targeted change only — keep every person's face locked "
+        f"to their input_references index, same scene and composition): {edit}"
+    )
+
+
 def clear_photo_edit_session(user_id: int) -> None:
     _sessions.pop(user_id, None)
 
@@ -244,6 +278,8 @@ def update_photo_edit_session_aspect_ratio(user_id: int, aspect_ratio: str) -> N
         user_prompt=sess.user_prompt,
         reference_file_id=sess.reference_file_id,
         generation_seed=sess.generation_seed,
+        group_ref_file_ids=sess.group_ref_file_ids,
+        group_base_prompt=sess.group_base_prompt,
     )
 
 
@@ -267,6 +303,8 @@ async def persist_photo_edit_session(
     user_prompt: str | None = None,
     reference_file_id: str | None = None,
     generation_seed: int | None = None,
+    group_ref_file_ids: tuple[str, ...] | list[str] | None = None,
+    group_base_prompt: str | None = None,
     ttl_sec: float = DEFAULT_EDIT_SESSION_TTL_SEC,
 ) -> PhotoEditSession | None:
     """In-memory сессия + долговременный якорь в БД (Telegram)."""
@@ -285,6 +323,8 @@ async def persist_photo_edit_session(
         user_prompt=user_prompt,
         reference_file_id=reference_file_id,
         generation_seed=generation_seed,
+        group_ref_file_ids=group_ref_file_ids,
+        group_base_prompt=group_base_prompt,
         ttl_sec=ttl_sec,
     )
     if sess is None or platform != "telegram":

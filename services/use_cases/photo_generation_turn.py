@@ -51,6 +51,7 @@ class PhotoEnqueueSpec:
     composite_base_reference_bytes: bytes | None = None
     group_multi_ref: bool = False
     group_ref_file_ids: tuple[str, ...] = ()
+    group_base_prompt: str | None = None
     i2i_reference_mode: str = "selfie"
 
 
@@ -83,6 +84,7 @@ async def run_photo_generation_turn(
     composite_base_reference_bytes: bytes | None = None,
     group_multi_ref: bool = False,
     group_ref_file_ids: list[str] | tuple[str, ...] | None = None,
+    group_base_prompt: str | None = None,
     i2i_reference_mode: str = "selfie",
 ) -> PhotoGenResult:
     # bot/chat_id/settings — контракт call-site; списание через billing store.
@@ -182,6 +184,11 @@ async def run_photo_generation_turn(
             composite_base_reference_bytes=base_bytes,
             group_multi_ref=group_multi_ref,
             group_ref_file_ids=group_refs if group_multi_ref else (),
+            group_base_prompt=(
+                ((group_base_prompt or "").strip() or (prompt or "").strip() or None)
+                if group_multi_ref
+                else None
+            ),
             i2i_reference_mode=(i2i_reference_mode or "selfie").strip() or "selfie",
         ),
     )
