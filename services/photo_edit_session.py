@@ -43,6 +43,7 @@ class PhotoEditSession:
     generation_seed: int | None = None
     group_ref_file_ids: tuple[str, ...] = ()
     group_base_prompt: str | None = None
+    awaiting_text_refine: bool = False
 
 
 def _evict_expired(now: float | None = None) -> None:
@@ -127,6 +128,7 @@ def save_photo_edit_session(
         generation_seed=generation_seed,
         group_ref_file_ids=group_refs,
         group_base_prompt=base_prompt,
+        awaiting_text_refine=False,
     )
     _sessions[user_id] = sess
     _trim_if_needed()
@@ -316,6 +318,47 @@ def clear_photo_edit_session(user_id: int) -> None:
     _sessions.pop(user_id, None)
 
 
+def _clone_photo_edit_session(sess: PhotoEditSession, **overrides: object) -> PhotoEditSession:
+    fields = {
+        "user_id": sess.user_id,
+        "image_model_id": sess.image_model_id,
+        "image_model_label": sess.image_model_label,
+        "aspect_ratio": sess.aspect_ratio,
+        "expires_at": sess.expires_at,
+        "platform": sess.platform,
+        "telegram_file_id": sess.telegram_file_id,
+        "media_url": sess.media_url,
+        "reference_image_bytes": sess.reference_image_bytes,
+        "reference_mime": sess.reference_mime,
+        "message_id": sess.message_id,
+        "chat_id": sess.chat_id,
+        "user_prompt": sess.user_prompt,
+        "reference_file_id": sess.reference_file_id,
+        "generation_seed": sess.generation_seed,
+        "group_ref_file_ids": sess.group_ref_file_ids,
+        "group_base_prompt": sess.group_base_prompt,
+        "awaiting_text_refine": sess.awaiting_text_refine,
+    }
+    fields.update(overrides)
+    return PhotoEditSession(**fields)  # type: ignore[arg-type]
+
+
+def mark_awaiting_text_refine(user_id: int) -> bool:
+    """Кнопка «Доработать»: флаг в сессии, если FSM потеряет refine_from_result."""
+    sess = get_photo_edit_session(user_id)
+    if sess is None:
+        return False
+    _sessions[user_id] = _clone_photo_edit_session(sess, awaiting_text_refine=True)
+    return True
+
+
+def clear_awaiting_text_refine(user_id: int) -> None:
+    sess = get_photo_edit_session(user_id)
+    if sess is None or not sess.awaiting_text_refine:
+        return
+    _sessions[user_id] = _clone_photo_edit_session(sess, awaiting_text_refine=False)
+
+
 def update_photo_edit_session_aspect_ratio(user_id: int, aspect_ratio: str) -> None:
     """Обновляет aspect_ratio активной edit-сессии (multi-turn refine)."""
     sess = get_photo_edit_session(user_id)
@@ -324,25 +367,7 @@ def update_photo_edit_session_aspect_ratio(user_id: int, aspect_ratio: str) -> N
     ar = normalize_photo_aspect_ratio(aspect_ratio)
     if sess.aspect_ratio == ar:
         return
-    _sessions[user_id] = PhotoEditSession(
-        user_id=sess.user_id,
-        image_model_id=sess.image_model_id,
-        image_model_label=sess.image_model_label,
-        aspect_ratio=ar,
-        expires_at=sess.expires_at,
-        platform=sess.platform,
-        telegram_file_id=sess.telegram_file_id,
-        media_url=sess.media_url,
-        reference_image_bytes=sess.reference_image_bytes,
-        reference_mime=sess.reference_mime,
-        message_id=sess.message_id,
-        chat_id=sess.chat_id,
-        user_prompt=sess.user_prompt,
-        reference_file_id=sess.reference_file_id,
-        generation_seed=sess.generation_seed,
-        group_ref_file_ids=sess.group_ref_file_ids,
-        group_base_prompt=sess.group_base_prompt,
-    )
+    _sessions[user_id] = _clone_photo_edit_session(sess, aspect_ratio=ar)
 
 
 def reset_photo_edit_sessions_for_tests() -> None:

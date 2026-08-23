@@ -10,6 +10,7 @@ import pytest
 from content import messages as msg
 from services.photo_edit_session import (
     get_photo_edit_session,
+    mark_awaiting_text_refine,
     reset_photo_edit_sessions_for_tests,
     save_photo_edit_session,
 )
@@ -67,6 +68,9 @@ async def test_photo_refine_callback_prefers_generated_result_over_selfie() -> N
     kwargs = state.update_data.await_args.kwargs
     assert kwargs["pending_reference_file_id"] is None
     assert kwargs["refine_from_result"] is True
+    sess = get_photo_edit_session(42)
+    assert sess is not None
+    assert sess.awaiting_text_refine is True
 
 
 @pytest.mark.asyncio
@@ -384,3 +388,54 @@ async def test_group_refine_uses_result_image_not_group_multi_ref() -> None:
     assert kwargs["i2i_reference_mode"] == "edit"
     assert kwargs.get("group_multi_ref") is not True
     assert "EDIT REQUEST" in kwargs["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_text_refine_uses_session_flag_when_fsm_refine_lost() -> None:
+    """Если FSM потерял refine_from_result, сессия всё равно направляет i2i edit."""
+    from platforms.handlers import generation_fsm
+
+    save_photo_edit_session(
+        66,
+        image_model_id="flux_schnell",
+        image_model_label="Flux 2 Pro",
+        aspect_ratio="1:1",
+        telegram_file_id="AgAC_result_only",
+        user_prompt="portrait in park",
+    )
+    mark_awaiting_text_refine(66)
+
+    message = MagicMock()
+    message.text = "добавь солнечные лучи"
+    message.from_user.id = 66
+    message.chat.id = 66
+    message.answer = AsyncMock()
+
+    state = MagicMock()
+    state.get_data = AsyncMock(
+        return_value={
+            "image_model_id": "flux_schnell",
+            "image_model_label": "Flux 2 Pro",
+            "image_aspect_ratio": "1:1",
+            "refine_from_result": False,
+        }
+    )
+    state.update_data = AsyncMock()
+
+    with patch.object(
+        generation_fsm,
+        "process_photo_prompt_message",
+        new_callable=AsyncMock,
+    ) as proc, patch(
+        "services.photo_intent_parser.resolve_photo_edit_prompt",
+        new_callable=AsyncMock,
+        return_value=("1:1", "добавь солнечные лучи", False),
+    ):
+        await generation_fsm.photo_process(message, state)
+
+    proc.assert_awaited_once()
+    kwargs = proc.await_args.kwargs
+    assert kwargs["telegram_file_id"] == "AgAC_result_only"
+    assert kwargs["i2i_reference_mode"] == "edit"
+    assert get_photo_edit_session(66) is not None
+    assert get_photo_edit_session(66).awaiting_text_refine is False

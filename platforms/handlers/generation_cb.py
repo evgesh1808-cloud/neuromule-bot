@@ -596,6 +596,7 @@ async def photo_refine_start(callback: CallbackQuery, state: FSMContext) -> None
     from platforms.telegram_throttling import mark_photo_flow
     from services.photo_edit_session import (
         get_or_restore_photo_edit_session,
+        mark_awaiting_text_refine,
         resolve_session_result_reference,
         session_has_result_image,
     )
@@ -612,6 +613,7 @@ async def photo_refine_start(callback: CallbackQuery, state: FSMContext) -> None
         return
 
     mark_photo_flow(user.id)
+    mark_awaiting_text_refine(user.id)
     try:
         await state.update_data(
             image_model_id=session.image_model_id,
