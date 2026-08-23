@@ -734,7 +734,9 @@ async def _generate_openrouter_multi_ref_group_model(
     async def _resolve_group_ref_with_face(file_id: str) -> tuple[str, str]:
         data_url = await resolve_reference_to_png_data_url(bot=bot, file_id=file_id)
         try:
-            face_desc = await describe_reference_face_for_prompt(app_settings, data_url)
+            face_desc = await describe_reference_face_for_prompt(
+                app_settings, data_url, for_group=True
+            )
         except ExternalApiError as exc:
             logger.warning(
                 "group multi-ref face describe skipped ref=%s: %s",

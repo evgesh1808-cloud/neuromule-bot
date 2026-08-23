@@ -166,6 +166,11 @@ def _identity_disambiguation_clause(label: str) -> str:
                 " ROLE: SON (male child) — NOT the father/man; "
                 "never blend with adult male reference."
             )
+        if "first child" in low or "second child" in low:
+            return (
+                " ROLE: CHILD — distinct from ALL adults; "
+                "never use mother or father reference for this face."
+            )
         return " ROLE: CHILD — distinct from all adult references; never blend adult features."
     if any(marker in low for marker in _MOTHER_LABEL_MARKERS):
         return (
@@ -222,3 +227,44 @@ def layout_from_ref_slots(
 def identity_disambiguation_clause(label: str) -> str:
     """Public wrapper for identity line suffixes."""
     return _identity_disambiguation_clause(label)
+
+
+def apply_explicit_ref_slots(
+    layout: SceneLayout,
+    explicit_slots: dict[int, str],
+    face_descriptions: list[str],
+) -> SceneLayout:
+    """Override mapper labels with user-provided ``фотоN = role`` entries."""
+    if not explicit_slots:
+        return layout
+
+    by_ref = {character.ref_index: character for character in layout.characters}
+    for ref_idx, label in explicit_slots.items():
+        if ref_idx < 0 or ref_idx >= len(face_descriptions):
+            continue
+        role = (label or "").strip()
+        if not role:
+            continue
+        desc = (face_descriptions[ref_idx] or "").strip()
+        prev = by_ref.get(ref_idx)
+        by_ref[ref_idx] = SceneCharacter(
+            ref_index=ref_idx,
+            label=role,
+            placement=(prev.placement if prev else "as in user scene prompt"),
+            appearance_anchor=desc[:200] if desc else (prev.appearance_anchor if prev else f"match input_references[{ref_idx}]"),
+        )
+
+    for idx in range(len(face_descriptions)):
+        if idx in by_ref:
+            continue
+        desc = (face_descriptions[idx] or "").strip()
+        by_ref[idx] = SceneCharacter(
+            ref_index=idx,
+            label=f"Person {idx + 1}",
+            placement="as in user scene prompt",
+            appearance_anchor=desc[:200] if desc else f"match input_references[{idx}]",
+        )
+
+    characters = sorted(by_ref.values(), key=lambda c: c.ref_index)
+    scene = (layout.scene_description_en or "").strip()
+    return SceneLayout(characters=characters, scene_description_en=scene)

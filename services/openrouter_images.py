@@ -295,7 +295,8 @@ COMPOSITE_PROMPT_MAX_CHARS = 5500
 
 MULTI_REF_GROUP_NEGATIVE_PROMPT = (
     "blended faces, merged identities, averaged facial features, duplicate faces, "
-    "face morphing, unrecognizable subjects, deformed group portrait"
+    "face morphing, unrecognizable subjects, deformed group portrait, "
+    "under-eye bags, dark circles, tired eyes, aged skin, wrinkles not in reference"
 )
 
 # Group multi-ref: Nano Pro primary, Nano 2 only — Flux excluded (identity loss on 2+ faces).
@@ -344,7 +345,12 @@ FACE_DESCRIBE_SYSTEM_PROMPT = (
     "Describe skin with complimentary markers: fresh, healthy, smooth, and well-rested appearance. "
     "NEVER output specific age numbers, digits, or numeric age estimates — use qualitative "
     "descriptors only (e.g. young adult, middle-aged). "
+    "NEVER mention under-eye bags, dark circles, wrinkles, tired or aged appearance. "
     "Ignore background, clothing, expression, and pose."
+)
+FACE_DESCRIBE_GROUP_EXTRA = (
+    " For group portraits: classify as adult male, adult female, boy child, or girl child. "
+    "Child faces must be clearly labeled girl child or boy child — never adult."
 )
 
 OPENROUTER_MODEL_BY_MENU_KEY: dict[str, str] = {
@@ -870,7 +876,9 @@ def build_structured_multi_ref_prompt(
             f"MUST preserve exact facial identity from input_references[{ref_idx}] — "
             f"identical eye shape, nose bridge, jawline, lip proportions, skin tone, "
             f"and apparent age. Do not age, rejuvenate, or alter skin texture. "
-            f"STRICTLY FORBIDDEN to swap or blend features with any other reference."
+            f"Do not add under-eye bags, dark circles, or tired eyes not in the reference. "
+            f"STRICTLY FORBIDDEN to swap, blend, or generate a similar-looking stranger — "
+            f"use the exact face from input_references[{ref_idx}] only."
             f"{disambig}"
         )
 
@@ -907,7 +915,7 @@ def build_structured_multi_ref_prompt(
         "STRICTLY FORBIDDEN to blend, merge, average, or swap facial features between references. "
         "Each character must remain completely distinct and 100% recognizable. "
         "Deep crisp focus on ALL faces. Preserve each subject's apparent age exactly — "
-        "no aging, de-aging, or skin alteration.\n\n"
+        "no aging, de-aging, skin alteration, or under-eye bags.\n\n"
         f"{scene_section}"
     )
     return append_negative_prompt_directive(
@@ -921,33 +929,33 @@ async def build_group_multi_ref_api_prompt(
     user_prompt: str,
     face_descriptions: list[str],
 ) -> str:
-    """Build group API prompt: verbatim/slot-map path or Scene Director fallback."""
+    """Build group API prompt: face-aware slot map + verbatim user scene."""
     from services.group_ref_slot_map import (
-        build_ordered_role_slots,
-        layout_from_ref_slots,
-        merge_ref_slot_maps,
+        apply_explicit_ref_slots,
         parse_explicit_ref_slot_map,
-        should_preserve_verbatim_group_prompt,
     )
-    from services.multi_ref_scene_parser import parse_multi_ref_scene
+    from services.multi_ref_scene_parser import map_multi_ref_slots
 
     prompt = (user_prompt or "").strip()
     explicit_slots = parse_explicit_ref_slot_map(prompt)
-    ordered_slots = build_ordered_role_slots(prompt, len(face_descriptions))
-    slot_map = merge_ref_slot_maps(ordered_slots, explicit_slots)
-    verbatim = should_preserve_verbatim_group_prompt(prompt)
-    skip_director = verbatim or bool(slot_map)
 
-    if skip_director:
-        layout = layout_from_ref_slots(slot_map, face_descriptions, prompt)
-        return build_structured_multi_ref_prompt(
-            layout,
-            face_descriptions,
-            verbatim_scene_text=prompt if verbatim else None,
-        )
+    try:
+        layout = await map_multi_ref_slots(settings, prompt, list(face_descriptions))
+    except Exception:
+        logger.exception("face-aware slot map failed, using ordered fallback")
+        from services.group_ref_slot_map import build_ordered_role_slots, layout_from_ref_slots
 
-    layout = await parse_multi_ref_scene(settings, prompt, list(face_descriptions))
-    return build_structured_multi_ref_prompt(layout, list(face_descriptions))
+        ordered = build_ordered_role_slots(prompt, len(face_descriptions))
+        layout = layout_from_ref_slots(ordered, list(face_descriptions), prompt)
+
+    if explicit_slots:
+        layout = apply_explicit_ref_slots(layout, explicit_slots, list(face_descriptions))
+
+    return build_structured_multi_ref_prompt(
+        layout,
+        list(face_descriptions),
+        verbatim_scene_text=prompt or None,
+    )
 
 
 def build_multi_banana_prompt(user_intent_en: str, num_refs: int) -> str:
@@ -1448,17 +1456,22 @@ async def resolve_reference_input_url(reference_url: str | None) -> str | None:
 async def describe_reference_face_for_prompt(
     settings: Settings,
     reference_image_url: str,
+    *,
+    for_group: bool = False,
 ) -> str:
     from services.ai_text import ask_ai_messages
 
     image_data_url = await reference_url_to_data_url(reference_image_url)
+    system_prompt = FACE_DESCRIBE_SYSTEM_PROMPT
+    if for_group:
+        system_prompt = f"{FACE_DESCRIBE_SYSTEM_PROMPT}{FACE_DESCRIBE_GROUP_EXTRA}"
 
     messages: list[dict[str, Any]] = [
-        {"role": "system", "content": FACE_DESCRIBE_SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt},
         {
             "role": "user",
             "content": [
-                {"type": "text", "text": FACE_DESCRIBE_SYSTEM_PROMPT},
+                {"type": "text", "text": system_prompt},
                 {"type": "image_url", "image_url": {"url": image_data_url}},
             ],
         },

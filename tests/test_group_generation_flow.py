@@ -33,6 +33,7 @@ from services.use_cases.photo_generation_turn import PhotoGenOutcome, run_photo_
 def test_face_describe_prompt_forbids_numeric_age() -> None:
     assert "NEVER output specific age numbers" in FACE_DESCRIBE_SYSTEM_PROMPT
     assert "fresh, healthy, smooth, and well-rested appearance" in FACE_DESCRIBE_SYSTEM_PROMPT
+    assert "under-eye bags" in FACE_DESCRIBE_SYSTEM_PROMPT
 
 
 def test_selfie_i2i_template_has_editorial_beauty_triggers() -> None:
@@ -91,7 +92,7 @@ def test_build_structured_multi_ref_prompt_husband_wife_unordered_album() -> Non
     assert "wife" in prompt.lower()
     assert "left foreground" in prompt
     assert "right side" in prompt
-    assert "STRICTLY FORBIDDEN to swap or blend" in prompt
+    assert "STRICTLY FORBIDDEN to swap, blend, or generate a similar-looking stranger" in prompt
     assert "Do not age, rejuvenate" in prompt
     assert "photo album" in prompt.lower()
 

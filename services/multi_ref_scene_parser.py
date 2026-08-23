@@ -23,6 +23,22 @@ _FENCED_JSON_RE = re.compile(
 _FENCE_OPEN_RE = re.compile(r"^\s*```(?:json)?\s*\n?", re.IGNORECASE)
 _FENCE_CLOSE_RE = re.compile(r"\n?```\s*$")
 
+_REF_SLOT_MAPPER_SYSTEM = (
+    "You map input_references indices to group portrait roles. "
+    "Given a Russian user prompt and English face descriptions per index (0-based), "
+    "assign EVERY reference to exactly one role. "
+    "CRITICAL: match by GENDER and APPARENT AGE from face descriptions — "
+    "upload order often does NOT match narrative order in the prompt. "
+    "A girl/child face must map to daughter/child, NEVER mother/woman. "
+    "An adult female face must map to mother/woman, NEVER daughter/child. "
+    "A boy/child male face must map to son/child, NEVER father/man. "
+    "Output JSON only:\n"
+    '{"characters":[{"ref_index":0,"label":"father","placement":"as in user scene",'
+    '"appearance_anchor":"adult male, strong jaw"}]}\n'
+    "Rules: unique ref_index; cover all indices 0..N-1; "
+    "appearance_anchor from that index face description; never output numeric ages."
+)
+
 _SCENE_DIRECTOR_SYSTEM = (
     "You are a Scene Director for multi-reference AI group portraits. "
     "Given a Russian user prompt and face descriptions for each input_references index "
@@ -156,3 +172,111 @@ async def parse_multi_ref_scene(
         characters=deduped,
         scene_description_en=layout.scene_description_en.strip(),
     )
+
+
+def _fallback_slot_layout(user_prompt_ru: str, face_descriptions: list[str]) -> SceneLayout:
+    """Face-keyword heuristic when LLM slot mapper fails."""
+    from services.group_ref_slot_map import build_ordered_role_slots, layout_from_ref_slots
+
+    ordered = build_ordered_role_slots(user_prompt_ru, len(face_descriptions))
+    if ordered:
+        return layout_from_ref_slots(ordered, face_descriptions, user_prompt_ru)
+
+    child_markers = ("girl", "boy", "child", "kid", "young")
+    adult_female = ("woman", "female", "lady", "mother", "mom")
+    adult_male = ("man", "male", "father", "dad", "beard")
+    labels_by_ref: dict[int, str] = {}
+    for idx, desc in enumerate(face_descriptions):
+        low = (desc or "").lower()
+        if any(m in low for m in child_markers):
+            if "girl" in low or "daughter" in low:
+                labels_by_ref[idx] = "daughter"
+            elif "boy" in low or "son" in low:
+                labels_by_ref[idx] = "son"
+            else:
+                labels_by_ref[idx] = "child"
+        elif any(m in low for m in adult_female):
+            labels_by_ref[idx] = "mother/woman"
+        elif any(m in low for m in adult_male):
+            labels_by_ref[idx] = "father/man"
+    return layout_from_ref_slots(labels_by_ref, face_descriptions, user_prompt_ru)
+
+
+async def map_multi_ref_slots(
+    settings: Settings,
+    user_prompt_ru: str,
+    face_descriptions: list[str],
+) -> SceneLayout:
+    """Face-aware ref_index → role mapping without paraphrasing the user scene."""
+    if len(face_descriptions) < 2:
+        raise ValueError("multi-ref slot map requires at least 2 face descriptions")
+
+    from services.ai_text import ask_ai_messages
+
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": _REF_SLOT_MAPPER_SYSTEM},
+        {"role": "user", "content": _build_director_user_message(user_prompt_ru, face_descriptions)},
+    ]
+    prompt = (user_prompt_ru or "").strip()
+    try:
+        completion = await ask_ai_messages(
+            settings,
+            messages,
+            models=[SCENE_DIRECTOR_MODEL],
+            max_tokens=384,
+            timeout=SCENE_DIRECTOR_TIMEOUT_SEC,
+            response_format={"type": "json_object"},
+            temperature=0.0,
+        )
+        raw = (completion.content or "").strip()
+        if not raw:
+            raise ValueError("empty ref slot mapper response")
+        data: Any = json.loads(strip_json_markdown_fence(raw))
+        characters_raw = data.get("characters") if isinstance(data, dict) else None
+        if not isinstance(characters_raw, list):
+            raise ValueError("missing characters array")
+        characters = [SceneCharacter.model_validate(item) for item in characters_raw]
+    except (json.JSONDecodeError, ValidationError, ValueError, RuntimeError) as exc:
+        logger.warning("multi_ref_slot_mapper fallback (%s)", exc)
+        return _fallback_slot_layout(prompt, face_descriptions)
+    except Exception:
+        logger.exception("multi_ref_slot_mapper failed, using fallback layout")
+        return _fallback_slot_layout(prompt, face_descriptions)
+
+    seen: set[int] = set()
+    deduped: list[SceneCharacter] = []
+    for character in characters:
+        if character.ref_index in seen:
+            continue
+        if character.ref_index >= len(face_descriptions):
+            continue
+        seen.add(character.ref_index)
+        desc = (face_descriptions[character.ref_index] or "").strip()
+        deduped.append(
+            SceneCharacter(
+                ref_index=character.ref_index,
+                label=character.label,
+                placement=(character.placement or "as in user scene").strip(),
+                appearance_anchor=(character.appearance_anchor or desc[:200] or character.label).strip(),
+            )
+        )
+
+    if len(deduped) < len(face_descriptions):
+        covered = {c.ref_index for c in deduped}
+        for idx in range(len(face_descriptions)):
+            if idx in covered:
+                continue
+            desc = (face_descriptions[idx] or "").strip()
+            deduped.append(
+                SceneCharacter(
+                    ref_index=idx,
+                    label=f"Person {idx + 1}",
+                    placement="as in user scene",
+                    appearance_anchor=desc[:200] if desc else f"match input_references[{idx}]",
+                )
+            )
+
+    if len(deduped) < 2:
+        return _fallback_slot_layout(prompt, face_descriptions)
+
+    return SceneLayout(characters=deduped, scene_description_en=prompt or "group portrait together")
