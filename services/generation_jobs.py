@@ -75,19 +75,19 @@ from services.openrouter_images import (
     OPENROUTER_NANO_BANANA_PRO_MODEL,
     MULTI_REF_GROUP_FALLBACKS,
     MULTI_REF_GROUP_PRIMARY_MODEL,
-    build_structured_multi_ref_prompt,
+    build_group_multi_ref_api_prompt,
     data_url_to_reference_bytes,
     describe_reference_face_for_prompt,
     generate_openrouter_composite_photo,
     generate_openrouter_multi_ref_group_photo,
     generate_openrouter_photo,
     openrouter_images_configured,
+    resize_png_data_url_for_api,
     resolve_composite_refine_model_key,
     resolve_identity_i2i_fallback_models,
     resolve_openrouter_photo_prompt_and_refs,
     resolve_reference_to_png_data_url,
 )
-from services.multi_ref_scene_parser import parse_multi_ref_scene
 from services.pollinations_client import generate_flux_schnell_image
 from services.repository import get_user_row
 
@@ -745,13 +745,18 @@ async def _generate_openrouter_multi_ref_group_model(
         return data_url, face_desc
 
     pairs = await asyncio.gather(*(_resolve_group_ref_with_face(file_id) for file_id in refs))
-    data_urls = [pair[0] for pair in pairs]
+    data_urls = [
+        resize_png_data_url_for_api(pair[0]) for pair in pairs
+    ]
     face_descriptions = [pair[1] for pair in pairs]
 
     api_prompt: str | None = None
     try:
-        layout = await parse_multi_ref_scene(app_settings, prompt, list(face_descriptions))
-        api_prompt = build_structured_multi_ref_prompt(layout, list(face_descriptions))
+        api_prompt = await build_group_multi_ref_api_prompt(
+            app_settings,
+            prompt,
+            list(face_descriptions),
+        )
     except Exception:
         logger.exception("structured group prompt failed, using legacy multi-ref builder")
 

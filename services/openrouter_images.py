@@ -841,10 +841,16 @@ def _build_multi_ref_identity_lines(num_refs: int) -> str:
 def build_structured_multi_ref_prompt(
     layout: SceneLayout,
     face_descriptions: list[str],
+    *,
+    verbatim_scene_text: str | None = None,
 ) -> str:
     """Slot-aware multi-ref prompt: each reference locked to role, placement, and identity."""
+    from services.group_ref_slot_map import identity_disambiguation_clause
+
     refs_count = len(face_descriptions)
-    intent = (layout.scene_description_en or DEFAULT_PHOTO_USER_INTENT).strip()
+    intent = (
+        (verbatim_scene_text or layout.scene_description_en or DEFAULT_PHOTO_USER_INTENT).strip()
+    )
     identity_lines: list[str] = []
     used_indices: set[int] = set()
 
@@ -857,6 +863,7 @@ def build_structured_multi_ref_prompt(
         anchor = (character.appearance_anchor or face_desc or character.label).strip()
         label = (character.label or f"Person {ref_idx + 1}").strip()
         placement = (character.placement or "in the scene as described").strip()
+        disambig = identity_disambiguation_clause(label)
         identity_lines.append(
             f"- {label} → input_references[{ref_idx}] ({placement}): "
             f"Identity anchor: {anchor}. "
@@ -864,6 +871,7 @@ def build_structured_multi_ref_prompt(
             f"identical eye shape, nose bridge, jawline, lip proportions, skin tone, "
             f"and apparent age. Do not age, rejuvenate, or alter skin texture. "
             f"STRICTLY FORBIDDEN to swap or blend features with any other reference."
+            f"{disambig}"
         )
 
     for idx in range(refs_count):
@@ -886,6 +894,12 @@ def build_structured_multi_ref_prompt(
             "Do not replace anyone with a new person. Hair/clothing/expression changes "
             "apply only where explicitly requested."
         )
+    scene_section = (
+        f"User scene prompt (preserve composition, framing, clothing, poses, and layout exactly):\n"
+        f"{intent}{edit_suffix}"
+        if verbatim_scene_text
+        else f"Scene and cinematic composition: {intent}{edit_suffix}"
+    )
     prompt = (
         "CRITICAL MULTI-SUBJECT IDENTITY DIRECTIVE:\n"
         f"You are provided with exactly {refs_count} individual face images in input_references.\n"
@@ -894,12 +908,46 @@ def build_structured_multi_ref_prompt(
         "Each character must remain completely distinct and 100% recognizable. "
         "Deep crisp focus on ALL faces. Preserve each subject's apparent age exactly — "
         "no aging, de-aging, or skin alteration.\n\n"
-        f"Scene and cinematic composition: {intent}{edit_suffix}"
+        f"{scene_section}"
     )
     return append_negative_prompt_directive(
         prompt,
         negative=MULTI_REF_GROUP_NEGATIVE_PROMPT,
     )
+
+
+async def build_group_multi_ref_api_prompt(
+    settings: Settings,
+    user_prompt: str,
+    face_descriptions: list[str],
+) -> str:
+    """Build group API prompt: verbatim/slot-map path or Scene Director fallback."""
+    from services.group_ref_slot_map import (
+        build_ordered_role_slots,
+        layout_from_ref_slots,
+        merge_ref_slot_maps,
+        parse_explicit_ref_slot_map,
+        should_preserve_verbatim_group_prompt,
+    )
+    from services.multi_ref_scene_parser import parse_multi_ref_scene
+
+    prompt = (user_prompt or "").strip()
+    explicit_slots = parse_explicit_ref_slot_map(prompt)
+    ordered_slots = build_ordered_role_slots(prompt, len(face_descriptions))
+    slot_map = merge_ref_slot_maps(ordered_slots, explicit_slots)
+    verbatim = should_preserve_verbatim_group_prompt(prompt)
+    skip_director = verbatim or bool(slot_map)
+
+    if skip_director:
+        layout = layout_from_ref_slots(slot_map, face_descriptions, prompt)
+        return build_structured_multi_ref_prompt(
+            layout,
+            face_descriptions,
+            verbatim_scene_text=prompt if verbatim else None,
+        )
+
+    layout = await parse_multi_ref_scene(settings, prompt, list(face_descriptions))
+    return build_structured_multi_ref_prompt(layout, list(face_descriptions))
 
 
 def build_multi_banana_prompt(user_intent_en: str, num_refs: int) -> str:
