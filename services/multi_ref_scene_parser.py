@@ -29,9 +29,12 @@ _REF_SLOT_MAPPER_SYSTEM = (
     "assign EVERY reference to exactly one role. "
     "CRITICAL: match by GENDER and APPARENT AGE from face descriptions — "
     "upload order often does NOT match narrative order in the prompt. "
+    "ref_index in output MUST point to the face description that matches the role — "
+    "never assign mother/woman to a girl child description or daughter to adult female. "
     "A girl/child face must map to daughter/child, NEVER mother/woman. "
     "An adult female face must map to mother/woman, NEVER daughter/child. "
     "A boy/child male face must map to son/child, NEVER father/man. "
+    "When two children: use hair/face cues to assign daughter vs son uniquely. "
     "Output JSON only:\n"
     '{"characters":[{"ref_index":0,"label":"father","placement":"as in user scene",'
     '"appearance_anchor":"adult male, strong jaw"}]}\n'

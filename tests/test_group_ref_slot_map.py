@@ -205,6 +205,66 @@ def test_face_describe_group_extra_labels_child() -> None:
     assert "girl child" in FACE_DESCRIBE_GROUP_EXTRA
 
 
+def test_infer_slots_teenage_girl_is_daughter_not_mother() -> None:
+    from services.group_ref_slot_map import infer_slots_from_face_descriptions
+
+    faces = [
+        "Adult male, beard",
+        "Adult female, long hair",
+        "Teenage girl, female, oval face, long brown hair",
+        "Boy child, round face",
+    ]
+    slots = infer_slots_from_face_descriptions(faces)
+    assert slots[2] == "daughter"
+    assert slots[1] == "mother/woman"
+
+
+def test_sanitize_mapper_rejects_mother_on_girl_child_ref() -> None:
+    from services.group_ref_slot_map import sanitize_mapper_slots_with_face
+
+    faces = [
+        "Adult male",
+        "Adult female",
+        "Girl child, long brown hair, bright eyes",
+        "Boy child",
+    ]
+    mapper = {0: "father", 1: "mother", 2: "mother", 3: "son"}
+    sanitized = sanitize_mapper_slots_with_face(mapper, faces)
+    assert sanitized[2] == "daughter"
+    assert sanitized[1] == "mother"
+
+
+def test_build_group_slot_layout_face_wins_over_text_order() -> None:
+    from services.group_ref_slot_map import build_group_slot_layout
+
+    prompt = (
+        "женщины, мужчины, двое детей подглядывают из-за стены. "
+        "Мужчина в черной футболке, девушка в черной майке, "
+        "первый ребенок в черной футболке, второй ребенок в черной футболке"
+    )
+    faces = [
+        "Adult male, strong jaw",
+        "Adult female, soft eyes",
+        "Girl child, long brown hair",
+        "Boy child, short hair",
+    ]
+    wrong_mapper = SceneLayout(
+        characters=[
+            SceneCharacter(ref_index=0, label="mother", placement="x", appearance_anchor=""),
+            SceneCharacter(ref_index=1, label="father", placement="x", appearance_anchor=""),
+            SceneCharacter(ref_index=2, label="mother", placement="x", appearance_anchor=""),
+            SceneCharacter(ref_index=3, label="son", placement="x", appearance_anchor=""),
+        ],
+        scene_description_en=prompt,
+    )
+    layout = build_group_slot_layout(prompt, faces, wrong_mapper)
+    by_ref = {c.ref_index: c.label for c in layout.characters}
+    assert by_ref[0] == "man/father"
+    assert by_ref[1] == "mother/woman"
+    assert by_ref[2] == "daughter"
+    assert by_ref[3] == "son"
+
+
 def test_infer_slots_from_face_descriptions_daughter_not_upload_order() -> None:
     from services.group_ref_slot_map import infer_slots_from_face_descriptions
 

@@ -47,13 +47,75 @@ _ORDERED_ROLE_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\b(?:сын\w*|son|мальчик)\b", re.I), "son"),
 )
 
-_CHILD_LABEL_MARKERS = frozenset(
+_CHILD_FACE_MARKERS = frozenset(
     {
+        "girl child",
+        "boy child",
+        "female child",
+        "male child",
         "child",
+        "kid",
+        "teen",
+        "teenage",
+        "adolescent",
+        "preteen",
+        "minor",
+        "schoolgirl",
+        "schoolboy",
+        "школьниц",
+        "подрост",
+    }
+)
+_ADULT_FEMALE_FACE_MARKERS = frozenset(
+    {
+        "adult female",
+        "woman",
+        "mother",
+        "lady",
+        "female",
+        "мам",
+        "женщ",
+    }
+)
+_ADULT_MALE_FACE_MARKERS = frozenset(
+    {
+        "adult male",
+        "man",
+        "father",
+        "male",
+        "beard",
+        "dad",
+        "мужчин",
+        "пап",
+        "отец",
+    }
+)
+
+_ADULT_ROLE_LABELS = frozenset(
+    {
+        "man/father",
+        "woman/mother",
+        "mother",
+        "father",
+        "mother/woman",
+        "man",
+        "woman",
+        "wife",
+        "husband",
+        "мама",
+        "папа",
+        "мужчин",
+        "женщин",
+        "девушка",
+    }
+)
+_CHILD_ROLE_LABELS = frozenset(
+    {
         "daughter",
         "son",
         "first child",
         "second child",
+        "child",
         "дочь",
         "дочка",
         "сын",
@@ -61,6 +123,10 @@ _CHILD_LABEL_MARKERS = frozenset(
         "ребёнок",
     }
 )
+
+CHILD_APPEARANCE_ANCHOR_MAX_CHARS = 400
+
+_CHILD_LABEL_MARKERS = _CHILD_ROLE_LABELS
 
 _MOTHER_LABEL_MARKERS = frozenset(
     {
@@ -151,6 +217,71 @@ def merge_ref_slot_maps(*maps: dict[int, str]) -> dict[int, str]:
     return merged
 
 
+def _is_child_face_description(desc: str) -> bool:
+    low = (desc or "").strip().lower()
+    if not low:
+        return False
+    if "girl child" in low or "boy child" in low:
+        return True
+    if "adult female" in low or "adult male" in low:
+        return False
+    if any(marker in low for marker in _CHILD_FACE_MARKERS):
+        if "adult" in low:
+            return False
+        return True
+    return False
+
+
+def _is_adult_female_face_description(desc: str) -> bool:
+    low = (desc or "").strip().lower()
+    if not low or _is_child_face_description(desc):
+        return False
+    if "adult female" in low:
+        return True
+    if "girl child" in low or "boy child" in low:
+        return False
+    return any(marker in low for marker in _ADULT_FEMALE_FACE_MARKERS)
+
+
+def _is_adult_male_face_description(desc: str) -> bool:
+    low = (desc or "").strip().lower()
+    if not low or _is_child_face_description(desc):
+        return False
+    if "adult male" in low:
+        return True
+    if "girl child" in low or "boy child" in low:
+        return False
+    return any(marker in low for marker in _ADULT_MALE_FACE_MARKERS)
+
+
+def _is_adult_role_label(label: str) -> bool:
+    low = (label or "").strip().lower()
+    return any(marker in low for marker in _ADULT_ROLE_LABELS) and not any(
+        marker in low for marker in _CHILD_ROLE_LABELS
+    )
+
+
+def _is_child_role_label(label: str) -> bool:
+    low = (label or "").strip().lower()
+    return any(marker in low for marker in _CHILD_ROLE_LABELS)
+
+
+def _appearance_anchor_for_ref(
+    ref_idx: int,
+    face_descriptions: list[str],
+    role_label: str,
+) -> str:
+    desc = (face_descriptions[ref_idx] if ref_idx < len(face_descriptions) else "").strip()
+    if not desc:
+        return f"match input_references[{ref_idx}]"
+    limit = (
+        CHILD_APPEARANCE_ANCHOR_MAX_CHARS
+        if _is_child_role_label(role_label) or _is_child_face_description(desc)
+        else 200
+    )
+    return desc[:limit]
+
+
 def infer_slots_from_face_descriptions(face_descriptions: list[str]) -> dict[int, str]:
     """Map ref indices from face-describe gender/age cues (upload order may be wrong)."""
     slots: dict[int, str] = {}
@@ -166,18 +297,63 @@ def infer_slots_from_face_descriptions(face_descriptions: list[str]) -> dict[int
             slots[idx] = "daughter"
         elif "son" in low or "male child" in low:
             slots[idx] = "son"
-        elif any(w in low for w in ("child", "kid", "young")):
-            if "girl" in low or "female" in low:
+        elif _is_child_face_description(desc):
+            if any(w in low for w in ("girl", "female", "daughter")):
                 slots[idx] = "daughter"
-            elif "boy" in low or "male" in low:
+            elif any(w in low for w in ("boy", "male", "son")):
                 slots[idx] = "son"
-        elif any(w in low for w in ("woman", "female", "mother", "lady", "мам")):
-            if "child" not in low and "girl child" not in low:
-                slots[idx] = "mother/woman"
-        elif any(w in low for w in ("man", "male", "father", "beard", "dad")):
-            if "child" not in low and "boy child" not in low:
-                slots[idx] = "man/father"
+        elif _is_adult_female_face_description(desc):
+            slots[idx] = "mother/woman"
+        elif _is_adult_male_face_description(desc):
+            slots[idx] = "man/father"
     return slots
+
+
+def sanitize_mapper_slots_with_face(
+    mapper_slots: dict[int, str],
+    face_descriptions: list[str],
+) -> dict[int, str]:
+    """Never let LLM mapper assign adult role to child face ref (or vice versa)."""
+    face_slots = infer_slots_from_face_descriptions(face_descriptions)
+    if not face_slots:
+        return dict(mapper_slots)
+
+    sanitized: dict[int, str] = {}
+    for ref_idx, label in mapper_slots.items():
+        if ref_idx < 0 or ref_idx >= len(face_descriptions):
+            continue
+        face_role = face_slots.get(ref_idx)
+        mapped = (label or "").strip()
+        if not mapped:
+            continue
+        if face_role in ("daughter", "son") and _is_adult_role_label(mapped):
+            sanitized[ref_idx] = face_role
+            continue
+        if face_role in ("mother/woman", "man/father") and _is_child_role_label(mapped):
+            sanitized[ref_idx] = face_role
+            continue
+        sanitized[ref_idx] = mapped
+
+    for ref_idx, face_role in face_slots.items():
+        if ref_idx not in sanitized:
+            sanitized[ref_idx] = face_role
+    return sanitized
+
+
+def resolve_child_labels_from_faces(
+    slot_map: dict[int, str],
+    face_descriptions: list[str],
+) -> dict[int, str]:
+    """Turn generic first/second child into daughter/son using face-desc gender."""
+    updated = dict(slot_map)
+    for ref_idx, label in list(updated.items()):
+        low = (label or "").lower()
+        if "first child" not in low and "second child" not in low:
+            continue
+        face_role = infer_slots_from_face_descriptions(face_descriptions).get(ref_idx)
+        if face_role in ("daughter", "son"):
+            updated[ref_idx] = face_role
+    return updated
 
 
 def reconcile_layout_with_face_slots(
@@ -293,15 +469,24 @@ def build_group_slot_layout(
     face_descriptions: list[str],
     mapped_layout: SceneLayout | None = None,
 ) -> SceneLayout:
-    """Merge ordered, face-inferred, and mapper layouts; apply vertical peek placements."""
+    """Merge face-inferred slots (primary), mapper, and ordered text; apply vertical peek."""
     prompt = (user_prompt or "").strip()
-    ordered = build_ordered_role_slots(prompt, len(face_descriptions))
+    count = len(face_descriptions)
     face_slots = infer_slots_from_face_descriptions(face_descriptions)
-    slot_map = merge_ref_slot_maps(ordered, face_slots)
+    ordered = build_ordered_role_slots(prompt, count)
 
+    slot_map: dict[int, str] = {}
     if mapped_layout is not None:
-        mapper_slots = {c.ref_index: c.label for c in mapped_layout.characters}
+        mapper_slots = sanitize_mapper_slots_with_face(
+            {c.ref_index: c.label for c in mapped_layout.characters},
+            face_descriptions,
+        )
         slot_map = merge_ref_slot_maps(slot_map, mapper_slots)
+
+    slot_map = merge_ref_slot_maps(slot_map, ordered)
+    # Face-desc age/gender always wins over LLM mapper and text-order heuristics.
+    slot_map = merge_ref_slot_maps(slot_map, face_slots)
+    slot_map = resolve_child_labels_from_faces(slot_map, face_descriptions)
 
     layout = layout_from_ref_slots(slot_map, face_descriptions, prompt)
     layout = reconcile_layout_with_face_slots(layout, face_descriptions)
@@ -317,7 +502,8 @@ def _identity_disambiguation_clause(label: str) -> str:
             return (
                 " ROLE: DAUGHTER (female child) — NOT the mother/woman; "
                 "never blend with adult female reference; reproduce exact eye shape, "
-                "nose, lips, jawline, and HAIR COLOR/STYLE from this reference only."
+                "nose, lips, jawline, child proportions, and HAIR COLOR/STYLE/LENGTH "
+                "from this reference only — hair must match reference within 0% deviation."
             )
         if any(m in low for m in ("son", "сын", "мальчик")):
             return (
@@ -360,7 +546,7 @@ def layout_from_ref_slots(
                 ref_index=ref_idx,
                 label=label,
                 placement="as described in the user scene prompt",
-                appearance_anchor=desc[:200] if desc else f"match input_references[{ref_idx}]",
+                appearance_anchor=_appearance_anchor_for_ref(ref_idx, face_descriptions, label),
             )
         )
         used.add(ref_idx)
@@ -369,12 +555,13 @@ def layout_from_ref_slots(
         if idx in used:
             continue
         desc = (face_descriptions[idx] or "").strip()
+        label = f"Person {idx + 1}"
         characters.append(
             SceneCharacter(
                 ref_index=idx,
-                label=f"Person {idx + 1}",
+                label=label,
                 placement="as described in the user scene prompt",
-                appearance_anchor=desc[:200] if desc else f"match input_references[{idx}]",
+                appearance_anchor=_appearance_anchor_for_ref(idx, face_descriptions, label),
             )
         )
 
@@ -409,7 +596,7 @@ def apply_explicit_ref_slots(
             ref_index=ref_idx,
             label=role,
             placement=(prev.placement if prev else "as in user scene prompt"),
-            appearance_anchor=desc[:200] if desc else (prev.appearance_anchor if prev else f"match input_references[{ref_idx}]"),
+            appearance_anchor=_appearance_anchor_for_ref(ref_idx, face_descriptions, role),
         )
 
     for idx in range(len(face_descriptions)):

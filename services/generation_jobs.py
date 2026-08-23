@@ -58,9 +58,14 @@ from services.photo_aspect_ratio import (
 )
 from services.photo_collage_mode import (
     build_collage_multi_ref_api_prompt,
+    compose_collage_reference_sheet,
     is_layout_collage_intent,
     resolve_collage_aspect_ratio,
+    resolve_collage_openrouter_extensions,
+    resolve_collage_ref_order,
+    role_label_for_ref,
 )
+from services.photo_collage_multistep import generate_collage_multistep
 from services.billing.image_pipeline import FREE_PHOTO_MODEL_KEY, normalize_image_model, free_tier_image_model
 from services.free_image_cascade import (
     FreeImageCascadeExhausted,
@@ -748,13 +753,71 @@ async def _generate_openrouter_multi_ref_group_model(
             effective_aspect,
         )
 
-        async def _resolve_collage_ref(file_id: str) -> str:
+        async def _resolve_collage_ref(file_id: str) -> tuple[str, str]:
             data_url = await resolve_reference_to_png_data_url(bot=bot, file_id=file_id)
-            return resize_png_data_url_for_api(data_url)
+            resized = resize_png_data_url_for_api(data_url)
+            try:
+                face_desc = await describe_reference_face_for_prompt(
+                    app_settings, resized, for_group=True
+                )
+            except ExternalApiError:
+                logger.warning("collage face description skipped file_id=%s", file_id[:12])
+                face_desc = ""
+            return resized, face_desc
 
-        data_urls = list(await asyncio.gather(*(_resolve_collage_ref(fid) for fid in refs)))
-        api_prompt = build_collage_multi_ref_api_prompt(prompt, len(data_urls))
+        pairs = list(await asyncio.gather(*(_resolve_collage_ref(fid) for fid in refs)))
+        data_urls = [pair[0] for pair in pairs]
+        face_descs = [pair[1] for pair in pairs]
+        left_idx, right_idx = resolve_collage_ref_order(prompt, len(data_urls))
+        left_role = role_label_for_ref(prompt, left_idx, 2)
+        right_role = role_label_for_ref(prompt, right_idx, 2)
+        composite_url = compose_collage_reference_sheet(data_urls[left_idx], data_urls[right_idx])
+        logger.info(
+            "collage refs: left=%s (%s) right=%s (%s) face_desc=%s/%s",
+            left_idx,
+            left_role,
+            right_idx,
+            right_role,
+            bool(face_descs[left_idx]),
+            bool(face_descs[right_idx]),
+        )
+        try:
+            return await generate_collage_multistep(
+                app_settings,
+                user_prompt=prompt,
+                left_ref_url=data_urls[left_idx],
+                right_ref_url=data_urls[right_idx],
+                left_role=left_role,
+                right_role=right_role,
+                left_face_desc=face_descs[left_idx],
+                right_face_desc=face_descs[right_idx],
+                model=or_model,
+                timeout_sec=float(EXTERNAL_API_TIMEOUT_SEC),
+            )
+        except Exception:
+            logger.exception("collage multistep failed, falling back to single-shot")
+            data_urls = [composite_url]
+            api_prompt = build_collage_multi_ref_api_prompt(
+                prompt,
+                2,
+                composite_sheet=True,
+                left_role=left_role,
+                right_role=right_role,
+            )
+            collage_extensions = resolve_collage_openrouter_extensions(or_model)
+            return await generate_openrouter_multi_ref_group_photo(
+                app_settings,
+                model=or_model,
+                user_prompt=prompt,
+                reference_image_data_urls=list(data_urls),
+                aspect_ratio=openrouter_aspect_ratio(effective_aspect),
+                fallback_models=fallback_models,
+                timeout_sec=float(EXTERNAL_API_TIMEOUT_SEC),
+                api_prompt=api_prompt,
+                body_extensions=collage_extensions,
+            )
     else:
+        collage_extensions = None
         or_model = MULTI_REF_GROUP_PRIMARY_MODEL
         fallback_models = MULTI_REF_GROUP_FALLBACKS
         logger.info(
@@ -802,6 +865,7 @@ async def _generate_openrouter_multi_ref_group_model(
         fallback_models=fallback_models,
         timeout_sec=float(EXTERNAL_API_TIMEOUT_SEC),
         api_prompt=api_prompt,
+        body_extensions=collage_extensions,
     )
 
 

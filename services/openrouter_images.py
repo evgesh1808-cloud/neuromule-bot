@@ -355,6 +355,10 @@ FACE_DESCRIBE_SYSTEM_PROMPT = (
 )
 FACE_DESCRIBE_GROUP_EXTRA = (
     " For group portraits: classify as adult male, adult female, boy child, or girl child. "
+    "Child faces (anyone who looks under 18, including teens/preteens) MUST be labeled "
+    "boy child or girl child — NEVER adult female, young woman, teen, or woman. "
+    "Adult females (clearly 20+) MUST be labeled adult female — NEVER girl child. "
+    "Always state HAIR COLOR and hair length/style explicitly. "
     "Child faces must be clearly labeled girl child or boy child — never adult."
 )
 
@@ -891,7 +895,7 @@ def build_structured_multi_ref_prompt(
             f"Identity anchor: {anchor}. "
             f"MUST preserve exact facial identity from input_references[{ref_idx}] — "
             f"identical eye shape, nose bridge, jawline, lip proportions, skin tone, "
-            f"and apparent age. Do not age, rejuvenate, or alter skin texture. "
+            f"hair color, hair length, and apparent age. Do not age, rejuvenate, or alter skin texture. "
             f"Do not add under-eye bags, dark circles, or tired eyes not in the reference. "
             f"STRICTLY FORBIDDEN to swap, blend, or generate a similar-looking stranger — "
             f"use the exact face from input_references[{ref_idx}] only."
@@ -1034,6 +1038,7 @@ async def generate_openrouter_multi_ref_group_photo(
     fallback_models: tuple[str, ...] = MULTI_REF_GROUP_FALLBACKS,
     timeout_sec: float = DEFAULT_OPENROUTER_IMAGES_TIMEOUT_SEC,
     api_prompt: str | None = None,
+    body_extensions: dict[str, Any] | None = None,
 ) -> GeminiImageResult:
     """Multi-reference group portrait via OpenRouter Images API."""
     scene_prompt = (user_prompt or "").strip() or DEFAULT_PHOTO_USER_INTENT
@@ -1057,12 +1062,16 @@ async def generate_openrouter_multi_ref_group_photo(
             continue
         try:
             payload = build_multi_ref_group_payload(api_prompt, png_refs)
+            extensions = body_extensions
+            if extensions and slug != (model or "").strip():
+                extensions = None
             return await generate_openrouter_image(
                 settings,
                 model=slug,
                 prompt=str(payload["prompt"]),
                 aspect_ratio=aspect_ratio,
                 input_references=payload["input_references"],
+                body_extensions=extensions,
                 timeout_sec=timeout_sec,
             )
         except ExternalApiError as exc:
