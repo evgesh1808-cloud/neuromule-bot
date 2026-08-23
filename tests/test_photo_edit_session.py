@@ -262,9 +262,125 @@ async def test_get_or_restore_photo_edit_session_from_db() -> None:
     assert sess.aspect_ratio == "16:9"
 
 
+
+@pytest.mark.asyncio
+async def test_sharpen_refine_uses_upscale_api() -> None:
+    from platforms.handlers import generation_fsm
+    from services.photo_edit_session import save_photo_edit_session
+
+    save_photo_edit_session(
+        88,
+        image_model_id="flux_schnell",
+        image_model_label="Flux 2 Pro",
+        aspect_ratio="1:1",
+        telegram_file_id="AgAC_result",
+        user_prompt="portrait",
+    )
+
+    message = MagicMock()
+    message.text = "сделать четче"
+    message.from_user.id = 88
+    message.chat.id = 88
+    message.answer = AsyncMock()
+
+    state = MagicMock()
+    state.get_data = AsyncMock(
+        return_value={
+            "image_model_id": "flux_schnell",
+            "image_model_label": "Flux 2 Pro",
+            "image_aspect_ratio": "1:1",
+            "refine_from_result": True,
+        }
+    )
+    state.update_data = AsyncMock()
+
+    bot = MagicMock()
+    bot.send_photo = AsyncMock(
+        return_value=MagicMock(photo=[MagicMock(file_id="AgAC_upscaled")])
+    )
+
+    with (
+        patch.object(generation_fsm.deps, "bot", return_value=bot),
+        patch.object(generation_fsm.billing, "spend_upscale", AsyncMock(return_value=MagicMock(ok=True, charge=MagicMock(charge_id="c1")))),
+        patch(
+            "services.openrouter_images.resolve_openrouter_reference_url",
+            AsyncMock(return_value="https://cdn.example/base.png"),
+        ),
+        patch(
+            "services.openrouter_images.upscale_openrouter_image_url",
+            AsyncMock(return_value="https://cdn.example/upscaled.png"),
+        ) as upscale,
+        patch(
+            "services.photo_edit_session.persist_photo_edit_session",
+            AsyncMock(),
+        ),
+        patch(
+            "services.photo_intent_parser.resolve_photo_edit_prompt",
+            AsyncMock(return_value=("1:1", "сделать четче", False)),
+        ),
+        patch.object(generation_fsm, "process_photo_prompt_message", AsyncMock()) as proc,
+    ):
+        await generation_fsm.photo_process(message, state)
+
+    upscale.assert_awaited_once()
+    proc.assert_not_called()
+
+
 def test_result_keyboard_has_refine_button() -> None:
     from content.inline_keyboards import result_photo_keyboard
 
     kb = result_photo_keyboard()
     texts = [btn.text for row in kb.inline_keyboard for btn in row]
     assert msg.BTN_PHOTO_REFINE in texts
+
+
+@pytest.mark.asyncio
+async def test_group_refine_uses_result_image_not_group_multi_ref() -> None:
+    from platforms.handlers import generation_fsm
+    from services.photo_edit_session import save_photo_edit_session
+
+    save_photo_edit_session(
+        55,
+        image_model_id="nano_banana_pro",
+        image_model_label="Nano Banana Pro",
+        aspect_ratio="9:16",
+        telegram_file_id="AgAC_group_result",
+        user_prompt="family peek scene",
+        group_ref_file_ids=("ref0", "ref1", "ref2", "ref3"),
+        group_base_prompt="family peek scene",
+    )
+
+    message = MagicMock()
+    message.text = "сделай стену светлее"
+    message.from_user.id = 55
+    message.chat.id = 55
+    message.answer = AsyncMock()
+
+    state = MagicMock()
+    state.get_data = AsyncMock(
+        return_value={
+            "image_model_id": "nano_banana_pro",
+            "image_model_label": "Nano Banana Pro",
+            "image_aspect_ratio": "9:16",
+            "refine_from_result": True,
+        }
+    )
+    state.update_data = AsyncMock()
+
+    with patch.object(
+        generation_fsm,
+        "process_photo_prompt_message",
+        new_callable=AsyncMock,
+    ) as proc, patch(
+        "services.photo_intent_parser.resolve_photo_edit_prompt",
+        new_callable=AsyncMock,
+        return_value=("9:16", "сделай стену светлее", False),
+    ):
+        await generation_fsm.photo_process(message, state)
+
+    proc.assert_awaited_once()
+    kwargs = proc.await_args.kwargs
+    assert kwargs["telegram_file_id"] == "AgAC_group_result"
+    assert kwargs["i2i_reference_mode"] == "edit"
+    assert kwargs.get("group_multi_ref") is not True
+    assert "EDIT REQUEST" in kwargs["prompt"]

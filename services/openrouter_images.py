@@ -1564,8 +1564,15 @@ async def resolve_openrouter_photo_prompt_and_refs(
         if not intent_en:
             intent_en = await translate_photo_user_intent(settings, cleaned)
         if i2i_reference_mode == "edit":
-            from services.photo_edit_session import build_photo_refine_edit_prompt
+            from services.photo_edit_session import (
+                build_photo_refine_edit_prompt,
+                build_photo_sharpen_edit_prompt,
+                is_photo_sharpen_intent,
+            )
 
+            if is_photo_sharpen_intent(cleaned) or is_photo_sharpen_intent(intent_en):
+                prompt = build_photo_sharpen_edit_prompt(intent_en)
+                return prompt, [openrouter_input_reference(ref_png)], {"resolution": "2K"}
             prompt = build_photo_refine_edit_prompt(intent_en)
         else:
             try:

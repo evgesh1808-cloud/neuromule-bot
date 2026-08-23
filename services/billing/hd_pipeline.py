@@ -40,6 +40,11 @@ UPSCALE_ENERGY_FALLBACK = 10  # 1 💎 == 10 ⚡ для резервной оп�
 
 async def spend_upscale(user_id: int) -> SpendResult:
     """UPSCALE: 1 💎; при 0 💎 — фоллбэк 10 ⚡."""
+    from services.god_mode import billing_bypass, god_mode_spend_result
+
+    if billing_bypass(user_id):
+        return god_mode_spend_result()
+
     user = await store.load_user_billing(user_id)
     if user.crystals >= UPSCALE_COST:
         return await _spend_crystals_only(user_id, UPSCALE_COST, SpendFeature.UPSCALE)

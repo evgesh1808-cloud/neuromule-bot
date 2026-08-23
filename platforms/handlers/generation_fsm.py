@@ -717,6 +717,130 @@ async def try_handle_photo_for_image_generation(
 from services.photo_edit_session import PhotoEditSession
 
 
+async def _try_dispatch_sharpen_upscale_refine(
+    message: Message,
+    state: FSMContext,
+    *,
+    prompt: str,
+) -> bool:
+    """«Сделать четче» / upscale after ✏️ Доработать — real OpenRouter upscale, not t2i."""
+    from content.keyboards import new_result_keyboard
+    from services.openrouter_images import (
+        openrouter_images_configured,
+        resolve_openrouter_reference_url,
+        upscale_openrouter_image_url,
+    )
+    from services.photo_edit_session import (
+        get_or_restore_photo_edit_session,
+        is_photo_sharpen_intent,
+        persist_photo_edit_session,
+        resolve_session_result_reference,
+        resolve_sharpen_scale,
+        session_has_result_image,
+    )
+
+    if not is_photo_sharpen_intent(prompt):
+        return False
+    if not openrouter_images_configured(settings):
+        await message.answer(msg.TXT_GEN_JOB_FAILED)
+        return True
+
+    user = message.from_user
+    if user is None:
+        return False
+
+    session = await get_or_restore_photo_edit_session(user.id, peer_id=message.chat.id)
+    if session is None or not session_has_result_image(session):
+        await message.answer(msg.TXT_PHOTO_REFINE_EXPIRED)
+        return True
+
+    result_ref = resolve_session_result_reference(session)
+    bot = deps.bot()
+    try:
+        image_url = await resolve_openrouter_reference_url(
+            bot=bot,
+            file_id=result_ref.telegram_file_id,
+            reference_image_url=result_ref.media_url,
+            reference_image_bytes=result_ref.reference_image_bytes,
+            reference_mime=result_ref.reference_mime,
+        )
+    except Exception:
+        logger.warning("sharpen refine: failed to resolve image uid=%s", user.id, exc_info=True)
+        await message.answer(msg.TXT_UPSCALE_FAILED)
+        return True
+
+    if not image_url:
+        await message.answer(msg.TXT_PHOTO_REFINE_EXPIRED)
+        return True
+
+    spend = await billing.spend_upscale(user.id)
+    if not spend.ok:
+        await message.answer(
+            msg.TXT_INSUFFICIENT_BALANCE,
+            reply_markup=paycat.shop_packages_keyboard(),
+            parse_mode=ParseMode.HTML,
+        )
+        return True
+
+    charge_id = spend.charge.charge_id if spend.charge else ""
+    scale = resolve_sharpen_scale(prompt)
+
+    await state.update_data(
+        pending_reference_file_id=None,
+        pending_object_file_id=None,
+        pending_group_ref_file_ids=[],
+        refine_from_result=None,
+    )
+
+    status = await message.answer(msg.TXT_UPSCALE_PROCESSING)
+    chat_id = message.chat.id
+
+    try:
+        async with chat_action_loop(bot, chat_id, "upload_document"):
+            upscaled_url = await upscale_openrouter_image_url(
+                settings,
+                image_url,
+                scale_value=scale,
+            )
+        sent = await bot.send_photo(
+            chat_id,
+            photo=upscaled_url,
+            caption=msg.format_photo_result_caption_html(
+                session.image_model_label,
+                session.user_prompt or prompt,
+            ),
+            parse_mode=ParseMode.HTML,
+            reply_markup=new_result_keyboard(),
+        )
+        tg_file_id = sent.photo[-1].file_id if sent.photo else None
+        await persist_photo_edit_session(
+            user.id,
+            image_model_id=session.image_model_id,
+            image_model_label=session.image_model_label,
+            aspect_ratio=session.aspect_ratio,
+            telegram_file_id=tg_file_id,
+            media_url=upscaled_url,
+            message_id=sent.message_id,
+            chat_id=chat_id,
+            platform="telegram",
+            user_prompt=session.user_prompt,
+            reference_file_id=session.reference_file_id,
+            generation_seed=session.generation_seed,
+            group_ref_file_ids=session.group_ref_file_ids,
+            group_base_prompt=session.group_base_prompt,
+        )
+        try:
+            await status.delete()
+        except TelegramBadRequest:
+            pass
+    except Exception:
+        logger.exception("sharpen upscale refine failed uid=%s scale=%s", user.id, scale)
+        if charge_id:
+            await refund_charge(charge_id)
+        await message.answer(msg.TXT_UPSCALE_FAILED)
+    return True
+
+
 async def _dispatch_group_refine_from_session(
     message: Message,
     state: FSMContext,
@@ -727,23 +851,51 @@ async def _dispatch_group_refine_from_session(
     label: str,
     aspect: str,
 ) -> None:
-    from services.photo_edit_session import build_group_refine_user_prompt
+    """Text refine after group photo: i2i on the generated result, not a new 4-ref run."""
+    from services.photo_edit_session import (
+        build_group_refine_user_prompt,
+        resolve_session_result_reference,
+        session_has_result_image,
+    )
+
+    if not session_has_result_image(session):
+        await message.answer(msg.TXT_PHOTO_REFINE_EXPIRED)
+        return
+
+    result_ref = resolve_session_result_reference(session)
+    file_id = result_ref.telegram_file_id
+    ref_url = result_ref.media_url if not file_id else None
+    ref_bytes = (
+        result_ref.reference_image_bytes
+        if not file_id and not ref_url
+        else None
+    )
+    if not file_id and not ref_url and not ref_bytes:
+        await message.answer(msg.TXT_PHOTO_REFINE_EXPIRED)
+        return
 
     combined = build_group_refine_user_prompt(
         session.group_base_prompt or session.user_prompt or "",
         edit_prompt,
     )
-    await state.update_data(pending_reference_file_id=None, refine_from_result=None)
+    await state.update_data(
+        pending_reference_file_id=None,
+        pending_object_file_id=None,
+        pending_group_ref_file_ids=[],
+        refine_from_result=None,
+    )
     await process_photo_prompt_message(
         message,
         state,
         model_id=model_id,
         label=label,
         prompt=combined,
+        telegram_file_id=file_id,
+        reference_image_url=ref_url,
+        reference_image_bytes=ref_bytes,
+        reference_mime=result_ref.reference_mime,
         aspect_ratio=aspect,
-        group_multi_ref=True,
-        group_ref_file_ids=list(session.group_ref_file_ids),
-        group_base_prompt=session.group_base_prompt or session.user_prompt,
+        i2i_reference_mode="edit",
     )
 
 
@@ -1216,7 +1368,11 @@ async def photo_process(message: Message, state: FSMContext) -> None:
             await state.update_data(image_aspect_ratio=aspect)
             update_photo_edit_session_aspect_ratio(message.from_user.id, aspect)
 
-        file_id = pending_file_id or None
+        if refine_from_result and prompt:
+            if await _try_dispatch_sharpen_upscale_refine(message, state, prompt=prompt):
+                return
+
+        file_id: str | None = None
         ref_url: str | None = None
         ref_bytes: bytes | None = None
         ref_mime = "image/jpeg"
@@ -1231,7 +1387,16 @@ async def photo_process(message: Message, state: FSMContext) -> None:
                 )
             else:
                 session = get_photo_edit_session(message.from_user.id, peer_id=message.chat.id)
-            if session and session_has_result_image(session):
+                file_id = pending_file_id or None
+
+            if refine_from_result and session and session_has_result_image(session):
+                result_ref = resolve_session_result_reference(session)
+                file_id = result_ref.telegram_file_id
+                if not file_id:
+                    ref_url = result_ref.media_url
+                    ref_bytes = result_ref.reference_image_bytes
+                    ref_mime = result_ref.reference_mime
+            elif not refine_from_result and session and session_has_result_image(session):
                 result_ref = resolve_session_result_reference(session)
                 file_id = file_id or result_ref.telegram_file_id
                 if not file_id:
@@ -1267,7 +1432,7 @@ async def photo_process(message: Message, state: FSMContext) -> None:
             reference_image_bytes=ref_bytes,
             reference_mime=ref_mime,
             aspect_ratio=aspect,
-            i2i_reference_mode="edit",
+            i2i_reference_mode="edit" if refine_from_result else "selfie",
         )
         return
 
@@ -1594,32 +1759,44 @@ async def animate_need_photo(message: Message) -> None:
 
 @router.message(UserFlow.waiting_for_upscale_photo, F.photo)
 async def upscale_process(message: Message, state: FSMContext) -> None:
+    from services.openrouter_images import (
+        openrouter_images_configured,
+        resolve_openrouter_reference_url,
+        upscale_openrouter_image_url,
+    )
+
     uid = message.from_user.id
     spend = await billing.spend_upscale(uid)
     if not spend.ok:
         await message.answer(
             msg.TXT_INSUFFICIENT_BALANCE,
             reply_markup=paycat.shop_packages_keyboard(),
+            parse_mode=ParseMode.HTML,
         )
         await state.clear()
         return
+    if not openrouter_images_configured(settings):
+        await message.answer(msg.TXT_GEN_JOB_FAILED)
+        await state.clear()
+        return
+
     upscale_charge_id = spend.charge.charge_id if spend.charge else ""
     await message.answer(msg.TXT_UPSCALE_PROCESSING)
+    bot = deps.bot()
+    photo_id = message.photo[-1].file_id
     try:
-        async with chat_action_loop(deps.bot(), message.chat.id, "upload_document"):
-            row = await get_user_row(uid)
-            photo_id = message.photo[-1].file_id
-            file = await deps.bot().get_file(photo_id)
-            if not file.file_path:
-                raise RuntimeError("Telegram did not return file_path for upscale photo")
-            buffer = BytesIO()
-            await deps.bot().download_file(file.file_path, buffer)
-            document = BufferedInputFile(buffer.getvalue(), filename="neuromule_upscale.jpg")
-            await deps.bot().send_document(
-                message.chat.id,
-                document,
-                caption=msg.TXT_UPSCALE_SUCCESS.format(balance=row.crystals),
+        image_url = await resolve_openrouter_reference_url(bot=bot, file_id=photo_id)
+        async with chat_action_loop(bot, message.chat.id, "upload_document"):
+            upscaled_url = await upscale_openrouter_image_url(
+                settings,
+                image_url,
+                scale_value=2,
             )
+        await bot.send_document(
+            message.chat.id,
+            document=upscaled_url,
+            caption=msg.TXT_UPSCALE_DONE,
+        )
     except Exception:
         logger.exception("upscale_failed user_id=%s", uid)
         if upscale_charge_id:

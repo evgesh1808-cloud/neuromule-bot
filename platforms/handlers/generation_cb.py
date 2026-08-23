@@ -619,6 +619,7 @@ async def photo_refine_start(callback: CallbackQuery, state: FSMContext) -> None
             image_aspect_ratio=session.aspect_ratio,
             pending_reference_file_id=None,
             pending_object_file_id=None,
+            pending_group_ref_file_ids=[],
             refine_from_result=True,
         )
         await state.set_state(UserFlow.waiting_for_photo)

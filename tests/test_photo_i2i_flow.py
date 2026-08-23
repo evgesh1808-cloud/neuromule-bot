@@ -81,6 +81,7 @@ async def test_text_after_pending_photo_passes_file_id() -> None:
         reference_image_bytes=None,
         reference_mime="image/jpeg",
         aspect_ratio="1:1",
+        i2i_reference_mode="selfie",
     )
 
 

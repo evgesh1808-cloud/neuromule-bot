@@ -228,6 +228,68 @@ def build_photo_refine_edit_prompt(user_intent_en: str) -> str:
     )
 
 
+_SHARPEN_INTENT_MARKERS: tuple[str, ...] = (
+    "четче",
+    "чётче",
+    "резче",
+    "sharp",
+    "sharpen",
+    "sharper",
+    "качеств",
+    "детализа",
+    "деталей",
+    "upscale",
+    "четкость",
+    "чёткость",
+    "резкость",
+    "hd ",
+    " 4k",
+    "4k ",
+    "x2",
+    "x4",
+    "×2",
+    "×4",
+)
+
+
+def is_photo_sharpen_intent(text: str) -> bool:
+    """True when user asks to sharpen/upscale/enhance quality of existing image."""
+    low = (text or "").strip().lower()
+    if not low:
+        return False
+    if any(marker in low for marker in _SHARPEN_INTENT_MARKERS):
+        return True
+    if ("улучши" in low or "улучшить" in low) and any(
+        token in low for token in ("качеств", "четк", "чётк", "резк", "четче", "чётче", "фото", "изображ")
+    ):
+        return True
+    return False
+
+
+def resolve_sharpen_scale(user_text: str) -> int:
+    """Pick upscale factor from user text (default x2)."""
+    low = (user_text or "").lower()
+    if any(token in low for token in ("x4", "×4", "4k", "4 k")):
+        return 4
+    return 2
+
+
+def build_photo_sharpen_edit_prompt(user_intent_en: str) -> str:
+    """i2i sharpen/upscale: enhance detail without reimagining the scene."""
+    intent = (user_intent_en or "").strip() or "increase sharpness and fine detail"
+    return (
+        "Using the attached image as the exact visual reference, perform a quality enhancement "
+        "pass ONLY on this photograph. "
+        "Increase sharpness, micro-detail, clarity, and perceived resolution. "
+        "Preserve 100% identical composition, subjects, faces, poses, expressions, colors, "
+        "lighting, background, and framing. "
+        "Do NOT regenerate from scratch, do NOT reimagine, do NOT change the scene, "
+        "do NOT add or remove people or objects. "
+        f"Enhancement goal: {intent}. "
+        "Photorealistic, crisp natural focus, preserve skin texture — no plastic smoothing."
+    )
+
+
 GROUP_REFINE_EDIT_MARKER = "EDIT REQUEST"
 
 

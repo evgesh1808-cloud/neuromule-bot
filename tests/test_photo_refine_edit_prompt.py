@@ -5,11 +5,32 @@ from services.openrouter_images import build_structured_multi_ref_prompt
 from services.photo_edit_session import (
     build_group_refine_user_prompt,
     build_photo_refine_edit_prompt,
+    build_photo_sharpen_edit_prompt,
+    is_photo_sharpen_intent,
+    resolve_sharpen_scale,
     session_has_group_refs,
     save_photo_edit_session,
     reset_photo_edit_sessions_for_tests,
     PhotoEditSession,
 )
+
+
+def test_is_photo_sharpen_intent_russian() -> None:
+    assert is_photo_sharpen_intent("сделать четче") is True
+    assert is_photo_sharpen_intent("улучши качество") is True
+    assert is_photo_sharpen_intent("добавь закат") is False
+
+
+def test_resolve_sharpen_scale() -> None:
+    assert resolve_sharpen_scale("сделать четче") == 2
+    assert resolve_sharpen_scale("upscale x4 4k") == 4
+
+
+def test_build_photo_sharpen_edit_prompt() -> None:
+    prompt = build_photo_sharpen_edit_prompt("make sharper")
+    assert "quality enhancement" in prompt.lower()
+    assert "do not regenerate" in prompt.lower()
+    assert "make sharper" in prompt
 
 
 def test_build_photo_refine_edit_prompt_preserves_reference() -> None:

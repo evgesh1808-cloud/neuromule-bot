@@ -99,6 +99,7 @@ from services.openrouter_images import (
     resolve_openrouter_photo_prompt_and_refs,
     resolve_reference_to_png_data_url,
 )
+from services.photo_edit_session import persist_photo_edit_session, save_photo_edit_session
 from services.pollinations_client import generate_flux_schnell_image
 from services.repository import get_user_row
 
