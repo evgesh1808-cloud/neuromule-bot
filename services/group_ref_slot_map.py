@@ -151,6 +151,163 @@ def merge_ref_slot_maps(*maps: dict[int, str]) -> dict[int, str]:
     return merged
 
 
+def infer_slots_from_face_descriptions(face_descriptions: list[str]) -> dict[int, str]:
+    """Map ref indices from face-describe gender/age cues (upload order may be wrong)."""
+    slots: dict[int, str] = {}
+    for idx, desc in enumerate(face_descriptions):
+        low = (desc or "").strip().lower()
+        if not low:
+            continue
+        if "girl child" in low or ("girl" in low and "child" in low):
+            slots[idx] = "daughter"
+        elif "boy child" in low or ("boy" in low and "child" in low):
+            slots[idx] = "son"
+        elif "daughter" in low or "female child" in low:
+            slots[idx] = "daughter"
+        elif "son" in low or "male child" in low:
+            slots[idx] = "son"
+        elif any(w in low for w in ("child", "kid", "young")):
+            if "girl" in low or "female" in low:
+                slots[idx] = "daughter"
+            elif "boy" in low or "male" in low:
+                slots[idx] = "son"
+        elif any(w in low for w in ("woman", "female", "mother", "lady", "мам")):
+            if "child" not in low and "girl child" not in low:
+                slots[idx] = "mother/woman"
+        elif any(w in low for w in ("man", "male", "father", "beard", "dad")):
+            if "child" not in low and "boy child" not in low:
+                slots[idx] = "man/father"
+    return slots
+
+
+def reconcile_layout_with_face_slots(
+    layout: SceneLayout,
+    face_descriptions: list[str],
+) -> SceneLayout:
+    """Replace generic first/second child labels with daughter/son from face describe."""
+    face_slots = infer_slots_from_face_descriptions(face_descriptions)
+    if not face_slots:
+        return layout
+
+    updated: list[SceneCharacter] = []
+    for character in layout.characters:
+        idx = character.ref_index
+        face_role = face_slots.get(idx)
+        if not face_role:
+            updated.append(character)
+            continue
+        low_label = character.label.lower()
+        generic_child = "child" in low_label or "person" in low_label
+        generic_adult = "person" in low_label
+        if face_role in ("daughter", "son") and generic_child:
+            desc = (face_descriptions[idx] or "").strip()
+            updated.append(
+                character.model_copy(
+                    update={
+                        "label": face_role,
+                        "appearance_anchor": desc[:200] if desc else character.appearance_anchor,
+                    }
+                )
+            )
+        elif face_role in ("mother/woman", "man/father") and generic_adult:
+            desc = (face_descriptions[idx] or "").strip()
+            updated.append(
+                character.model_copy(
+                    update={
+                        "label": face_role,
+                        "appearance_anchor": desc[:200] if desc else character.appearance_anchor,
+                    }
+                )
+            )
+        elif face_role in ("daughter", "son", "mother/woman", "man/father"):
+            desc = (face_descriptions[idx] or "").strip()
+            updated.append(
+                character.model_copy(
+                    update={
+                        "label": face_role,
+                        "appearance_anchor": desc[:200] if desc else character.appearance_anchor,
+                    }
+                )
+            )
+        else:
+            updated.append(character)
+    return SceneLayout(characters=updated, scene_description_en=layout.scene_description_en)
+
+
+_VERTICAL_PEEK_MARKERS: tuple[str, ...] = (
+    "подглядыва",
+    "выглядыва",
+    "peek",
+    "peeking",
+    "из-за",
+    "за стен",
+    "за вертикаль",
+    "матовой",
+)
+
+_VERTICAL_STACK_PLACEMENTS: tuple[str, ...] = (
+    "top of vertical peek stack (position 1 from top, below wall edge)",
+    "second from top in vertical peek stack (position 2)",
+    "third from top in vertical peek stack (position 3)",
+    "fourth from top / bottom of vertical peek stack (position 4)",
+)
+
+
+def _role_vertical_rank(label: str) -> int:
+    low = (label or "").lower()
+    if any(k in low for k in ("father", "man", "husband", "мужчин", "пап", "отец")):
+        return 0
+    if any(k in low for k in ("mother", "woman", "wife", "женщин", "мам", "девушк")):
+        return 1
+    if any(k in low for k in ("first child", "перв")):
+        return 2
+    if any(k in low for k in ("daughter", "дочь", "дочка")) and "mother" not in low:
+        return 2
+    if any(k in low for k in ("second child", "втор")):
+        return 3
+    if any(k in low for k in ("son", "сын", "мальчик")):
+        return 3
+    if any(k in low for k in ("child", "реб")):
+        return 2
+    return 50
+
+
+def apply_vertical_peek_placements(layout: SceneLayout, user_prompt: str) -> SceneLayout:
+    """Assign vertical stack positions for wall-peek family compositions."""
+    low = (user_prompt or "").lower()
+    if not any(marker in low for marker in _VERTICAL_PEEK_MARKERS):
+        return layout
+
+    by_ref = {character.ref_index: character for character in layout.characters}
+    ranked = sorted(layout.characters, key=lambda c: (_role_vertical_rank(c.label), c.ref_index))
+    for pos, character in enumerate(ranked[: len(_VERTICAL_STACK_PLACEMENTS)]):
+        placement = _VERTICAL_STACK_PLACEMENTS[pos]
+        by_ref[character.ref_index] = character.model_copy(update={"placement": placement})
+
+    characters = sorted(by_ref.values(), key=lambda c: c.ref_index)
+    return SceneLayout(characters=characters, scene_description_en=layout.scene_description_en)
+
+
+def build_group_slot_layout(
+    user_prompt: str,
+    face_descriptions: list[str],
+    mapped_layout: SceneLayout | None = None,
+) -> SceneLayout:
+    """Merge ordered, face-inferred, and mapper layouts; apply vertical peek placements."""
+    prompt = (user_prompt or "").strip()
+    ordered = build_ordered_role_slots(prompt, len(face_descriptions))
+    face_slots = infer_slots_from_face_descriptions(face_descriptions)
+    slot_map = merge_ref_slot_maps(ordered, face_slots)
+
+    if mapped_layout is not None:
+        mapper_slots = {c.ref_index: c.label for c in mapped_layout.characters}
+        slot_map = merge_ref_slot_maps(slot_map, mapper_slots)
+
+    layout = layout_from_ref_slots(slot_map, face_descriptions, prompt)
+    layout = reconcile_layout_with_face_slots(layout, face_descriptions)
+    return apply_vertical_peek_placements(layout, prompt)
+
+
 def _identity_disambiguation_clause(label: str) -> str:
     low = (label or "").strip().lower()
     if not low:
@@ -159,7 +316,8 @@ def _identity_disambiguation_clause(label: str) -> str:
         if any(m in low for m in ("daughter", "дочь", "дочка")):
             return (
                 " ROLE: DAUGHTER (female child) — NOT the mother/woman; "
-                "never blend with adult female reference."
+                "never blend with adult female reference; reproduce exact eye shape, "
+                "nose, lips, jawline, and HAIR COLOR/STYLE from this reference only."
             )
         if any(m in low for m in ("son", "сын", "мальчик")):
             return (

@@ -84,6 +84,23 @@ def openrouter_aspect_ratio(value: str | None) -> str:
     return normalize_photo_aspect_ratio(value)
 
 
+def resolve_prompt_aspect_ratio(prompt: str, current: str | None) -> str:
+    """Infer aspect ratio from prompt text when user did not pick format explicitly."""
+    normalized = normalize_photo_aspect_ratio(current)
+    if normalized != DEFAULT_PHOTO_ASPECT_RATIO:
+        return normalized
+
+    low = (prompt or "").strip().lower()
+    for ratio in (ASPECT_RATIO_STORIES, ASPECT_RATIO_WIDE, ASPECT_RATIO_SOCIAL, ASPECT_RATIO_VERTICAL_POST):
+        if ratio in low:
+            return ratio
+    if any(marker in low for marker in ("вертикаль", "vertical portrait", "vertical")):
+        return ASPECT_RATIO_STORIES
+    if any(marker in low for marker in ("горизонталь", "horizontal", "landscape")):
+        return ASPECT_RATIO_WIDE
+    return normalized
+
+
 def aspect_ratio_from_callback_suffix(suffix: str | None) -> str | None:
     """Декодирует ``img_ar:<suffix>`` в каноническое ``1:1`` … ``16:9``."""
     key = (suffix or "").strip().lower()

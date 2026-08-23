@@ -176,30 +176,9 @@ async def parse_multi_ref_scene(
 
 def _fallback_slot_layout(user_prompt_ru: str, face_descriptions: list[str]) -> SceneLayout:
     """Face-keyword heuristic when LLM slot mapper fails."""
-    from services.group_ref_slot_map import build_ordered_role_slots, layout_from_ref_slots
+    from services.group_ref_slot_map import build_group_slot_layout
 
-    ordered = build_ordered_role_slots(user_prompt_ru, len(face_descriptions))
-    if ordered:
-        return layout_from_ref_slots(ordered, face_descriptions, user_prompt_ru)
-
-    child_markers = ("girl", "boy", "child", "kid", "young")
-    adult_female = ("woman", "female", "lady", "mother", "mom")
-    adult_male = ("man", "male", "father", "dad", "beard")
-    labels_by_ref: dict[int, str] = {}
-    for idx, desc in enumerate(face_descriptions):
-        low = (desc or "").lower()
-        if any(m in low for m in child_markers):
-            if "girl" in low or "daughter" in low:
-                labels_by_ref[idx] = "daughter"
-            elif "boy" in low or "son" in low:
-                labels_by_ref[idx] = "son"
-            else:
-                labels_by_ref[idx] = "child"
-        elif any(m in low for m in adult_female):
-            labels_by_ref[idx] = "mother/woman"
-        elif any(m in low for m in adult_male):
-            labels_by_ref[idx] = "father/man"
-    return layout_from_ref_slots(labels_by_ref, face_descriptions, user_prompt_ru)
+    return build_group_slot_layout(user_prompt_ru, face_descriptions, mapped_layout=None)
 
 
 async def map_multi_ref_slots(

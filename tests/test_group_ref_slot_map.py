@@ -203,3 +203,54 @@ async def test_build_group_api_prompt_short_prompt_still_verbatim() -> None:
 
 def test_face_describe_group_extra_labels_child() -> None:
     assert "girl child" in FACE_DESCRIBE_GROUP_EXTRA
+
+
+def test_infer_slots_from_face_descriptions_daughter_not_upload_order() -> None:
+    from services.group_ref_slot_map import infer_slots_from_face_descriptions
+
+    faces = [
+        "Adult male, beard",
+        "Adult female, long hair",
+        "Boy child, round face",
+        "Girl child, bright eyes, long brown hair",
+    ]
+    slots = infer_slots_from_face_descriptions(faces)
+    assert slots[2] == "son"
+    assert slots[3] == "daughter"
+
+
+def test_reconcile_layout_relabels_first_child_as_daughter() -> None:
+    from services.group_ref_slot_map import reconcile_layout_with_face_slots
+
+    layout = SceneLayout(
+        characters=[
+            SceneCharacter(ref_index=2, label="first child", placement="x", appearance_anchor=""),
+            SceneCharacter(ref_index=3, label="second child", placement="x", appearance_anchor=""),
+        ],
+        scene_description_en="scene",
+    )
+    faces = ["a", "b", "Boy child face", "Girl child with long hair"]
+    updated = reconcile_layout_with_face_slots(layout, faces)
+    by_ref = {c.ref_index: c.label for c in updated.characters}
+    assert by_ref[2] == "son"
+    assert by_ref[3] == "daughter"
+
+
+def test_apply_vertical_peek_placements_family_stack() -> None:
+    from services.group_ref_slot_map import apply_vertical_peek_placements
+
+    layout = SceneLayout(
+        characters=[
+            SceneCharacter(ref_index=0, label="man/father", placement="x", appearance_anchor=""),
+            SceneCharacter(ref_index=1, label="woman/mother", placement="x", appearance_anchor=""),
+            SceneCharacter(ref_index=3, label="daughter", placement="x", appearance_anchor=""),
+            SceneCharacter(ref_index=2, label="son", placement="x", appearance_anchor=""),
+        ],
+        scene_description_en="scene",
+    )
+    prompt = "подглядывают из-за вертикальной матовой стены слева"
+    updated = apply_vertical_peek_placements(layout, prompt)
+    by_ref = {c.ref_index: c.placement for c in updated.characters}
+    assert "top of vertical peek stack" in by_ref[0]
+    assert "position 3" in by_ref[3]
+    assert "position 4" in by_ref[2] or "bottom" in by_ref[2].lower()

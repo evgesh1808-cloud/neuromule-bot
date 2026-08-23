@@ -302,6 +302,11 @@ MULTI_REF_GROUP_NEGATIVE_PROMPT = (
 # Group multi-ref: Nano Pro primary, Nano 2 only — Flux excluded (identity loss on 2+ faces).
 MULTI_REF_GROUP_PRIMARY_MODEL = OPENROUTER_NANO_BANANA_PRO_MODEL
 MULTI_REF_GROUP_FALLBACKS: tuple[str, ...] = (OPENROUTER_NANO_BANANA2_MODEL,)
+MULTI_REF_COLLAGE_PRIMARY_MODEL = OPENROUTER_GPT_IMAGE2_MODEL
+MULTI_REF_COLLAGE_FALLBACKS: tuple[str, ...] = (
+    OPENROUTER_NANO_BANANA_PRO_MODEL,
+    OPENROUTER_NANO_BANANA2_MODEL,
+)
 
 GOOGLE_IDENTITY_LOCK = (
     "Maintain the exact same facial identity as the reference: identical eye shape, "
@@ -470,6 +475,17 @@ def resolve_multi_ref_group_fallbacks(model_key: str) -> tuple[str, ...]:
     """Fallback for group multi-ref — Nano Banana 2 only, no Flux/GPT cascade."""
     _ = model_key
     return MULTI_REF_GROUP_FALLBACKS
+
+
+def resolve_multi_ref_collage_model_key(model_key: str) -> str:
+    """2-ref layout collage / photo booth → GPT Image 2 primary."""
+    _ = model_key
+    return MULTI_REF_COLLAGE_PRIMARY_MODEL
+
+
+def resolve_multi_ref_collage_fallbacks(model_key: str) -> tuple[str, ...]:
+    _ = model_key
+    return MULTI_REF_COLLAGE_FALLBACKS
 
 
 def resolve_creative_composite_fallbacks(model_key: str) -> tuple[str, ...]:
@@ -932,24 +948,29 @@ async def build_group_multi_ref_api_prompt(
     """Build group API prompt: face-aware slot map + verbatim user scene."""
     from services.group_ref_slot_map import (
         apply_explicit_ref_slots,
+        apply_vertical_peek_placements,
+        build_group_slot_layout,
         parse_explicit_ref_slot_map,
+        reconcile_layout_with_face_slots,
     )
     from services.multi_ref_scene_parser import map_multi_ref_slots
 
     prompt = (user_prompt or "").strip()
     explicit_slots = parse_explicit_ref_slot_map(prompt)
 
+    mapped_layout: SceneLayout | None = None
     try:
-        layout = await map_multi_ref_slots(settings, prompt, list(face_descriptions))
+        mapped_layout = await map_multi_ref_slots(settings, prompt, list(face_descriptions))
+        mapped_layout = reconcile_layout_with_face_slots(mapped_layout, list(face_descriptions))
+        mapped_layout = apply_vertical_peek_placements(mapped_layout, prompt)
     except Exception:
-        logger.exception("face-aware slot map failed, using ordered fallback")
-        from services.group_ref_slot_map import build_ordered_role_slots, layout_from_ref_slots
+        logger.exception("face-aware slot map failed, using face-inferred fallback")
 
-        ordered = build_ordered_role_slots(prompt, len(face_descriptions))
-        layout = layout_from_ref_slots(ordered, list(face_descriptions), prompt)
+    layout = build_group_slot_layout(prompt, list(face_descriptions), mapped_layout)
 
     if explicit_slots:
         layout = apply_explicit_ref_slots(layout, explicit_slots, list(face_descriptions))
+        layout = apply_vertical_peek_placements(layout, prompt)
 
     return build_structured_multi_ref_prompt(
         layout,

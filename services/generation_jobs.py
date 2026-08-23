@@ -56,7 +56,11 @@ from services.photo_aspect_ratio import (
     normalize_photo_aspect_ratio,
     openrouter_aspect_ratio,
 )
-from services.photo_edit_session import persist_photo_edit_session, save_photo_edit_session
+from services.photo_collage_mode import (
+    build_collage_multi_ref_api_prompt,
+    is_layout_collage_intent,
+    resolve_collage_aspect_ratio,
+)
 from services.billing.image_pipeline import FREE_PHOTO_MODEL_KEY, normalize_image_model, free_tier_image_model
 from services.free_image_cascade import (
     FreeImageCascadeExhausted,
@@ -75,6 +79,8 @@ from services.openrouter_images import (
     OPENROUTER_NANO_BANANA_PRO_MODEL,
     MULTI_REF_GROUP_FALLBACKS,
     MULTI_REF_GROUP_PRIMARY_MODEL,
+    MULTI_REF_COLLAGE_FALLBACKS,
+    MULTI_REF_COLLAGE_PRIMARY_MODEL,
     build_group_multi_ref_api_prompt,
     data_url_to_reference_bytes,
     describe_reference_face_for_prompt,
@@ -723,52 +729,77 @@ async def _generate_openrouter_multi_ref_group_model(
     if len(refs) < 2:
         raise ExternalApiError("OpenRouter", "group multi-ref requires at least 2 references")
 
-    or_model = MULTI_REF_GROUP_PRIMARY_MODEL
-    logger.info(
-        "group multi-ref openrouter: menu=%s → hard-route %s refs=%s",
-        model_key,
-        or_model,
-        len(refs),
-    )
+    collage_mode = len(refs) == 2 and is_layout_collage_intent(prompt)
+    effective_aspect = aspect_ratio
+    if collage_mode:
+        effective_aspect = resolve_collage_aspect_ratio(prompt, aspect_ratio)
+    elif len(refs) >= 2:
+        from services.photo_aspect_ratio import resolve_prompt_aspect_ratio
 
-    async def _resolve_group_ref_with_face(file_id: str) -> tuple[str, str]:
-        data_url = await resolve_reference_to_png_data_url(bot=bot, file_id=file_id)
-        try:
-            face_desc = await describe_reference_face_for_prompt(
-                app_settings, data_url, for_group=True
-            )
-        except ExternalApiError as exc:
-            logger.warning(
-                "group multi-ref face describe skipped ref=%s: %s",
-                file_id[:24],
-                exc,
-            )
-            face_desc = ""
-        return data_url, face_desc
+        effective_aspect = resolve_prompt_aspect_ratio(prompt, aspect_ratio)
 
-    pairs = await asyncio.gather(*(_resolve_group_ref_with_face(file_id) for file_id in refs))
-    data_urls = [
-        resize_png_data_url_for_api(pair[0]) for pair in pairs
-    ]
-    face_descriptions = [pair[1] for pair in pairs]
-
-    api_prompt: str | None = None
-    try:
-        api_prompt = await build_group_multi_ref_api_prompt(
-            app_settings,
-            prompt,
-            list(face_descriptions),
+    if collage_mode:
+        or_model = MULTI_REF_COLLAGE_PRIMARY_MODEL
+        fallback_models = MULTI_REF_COLLAGE_FALLBACKS
+        logger.info(
+            "collage multi-ref openrouter: menu=%s → %s aspect=%s refs=2",
+            model_key,
+            or_model,
+            effective_aspect,
         )
-    except Exception:
-        logger.exception("structured group prompt failed, using legacy multi-ref builder")
+
+        async def _resolve_collage_ref(file_id: str) -> str:
+            data_url = await resolve_reference_to_png_data_url(bot=bot, file_id=file_id)
+            return resize_png_data_url_for_api(data_url)
+
+        data_urls = list(await asyncio.gather(*(_resolve_collage_ref(fid) for fid in refs)))
+        api_prompt = build_collage_multi_ref_api_prompt(prompt, len(data_urls))
+    else:
+        or_model = MULTI_REF_GROUP_PRIMARY_MODEL
+        fallback_models = MULTI_REF_GROUP_FALLBACKS
+        logger.info(
+            "group multi-ref openrouter: menu=%s → hard-route %s refs=%s",
+            model_key,
+            or_model,
+            len(refs),
+        )
+
+        async def _resolve_group_ref_with_face(file_id: str) -> tuple[str, str]:
+            data_url = await resolve_reference_to_png_data_url(bot=bot, file_id=file_id)
+            try:
+                face_desc = await describe_reference_face_for_prompt(
+                    app_settings, data_url, for_group=True
+                )
+            except ExternalApiError as exc:
+                logger.warning(
+                    "group multi-ref face describe skipped ref=%s: %s",
+                    file_id[:24],
+                    exc,
+                )
+                face_desc = ""
+            return data_url, face_desc
+
+        pairs = await asyncio.gather(*(_resolve_group_ref_with_face(file_id) for file_id in refs))
+        data_urls = [resize_png_data_url_for_api(pair[0]) for pair in pairs]
+        face_descriptions = [pair[1] for pair in pairs]
+
+        api_prompt = None
+        try:
+            api_prompt = await build_group_multi_ref_api_prompt(
+                app_settings,
+                prompt,
+                list(face_descriptions),
+            )
+        except Exception:
+            logger.exception("structured group prompt failed, using legacy multi-ref builder")
 
     return await generate_openrouter_multi_ref_group_photo(
         app_settings,
         model=or_model,
         user_prompt=prompt,
         reference_image_data_urls=list(data_urls),
-        aspect_ratio=openrouter_aspect_ratio(aspect_ratio),
-        fallback_models=MULTI_REF_GROUP_FALLBACKS,
+        aspect_ratio=openrouter_aspect_ratio(effective_aspect),
+        fallback_models=fallback_models,
         timeout_sec=float(EXTERNAL_API_TIMEOUT_SEC),
         api_prompt=api_prompt,
     )

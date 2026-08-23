@@ -14,7 +14,12 @@ from typing import TYPE_CHECKING
 from config import Settings
 from services.billing import billing
 from services.billing.image_pipeline import FREE_PHOTO_MODEL_KEY, free_tier_image_model
-from services.photo_aspect_ratio import DEFAULT_PHOTO_ASPECT_RATIO, normalize_photo_aspect_ratio
+from services.photo_aspect_ratio import (
+    DEFAULT_PHOTO_ASPECT_RATIO,
+    normalize_photo_aspect_ratio,
+    resolve_prompt_aspect_ratio,
+)
+from services.photo_collage_mode import is_layout_collage_intent, resolve_collage_aspect_ratio
 
 if TYPE_CHECKING:
     from aiogram import Bot
@@ -161,6 +166,13 @@ async def run_photo_generation_turn(
     tariff = normalize_tariff(row.tariff)
     priority = queue_priority_for_tariff(tariff)
 
+    effective_aspect = normalize_photo_aspect_ratio(aspect_ratio)
+    if group_multi_ref and effective_aspect == DEFAULT_PHOTO_ASPECT_RATIO:
+        if len(group_refs) == 2 and is_layout_collage_intent(prompt):
+            effective_aspect = resolve_collage_aspect_ratio(prompt, effective_aspect)
+        else:
+            effective_aspect = resolve_prompt_aspect_ratio(prompt, effective_aspect)
+
     effective_model = model_id if model_id else FREE_PHOTO_MODEL_KEY
     return PhotoGenResult(
         outcome=PhotoGenOutcome.SUCCESS,
@@ -177,7 +189,7 @@ async def run_photo_generation_turn(
             reference_image_url=url_ref,
             reference_image_bytes=bytes_ref,
             reference_mime=reference_mime or "image/jpeg",
-            aspect_ratio=normalize_photo_aspect_ratio(aspect_ratio),
+            aspect_ratio=effective_aspect,
             composite_refine=composite_refine,
             composite_base_file_id=base_file_id,
             composite_base_reference_url=base_url,
