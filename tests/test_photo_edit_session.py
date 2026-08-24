@@ -387,7 +387,8 @@ async def test_group_refine_uses_result_image_not_group_multi_ref() -> None:
     assert kwargs["telegram_file_id"] == "AgAC_group_result"
     assert kwargs["i2i_reference_mode"] == "edit"
     assert kwargs.get("group_multi_ref") is not True
-    assert "EDIT REQUEST" in kwargs["prompt"]
+    assert kwargs["prompt"] == "сделай стену светлее"
+    assert "EDIT REQUEST" not in kwargs["prompt"]
 
 
 @pytest.mark.asyncio

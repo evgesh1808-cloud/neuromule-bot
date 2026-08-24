@@ -854,7 +854,6 @@ async def _dispatch_group_refine_from_session(
     """Text refine after group photo: i2i on the generated result, not a new 4-ref run."""
     from services.photo_edit_session import (
         clear_awaiting_text_refine,
-        build_group_refine_user_prompt,
         resolve_session_result_reference,
         session_has_result_image,
     )
@@ -875,10 +874,10 @@ async def _dispatch_group_refine_from_session(
         await message.answer(msg.TXT_PHOTO_REFINE_EXPIRED)
         return
 
-    combined = build_group_refine_user_prompt(
-        session.group_base_prompt or session.user_prompt or "",
-        edit_prompt,
-    )
+    combined = (edit_prompt or "").strip()
+    if not combined:
+        await message.answer(msg.TXT_CREATE_IMAGE_AFTER_MODEL)
+        return
     if message.from_user is not None:
         clear_awaiting_text_refine(message.from_user.id)
     await state.update_data(
@@ -1302,19 +1301,18 @@ async def photo_process(message: Message, state: FSMContext) -> None:
     refine_from_result = bool(data.get("refine_from_result"))
     if not refine_from_result and session_hint is not None and session_hint.awaiting_text_refine:
         refine_from_result = True
-        if not str(model_id or "").strip() and session_hint.image_model_id:
-            model_id = session_hint.image_model_id
-            label = session_hint.image_model_label
-            aspect = session_hint.aspect_ratio
-            await state.update_data(
-                image_model_id=model_id,
-                image_model_label=label,
-                image_aspect_ratio=aspect,
-                refine_from_result=True,
-                pending_reference_file_id=None,
-                pending_object_file_id=None,
-                pending_group_ref_file_ids=[],
-            )
+        model_id = str(model_id or session_hint.image_model_id or "").strip()
+        label = str(label or session_hint.image_model_label or "модель")
+        aspect = normalize_photo_aspect_ratio(aspect or session_hint.aspect_ratio)
+        await state.update_data(
+            image_model_id=model_id or session_hint.image_model_id,
+            image_model_label=label,
+            image_aspect_ratio=aspect,
+            refine_from_result=True,
+            pending_reference_file_id=None,
+            pending_object_file_id=None,
+            pending_group_ref_file_ids=[],
+        )
 
     if (
         len(pending_refs) >= 2

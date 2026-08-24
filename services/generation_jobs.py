@@ -617,6 +617,7 @@ async def _generate_free_tier_photo(
     reference_image_url: str | None = None,
     reference_image_bytes: bytes | None = None,
     reference_mime: str = "image/jpeg",
+    i2i_reference_mode: str = "selfie",
 ) -> GeminiImageResult:
     """Flux FREE: каскад Pollinations → OpenRouter spare → RR (таймаут снаружи)."""
     if isinstance(prompt, (bytes, bytearray, memoryview)):
@@ -624,8 +625,13 @@ async def _generate_free_tier_photo(
     text = str(prompt or "").strip() or "Улучши это фото"
     ref_bytes: bytes | None = None
     ref_mime = "image/jpeg"
-    if file_id or reference_image_url or reference_image_bytes:
-        logger.info("Flux FREE i2i: Pollinations skip, spare wheel / OR cascade")
+    has_ref = bool(file_id or reference_image_url or reference_image_bytes)
+    mode = (i2i_reference_mode or "selfie").strip() or "selfie"
+    if has_ref:
+        logger.info(
+            "Flux FREE i2i: Pollinations skip, spare wheel / OR cascade mode=%s",
+            mode,
+        )
         ref_bytes, ref_mime = await _load_reference_image_bytes(
             bot=bot,
             file_id=file_id,
@@ -633,11 +639,56 @@ async def _generate_free_tier_photo(
             reference_image_bytes=reference_image_bytes,
             reference_mime=reference_mime,
         )
+        if mode == "edit":
+            reference_data_url = await _resolve_reference_data_url(
+                bot,
+                file_id,
+                reference_image_url,
+                reference_image_bytes,
+                reference_mime,
+            )
+            text = await _resolve_free_tier_edit_prompt(
+                text,
+                reference_data_url=reference_data_url,
+            )
     return await generate_free_tier_image(
         text,
         reference_image_bytes=ref_bytes,
         reference_mime=ref_mime,
     )
+
+
+async def _resolve_free_tier_edit_prompt(
+    user_prompt: str,
+    *,
+    reference_data_url: str | None,
+) -> str:
+    """Собирает edit-промпт для free-tier i2i (не selfie / не t2i)."""
+    from services.openrouter_images import (
+        OPENROUTER_FLUX_PAID_MODEL,
+        openrouter_images_configured,
+        resolve_openrouter_photo_prompt_and_refs,
+    )
+    from services.photo_edit_session import build_photo_refine_edit_prompt
+
+    text = (user_prompt or "").strip() or "subtle quality improvements"
+    ref = (reference_data_url or "").strip()
+    if ref and openrouter_images_configured(app_settings):
+        try:
+            resolved, _, _ = await resolve_openrouter_photo_prompt_and_refs(
+                app_settings,
+                model=OPENROUTER_FLUX_PAID_MODEL,
+                user_prompt=text,
+                reference_data_url=ref,
+                i2i_reference_mode="edit",
+            )
+            return resolved
+        except ExternalApiError:
+            logger.warning(
+                "free tier edit prompt build failed, using local template",
+                exc_info=True,
+            )
+    return build_photo_refine_edit_prompt(text)
 
 
 async def _free_tier_flux_uses_pollinations(user_id: int | None, model_key: str) -> bool:
@@ -1038,6 +1089,16 @@ async def _generate_photo_result(
     try:
         if model_key == "flux_2_pro":
             if await _free_tier_flux_uses_pollinations(user_id, model_key):
+                if i2i_reference_mode == "edit" and has_reference:
+                    return await _generate_free_tier_photo(
+                        prompt,
+                        bot=bot,
+                        file_id=file_id,
+                        reference_image_url=reference_image_url,
+                        reference_image_bytes=reference_image_bytes,
+                        reference_mime=reference_mime,
+                        i2i_reference_mode="edit",
+                    )
                 return await generate_flux_schnell_image(prompt)
             return await _generate_flux_schnell_paid(
                 prompt,
@@ -1215,7 +1276,7 @@ async def _photo_stub_worker(task: GenTask) -> None:
     is_free = task.used_daily_slot or model_key == FREE_PHOTO_MODEL_KEY
 
     logger.info(
-        "photo job %s user_id=%s model_id=%s model_key=%s prompt_len=%s file_id=%s ref_url=%s ref_bytes=%s free_slot=%s platform=%s",
+        "photo job %s user_id=%s model_id=%s model_key=%s prompt_len=%s file_id=%s ref_url=%s ref_bytes=%s free_slot=%s platform=%s i2i_mode=%s",
         task.task_id,
         user_id,
         task.image_model_id,
@@ -1226,6 +1287,7 @@ async def _photo_stub_worker(task: GenTask) -> None:
         bool(task.reference_image_bytes),
         task.used_daily_slot,
         task.platform,
+        task.i2i_reference_mode,
     )
 
     try:
@@ -1265,6 +1327,7 @@ async def _photo_stub_worker(task: GenTask) -> None:
                                 reference_image_url=task.reference_image_url,
                                 reference_image_bytes=task.reference_image_bytes,
                                 reference_mime=task.reference_mime,
+                                i2i_reference_mode=task.i2i_reference_mode,
                             )
                     else:
                         raw = await _generate_photo_result(
