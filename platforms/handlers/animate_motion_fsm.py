@@ -22,7 +22,8 @@ from services.animate_motion import (
     build_motion_draft_from_choices,
     resolve_animate_participants,
 )
-from services.animate_video_lock import is_animate_video_locked
+from services.animate_video_lock import is_animate_video_locked, release_animate_video_lock
+from services.god_mode import admin_animate_bypass
 from services.openrouter_videos import ANIMATE_DEFAULT_PROMPT, expand_motion_prompt_with_gpt
 from services.repository import get_user_row
 from services.tariffs import can_use_animate, normalize_tariff
@@ -105,12 +106,16 @@ def _participants_to_fsm(participants: AnimateParticipants) -> tuple[list[dict[s
 
 
 async def _balance_ok_for_animate(user_id: int) -> bool:
+    if admin_animate_bypass(user_id):
+        return True
     min_cost = int(getattr(settings, "cost_animate", 20) or 20)
     row = await get_user_row(user_id)
     return int(row.crystals or 0) >= min_cost
 
 
 async def _tariff_allows_animate(user_id: int) -> bool:
+    if admin_animate_bypass(user_id):
+        return True
     row = await get_user_row(user_id)
     return can_use_animate(normalize_tariff(row.tariff))
 
@@ -127,7 +132,10 @@ async def start_animate_motion_survey(
     Старт FSM опроса. Возвращает outcome при немедленном отказе, иначе None.
     """
     if await is_animate_video_locked(user_id):
-        return AnimateGenOutcome.ALREADY_GENERATING
+        if admin_animate_bypass(user_id):
+            await release_animate_video_lock(user_id)
+        else:
+            return AnimateGenOutcome.ALREADY_GENERATING
 
     if not await _tariff_allows_animate(user_id):
         return AnimateGenOutcome.FORBIDDEN_BY_TARIFF
@@ -208,9 +216,12 @@ async def _finish_animate_from_fsm(
         return
 
     if await is_animate_video_locked(user.id):
-        await callback.message.answer(msg.TXT_ANIMATE_GENERATING_BUSY)
-        await state.clear()
-        return
+        if admin_animate_bypass(user.id):
+            await release_animate_video_lock(user.id)
+        else:
+            await callback.message.answer(msg.TXT_ANIMATE_GENERATING_BUSY)
+            await state.clear()
+            return
 
     motion_prompt = ANIMATE_DEFAULT_PROMPT
     if not use_default:

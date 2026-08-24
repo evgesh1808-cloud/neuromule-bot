@@ -15,6 +15,7 @@ from services.animate_video_lock import (
     try_acquire_animate_video_lock,
 )
 from services.billing import billing
+from services.god_mode import admin_animate_bypass
 from services.generation_jobs import GenTask, fire_animate_job, make_animate_task_id
 from services.repository import get_user_row
 from services.tariffs import can_use_animate, normalize_tariff
@@ -54,15 +55,19 @@ async def run_animate_generation_turn(
         return AnimateGenResult(outcome=AnimateGenOutcome.NEED_PHOTO)
 
     if await is_animate_video_locked(uid):
-        return AnimateGenResult(outcome=AnimateGenOutcome.ALREADY_GENERATING)
+        if admin_animate_bypass(uid):
+            await release_animate_video_lock(uid)
+        else:
+            return AnimateGenResult(outcome=AnimateGenOutcome.ALREADY_GENERATING)
 
     row = await get_user_row(uid)
+    admin_bypass = admin_animate_bypass(uid)
     tariff = normalize_tariff(row.tariff)
-    if not can_use_animate(tariff):
+    if not admin_bypass and not can_use_animate(tariff):
         return AnimateGenResult(outcome=AnimateGenOutcome.FORBIDDEN_BY_TARIFF, upgrade_to="ultra")
 
     min_cost = int(getattr(cfg, "cost_animate", 20) or 20)
-    if int(row.crystals or 0) < min_cost:
+    if not admin_bypass and int(row.crystals or 0) < min_cost:
         return AnimateGenResult(outcome=AnimateGenOutcome.INSUFFICIENT_BALANCE)
 
     spend = await billing.spend_animate(uid)

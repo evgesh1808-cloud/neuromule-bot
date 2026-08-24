@@ -93,3 +93,38 @@ async def test_expand_motion_prompt_with_gpt_uses_director(monkeypatch) -> None:
 
 def test_default_animate_prompt_blocks_yawning() -> None:
     assert "NO yawning" in ANIMATE_DEFAULT_PROMPT
+
+
+@pytest.mark.asyncio
+async def test_admin_animate_bypass_skips_tariff_and_balance(repo_module, monkeypatch) -> None:
+    from aiogram.fsm.context import FSMContext
+    from aiogram.fsm.storage.memory import MemoryStorage
+    from unittest.mock import MagicMock
+
+    from config import settings
+    from platforms.handlers.animate_motion_fsm import start_animate_motion_survey
+    from services.god_mode import GOD_MODE_CHARGE_ID, admin_animate_bypass
+    from tests.conftest import TEST_ADMIN_IDS
+
+    admin_id = TEST_ADMIN_IDS[0]
+    object.__setattr__(settings, "god_mode_enabled", False)
+    assert admin_animate_bypass(admin_id) is True
+
+    storage = MemoryStorage()
+    state = FSMContext(storage=storage, key=MagicMock(chat_id=admin_id, user_id=admin_id, bot_id=1))
+
+    result = await start_animate_motion_survey(
+        user_id=admin_id,
+        chat_id=admin_id,
+        file_id="AgAC_test",
+        state=state,
+        session=None,
+    )
+    assert result is None
+
+    from services.billing.hd_pipeline import spend_animate
+
+    spend = await spend_animate(admin_id)
+    assert spend.ok is True
+    assert spend.charge is not None
+    assert spend.charge.charge_id == GOD_MODE_CHARGE_ID

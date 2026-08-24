@@ -20,6 +20,11 @@ def billing_bypass(user_id: int | None) -> bool:
     return bool(settings.god_mode_enabled) and is_super_admin(user_id)
 
 
+def admin_animate_bypass(user_id: int | None) -> bool:
+    """Супер-админ (``ADMIN_IDS``): оживление без ULTRA и без минимального баланса 💎."""
+    return is_super_admin(user_id)
+
+
 def god_mode_charge() -> ChargeBreakdown:
     """Фиктивное списание без изменения баланса в БД."""
     return ChargeBreakdown(charge_id=GOD_MODE_CHARGE_ID)
