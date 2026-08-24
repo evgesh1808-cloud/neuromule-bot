@@ -178,14 +178,14 @@ def resolve_session_result_reference(sess: PhotoEditSession) -> SessionResultRef
         return SessionResultReference(
             telegram_file_id=tg_id,
             media_url=url,
-            reference_image_bytes=None,
+            reference_image_bytes=raw,
             reference_mime=sess.reference_mime,
         )
     if url:
         return SessionResultReference(
             telegram_file_id=None,
             media_url=url,
-            reference_image_bytes=None,
+            reference_image_bytes=raw,
             reference_mime=sess.reference_mime,
         )
     return SessionResultReference(
@@ -201,6 +201,71 @@ def session_has_result_image(sess: PhotoEditSession | None) -> bool:
         return False
     ref = resolve_session_result_reference(sess)
     return bool(ref.telegram_file_id or ref.media_url or ref.reference_image_bytes)
+
+
+async def resolve_openrouter_reference_for_result(
+    bot: object | None,
+    ref: SessionResultReference,
+) -> str:
+    """bytes → CDN URL → Telegram file_id — первый рабочий источник для OpenRouter."""
+    from services.api_resilience import ExternalApiError
+    from services.openrouter_images import resolve_openrouter_reference_url
+
+    attempts: list[tuple[str, dict[str, object]]] = []
+    raw = ref.reference_image_bytes
+    if raw:
+        attempts.append(
+            (
+                "bytes",
+                {
+                    "file_id": None,
+                    "reference_image_url": None,
+                    "reference_image_bytes": raw,
+                    "reference_mime": ref.reference_mime,
+                },
+            )
+        )
+    url = (ref.media_url or "").strip()
+    if url:
+        attempts.append(
+            (
+                "url",
+                {
+                    "file_id": None,
+                    "reference_image_url": url,
+                    "reference_image_bytes": None,
+                    "reference_mime": ref.reference_mime,
+                },
+            )
+        )
+    tg_id = (ref.telegram_file_id or "").strip()
+    if tg_id and bot is not None:
+        attempts.append(
+            (
+                "file_id",
+                {
+                    "file_id": tg_id,
+                    "reference_image_url": None,
+                    "reference_image_bytes": None,
+                    "reference_mime": ref.reference_mime,
+                },
+            )
+        )
+
+    last_exc: Exception | None = None
+    for label, kwargs in attempts:
+        try:
+            resolved = await resolve_openrouter_reference_url(bot=bot, **kwargs)
+            if resolved:
+                logger.info("photo result ref resolved via %s", label)
+                return resolved
+        except Exception as exc:
+            last_exc = exc
+            logger.warning("photo result ref %s failed: %s", label, exc)
+
+    if last_exc is not None:
+        raise last_exc
+    raise ExternalApiError("OpenRouter", "reference image could not be resolved")
 
 
 def build_format_change_prompt(original_prompt: str, aspect_ratio: str) -> str:

@@ -727,13 +727,13 @@ async def _try_dispatch_sharpen_upscale_refine(
     from content.keyboards import new_result_keyboard
     from services.openrouter_images import (
         openrouter_images_configured,
-        resolve_openrouter_reference_url,
         upscale_openrouter_image_url,
     )
     from services.photo_edit_session import (
         get_or_restore_photo_edit_session,
         is_photo_sharpen_intent,
         persist_photo_edit_session,
+        resolve_openrouter_reference_for_result,
         resolve_session_result_reference,
         resolve_sharpen_scale,
         session_has_result_image,
@@ -757,13 +757,7 @@ async def _try_dispatch_sharpen_upscale_refine(
     result_ref = resolve_session_result_reference(session)
     bot = deps.bot()
     try:
-        image_url = await resolve_openrouter_reference_url(
-            bot=bot,
-            file_id=result_ref.telegram_file_id,
-            reference_image_url=result_ref.media_url,
-            reference_image_bytes=result_ref.reference_image_bytes,
-            reference_mime=result_ref.reference_mime,
-        )
+        image_url = await resolve_openrouter_reference_for_result(bot, result_ref)
     except Exception:
         logger.warning("sharpen refine: failed to resolve image uid=%s", user.id, exc_info=True)
         await message.answer(msg.TXT_UPSCALE_FAILED)
@@ -1417,10 +1411,9 @@ async def photo_process(message: Message, state: FSMContext) -> None:
             if refine_from_result and session and session_has_result_image(session):
                 result_ref = resolve_session_result_reference(session)
                 file_id = result_ref.telegram_file_id
-                if not file_id:
-                    ref_url = result_ref.media_url
-                    ref_bytes = result_ref.reference_image_bytes
-                    ref_mime = result_ref.reference_mime
+                ref_url = result_ref.media_url
+                ref_bytes = result_ref.reference_image_bytes
+                ref_mime = result_ref.reference_mime
             elif not refine_from_result and session and session_has_result_image(session):
                 result_ref = resolve_session_result_reference(session)
                 file_id = file_id or result_ref.telegram_file_id

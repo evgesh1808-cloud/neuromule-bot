@@ -1073,6 +1073,9 @@ async def _generate_photo_result(
             )
 
     has_reference = _photo_has_reference(file_id, reference_image_url, reference_image_bytes)
+    if (i2i_reference_mode or "").strip() == "edit" and not has_reference:
+        raise ExternalApiError("PhotoRef", "edit mode requires a reference image")
+
     model_key = resolve_smart_photo_model_key(
         model_key,
         has_reference=has_reference,
@@ -1085,6 +1088,8 @@ async def _generate_photo_result(
         reference_image_bytes,
         reference_mime,
     )
+    if (i2i_reference_mode or "").strip() == "edit" and not reference_data_url:
+        raise ExternalApiError("PhotoRef", "edit mode reference could not be encoded")
 
     try:
         if model_key == "flux_2_pro":

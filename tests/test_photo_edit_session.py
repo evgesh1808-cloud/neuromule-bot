@@ -12,6 +12,7 @@ from services.photo_edit_session import (
     get_photo_edit_session,
     mark_awaiting_text_refine,
     reset_photo_edit_sessions_for_tests,
+    resolve_session_result_reference,
     save_photo_edit_session,
 )
 
@@ -440,3 +441,44 @@ async def test_text_refine_uses_session_flag_when_fsm_refine_lost() -> None:
     assert kwargs["i2i_reference_mode"] == "edit"
     assert get_photo_edit_session(66) is not None
     assert get_photo_edit_session(66).awaiting_text_refine is False
+
+
+def test_resolve_session_result_reference_keeps_bytes_with_telegram_file_id() -> None:
+    save_photo_edit_session(
+        91,
+        image_model_id="flux_schnell",
+        image_model_label="Flux",
+        telegram_file_id="AgAC_result",
+        reference_image_bytes=b"cached-bytes",
+    )
+    ref = resolve_session_result_reference(get_photo_edit_session(91))
+    assert ref.telegram_file_id == "AgAC_result"
+    assert ref.reference_image_bytes == b"cached-bytes"
+
+
+@pytest.mark.asyncio
+async def test_resolve_openrouter_reference_prefers_bytes_over_file_id() -> None:
+    from services.photo_edit_session import (
+        SessionResultReference,
+        resolve_openrouter_reference_for_result,
+    )
+
+    ref = SessionResultReference(
+        telegram_file_id="AgAC_should_skip",
+        media_url="https://cdn.example/old.png",
+        reference_image_bytes=b"raw-image",
+        reference_mime="image/jpeg",
+    )
+
+    async def _fake_resolve(*, bot, **kwargs):
+        if kwargs.get("reference_image_bytes"):
+            return "data:image/jpeg;base64,abc"
+        raise AssertionError(f"unexpected resolve kwargs: {kwargs}")
+
+    with patch(
+        "services.openrouter_images.resolve_openrouter_reference_url",
+        side_effect=_fake_resolve,
+    ):
+        url = await resolve_openrouter_reference_for_result(MagicMock(), ref)
+
+    assert url == "data:image/jpeg;base64,abc"

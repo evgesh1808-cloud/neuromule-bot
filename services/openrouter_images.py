@@ -1765,23 +1765,43 @@ async def upscale_openrouter_image_url(
         raise ExternalApiError("OpenRouter", f"unsupported scale_value={scale}")
 
     if src.startswith("data:"):
-        ref_b64 = src
+        ref_b64 = await ensure_png_reference_data_url(src)
     else:
-        ref_b64 = await reference_url_to_data_url(src)
+        ref_b64 = await reference_url_to_png_data_url(src)
     resolution = "2K" if scale == 2 else "4K"
-    result = await generate_openrouter_image(
-        settings,
-        model=OPENROUTER_FLUX_PAID_MODEL,
-        prompt=(
-            "Enhance resolution, sharpness, and fine detail. "
-            "Preserve composition, subjects, colors, and facial identity exactly."
-        ),
-        aspect_ratio="auto",
-        input_references=[openrouter_input_reference(ref_b64)],
-        resolution=resolution,
+    from services.photo_edit_session import build_photo_sharpen_edit_prompt
+
+    prompt = build_photo_sharpen_edit_prompt(
+        "increase resolution, sharpness, micro-detail, and perceived quality"
     )
-    if result.url:
-        return result.url
+    upscale_models: tuple[str, ...] = (
+        OPENROUTER_NANO_BANANA_PRO_MODEL,
+        OPENROUTER_NANO_BANANA2_MODEL,
+        OPENROUTER_FLUX_PAID_MODEL,
+        *OPENROUTER_FLUX_STACK_FALLBACKS,
+    )
+    last_exc: ExternalApiError | None = None
+    for model in upscale_models:
+        if not (model or "").strip():
+            continue
+        try:
+            result = await generate_openrouter_image(
+                settings,
+                model=model,
+                prompt=prompt,
+                aspect_ratio="auto",
+                input_references=[openrouter_input_reference(ref_b64)],
+                resolution=resolution,
+            )
+            if result.url:
+                return result.url
+            last_exc = ExternalApiError("OpenRouter", "upscale returned no URL")
+        except ExternalApiError as exc:
+            last_exc = exc
+            logger.warning("upscale model=%s failed: %s", model, exc)
+            continue
+    if last_exc is not None:
+        raise last_exc
     raise ExternalApiError("OpenRouter", "upscale returned no URL")
 
 

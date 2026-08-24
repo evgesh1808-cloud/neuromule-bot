@@ -28,7 +28,9 @@ from services.generation_jobs import fire_photo_job
 from services.photo_aspect_ratio import aspect_ratio_from_callback_suffix, normalize_photo_aspect_ratio
 from services.photo_edit_session import (
     build_format_change_prompt,
+    get_or_restore_photo_edit_session,
     get_photo_edit_session,
+    resolve_openrouter_reference_for_result,
     resolve_session_result_reference,
     session_has_result_image,
     update_photo_edit_session_aspect_ratio,
@@ -96,16 +98,17 @@ async def _resolve_session_upscale_source(session: object) -> str | None:
     ref = resolve_session_result_reference(session)
     bot = deps.bot()
     try:
-        return await resolve_openrouter_reference_url(
-            bot=bot,
-            file_id=ref.telegram_file_id,
-            reference_image_url=ref.media_url,
-            reference_image_bytes=ref.reference_image_bytes,
-            reference_mime=ref.reference_mime,
-        )
+        return await resolve_openrouter_reference_for_result(bot, ref)
     except Exception:
         logger.warning("upscale: failed to resolve session image ref uid=%s", session.user_id, exc_info=True)
         return None
+
+
+async def _load_result_session(user_id: int, *, peer_id: int | None) -> object | None:
+    session = get_photo_edit_session(user_id, peer_id=peer_id)
+    if session is not None and session_has_result_image(session):
+        return session
+    return await get_or_restore_photo_edit_session(user_id, peer_id=peer_id)
 
 
 async def _rerun_from_session(
@@ -119,7 +122,7 @@ async def _rerun_from_session(
     if user is None or callback.message is None:
         return
 
-    session = get_photo_edit_session(user.id, peer_id=callback.message.chat.id)
+    session = await _load_result_session(user.id, peer_id=callback.message.chat.id)
     if session is None or not (session.user_prompt or "").strip():
         await callback.message.answer(msg.TXT_PHOTO_REFINE_EXPIRED)
         return
@@ -246,7 +249,7 @@ async def _resolve_animate_file_id(callback: CallbackQuery) -> str | None:
     if file_id:
         return file_id
 
-    session = get_photo_edit_session(
+    session = await _load_result_session(
         callback.from_user.id,
         peer_id=callback.message.chat.id,
     )
@@ -347,7 +350,7 @@ async def result_repeat_photo(callback: CallbackQuery, state: FSMContext) -> Non
     if user is None or callback.message is None:
         await callback.answer()
         return
-    session = get_photo_edit_session(user.id, peer_id=callback.message.chat.id)
+    session = await _load_result_session(user.id, peer_id=callback.message.chat.id)
     if session is None or not (session.user_prompt or "").strip():
         await callback.answer(msg.TXT_PHOTO_REFINE_EXPIRED, show_alert=True)
         return
@@ -401,7 +404,7 @@ async def _run_upscale(callback: CallbackQuery, *, scale: int, cost: int, alert_
         await callback.answer(msg.TXT_GEN_JOB_FAILED, show_alert=True)
         return
 
-    session = get_photo_edit_session(user.id, peer_id=callback.message.chat.id)
+    session = await _load_result_session(user.id, peer_id=callback.message.chat.id)
     if session is None or not session_has_result_image(session):
         await callback.answer(msg.TXT_PHOTO_REFINE_EXPIRED, show_alert=True)
         return
