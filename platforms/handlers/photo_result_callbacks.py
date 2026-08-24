@@ -310,26 +310,31 @@ async def result_animate_photo(callback: CallbackQuery, state: FSMContext) -> No
         await callback.answer()
         return
 
-    file_id = await _resolve_animate_file_id(callback)
-    if not file_id:
-        await callback.answer(msg.TXT_PHOTO_REFINE_EXPIRED, show_alert=True)
-        return
+    try:
+        file_id = await _resolve_animate_file_id(callback)
+        if not file_id:
+            await callback.answer(msg.TXT_PHOTO_REFINE_EXPIRED, show_alert=True)
+            return
 
-    await callback.answer()
-    from services.photo_edit_session import pin_session_result_file_id
+        await callback.answer()
+        from services.photo_edit_session import pin_session_result_file_id
 
-    if not file_id.startswith(("http://", "https://", "data:")):
-        pin_session_result_file_id(user.id, file_id)
+        if not file_id.startswith(("http://", "https://", "data:")):
+            pin_session_result_file_id(user.id, file_id)
 
-    ar = await run_animate_generation_turn(
-        uid=user.id,
-        telegram_file_id=file_id,
-        bot=deps.bot(),
-        chat_id=callback.message.chat.id,
-        settings=settings,
-    )
-    if ar.outcome is not AnimateGenOutcome.SUCCESS:
-        await _notify_animate_turn_result(callback, ar.outcome)
+        ar = await run_animate_generation_turn(
+            uid=user.id,
+            telegram_file_id=file_id,
+            bot=deps.bot(),
+            chat_id=callback.message.chat.id,
+            settings=settings,
+        )
+        if ar.outcome is not AnimateGenOutcome.SUCCESS:
+            await _notify_animate_turn_result(callback, ar.outcome)
+    except Exception:
+        logger.exception("result_animate_photo failed uid=%s", user.id)
+        if callback.message is not None:
+            await callback.message.answer(msg.TXT_ANIMATE_FAILED)
 
 
 @router.callback_query(F.data == msg.CB_RESULT_ANIMATE_REGENERATE)

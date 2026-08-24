@@ -123,7 +123,10 @@ async def run_animate_generation_turn(
     except Exception:
         logger.exception("animate generation turn failed uid=%s", uid)
         if lock_acquired:
-            await release_animate_video_lock(uid)
+            try:
+                await release_animate_video_lock(uid)
+            except Exception:
+                logger.exception("animate lock release failed uid=%s", uid)
         if charge is not None and charge.charge_id:
             try:
                 await refund_charge(charge.charge_id)

@@ -1777,6 +1777,7 @@ async def video_process(message: Message, state: FSMContext) -> None:
     prompt = (message.text or "").strip()
     data = await state.get_data()
     scenario_id = data.get("video_scenario_id") or "video_pro_5sec"
+    bot = deps.bot()
     vr = await run_video_scenario_turn(
         settings,
         bot,
@@ -1793,6 +1794,7 @@ async def video_prank_photo_process(message: Message, state: FSMContext) -> None
     data = await state.get_data()
     scenario_id = str(data.get("video_scenario_id") or "")
     caption = (message.caption or "").strip()
+    bot = deps.bot()
     vr = await run_video_scenario_turn(
         settings,
         bot,
@@ -1823,6 +1825,7 @@ async def animate_photo_process(message: Message, state: FSMContext) -> None:
         await message.answer(msg.TXT_CREATE_ANIMATE_HINT)
         return
 
+    bot = deps.bot()
     ar = await run_animate_generation_turn(
         uid=uid,
         telegram_file_id=large_photo_file_id,
