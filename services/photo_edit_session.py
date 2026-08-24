@@ -522,6 +522,48 @@ async def persist_photo_edit_session(
     ttl_sec: float = DEFAULT_EDIT_SESSION_TTL_SEC,
 ) -> PhotoEditSession | None:
     """In-memory сессия + долговременный якорь в БД (Telegram)."""
+    roles_tuple = tuple((r or "").strip() for r in (final_roles or ()) if (r or "").strip())
+    refs_tuple = tuple(
+        (fid or "").strip()
+        for fid in (group_ref_file_ids or ())
+        if (fid or "").strip()
+    )
+    base_prompt = (group_base_prompt or "").strip() or None
+
+    existing = get_photo_edit_session(user_id)
+    if existing is not None:
+        if not roles_tuple and existing.final_roles:
+            roles_tuple = existing.final_roles
+        if len(refs_tuple) < 2 and len(existing.group_ref_file_ids) >= 2:
+            refs_tuple = existing.group_ref_file_ids
+        if not base_prompt:
+            base_prompt = existing.group_base_prompt
+
+    if not roles_tuple or len(refs_tuple) < 2:
+        from services.repository import get_last_generated_image
+
+        persisted = await get_last_generated_image(user_id)
+        if persisted:
+            if not roles_tuple:
+                db_roles = persisted.get("final_roles") or []
+                roles_tuple = tuple(r for r in db_roles if str(r).strip())
+            db_refs = persisted.get("group_ref_file_ids") or []
+            if len(refs_tuple) < 2 and len(db_refs) >= 2:
+                refs_tuple = tuple(str(x).strip() for x in db_refs if str(x).strip())
+            if not base_prompt:
+                base_prompt = str(persisted.get("group_base_prompt") or "").strip() or None
+
+    if not roles_tuple:
+        from services.animate_motion import resolve_final_roles_from_context
+
+        roles_tuple = tuple(
+            resolve_final_roles_from_context(
+                group_ref_file_ids=refs_tuple,
+                group_base_prompt=base_prompt,
+                user_prompt=(user_prompt or "").strip() or None,
+            )
+        )
+
     sess = save_photo_edit_session(
         user_id,
         image_model_id=image_model_id,
@@ -537,9 +579,9 @@ async def persist_photo_edit_session(
         user_prompt=user_prompt,
         reference_file_id=reference_file_id,
         generation_seed=generation_seed,
-        group_ref_file_ids=group_ref_file_ids,
-        group_base_prompt=group_base_prompt,
-        final_roles=final_roles,
+        group_ref_file_ids=refs_tuple,
+        group_base_prompt=base_prompt,
+        final_roles=roles_tuple,
         ttl_sec=ttl_sec,
     )
     if sess is None or platform != "telegram":

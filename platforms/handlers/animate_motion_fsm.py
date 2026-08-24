@@ -19,7 +19,10 @@ from services.animate_motion import (
     MOTION_CHOICE_MAP,
     PET_MOTION_CHOICE_MAP,
     AnimateParticipants,
+    AnimatePerson,
+    AnimatePet,
     build_motion_draft_from_choices,
+    format_participant_list_ru,
     resolve_animate_participants,
 )
 from services.animate_video_lock import is_animate_video_locked, release_animate_video_lock
@@ -42,17 +45,23 @@ FSM_CHOICES = "animate_motion_choices"
 FSM_AWAIT_PET = "animate_await_pet"
 
 
-def _person_motion_keyboard(ref_index: int) -> InlineKeyboardMarkup:
+def _person_motion_keyboard(ref_index: int, *, show_apply_rest: bool = False) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     for code, (label, _motion) in MOTION_CHOICE_MAP.items():
-        rows.append(
-            [
+        row = [
+            InlineKeyboardButton(
+                text=label,
+                callback_data=f"{msg.CB_ANIMATE_MOTION_PREFIX}{code}:{ref_index}",
+            )
+        ]
+        if show_apply_rest:
+            row.append(
                 InlineKeyboardButton(
-                    text=label,
-                    callback_data=f"{msg.CB_ANIMATE_MOTION_PREFIX}{code}:{ref_index}",
+                    text=msg.BTN_ANIMATE_MOTION_APPLY_REST,
+                    callback_data=f"{msg.CB_ANIMATE_MOTION_APPLY_REST_PREFIX}{code}:{ref_index}",
                 )
-            ]
-        )
+            )
+        rows.append(row)
     rows.append(
         [
             InlineKeyboardButton(
@@ -182,8 +191,15 @@ async def _send_current_motion_step(callback: CallbackQuery, state: FSMContext) 
     if step < len(people):
         person = people[step]
         await callback.message.answer(
-            msg.TXT_ANIMATE_MOTION_ASK.format(role=person["display_label"]),
-            reply_markup=_person_motion_keyboard(int(person["ref_index"])),
+            msg.TXT_ANIMATE_MOTION_ASK.format(
+                role=person["display_label"],
+                step=step + 1,
+                total=len(people),
+            ),
+            reply_markup=_person_motion_keyboard(
+                int(person["ref_index"]),
+                show_apply_rest=step < len(people) - 1,
+            ),
             parse_mode=ParseMode.HTML,
         )
         return
@@ -292,14 +308,53 @@ async def ask_first_animate_motion_step(message: object, state: FSMContext) -> N
         return
     person = people[0]
     await message.answer(  # type: ignore[union-attr]
-        msg.TXT_ANIMATE_MOTION_ASK.format(role=person["display_label"]),
-        reply_markup=_person_motion_keyboard(int(person["ref_index"])),
+        msg.TXT_ANIMATE_MOTION_ASK.format(
+            role=person["display_label"],
+            step=1,
+            total=len(people),
+        ),
+        reply_markup=_person_motion_keyboard(
+            int(person["ref_index"]),
+            show_apply_rest=len(people) > 1,
+        ),
         parse_mode=ParseMode.HTML,
     )
 
 
-async def send_animate_survey_intro(message: object, *, cost: int) -> None:
-    text = msg.TXT_ANIMATE_MOTION_SURVEY_INTRO.format(cost=cost)
+async def send_animate_survey_intro(
+    message: object,
+    state: FSMContext,
+    *,
+    cost: int,
+) -> None:
+    data = await state.get_data()
+    people: list[dict[str, Any]] = list(data.get(FSM_PEOPLE) or [])
+    pet = data.get(FSM_PET)
+    participants = AnimateParticipants(
+        people=tuple(
+            AnimatePerson(
+                ref_index=int(p["ref_index"]),
+                role_key=str(p["role_key"]),
+                display_label=str(p["display_label"]),
+            )
+            for p in people
+        ),
+        pet=(
+            AnimatePet(
+                ref_index=int(pet["ref_index"]),
+                role_key=str(pet["role_key"]),
+                display_label=str(pet["display_label"]),
+            )
+            if isinstance(pet, dict)
+            else None
+        ),
+    )
+    count = len(participants.people) + (1 if participants.pet else 0)
+    text = msg.TXT_ANIMATE_MOTION_SURVEY_INTRO.format(
+        cost=cost,
+        participants=format_participant_list_ru(participants),
+        count=count,
+    )
     await message.answer(text, parse_mode=ParseMode.HTML)  # type: ignore[union-attr]
 
 
@@ -309,9 +364,52 @@ async def animate_motion_use_default(callback: CallbackQuery, state: FSMContext)
     await _finish_animate_from_fsm(callback, state, use_default=True)
 
 
+@router.callback_query(F.data.startswith(msg.CB_ANIMATE_MOTION_APPLY_REST_PREFIX))
+async def animate_person_motion_apply_rest(callback: CallbackQuery, state: FSMContext) -> None:
+    raw = (callback.data or "").strip()
+    body = raw[len(msg.CB_ANIMATE_MOTION_APPLY_REST_PREFIX) :]
+    parts = body.split(":")
+    if len(parts) != 2:
+        await callback.answer()
+        return
+    code, ref_s = parts[0], parts[1]
+    motion_entry = MOTION_CHOICE_MAP.get(code)
+    if motion_entry is None:
+        await callback.answer()
+        return
+
+    data = await state.get_data()
+    people: list[dict[str, Any]] = list(data.get(FSM_PEOPLE) or [])
+    choices: dict[str, str] = dict(data.get(FSM_CHOICES) or {})
+    step = int(data.get(FSM_STEP) or 0)
+    start_idx = next(
+        (i for i, person in enumerate(people) if str(person["ref_index"]) == ref_s),
+        step,
+    )
+    for person in people[start_idx:]:
+        choices[f"p:{person['ref_index']}"] = motion_entry[1]
+
+    pet = data.get(FSM_PET)
+    await state.update_data(
+        {
+            FSM_CHOICES: choices,
+            FSM_STEP: len(people),
+            FSM_AWAIT_PET: pet is not None,
+        }
+    )
+    await callback.answer(f"{motion_entry[0]} — всем ниже")
+
+    if pet is not None:
+        await _send_current_motion_step(callback, state)
+        return
+    await _finish_animate_from_fsm(callback, state, use_default=False)
+
+
 @router.callback_query(F.data.startswith(msg.CB_ANIMATE_MOTION_PREFIX))
 async def animate_person_motion_choice(callback: CallbackQuery, state: FSMContext) -> None:
     if callback.data == msg.CB_ANIMATE_MOTION_DEFAULT:
+        return
+    if (callback.data or "").startswith(msg.CB_ANIMATE_MOTION_APPLY_REST_PREFIX):
         return
     raw = (callback.data or "").strip()
     parts = raw.split(":")

@@ -271,8 +271,10 @@ CB_SHOW_INSTRUCTION = "show_instruction"
 CB_CHECK_SUBSCRIPTION = "check_subscription"
 CB_RECHECK_SUBSCRIPTION = "recheck_subscription"
 CB_RESULT_ANIMATE = "res_anim"
+CB_RESULT_ANIMATE_REGENERATE = "res_anim_reg"
 CB_ANIMATE_MOTION_DEFAULT = "am:def"
 CB_ANIMATE_MOTION_PREFIX = "am:"
+CB_ANIMATE_MOTION_APPLY_REST_PREFIX = "am:rest:"
 CB_ANIMATE_PET_MOTION_PREFIX = "ap:"
 CB_RESULT_REPEAT_PHOTO = "res_repeat_ph"
 CB_RESULT_UPSCALE = "res_upscale"
@@ -1655,8 +1657,15 @@ TXT_RESULT_ANIMATE_CAPTION = (
     "🔋 Остаток: {balance} 💎"
 )
 TXT_ANIMATE_SUCCESS = (
-    "🎬 Фотография успешно оживлена! Нейросеть NeuroMule превратила ваш статичный кадр в живое видео."
+    "🎬 Фото оживлено — мягкое моргание и дыхание без зевоты и без навязчивых улыбок.\n"
+    "Не понравилось? Нажмите «🔄 Перегенерировать видео» — будет другой вариант движения."
 )
+TXT_ANIMATE_REGENERATE_NO_HISTORY = (
+    "⚠️ Не нашёл исходное фото для повторного оживления. "
+    "Сначала нажмите «🪄 Оживить это фото» под снимком."
+)
+TXT_ANIMATE_REGENERATE_STARTED = "⏳ Перегенерирую видео…"
+BTN_ANIMATE_REGENERATE = "🔄 Перегенерировать видео"
 TXT_ANIMATE_SOURCE_CAPTION = "Оживлённый исходник (тест контура)"
 TXT_ANIMATE_FAILED = "⚠️ Не удалось оживить фотографию. Попробуйте другой снимок."
 TXT_HD_MATCH_DUO_PICKER = (
@@ -1721,11 +1730,13 @@ TXT_ANIMATE_QUEUE_ACCEPTED = (
 )
 TXT_ANIMATE_MOTION_SURVEY_INTRO = (
     "🎬 <b>Конструктор движений</b>\n\n"
-    "Настроим, как оживится каждый участник кадра (сверху вниз). "
+    "На фото: <b>{participants}</b> ({count}).\n"
+    "Сейчас по очереди (сверху вниз) настроим движение каждого. "
     "Стоимость оживления — {cost} 💎.\n\n"
-    "Можно пропустить опрос — тогда будет мягкое моргание и дыхание без зевоты."
+    "Если не хотите настраивать — нажмите «Без настройки»: будет только "
+    "мягкое моргание и дыхание, без зевоты и без навязчивых улыбок."
 )
-TXT_ANIMATE_MOTION_ASK = "Что делает <b>{role}</b>?"
+TXT_ANIMATE_MOTION_ASK = "Что делает <b>{role}</b>? <i>({step} из {total})</i>"
 TXT_ANIMATE_PET_ASK = "Что делает <b>{pet}</b>?"
 TXT_ANIMATE_GENERATING_BUSY = (
     "⏳ Ваше видео ещё монтируется ИИ-режиссёром (это занимает 1–5 минут). "
@@ -1734,7 +1745,8 @@ TXT_ANIMATE_GENERATING_BUSY = (
 TXT_ANIMATE_MOTION_DIRECTING = (
     "🎬 ИИ-режиссёр собирает сценарий движений… Оживление займёт 1–5 минут."
 )
-BTN_ANIMATE_MOTION_SKIP = "🪄 Пропустить опрос (Дефолт)"
+BTN_ANIMATE_MOTION_SKIP = "✨ Без настройки — только моргание и дыхание"
+BTN_ANIMATE_MOTION_APPLY_REST = "⬇️ Так же всем ниже"
 
 TXT_BALANCE_LOW_FOOTER = "\n\n⚠️ Внимание: кристаллы заканчиваются! [Пополнить] — раздел «Тарифы»."
 

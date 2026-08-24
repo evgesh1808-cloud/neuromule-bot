@@ -38,7 +38,10 @@ from services.photo_edit_session import (
 from services.photo_gen_status import send_photo_gen_status_message
 from services.god_mode import billing_bypass
 from services.repository import get_user_row, try_consume_crystals
-from services.use_cases.animate_generation_turn import AnimateGenOutcome
+from services.use_cases.animate_generation_turn import (
+    AnimateGenOutcome,
+    run_animate_generation_turn,
+)
 from services.use_cases.photo_generation_turn import PhotoGenOutcome, run_photo_generation_turn
 
 logger = logging.getLogger(__name__)
@@ -58,14 +61,18 @@ def _photo_file_id_from_message(message: Message) -> str | None:
     return None
 
 
-async def _notify_animate_turn_result(callback: CallbackQuery, outcome: AnimateGenOutcome) -> None:
-    if callback.message is None:
+async def notify_animate_outcome_message(
+    target: Message | CallbackQuery,
+    outcome: AnimateGenOutcome,
+) -> None:
+    message = target if isinstance(target, Message) else target.message
+    if message is None:
         return
     if outcome is AnimateGenOutcome.ALREADY_GENERATING:
-        await callback.message.answer(msg.TXT_ANIMATE_GENERATING_BUSY)
+        await message.answer(msg.TXT_ANIMATE_GENERATING_BUSY)
         return
     if outcome is AnimateGenOutcome.FORBIDDEN_BY_TARIFF:
-        await callback.message.answer(
+        await message.answer(
             msg.TXT_UPGRADE_TO_ULTRA,
             reply_markup=paycat.shop_packages_keyboard(),
             parse_mode=ParseMode.HTML,
@@ -74,14 +81,18 @@ async def _notify_animate_turn_result(callback: CallbackQuery, outcome: AnimateG
     if outcome is AnimateGenOutcome.FREE_PREMIUM_BLOCKED:
         from platforms.telegram_utils import send_free_create_blocked
 
-        await send_free_create_blocked(callback.message)
+        await send_free_create_blocked(message)
         return
     if outcome is AnimateGenOutcome.INSUFFICIENT_BALANCE:
-        await callback.message.answer(
+        await message.answer(
             msg.TXT_INSUFFICIENT_BALANCE,
             reply_markup=paycat.shop_packages_keyboard(),
             parse_mode=ParseMode.HTML,
         )
+
+
+async def _notify_animate_turn_result(callback: CallbackQuery, outcome: AnimateGenOutcome) -> None:
+    await notify_animate_outcome_message(callback, outcome)
 
 
 async def _restore_result_keyboard(callback: CallbackQuery) -> None:
@@ -289,15 +300,8 @@ async def _resolve_animate_file_id(callback: CallbackQuery) -> str | None:
 
 @router.callback_query(F.data == msg.CB_RESULT_ANIMATE)
 async def result_animate_photo(callback: CallbackQuery, state: FSMContext) -> None:
-    """
-    Оживление: FSM конструктор движений → GPT-режиссёр → OpenRouter Video API.
-    """
-    from platforms.handlers.animate_motion_fsm import (
-        ask_first_animate_motion_step,
-        send_animate_survey_intro,
-        start_animate_motion_survey,
-    )
-
+    """Оживление одним кликом — мягкий промпт + очередь OpenRouter Video API."""
+    _ = state
     user = callback.from_user
     if user is None or callback.message is None:
         await callback.answer()
@@ -308,22 +312,44 @@ async def result_animate_photo(callback: CallbackQuery, state: FSMContext) -> No
         await callback.answer(msg.TXT_PHOTO_REFINE_EXPIRED, show_alert=True)
         return
 
-    session = await _load_result_session(user.id, peer_id=callback.message.chat.id)
-    preflight = await start_animate_motion_survey(
-        user_id=user.id,
+    await callback.answer()
+    ar = await run_animate_generation_turn(
+        uid=user.id,
+        telegram_file_id=file_id,
+        bot=deps.bot(),
         chat_id=callback.message.chat.id,
-        file_id=file_id,
-        state=state,
-        session=session,
+        settings=settings,
     )
-    if preflight is not None:
+    if ar.outcome is not AnimateGenOutcome.SUCCESS:
+        await _notify_animate_turn_result(callback, ar.outcome)
+
+
+@router.callback_query(F.data == msg.CB_RESULT_ANIMATE_REGENERATE)
+async def result_animate_regenerate(callback: CallbackQuery) -> None:
+    """Повторное оживление того же исходника (другой вариант движения)."""
+    from services.last_animate_request import get as get_last_animate
+
+    user = callback.from_user
+    if user is None or callback.message is None:
         await callback.answer()
-        await _notify_animate_turn_result(callback, preflight)
         return
 
-    await callback.answer()
-    await send_animate_survey_intro(callback.message, cost=settings.cost_animate)
-    await ask_first_animate_motion_step(callback.message, state)
+    last = get_last_animate(user.id)
+    if last is None or not last.source_file_id:
+        await callback.answer(msg.TXT_ANIMATE_REGENERATE_NO_HISTORY, show_alert=True)
+        return
+
+    await callback.answer(msg.TXT_ANIMATE_REGENERATE_STARTED)
+    ar = await run_animate_generation_turn(
+        uid=user.id,
+        telegram_file_id=last.source_file_id,
+        bot=deps.bot(),
+        chat_id=callback.message.chat.id,
+        settings=settings,
+        motion_prompt=last.motion_prompt,
+    )
+    if ar.outcome is not AnimateGenOutcome.SUCCESS:
+        await _notify_animate_turn_result(callback, ar.outcome)
 
 
 @router.callback_query(F.data == msg.CB_RESULT_UPSCALE)

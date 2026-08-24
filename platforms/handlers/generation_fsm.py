@@ -114,7 +114,10 @@ from services.repository import (
     update_balance,
 )
 from services.telegram_safe_text import sanitize_telegram_plain_text
-from services.use_cases.animate_generation_turn import AnimateGenOutcome
+from services.use_cases.animate_generation_turn import (
+    AnimateGenOutcome,
+    run_animate_generation_turn,
+)
 from platforms.telegram_chat_action import chat_action_loop
 from platforms.telegram_chat_stream import create_throttled_stream_reply
 from platforms.telegram_chunks import answer_chat_text
@@ -1811,48 +1814,28 @@ async def video_prank_need_photo(message: Message) -> None:
 
 @router.message(UserFlow.waiting_for_animate, F.photo)
 async def animate_photo_process(message: Message, state: FSMContext) -> None:
-    from platforms.handlers.animate_motion_fsm import (
-        ask_first_animate_motion_step,
-        send_animate_survey_intro,
-        start_animate_motion_survey,
-    )
-    from platforms.telegram_utils import send_free_create_blocked
+    from platforms.handlers.photo_result_callbacks import notify_animate_outcome_message
 
+    _ = state
     uid = message.from_user.id if message.from_user else 0
     large_photo_file_id = message.photo[-1].file_id if message.photo else ""
-    preflight = await start_animate_motion_survey(
-        user_id=uid,
-        chat_id=message.chat.id,
-        file_id=large_photo_file_id,
-        state=state,
-        session=None,
-    )
-    if preflight is AnimateGenOutcome.NEED_PHOTO:
+    if not large_photo_file_id:
         await message.answer(msg.TXT_CREATE_ANIMATE_HINT)
         return
-    if preflight is AnimateGenOutcome.FREE_PREMIUM_BLOCKED:
-        await send_free_create_blocked(message)
-        return
-    if preflight is AnimateGenOutcome.FORBIDDEN_BY_TARIFF:
-        await message.answer(
-            msg.TXT_UPGRADE_TO_ULTRA,
-            reply_markup=paycat.shop_packages_keyboard(),
-            parse_mode=ParseMode.HTML,
-        )
-        return
-    if preflight is AnimateGenOutcome.INSUFFICIENT_BALANCE:
-        await message.answer(
-            msg.TXT_INSUFFICIENT_BALANCE,
-            reply_markup=paycat.shop_packages_keyboard(),
-            parse_mode=ParseMode.HTML,
-        )
-        return
-    if preflight is AnimateGenOutcome.ALREADY_GENERATING:
-        await message.answer(msg.TXT_ANIMATE_GENERATING_BUSY)
-        return
 
-    await send_animate_survey_intro(message, cost=settings.cost_animate)
-    await ask_first_animate_motion_step(message, state)
+    ar = await run_animate_generation_turn(
+        uid=uid,
+        telegram_file_id=large_photo_file_id,
+        bot=bot,
+        chat_id=message.chat.id,
+        settings=settings,
+    )
+    if ar.outcome is AnimateGenOutcome.SUCCESS:
+        return
+    if ar.outcome is AnimateGenOutcome.NEED_PHOTO:
+        await message.answer(msg.TXT_CREATE_ANIMATE_HINT)
+        return
+    await notify_animate_outcome_message(message, ar.outcome)
 
 @router.message(UserFlow.waiting_for_animate)
 async def animate_need_photo(message: Message) -> None:

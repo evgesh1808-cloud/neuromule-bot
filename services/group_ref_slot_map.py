@@ -33,6 +33,14 @@ _EXPLICIT_PHOTO_ROLE_RE = re.compile(
 )
 
 _ORDERED_ROLE_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\b(?:дедушк\w*|grandfather|grandpa)\b", re.I), "дедушка"),
+    (re.compile(r"\b(?:бабушк\w*|grandmother|grandma)\b", re.I), "бабушка"),
+    (re.compile(r"\b(?:тёт\w*|тет\w*|aunt)\b", re.I), "тётя"),
+    (re.compile(r"\b(?:дяд\w*|uncle)\b", re.I), "дядя"),
+    (re.compile(r"\b(?:внучк\w*|granddaughter)\b", re.I), "внучка"),
+    (re.compile(r"\b(?:внук\w*|grandson)\b", re.I), "внук"),
+    (re.compile(r"\b(?:племянниц\w*|niece)\b", re.I), "племянница"),
+    (re.compile(r"\b(?:племянник\w*|nephew)\b", re.I), "племянник"),
     (re.compile(r"\b(?:мужчин\w*|пап\w*|отец|father|man|husband)\b", re.I), "man/father"),
     (re.compile(r"\b(?:женщин\w*|девушк\w*|мам\w*|mother|woman|wife)\b", re.I), "woman/mother"),
     (
@@ -488,6 +496,23 @@ _PEEK_WALL_ROLE_ALIASES: dict[str, str] = {
     "son": "сын",
     "мальчик": "сын",
     "boy": "сын",
+    "дедушка": "дедушка",
+    "бабушка": "бабушка",
+    "grandfather": "дедушка",
+    "grandmother": "бабушка",
+    "тётя": "тётя",
+    "тетя": "тётя",
+    "aunt": "тётя",
+    "дядя": "дядя",
+    "uncle": "дядя",
+    "внук": "внук",
+    "внучка": "внучка",
+    "grandson": "внук",
+    "granddaughter": "внучка",
+    "племянник": "племянник",
+    "племянница": "племянница",
+    "nephew": "племянник",
+    "niece": "племянница",
 }
 
 

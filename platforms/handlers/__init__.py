@@ -13,7 +13,6 @@ from aiogram import Dispatcher
 
 from platforms import blogger_flow, music_studio
 from platforms.handlers import (
-    animate_motion_fsm,
     gallery_flow,
     generation_cb,
     generation_fsm,
@@ -43,7 +42,6 @@ def register_all(dp: Dispatcher) -> None:
         gallery_flow,
         reviews,
         generation_cb,
-        animate_motion_fsm,
         photo_download,
         photo_result_callbacks,
         table_chart_cb,

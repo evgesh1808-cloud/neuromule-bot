@@ -116,6 +116,21 @@ def result_photo_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def result_animate_video_keyboard(*, task_id: str | None = None) -> InlineKeyboardMarkup:
+    """Клавиатура под готовым mp4 оживления."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=msg.BTN_ANIMATE_REGENERATE,
+                    callback_data=msg.CB_RESULT_ANIMATE_REGENERATE,
+                )
+            ],
+            _gallery_share_row(task_id),
+        ]
+    )
+
+
 def result_video_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[

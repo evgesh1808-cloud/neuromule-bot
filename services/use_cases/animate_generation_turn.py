@@ -105,5 +105,9 @@ async def run_animate_generation_turn(
             await billing.refund_charge(charge.charge_id)
         raise
 
+    from services.last_animate_request import remember as remember_last_animate
+
+    remember_last_animate(uid, source_file_id=photo_id, motion_prompt=cleaned_prompt)
+
     await bot.send_message(cid, msg.TXT_ANIMATE_QUEUE_ACCEPTED)
     return AnimateGenResult(outcome=AnimateGenOutcome.SUCCESS)

@@ -21,6 +21,7 @@ from config import settings
 from content import messages as msg
 from content.keyboards import new_result_keyboard
 from content.inline_keyboards import (
+    result_animate_video_keyboard,
     result_music_keyboard,
     result_music_keyboard_pro,
 )
@@ -551,6 +552,23 @@ async def _persist_task_photo_edit_session(
         else None
     )
     final_roles = _task_final_roles(task) if task.group_multi_ref else ()
+
+    if not final_roles or len(group_refs) < 2:
+        from services.animate_motion import resolve_final_roles_from_session
+        from services.photo_edit_session import get_photo_edit_session
+
+        existing = get_photo_edit_session(task.user_id)
+        if existing is not None:
+            if len(group_refs) < 2 and len(existing.group_ref_file_ids) >= 2:
+                group_refs = existing.group_ref_file_ids
+            if not group_base:
+                group_base = existing.group_base_prompt
+            if not final_roles:
+                final_roles = tuple(resolve_final_roles_from_session(existing))
+
+    if not final_roles and len(group_refs) >= 2:
+        final_roles = _task_final_roles_from_refs(group_refs, group_base or task.prompt)
+
     await persist_photo_edit_session(
         task.user_id,
         image_model_id=task.image_model_id,
@@ -574,11 +592,22 @@ async def _persist_task_photo_edit_session(
 def _task_final_roles(task: GenTask) -> tuple[str, ...]:
     if not task.group_multi_ref or len(task.group_ref_file_ids) < 2:
         return ()
+    return _task_final_roles_from_refs(
+        task.group_ref_file_ids,
+        (task.group_base_prompt or task.prompt or "").strip(),
+    )
+
+
+def _task_final_roles_from_refs(
+    group_ref_file_ids: tuple[str, ...] | list[str],
+    prompt: str,
+) -> tuple[str, ...]:
+    count = len(group_ref_file_ids)
+    if count < 2:
+        return ()
     from services.group_ref_slot_map import build_group_slot_layout, final_roles_from_layout
 
-    prompt = (task.group_base_prompt or task.prompt or "").strip()
-    count = len(task.group_ref_file_ids)
-    layout = build_group_slot_layout(prompt, [""] * count)
+    layout = build_group_slot_layout((prompt or "").strip(), [""] * count)
     return tuple(final_roles_from_layout(layout, count))
 
 
@@ -1779,7 +1808,12 @@ async def _animate_stub_worker(task: GenTask) -> None:
             )
             cap += _balance_footer(row.crystals)
             video_file = BufferedInputFile(video_bytes, filename="neuromule_animate.mp4")
-            sent = await bot.send_video(chat_id, video=video_file, caption=cap)
+            sent = await bot.send_video(
+                chat_id,
+                video=video_file,
+                caption=cap,
+                reply_markup=result_animate_video_keyboard(task_id=task.task_id),
+            )
             tg_file_id = sent.video.file_id if sent.video else None
             _remember_share(task, file_id=tg_file_id, media_url=animate_result.url)
 

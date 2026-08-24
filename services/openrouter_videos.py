@@ -26,10 +26,13 @@ ANIMATE_FRAME_MAX_BYTES = DEFAULT_MAX_BYTES
 ANIMATE_VIDEO_MAX_BYTES = 50 * 1024 * 1024
 
 ANIMATE_DEFAULT_PROMPT = (
-    "Cinematic subtle portrait movement, realistic eyes blinking, natural gentle breathing, "
-    "slight lifelike facial expression, high-quality rendering, "
-    "maintain original skin texture and lighting, mouths closed, strictly NO yawning, "
-    "NO open mouths, NO distorted faces, 100% identity preservation, smooth cinematic video"
+    "Ultra-subtle cinematic portrait animation: gentle natural eye blinks only, "
+    "soft chest breathing, completely neutral relaxed closed lips, "
+    "faces remain calm and still, minimal micro-movement, no head turns, "
+    "maintain original skin texture and lighting, "
+    "mouths closed, strictly NO yawning, NO open mouths, NO teeth visible, "
+    "NO smiling, NO grinning, NO laughing, NO exaggerated expressions, NO distorted faces, "
+    "100% identity preservation, smooth cinematic video"
 )
 
 ANIMATE_MOTION_DIRECTOR_MODEL = "openai/gpt-4o-mini"
@@ -45,6 +48,9 @@ _MOTION_DIRECTOR_SYSTEM_PROMPT = (
     "Person 2 (input_references) в соответствии с их реальным порядком на фото сверху вниз.\n"
     "- Описывай питомцев чисто текстом в самом конце: "
     "'At the very bottom, a realistic [cat/dog] subtly twitches its ears...'.\n"
+    "- Движение из черновика применяй ТОЛЬКО к указанному человеку; остальные — "
+    "почти статичны: micro eye-blink и дыхание, neutral closed mouth, NO smile.\n"
+    "- Не добавляй улыбки и активную мимику тем, кому пользователь не выбирал движение.\n"
     "- В подвал промпта НАМЕРТВО зашей жесткие негативные ограничения: "
     "'mouths closed, strictly NO yawning, NO open mouths, NO distorted faces, NO screaming, "
     "100% identity preservation, smooth cinematic video'."
