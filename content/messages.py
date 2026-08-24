@@ -1726,7 +1726,7 @@ TXT_MUSIC_QUEUE_ACCEPTED = (
     "от 1 до 3 минут. Пожалуйста, подождите."
 )
 TXT_ANIMATE_QUEUE_ACCEPTED = (
-    "⏳ Фотография получена. NeuroMule добавляет задачу в очередь на оживление…"
+    "⏳ Оживляем фото… Подождите 1–3 минуты."
 )
 TXT_ANIMATE_MOTION_SURVEY_INTRO = (
     "🎬 <b>Конструктор движений</b>\n\n"
