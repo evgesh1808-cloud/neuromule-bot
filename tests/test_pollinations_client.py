@@ -97,6 +97,7 @@ async def test_paid_tier_flux_uses_openrouter_primary(monkeypatch: pytest.Monkey
         aspect_ratio: str = "1:1",
         reference_data_url=None,
         fallback_models=(),
+        i2i_reference_mode: str = "selfie",
     ) -> GeminiImageResult:
         assert model == "black-forest-labs/flux.2-pro"
         assert aspect_ratio == "1:1"
@@ -138,6 +139,7 @@ async def test_paid_tier_flux_uses_openrouter_with_fallback_models(monkeypatch: 
         aspect_ratio: str = "1:1",
         reference_data_url=None,
         fallback_models=(),
+        i2i_reference_mode: str = "selfie",
     ) -> GeminiImageResult:
         nonlocal seen_fallbacks
         seen_fallbacks = fallback_models

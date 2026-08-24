@@ -28,11 +28,35 @@ ANIMATE_VIDEO_MAX_BYTES = 50 * 1024 * 1024
 ANIMATE_DEFAULT_PROMPT = (
     "Cinematic subtle portrait movement, realistic eyes blinking, natural gentle breathing, "
     "slight lifelike facial expression, high-quality rendering, "
-    "maintain original skin texture and lighting"
+    "maintain original skin texture and lighting, mouths closed, strictly NO yawning, "
+    "NO open mouths, NO distorted faces, 100% identity preservation, smooth cinematic video"
 )
 
-DEFAULT_ANIMATE_DURATION_SEC = 5
-VEO_ANIMATE_DURATION_SEC = 4
+ANIMATE_MOTION_DIRECTOR_MODEL = "openai/gpt-4o-mini"
+ANIMATE_FIXED_DURATION_SEC = 4
+ANIMATE_STANDARD_RESOLUTION = "720p"
+
+_MOTION_DIRECTOR_SYSTEM_PROMPT = (
+    "Ты — профессиональный ИИ-режиссер анимации для видеомоделей (Luma, Kling, Veo). "
+    "Твой вход — черновой сценарий кликов пользователя для каждого члена семьи. "
+    "Переведи и преврати его в идеальный, плавный посекундный технический промпт на английском языке.\n"
+    "Правила:\n"
+    "- Описывай людей строго через системные токены: Person 1 (input_references), "
+    "Person 2 (input_references) в соответствии с их реальным порядком на фото сверху вниз.\n"
+    "- Описывай питомцев чисто текстом в самом конце: "
+    "'At the very bottom, a realistic [cat/dog] subtly twitches its ears...'.\n"
+    "- В подвал промпта НАМЕРТВО зашей жесткие негативные ограничения: "
+    "'mouths closed, strictly NO yawning, NO open mouths, NO distorted faces, NO screaming, "
+    "100% identity preservation, smooth cinematic video'."
+)
+
+_MOTION_NEGATIVE_FOOTER = (
+    "mouths closed, strictly NO yawning, NO open mouths, NO distorted faces, NO screaming, "
+    "100% identity preservation, smooth cinematic video"
+)
+
+DEFAULT_ANIMATE_DURATION_SEC = ANIMATE_FIXED_DURATION_SEC
+VEO_ANIMATE_DURATION_SEC = ANIMATE_FIXED_DURATION_SEC
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,11 +68,9 @@ class OpenRouterAnimateResult:
 
 
 def resolve_animate_duration_for_model(model_id: str) -> int:
-    """Veo принимает 4/6/8 с; Seedance — 4–15. Безопасный дефолт — 4 для Veo, 5 для остальных."""
-    mid = (model_id or "").strip().lower()
-    if "veo" in mid:
-        return VEO_ANIMATE_DURATION_SEC
-    return DEFAULT_ANIMATE_DURATION_SEC
+    """Фиксированная длительность 4 с — контроль стоимости OpenRouter Video API."""
+    _ = model_id
+    return ANIMATE_FIXED_DURATION_SEC
 
 
 def _looks_like_mp4(data: bytes) -> bool:
@@ -307,6 +329,55 @@ async def _submit_video_job(
     )
 
 
+async def expand_motion_prompt_with_gpt(
+    settings: Settings,
+    user_choices_text: str,
+) -> str:
+    """
+    GPT-4o-mini режиссёр: черновик кликов → технический EN промпт для image-to-video.
+    При сбое OpenRouter возвращает черновик + негативный footer.
+    """
+    draft = (user_choices_text or "").strip()
+    if not draft:
+        return ANIMATE_DEFAULT_PROMPT
+
+    if not openrouter_videos_configured(settings):
+        return f"{draft}. {_MOTION_NEGATIVE_FOOTER}"
+
+    from services.ai_text import ask_ai_messages
+
+    messages = [
+        {"role": "system", "content": _MOTION_DIRECTOR_SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": (
+                "Draft user motion scenario (one line per person/pet):\n"
+                f"{draft}\n\n"
+                "Output ONLY the final English video motion prompt, no markdown."
+            ),
+        },
+    ]
+    try:
+        result = await ask_ai_messages(
+            settings,
+            messages,
+            timeout=min(45.0, float(getattr(settings, "openrouter_timeout_sec", 60.0) or 60.0)),
+            models=[ANIMATE_MOTION_DIRECTOR_MODEL],
+            temperature=0.35,
+            max_tokens=600,
+        )
+        expanded = (result.get("content") or "").strip()
+        if expanded:
+            low = expanded.lower()
+            if "no yawning" not in low:
+                expanded = f"{expanded.rstrip('.')}. {_MOTION_NEGATIVE_FOOTER}"
+            return expanded
+    except Exception:
+        logger.warning("expand_motion_prompt_with_gpt failed, using draft", exc_info=True)
+
+    return f"{draft}. {_MOTION_NEGATIVE_FOOTER}"
+
+
 async def generate_openrouter_animate_video(
     settings: Settings,
     *,
@@ -314,7 +385,7 @@ async def generate_openrouter_animate_video(
     telegram_file_id: str,
     prompt: str | None = None,
     aspect_ratio: str = "16:9",
-    resolution: str = "720p",
+    resolution: str = ANIMATE_STANDARD_RESOLUTION,
     duration: int | None = None,
 ) -> OpenRouterAnimateResult:
     """
@@ -350,7 +421,7 @@ async def generate_openrouter_animate_video(
     body_base = {
         "prompt": cleaned_prompt,
         "aspect_ratio": aspect_ratio,
-        "resolution": resolution,
+        "resolution": (resolution or ANIMATE_STANDARD_RESOLUTION).strip() or ANIMATE_STANDARD_RESOLUTION,
         "generate_audio": False,
     }
 
@@ -363,11 +434,9 @@ async def generate_openrouter_animate_video(
     last_exc: ExternalApiError | None = None
 
     for model_idx, model_id in enumerate(model_candidates):
-        body_duration = (
-            int(duration)
-            if duration is not None
-            else resolve_animate_duration_for_model(model_id)
-        )
+        body_duration = ANIMATE_FIXED_DURATION_SEC
+        if duration is not None:
+            body_duration = min(ANIMATE_FIXED_DURATION_SEC, max(4, int(duration)))
         for force_data_url in force_data_modes:
             frame_url = await resolve_frame_image_url(
                 settings,

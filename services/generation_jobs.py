@@ -550,6 +550,7 @@ async def _persist_task_photo_edit_session(
         if task.group_multi_ref
         else None
     )
+    final_roles = _task_final_roles(task) if task.group_multi_ref else ()
     await persist_photo_edit_session(
         task.user_id,
         image_model_id=task.image_model_id,
@@ -566,7 +567,19 @@ async def _persist_task_photo_edit_session(
         generation_seed=task.generation_seed,
         group_ref_file_ids=group_refs,
         group_base_prompt=group_base,
+        final_roles=final_roles,
     )
+
+
+def _task_final_roles(task: GenTask) -> tuple[str, ...]:
+    if not task.group_multi_ref or len(task.group_ref_file_ids) < 2:
+        return ()
+    from services.group_ref_slot_map import build_group_slot_layout, final_roles_from_layout
+
+    prompt = (task.group_base_prompt or task.prompt or "").strip()
+    count = len(task.group_ref_file_ids)
+    layout = build_group_slot_layout(prompt, [""] * count)
+    return tuple(final_roles_from_layout(layout, count))
 
 
 async def _deliver_photo_url_chatcom(task: GenTask, final_image_url: str) -> None:
@@ -1711,11 +1724,14 @@ async def _animate_stub_worker(task: GenTask) -> None:
     Воркер очереди для оживления фото.
     Использует Telegram file_id исходного снимка из task.file_id.
     """
+    from services.animate_video_lock import release_animate_video_lock
+
     task.status = "processing"
     bot, chat_id, user_id = task.bot, task.chat_id, task.user_id
     file_id = (task.file_id or "").strip()
     if not file_id:
         logger.error("animate job %s: missing file_id user_id=%s", task.task_id, user_id)
+        await release_animate_video_lock(user_id)
         await fail_generation_task(
             task,
             user_message=msg.TXT_ANIMATE_FAILED,
@@ -1727,13 +1743,15 @@ async def _animate_stub_worker(task: GenTask) -> None:
         getattr(app_settings, "openrouter_video_poll_timeout_sec", 600.0) or 600.0
     )
 
+    lock_held = True
     try:
         logger.info(
-            "animate job %s file_id=%s user_id=%s openrouter=%s",
+            "animate job %s file_id=%s user_id=%s openrouter=%s prompt_len=%s",
             task.task_id,
-            file_id,
+            file_id[:24] if file_id else "",
             user_id,
             openrouter_videos_configured(app_settings),
+            len(task.prompt or ""),
         )
         async with chat_action_loop(bot, chat_id, "upload_video"):
             row = await get_user_row(user_id)
@@ -1746,6 +1764,7 @@ async def _animate_stub_worker(task: GenTask) -> None:
                     app_settings,
                     bot=bot,
                     telegram_file_id=file_id,
+                    prompt=task.prompt,
                 )
                 video_bytes = await download_animate_video_bytes(
                     app_settings,
@@ -1784,6 +1803,9 @@ async def _animate_stub_worker(task: GenTask) -> None:
             log_msg="animate job failed",
             exc=exc,
         )
+    finally:
+        if lock_held:
+            await release_animate_video_lock(user_id)
 
 
 async def _queue_worker() -> None:

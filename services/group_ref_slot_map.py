@@ -553,8 +553,12 @@ def _peek_wall_role_marker(idx: int, role: str, *, has_mama: bool) -> str:
     if role == "мама":
         return f"Женщина (мама, input_references[{idx}])"
     if role == "дочка":
-        suffix = ", NOT the woman" if has_mama else ""
-        return f"Дочка (девочка, input_references[{idx}]{suffix})"
+        suffix = ", NOT the woman/mother" if has_mama else ""
+        return (
+            f"Дочка (девочка, input_references[{idx}]{suffix}) — "
+            f"100% точное копирование лица дочери строго с input_references[{idx}]: "
+            "идентичные глаза, нос, губы, овал лица, пропорции ребёнка, цвет и длина волос"
+        )
     if role == "сын":
         return f"Сын (мальчик, input_references[{idx}])"
     return f"Персонаж ({role}, input_references[{idx}])"

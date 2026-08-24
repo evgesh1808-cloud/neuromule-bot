@@ -35,12 +35,11 @@ async def test_photo_without_caption_waits_for_prompt() -> None:
         await generation_fsm.photo_process_with_image(message, state)
 
     proc.assert_not_called()
-    state.update_data.assert_awaited_once()
-    kwargs = state.update_data.await_args.kwargs
-    assert kwargs["pending_reference_file_id"] == "AgAC_ref"
-    assert kwargs["photo_service_message_ids"]
+    assert state.update_data.await_count == 2
+    last_kwargs = state.update_data.await_args_list[-1].kwargs
+    assert last_kwargs["photo_service_message_ids"]
     message.answer.assert_awaited_once_with(
-        msg.TXT_CREATE_IMAGE_WAIT_PROMPT,
+        msg.TXT_PHOTO_MULTI_REF_COLLECT,
         parse_mode=ParseMode.HTML,
     )
 

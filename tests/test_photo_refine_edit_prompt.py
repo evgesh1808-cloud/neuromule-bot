@@ -52,6 +52,18 @@ def test_build_group_refine_user_prompt_keeps_base_scene() -> None:
     assert "input_references" in combined
 
 
+def test_build_group_refine_user_prompt_identity_boost_for_daughter() -> None:
+    from services.photo_edit_session import is_identity_focused_refine
+
+    assert is_identity_focused_refine("сделай дочь больше похожей на себя с фотографии")
+    combined = build_group_refine_user_prompt(
+        "семья за стеной",
+        "сделай дочь больше похожей на себя с фотографии",
+    )
+    assert "CRITICAL IDENTITY PRIORITY" in combined
+    assert "input_references" in combined
+
+
 def test_session_has_group_refs() -> None:
     reset_photo_edit_sessions_for_tests()
     assert not session_has_group_refs(None)

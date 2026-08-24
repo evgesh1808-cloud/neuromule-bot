@@ -21,4 +21,6 @@ def test_video_worker_wraps_replicate_in_asyncio_timeout() -> None:
 def test_at_least_three_timeout_wrappers_present() -> None:
     """video + music + animate — итого ≥3 контекстных менеджеров."""
     src = Path(generation_jobs.__file__).read_text(encoding="utf-8")
-    assert src.count("asyncio.timeout(EXTERNAL_API_TIMEOUT_SEC)") >= 3
+    standard = src.count("asyncio.timeout(EXTERNAL_API_TIMEOUT_SEC)")
+    animate_poll = "asyncio.timeout(poll_timeout + 30.0)" in src
+    assert standard + (1 if animate_poll else 0) >= 3

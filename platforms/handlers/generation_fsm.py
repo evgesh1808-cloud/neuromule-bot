@@ -114,7 +114,7 @@ from services.repository import (
     update_balance,
 )
 from services.telegram_safe_text import sanitize_telegram_plain_text
-from services.use_cases.animate_generation_turn import AnimateGenOutcome, run_animate_generation_turn
+from services.use_cases.animate_generation_turn import AnimateGenOutcome
 from platforms.telegram_chat_action import chat_action_loop
 from platforms.telegram_chat_stream import create_throttled_stream_reply
 from platforms.telegram_chunks import answer_chat_text
@@ -845,22 +845,53 @@ async def _dispatch_text_refine_from_session(
     label: str,
     aspect: str,
 ) -> None:
-    """i2i «Доработать текстом»: один референс = последний результат, preserve-промпт."""
+    """«Доработать текстом»: group → multi-ref с исходными рефами; одиночное фото → preserve i2i."""
     from services.generation_jobs import materialize_photo_reference_for_job
     from services.photo_edit_session import (
+        build_group_refine_user_prompt,
         build_refine_edit_prompt_for_job,
         clear_awaiting_text_refine,
+        resolve_group_refine_model,
         resolve_session_result_reference,
+        session_has_group_refs,
         session_has_result_image,
     )
-
-    if not session_has_result_image(session):
-        await message.answer(msg.TXT_PHOTO_REFINE_EXPIRED)
-        return
+    from services.photo_multi_ref_routing import MAX_GROUP_REFS
 
     body = (edit_prompt or "").strip()
     if not body:
         await message.answer(msg.TXT_CREATE_IMAGE_AFTER_MODEL)
+        return
+
+    if session_has_group_refs(session):
+        base = (session.group_base_prompt or session.user_prompt or "").strip()
+        combined = build_group_refine_user_prompt(base, body)
+        refs = list(session.group_ref_file_ids)[:MAX_GROUP_REFS]
+        if len(refs) >= 2:
+            refine_model_id, refine_label = resolve_group_refine_model(session, model_id)
+            if message.from_user is not None:
+                clear_awaiting_text_refine(message.from_user.id)
+            await state.update_data(
+                pending_reference_file_id=None,
+                pending_object_file_id=None,
+                pending_group_ref_file_ids=[],
+                refine_from_result=None,
+            )
+            await process_photo_prompt_message(
+                message,
+                state,
+                model_id=refine_model_id,
+                label=str(label or refine_label),
+                prompt=combined,
+                aspect_ratio=aspect,
+                group_multi_ref=True,
+                group_ref_file_ids=refs,
+                group_base_prompt=base or None,
+            )
+            return
+
+    if not session_has_result_image(session):
+        await message.answer(msg.TXT_PHOTO_REFINE_EXPIRED)
         return
 
     result_ref = resolve_session_result_reference(session)
@@ -1780,37 +1811,48 @@ async def video_prank_need_photo(message: Message) -> None:
 
 @router.message(UserFlow.waiting_for_animate, F.photo)
 async def animate_photo_process(message: Message, state: FSMContext) -> None:
-    uid = message.from_user.id
-    large_photo_file_id = message.photo[-1].file_id
-    await state.clear()
-    ar = await run_animate_generation_turn(
-        uid=uid,
-        telegram_file_id=large_photo_file_id,
-        bot=message.bot,
-        chat_id=message.chat.id,
-        settings=settings,
+    from platforms.handlers.animate_motion_fsm import (
+        ask_first_animate_motion_step,
+        send_animate_survey_intro,
+        start_animate_motion_survey,
     )
-    if ar.outcome is AnimateGenOutcome.NEED_PHOTO:
+    from platforms.telegram_utils import send_free_create_blocked
+
+    uid = message.from_user.id if message.from_user else 0
+    large_photo_file_id = message.photo[-1].file_id if message.photo else ""
+    preflight = await start_animate_motion_survey(
+        user_id=uid,
+        chat_id=message.chat.id,
+        file_id=large_photo_file_id,
+        state=state,
+        session=None,
+    )
+    if preflight is AnimateGenOutcome.NEED_PHOTO:
         await message.answer(msg.TXT_CREATE_ANIMATE_HINT)
         return
-    if ar.outcome is AnimateGenOutcome.FREE_PREMIUM_BLOCKED:
-        from platforms.telegram_utils import send_free_create_blocked
-
+    if preflight is AnimateGenOutcome.FREE_PREMIUM_BLOCKED:
         await send_free_create_blocked(message)
         return
-    if ar.outcome is AnimateGenOutcome.FORBIDDEN_BY_TARIFF:
+    if preflight is AnimateGenOutcome.FORBIDDEN_BY_TARIFF:
         await message.answer(
             msg.TXT_UPGRADE_TO_ULTRA,
             reply_markup=paycat.shop_packages_keyboard(),
             parse_mode=ParseMode.HTML,
         )
         return
-    if ar.outcome is AnimateGenOutcome.INSUFFICIENT_BALANCE:
+    if preflight is AnimateGenOutcome.INSUFFICIENT_BALANCE:
         await message.answer(
             msg.TXT_INSUFFICIENT_BALANCE,
             reply_markup=paycat.shop_packages_keyboard(),
             parse_mode=ParseMode.HTML,
         )
+        return
+    if preflight is AnimateGenOutcome.ALREADY_GENERATING:
+        await message.answer(msg.TXT_ANIMATE_GENERATING_BUSY)
+        return
+
+    await send_animate_survey_intro(message, cost=settings.cost_animate)
+    await ask_first_animate_motion_step(message, state)
 
 @router.message(UserFlow.waiting_for_animate)
 async def animate_need_photo(message: Message) -> None:

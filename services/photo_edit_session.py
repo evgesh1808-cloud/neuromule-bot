@@ -43,6 +43,7 @@ class PhotoEditSession:
     generation_seed: int | None = None
     group_ref_file_ids: tuple[str, ...] = ()
     group_base_prompt: str | None = None
+    final_roles: tuple[str, ...] = ()
     awaiting_text_refine: bool = False
 
 
@@ -82,6 +83,7 @@ def save_photo_edit_session(
     generation_seed: int | None = None,
     group_ref_file_ids: tuple[str, ...] | list[str] | None = None,
     group_base_prompt: str | None = None,
+    final_roles: tuple[str, ...] | list[str] | None = None,
     ttl_sec: float = DEFAULT_EDIT_SESSION_TTL_SEC,
 ) -> PhotoEditSession | None:
     """Сохраняет контекст последней генерации; нужен хотя бы один источник изображения."""
@@ -109,6 +111,7 @@ def save_photo_edit_session(
         if (fid or "").strip()
     )
     base_prompt = (group_base_prompt or "").strip() or None
+    roles = tuple((r or "").strip() for r in (final_roles or ()) if (r or "").strip())
 
     sess = PhotoEditSession(
         user_id=user_id,
@@ -128,6 +131,7 @@ def save_photo_edit_session(
         generation_seed=generation_seed,
         group_ref_file_ids=group_refs,
         group_base_prompt=base_prompt,
+        final_roles=roles,
         awaiting_text_refine=False,
     )
     _sessions[user_id] = sess
@@ -359,9 +363,57 @@ def build_photo_sharpen_edit_prompt(user_intent_en: str) -> str:
 
 GROUP_REFINE_EDIT_MARKER = "EDIT REQUEST"
 
+_IDENTITY_REFINE_MARKERS: tuple[str, ...] = (
+    "похож",
+    "похожа",
+    "схож",
+    "идентич",
+    "черт",
+    "лиц",
+    "узнава",
+    "как на фото",
+    "как в реф",
+    "reference",
+    "identity",
+    "look like",
+    "daughter",
+    "дочь",
+    "дочка",
+    "сын",
+    "пап",
+    "мам",
+    "father",
+    "mother",
+    "son",
+)
+
+_GROUP_REFINE_MODEL_ID = "nano_banana_pro"
+_GROUP_REFINE_MODEL_LABEL = "Nano Banana Pro"
+
 
 def session_has_group_refs(sess: PhotoEditSession | None) -> bool:
     return bool(sess and len(sess.group_ref_file_ids) >= 2)
+
+
+def is_identity_focused_refine(edit_request: str) -> bool:
+    low = (edit_request or "").strip().lower()
+    if not low:
+        return False
+    return any(marker in low for marker in _IDENTITY_REFINE_MARKERS)
+
+
+def resolve_group_refine_model(session: PhotoEditSession | None, model_id: str) -> tuple[str, str]:
+    """Group refine always routes through Nano Banana Pro (multi-ref identity)."""
+    _ = session
+    mid = (model_id or "").strip()
+    free_keys = frozenset({"flux_schnell", "flux_2_pro", "flux_free"})
+    if mid and mid not in free_keys:
+        from services.billing.image_pipeline import FREE_PHOTO_MODEL_KEY, normalize_image_model
+
+        normalized = normalize_image_model(mid)
+        if normalized and normalized != FREE_PHOTO_MODEL_KEY:
+            return normalized, _GROUP_REFINE_MODEL_LABEL
+    return _GROUP_REFINE_MODEL_ID, _GROUP_REFINE_MODEL_LABEL
 
 
 def build_group_refine_user_prompt(base_scene_prompt: str, edit_request: str) -> str:
@@ -372,10 +424,18 @@ def build_group_refine_user_prompt(base_scene_prompt: str, edit_request: str) ->
         return base
     if not base:
         return edit
+    identity_boost = ""
+    if is_identity_focused_refine(edit):
+        identity_boost = (
+            " CRITICAL IDENTITY PRIORITY: Match each named person's face to their "
+            "input_references index with maximum fidelity — identical bone structure, "
+            "eyes, nose bridge, jawline, lip shape, skin tone, hair color, hair length, "
+            "and child vs adult proportions. Do NOT invent a similar-looking stranger."
+        )
     return (
         f"{base}\n\n"
         f"{GROUP_REFINE_EDIT_MARKER} (targeted change only — keep every person's face locked "
-        f"to their input_references index, same scene and composition): {edit}"
+        f"to their input_references index, same scene and composition): {edit}{identity_boost}"
     )
 
 
@@ -402,6 +462,7 @@ def _clone_photo_edit_session(sess: PhotoEditSession, **overrides: object) -> Ph
         "generation_seed": sess.generation_seed,
         "group_ref_file_ids": sess.group_ref_file_ids,
         "group_base_prompt": sess.group_base_prompt,
+        "final_roles": sess.final_roles,
         "awaiting_text_refine": sess.awaiting_text_refine,
     }
     fields.update(overrides)
@@ -457,6 +518,7 @@ async def persist_photo_edit_session(
     generation_seed: int | None = None,
     group_ref_file_ids: tuple[str, ...] | list[str] | None = None,
     group_base_prompt: str | None = None,
+    final_roles: tuple[str, ...] | list[str] | None = None,
     ttl_sec: float = DEFAULT_EDIT_SESSION_TTL_SEC,
 ) -> PhotoEditSession | None:
     """In-memory сессия + долговременный якорь в БД (Telegram)."""
@@ -477,6 +539,7 @@ async def persist_photo_edit_session(
         generation_seed=generation_seed,
         group_ref_file_ids=group_ref_file_ids,
         group_base_prompt=group_base_prompt,
+        final_roles=final_roles,
         ttl_sec=ttl_sec,
     )
     if sess is None or platform != "telegram":
@@ -491,6 +554,9 @@ async def persist_photo_edit_session(
         image_model_label=sess.image_model_label,
         aspect_ratio=sess.aspect_ratio,
         user_prompt=sess.user_prompt,
+        group_ref_file_ids=sess.group_ref_file_ids,
+        group_base_prompt=sess.group_base_prompt,
+        final_roles=sess.final_roles,
     )
     return sess
 
@@ -526,6 +592,9 @@ async def get_or_restore_photo_edit_session(
         chat_id=peer_id,
         platform="telegram",
         user_prompt=persisted.get("user_prompt"),
+        group_ref_file_ids=persisted.get("group_ref_file_ids") or (),
+        group_base_prompt=persisted.get("group_base_prompt"),
+        final_roles=persisted.get("final_roles") or (),
     )
     if restored is None:
         return None

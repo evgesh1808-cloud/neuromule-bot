@@ -19,7 +19,7 @@ from services.openrouter_videos import (
 
 def test_resolve_animate_duration_for_veo() -> None:
     assert resolve_animate_duration_for_model("google/veo-3.1-lite") == 4
-    assert resolve_animate_duration_for_model("bytedance/seedance-2.0-mini") == 5
+    assert resolve_animate_duration_for_model("bytedance/seedance-2.0-mini") == 4
 
 
 def test_build_frame_images_uses_openrouter_content_part_schema() -> None:
@@ -106,7 +106,7 @@ async def test_generate_openrouter_animate_video_polls_until_completed() -> None
     client.post.assert_awaited_once()
     body = client.post.await_args.kwargs["json"]
     assert body["model"] == "bytedance/seedance-2.0-mini"
-    assert body["duration"] == 5
+    assert body["duration"] == 4
     frame = body["frame_images"][0]
     assert frame["type"] == "image_url"
     assert frame["frame_type"] == "first_frame"

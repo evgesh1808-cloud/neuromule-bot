@@ -43,6 +43,7 @@ async def test_nano_banana2_i2i_from_reference_image_url() -> None:
         aspect_ratio="1:1",
         reference_data_url=png_ref,
         fallback_models=NANO_BANANO2_FALLBACKS,
+        i2i_reference_mode="selfie",
     )
 
 

@@ -120,7 +120,8 @@ def test_build_peek_wall_prompt_family_of_four() -> None:
     assert prompt.startswith("Динамичное групповое фото 4 человек")
     assert "1. Мужчина (папа, input_references[0])" in prompt
     assert "2. Женщина (мама, input_references[1])" in prompt
-    assert "3. Дочка (девочка, input_references[2], NOT the woman)" in prompt
+    assert "3. Дочка (девочка, input_references[2], NOT the woman/mother)" in prompt
+    assert "100% точное копирование лица дочери" in prompt
     assert "4. Сын (мальчик, input_references[3])" in prompt
     assert "наклоняет торс из-за стены на самом верху" in prompt
     assert "самом нижнем уровне" in prompt

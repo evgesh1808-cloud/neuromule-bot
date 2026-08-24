@@ -87,6 +87,7 @@ async def test_selfie_routes_to_nano_banana_pro_openrouter() -> None:
         aspect_ratio="1:1",
         reference_data_url="data:image/jpeg;base64,abc",
         fallback_models=NANO_BANANO2_FALLBACKS,
+        i2i_reference_mode="selfie",
     )
 
 

@@ -230,12 +230,16 @@ async def test_save_last_generated_image_roundtrip(repo_module, tmp_path) -> Non
         image_model_label="Nano Pro",
         aspect_ratio="3:4",
         user_prompt="test prompt",
+        group_ref_file_ids=("AgAC_a", "AgAC_b", "AgAC_c", "AgAC_d"),
+        group_base_prompt="семейное фото",
     )
     row = await get_last_generated_image(user_id)
     assert row is not None
     assert row["telegram_file_id"] == "AgAC_persist"
     assert row["image_model_id"] == "nano_banana_pro"
     assert row["aspect_ratio"] == "3:4"
+    assert row["group_ref_file_ids"] == ["AgAC_a", "AgAC_b", "AgAC_c", "AgAC_d"]
+    assert row["group_base_prompt"] == "семейное фото"
 
 
 @pytest.mark.asyncio
@@ -254,6 +258,8 @@ async def test_get_or_restore_photo_edit_session_from_db() -> None:
         "image_model_label": "Flux 2 Pro",
         "aspect_ratio": "16:9",
         "user_prompt": "scene",
+        "group_ref_file_ids": ["AgAC_dad", "AgAC_mom", "AgAC_daughter", "AgAC_son"],
+        "group_base_prompt": "семья за стеной",
     }
 
     with patch(
@@ -265,6 +271,8 @@ async def test_get_or_restore_photo_edit_session_from_db() -> None:
 
     assert sess is not None
     assert sess.telegram_file_id == "AgAC_anchor"
+    assert sess.group_ref_file_ids == ("AgAC_dad", "AgAC_mom", "AgAC_daughter", "AgAC_son")
+    assert sess.group_base_prompt == "семья за стеной"
     assert sess.image_model_id == "flux_schnell"
     assert sess.aspect_ratio == "16:9"
 
@@ -388,32 +396,21 @@ async def test_group_refine_uses_result_image_not_group_multi_ref() -> None:
         generation_fsm,
         "process_photo_prompt_message",
         new_callable=AsyncMock,
-    ) as proc, patch.object(
-        generation_fsm.deps,
-        "bot",
-        return_value=MagicMock(),
-    ), patch(
+    ) as proc, patch(
         "services.photo_intent_parser.resolve_photo_edit_prompt",
         new_callable=AsyncMock,
         return_value=("9:16", "сделай стену светлее", False),
-    ), patch(
-        "services.generation_jobs.materialize_photo_reference_for_job",
-        new_callable=AsyncMock,
-        return_value=(None, None, b"\xff\xd8\xff", "image/jpeg"),
-    ), patch(
-        "services.photo_edit_session.build_refine_edit_prompt_for_job",
-        new_callable=AsyncMock,
-        return_value=REFINE_API_PROMPT,
     ):
         await generation_fsm.photo_process(message, state)
 
     proc.assert_awaited_once()
     kwargs = proc.await_args.kwargs
-    assert kwargs["reference_image_bytes"] == b"\xff\xd8\xff"
-    assert kwargs["i2i_reference_mode"] == "preserve"
-    assert kwargs.get("group_multi_ref") is not True
-    assert kwargs["prompt"] == REFINE_API_PROMPT
-    assert "EDIT REQUEST" not in kwargs["prompt"]
+    assert kwargs.get("group_multi_ref") is True
+    assert kwargs["group_ref_file_ids"] == ["ref0", "ref1", "ref2", "ref3"]
+    assert "family peek scene" in kwargs["prompt"]
+    assert "сделай стену светлее" in kwargs["prompt"]
+    assert "EDIT REQUEST" in kwargs["prompt"]
+    assert kwargs.get("i2i_reference_mode", "selfie") != "preserve"
 
 
 @pytest.mark.asyncio

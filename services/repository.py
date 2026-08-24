@@ -1,6 +1,7 @@
 """SQLite через aiosqlite: пользователи, рефералы, лимиты, промокоды, диалог, платежи."""
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sqlite3
@@ -107,6 +108,18 @@ async def _migrate_users(db: aiosqlite.Connection) -> None:
             "last_generated_image_prompt",
             "ALTER TABLE users ADD COLUMN last_generated_image_prompt TEXT",
         ),
+        (
+            "last_generated_image_group_refs",
+            "ALTER TABLE users ADD COLUMN last_generated_image_group_refs TEXT",
+        ),
+        (
+            "last_generated_image_group_base_prompt",
+            "ALTER TABLE users ADD COLUMN last_generated_image_group_base_prompt TEXT",
+        ),
+        (
+            "last_generated_image_final_roles",
+            "ALTER TABLE users ADD COLUMN last_generated_image_final_roles TEXT",
+        ),
     ]
     for name, ddl in alters:
         if name not in cols:
@@ -151,6 +164,14 @@ async def _migrate_rate_limit_hits(db: aiosqlite.Connection) -> None:
     await db.execute(
         """
         CREATE TABLE IF NOT EXISTS chat_locks (
+            user_id INTEGER PRIMARY KEY,
+            expires_at REAL NOT NULL
+        )
+        """
+    )
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS animate_video_locks (
             user_id INTEGER PRIMARY KEY,
             expires_at REAL NOT NULL
         )
@@ -1582,6 +1603,9 @@ async def save_last_generated_image(
     image_model_label: str,
     aspect_ratio: str,
     user_prompt: str | None = None,
+    group_ref_file_ids: tuple[str, ...] | list[str] | None = None,
+    group_base_prompt: str | None = None,
+    final_roles: tuple[str, ...] | list[str] | None = None,
 ) -> None:
     """Долговременный якорь последнего результата для кнопки «✏️ Доработать»."""
     await ensure_user(user_id)
@@ -1590,6 +1614,11 @@ async def save_last_generated_image(
     if not tg_id and not url:
         return
     prompt = (user_prompt or "").strip() or None
+    refs = tuple((fid or "").strip() for fid in (group_ref_file_ids or ()) if (fid or "").strip())
+    refs_json = json.dumps(list(refs), ensure_ascii=False) if len(refs) >= 2 else None
+    base_prompt = (group_base_prompt or "").strip() or None
+    role_list = tuple((r or "").strip() for r in (final_roles or ()) if (r or "").strip())
+    roles_json = json.dumps(list(role_list), ensure_ascii=False) if role_list else None
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """
@@ -1599,7 +1628,10 @@ async def save_last_generated_image(
                 last_generated_image_model_id = ?,
                 last_generated_image_model_label = ?,
                 last_generated_image_aspect = ?,
-                last_generated_image_prompt = ?
+                last_generated_image_prompt = ?,
+                last_generated_image_group_refs = ?,
+                last_generated_image_group_base_prompt = ?,
+                last_generated_image_final_roles = ?
             WHERE id = ?
             """,
             (
@@ -1609,13 +1641,16 @@ async def save_last_generated_image(
                 (image_model_label or "модель").strip(),
                 (aspect_ratio or "1:1").strip(),
                 prompt,
+                refs_json,
+                base_prompt,
+                roles_json,
                 user_id,
             ),
         )
         await db.commit()
 
 
-async def get_last_generated_image(user_id: int) -> dict[str, str | None] | None:
+async def get_last_generated_image(user_id: int) -> dict[str, str | list[str] | None] | None:
     """Последний успешный результат генерации из БД (без TTL)."""
     await ensure_user(user_id)
     async with aiosqlite.connect(DB_PATH) as db:
@@ -1627,7 +1662,10 @@ async def get_last_generated_image(user_id: int) -> dict[str, str | None] | None
                 last_generated_image_model_id,
                 last_generated_image_model_label,
                 last_generated_image_aspect,
-                last_generated_image_prompt
+                last_generated_image_prompt,
+                last_generated_image_group_refs,
+                last_generated_image_group_base_prompt,
+                last_generated_image_final_roles
             FROM users WHERE id = ?
             """,
             (user_id,),
@@ -1639,6 +1677,24 @@ async def get_last_generated_image(user_id: int) -> dict[str, str | None] | None
     url = str(row[1]).strip() if row[1] else None
     if not tg_id and not url:
         return None
+    group_refs: list[str] = []
+    raw_refs = row[6]
+    if raw_refs:
+        try:
+            parsed = json.loads(str(raw_refs))
+            if isinstance(parsed, list):
+                group_refs = [str(x).strip() for x in parsed if str(x).strip()]
+        except json.JSONDecodeError:
+            logger.warning("invalid last_generated_image_group_refs uid=%s", user_id)
+    final_roles: list[str] = []
+    raw_roles = row[8]
+    if raw_roles:
+        try:
+            parsed_roles = json.loads(str(raw_roles))
+            if isinstance(parsed_roles, list):
+                final_roles = [str(x).strip() for x in parsed_roles if str(x).strip()]
+        except json.JSONDecodeError:
+            logger.warning("invalid last_generated_image_final_roles uid=%s", user_id)
     return {
         "telegram_file_id": tg_id,
         "media_url": url,
@@ -1646,6 +1702,9 @@ async def get_last_generated_image(user_id: int) -> dict[str, str | None] | None
         "image_model_label": str(row[3]).strip() if row[3] else "модель",
         "aspect_ratio": str(row[4]).strip() if row[4] else "1:1",
         "user_prompt": str(row[5]).strip() if row[5] else None,
+        "group_ref_file_ids": group_refs,
+        "group_base_prompt": str(row[7]).strip() if row[7] else None,
+        "final_roles": final_roles,
     }
 
 
@@ -1876,6 +1935,51 @@ async def chat_lock_acquire(user_id: int, ttl_sec: int) -> bool:
 async def chat_lock_release(user_id: int) -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("DELETE FROM chat_locks WHERE user_id = ?", (user_id,))
+        await db.commit()
+
+
+async def animate_video_lock_is_active(user_id: int) -> bool:
+    import time as _time
+
+    now = _time.time()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM animate_video_locks WHERE expires_at <= ?", (now,))
+        async with db.execute(
+            "SELECT 1 FROM animate_video_locks WHERE user_id = ?",
+            (user_id,),
+        ) as cur:
+            row = await cur.fetchone()
+    return row is not None
+
+
+async def animate_video_lock_acquire(user_id: int, ttl_sec: int) -> bool:
+    """SQLite NX+TTL: один активный animate-job на user_id."""
+    import time as _time
+
+    now = _time.time()
+    expires = now + max(1, int(ttl_sec))
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        await db.execute("DELETE FROM animate_video_locks WHERE expires_at <= ?", (now,))
+        async with db.execute(
+            "SELECT 1 FROM animate_video_locks WHERE user_id = ?",
+            (user_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        if row:
+            await db.execute("ROLLBACK")
+            return False
+        await db.execute(
+            "INSERT INTO animate_video_locks (user_id, expires_at) VALUES (?, ?)",
+            (user_id, expires),
+        )
+        await db.commit()
+    return True
+
+
+async def animate_video_lock_release(user_id: int) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM animate_video_locks WHERE user_id = ?", (user_id,))
         await db.commit()
 
 

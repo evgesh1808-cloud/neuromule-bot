@@ -282,12 +282,15 @@ async def test_animate_worker_caches_share_media(monkeypatch) -> None:
 
     monkeypatch.setattr(generation_jobs, "openrouter_videos_configured", lambda _s: True)
 
-    async def _fake_openrouter_animate(_settings, *, bot, telegram_file_id):
+    async def _fake_openrouter_animate(_settings, *, bot, telegram_file_id, prompt=None):
         assert telegram_file_id == "src_selfie"
         return OpenRouterAnimateResult(
             url="https://cdn.fake/animate.mp4",
             api_key="or-key",
         )
+
+    async def _noop_release_lock(_uid):
+        return None
 
     async def _fake_row(_uid):
         return SimpleNamespace(crystals=80)
@@ -308,6 +311,10 @@ async def test_animate_worker_caches_share_media(monkeypatch) -> None:
         _fake_download_video,
     )
     monkeypatch.setattr(generation_jobs, "get_user_row", _fake_row)
+    monkeypatch.setattr(
+        "services.animate_video_lock.release_animate_video_lock",
+        _noop_release_lock,
+    )
 
     class _NoopAction:
         async def __aenter__(self):

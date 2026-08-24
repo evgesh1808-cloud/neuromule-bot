@@ -271,6 +271,9 @@ CB_SHOW_INSTRUCTION = "show_instruction"
 CB_CHECK_SUBSCRIPTION = "check_subscription"
 CB_RECHECK_SUBSCRIPTION = "recheck_subscription"
 CB_RESULT_ANIMATE = "res_anim"
+CB_ANIMATE_MOTION_DEFAULT = "am:def"
+CB_ANIMATE_MOTION_PREFIX = "am:"
+CB_ANIMATE_PET_MOTION_PREFIX = "ap:"
 CB_RESULT_REPEAT_PHOTO = "res_repeat_ph"
 CB_RESULT_UPSCALE = "res_upscale"
 CB_RESULT_UPSCALE_X2 = "res_up_x2"
@@ -1716,6 +1719,22 @@ TXT_MUSIC_QUEUE_ACCEPTED = (
 TXT_ANIMATE_QUEUE_ACCEPTED = (
     "⏳ Фотография получена. NeuroMule добавляет задачу в очередь на оживление…"
 )
+TXT_ANIMATE_MOTION_SURVEY_INTRO = (
+    "🎬 <b>Конструктор движений</b>\n\n"
+    "Настроим, как оживится каждый участник кадра (сверху вниз). "
+    "Стоимость оживления — {cost} 💎.\n\n"
+    "Можно пропустить опрос — тогда будет мягкое моргание и дыхание без зевоты."
+)
+TXT_ANIMATE_MOTION_ASK = "Что делает <b>{role}</b>?"
+TXT_ANIMATE_PET_ASK = "Что делает <b>{pet}</b>?"
+TXT_ANIMATE_GENERATING_BUSY = (
+    "⏳ Ваше видео ещё монтируется ИИ-режиссёром (это занимает 1–5 минут). "
+    "Пожалуйста, подождите!"
+)
+TXT_ANIMATE_MOTION_DIRECTING = (
+    "🎬 ИИ-режиссёр собирает сценарий движений… Оживление займёт 1–5 минут."
+)
+BTN_ANIMATE_MOTION_SKIP = "🪄 Пропустить опрос (Дефолт)"
 
 TXT_BALANCE_LOW_FOOTER = "\n\n⚠️ Внимание: кристаллы заканчиваются! [Пополнить] — раздел «Тарифы»."
 

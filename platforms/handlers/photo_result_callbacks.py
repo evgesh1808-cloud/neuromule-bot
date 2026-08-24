@@ -38,7 +38,7 @@ from services.photo_edit_session import (
 from services.photo_gen_status import send_photo_gen_status_message
 from services.god_mode import billing_bypass
 from services.repository import get_user_row, try_consume_crystals
-from services.use_cases.animate_generation_turn import AnimateGenOutcome, run_animate_generation_turn
+from services.use_cases.animate_generation_turn import AnimateGenOutcome
 from services.use_cases.photo_generation_turn import PhotoGenOutcome, run_photo_generation_turn
 
 logger = logging.getLogger(__name__)
@@ -60,6 +60,9 @@ def _photo_file_id_from_message(message: Message) -> str | None:
 
 async def _notify_animate_turn_result(callback: CallbackQuery, outcome: AnimateGenOutcome) -> None:
     if callback.message is None:
+        return
+    if outcome is AnimateGenOutcome.ALREADY_GENERATING:
+        await callback.message.answer(msg.TXT_ANIMATE_GENERATING_BUSY)
         return
     if outcome is AnimateGenOutcome.FORBIDDEN_BY_TARIFF:
         await callback.message.answer(
@@ -285,13 +288,16 @@ async def _resolve_animate_file_id(callback: CallbackQuery) -> str | None:
 
 
 @router.callback_query(F.data == msg.CB_RESULT_ANIMATE)
-async def result_animate_photo(callback: CallbackQuery) -> None:
+async def result_animate_photo(callback: CallbackQuery, state: FSMContext) -> None:
     """
-    Оживление одной фотографии (Image-to-Video) через OpenRouter Video API.
+    Оживление: FSM конструктор движений → GPT-режиссёр → OpenRouter Video API.
+    """
+    from platforms.handlers.animate_motion_fsm import (
+        ask_first_animate_motion_step,
+        send_animate_survey_intro,
+        start_animate_motion_survey,
+    )
 
-    Billing + очередь: ``run_animate_generation_turn`` → ``fire_animate_job``
-    → ``generate_openrouter_animate_video`` (POST/GET ``/api/v1/videos``).
-    """
     user = callback.from_user
     if user is None or callback.message is None:
         await callback.answer()
@@ -302,16 +308,22 @@ async def result_animate_photo(callback: CallbackQuery) -> None:
         await callback.answer(msg.TXT_PHOTO_REFINE_EXPIRED, show_alert=True)
         return
 
-    await callback.answer()
-    ar = await run_animate_generation_turn(
-        uid=user.id,
-        telegram_file_id=file_id,
-        bot=deps.bot(),
+    session = await _load_result_session(user.id, peer_id=callback.message.chat.id)
+    preflight = await start_animate_motion_survey(
+        user_id=user.id,
         chat_id=callback.message.chat.id,
-        settings=settings,
+        file_id=file_id,
+        state=state,
+        session=session,
     )
-    if ar.outcome is not AnimateGenOutcome.SUCCESS:
-        await _notify_animate_turn_result(callback, ar.outcome)
+    if preflight is not None:
+        await callback.answer()
+        await _notify_animate_turn_result(callback, preflight)
+        return
+
+    await callback.answer()
+    await send_animate_survey_intro(callback.message, cost=settings.cost_animate)
+    await ask_first_animate_motion_step(callback.message, state)
 
 
 @router.callback_query(F.data == msg.CB_RESULT_UPSCALE)

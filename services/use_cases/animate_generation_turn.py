@@ -8,6 +8,12 @@ from typing import TYPE_CHECKING
 
 from config import Settings, settings as app_settings
 from content import messages as msg
+from services.animate_video_lock import (
+    DEFAULT_ANIMATE_LOCK_TTL_SEC,
+    is_animate_video_locked,
+    release_animate_video_lock,
+    try_acquire_animate_video_lock,
+)
 from services.billing import billing
 from services.generation_jobs import GenTask, fire_animate_job, make_animate_task_id
 from services.repository import get_user_row
@@ -22,6 +28,7 @@ class AnimateGenOutcome(str, Enum):
     FORBIDDEN_BY_TARIFF = "forbidden_by_tariff"
     FREE_PREMIUM_BLOCKED = "free_premium_blocked"
     INSUFFICIENT_BALANCE = "insufficient_balance"
+    ALREADY_GENERATING = "already_generating"
     SUCCESS = "success"
 
 
@@ -38,17 +45,25 @@ async def run_animate_generation_turn(
     bot: "Bot",
     chat_id: int | None = None,
     settings: Settings | None = None,
+    motion_prompt: str | None = None,
 ) -> AnimateGenResult:
-    _ = settings or app_settings
+    cfg = settings or app_settings
     cid = chat_id if chat_id is not None else uid
     photo_id = (telegram_file_id or "").strip()
     if not photo_id:
         return AnimateGenResult(outcome=AnimateGenOutcome.NEED_PHOTO)
 
+    if await is_animate_video_locked(uid):
+        return AnimateGenResult(outcome=AnimateGenOutcome.ALREADY_GENERATING)
+
     row = await get_user_row(uid)
     tariff = normalize_tariff(row.tariff)
     if not can_use_animate(tariff):
         return AnimateGenResult(outcome=AnimateGenOutcome.FORBIDDEN_BY_TARIFF, upgrade_to="ultra")
+
+    min_cost = int(getattr(cfg, "cost_animate", 20) or 20)
+    if int(row.crystals or 0) < min_cost:
+        return AnimateGenResult(outcome=AnimateGenOutcome.INSUFFICIENT_BALANCE)
 
     spend = await billing.spend_animate(uid)
     if not spend.ok:
@@ -58,6 +73,13 @@ async def run_animate_generation_turn(
 
     charge = spend.charge
     assert charge is not None
+
+    if not await try_acquire_animate_video_lock(uid, ttl_sec=DEFAULT_ANIMATE_LOCK_TTL_SEC, settings=cfg):
+        if charge.charge_id:
+            await billing.refund_charge(charge.charge_id)
+        return AnimateGenResult(outcome=AnimateGenOutcome.ALREADY_GENERATING)
+
+    cleaned_prompt = (motion_prompt or "").strip() or None
     new_task = GenTask(
         task_id=make_animate_task_id(uid),
         bot=bot,
@@ -66,9 +88,17 @@ async def run_animate_generation_turn(
         task_type="animate",
         status="pending",
         file_id=photo_id,
+        prompt=cleaned_prompt,
         charged_crystals=charge.crystals,
         billing_charge_id=charge.charge_id,
     )
-    fire_animate_job(new_task)
+    try:
+        fire_animate_job(new_task)
+    except Exception:
+        await release_animate_video_lock(uid)
+        if charge.charge_id:
+            await billing.refund_charge(charge.charge_id)
+        raise
+
     await bot.send_message(cid, msg.TXT_ANIMATE_QUEUE_ACCEPTED)
     return AnimateGenResult(outcome=AnimateGenOutcome.SUCCESS)

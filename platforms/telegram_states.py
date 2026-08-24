@@ -51,6 +51,12 @@ class MusicFlow(StatesGroup):
     waiting_for_instrumental_style = State()
 
 
+class AnimateMotionStates(StatesGroup):
+    """Пошаговый конструктор движений перед image-to-video."""
+
+    choosing_motion = State()
+
+
 class AdminStates(StatesGroup):
     waiting_for_crystals = State()
     waiting_for_broadcast = State()
