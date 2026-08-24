@@ -864,7 +864,7 @@ def _build_multi_ref_identity_lines(num_refs: int) -> str:
     return "\n".join(lines)
 
 
-def build_structured_multi_ref_prompt(
+def _build_legacy_structured_multi_ref_prompt(
     layout: SceneLayout,
     face_descriptions: list[str],
     *,
@@ -941,6 +941,32 @@ def build_structured_multi_ref_prompt(
     return append_negative_prompt_directive(
         prompt,
         negative=MULTI_REF_GROUP_NEGATIVE_PROMPT,
+    )
+
+
+def build_structured_multi_ref_prompt(
+    layout: SceneLayout,
+    face_descriptions: list[str],
+    *,
+    verbatim_scene_text: str | None = None,
+) -> str:
+    """Peek-wall family template or legacy identity-block prompt."""
+    from services.group_ref_slot_map import (
+        build_structured_multi_ref_prompt as build_peek_wall_prompt,
+        final_roles_from_layout,
+        is_peek_wall_group_scene,
+    )
+
+    scene_text = (
+        (verbatim_scene_text or layout.scene_description_en or DEFAULT_PHOTO_USER_INTENT).strip()
+    )
+    if is_peek_wall_group_scene(scene_text):
+        roles = final_roles_from_layout(layout, len(face_descriptions))
+        return build_peek_wall_prompt(roles)
+    return _build_legacy_structured_multi_ref_prompt(
+        layout,
+        face_descriptions,
+        verbatim_scene_text=verbatim_scene_text,
     )
 
 

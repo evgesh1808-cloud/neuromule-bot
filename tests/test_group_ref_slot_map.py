@@ -11,8 +11,11 @@ from config import Settings
 from services.group_ref_slot_map import (
     apply_explicit_ref_slots,
     build_ordered_role_slots,
+    build_structured_multi_ref_prompt as build_peek_wall_prompt,
+    coerce_final_roles,
     layout_from_ref_slots,
     merge_ref_slot_maps,
+    normalize_peek_wall_role,
     parse_explicit_ref_slot_map,
     should_preserve_verbatim_group_prompt,
 )
@@ -102,12 +105,45 @@ def test_build_structured_prompt_verbatim_preserves_user_text() -> None:
         verbatim_scene_text=MISH04_STYLE_PROMPT,
     )
 
-    assert "User scene prompt (preserve composition" in prompt
-    assert "vertical matte wall" in prompt
+    assert "Динамичное групповое фото 4 человек" in prompt
+    assert "Композиция «прятки»" in prompt
+    assert "input_references[0]" in prompt
     assert "input_references[2]" in prompt
-    assert "daughter" in prompt.lower()
-    assert "NOT the mother/woman" in prompt
-    assert "under-eye bags" in prompt
+    assert "NOT the woman" in prompt
+    assert "формат 9:16" in prompt
+    assert "mouths closed" in prompt
+
+
+def test_build_peek_wall_prompt_family_of_four() -> None:
+    prompt = build_peek_wall_prompt(["папа", "мама", "дочка", "сын"])
+
+    assert prompt.startswith("Динамичное групповое фото 4 человек")
+    assert "1. Мужчина (папа, input_references[0])" in prompt
+    assert "2. Женщина (мама, input_references[1])" in prompt
+    assert "3. Дочка (девочка, input_references[2], NOT the woman)" in prompt
+    assert "4. Сын (мальчик, input_references[3])" in prompt
+    assert "наклоняет торс из-за стены на самом верху" in prompt
+    assert "самом нижнем уровне" in prompt
+    assert "ЧЕРНУЮ МАЙКУ" in prompt
+    assert "сфокусированные" in prompt
+
+
+def test_build_peek_wall_prompt_two_sons_two_daughters() -> None:
+    roles = {0: "сын", 1: "дочка", 2: "сын", 3: "дочка"}
+    prompt = build_peek_wall_prompt(roles)
+
+    assert "4 человек" in prompt
+    assert "input_references[0]" in prompt
+    assert "input_references[3]" in prompt
+    assert "NOT the woman" not in prompt
+    assert coerce_final_roles(roles) == ["сын", "дочка", "сын", "дочка"]
+
+
+def test_normalize_peek_wall_role_synonyms() -> None:
+    assert normalize_peek_wall_role("man/father") == "папа"
+    assert normalize_peek_wall_role("woman/mother") == "мама"
+    assert normalize_peek_wall_role("daughter") == "дочка"
+    assert normalize_peek_wall_role("мальчик") == "сын"
 
 
 def test_build_structured_prompt_photo3_daughter_slot() -> None:
@@ -118,7 +154,7 @@ def test_build_structured_prompt_photo3_daughter_slot() -> None:
 
     assert "input_references[2]" in prompt
     assert "дочка" in prompt
-    assert "NOT the mother/woman" in prompt
+    assert "CRITICAL MULTI-SUBJECT" in prompt
 
 
 @pytest.mark.asyncio
@@ -173,10 +209,9 @@ async def test_build_group_api_prompt_uses_face_mapper_and_verbatim_scene() -> N
         prompt = await build_group_multi_ref_api_prompt(settings, MISH04_STYLE_PROMPT, faces)
 
     mapper.assert_awaited_once()
-    assert "User scene prompt (preserve composition" in prompt
-    assert "vertical matte wall" in prompt
+    assert "Динамичное групповое фото 4 человек" in prompt
+    assert "Композиция «прятки»" in prompt
     assert "input_references[2]" in prompt
-    assert "daughter" in prompt.lower()
 
 
 @pytest.mark.asyncio

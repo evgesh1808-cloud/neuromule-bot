@@ -464,6 +464,191 @@ def apply_vertical_peek_placements(layout: SceneLayout, user_prompt: str) -> Sce
     return SceneLayout(characters=characters, scene_description_en=layout.scene_description_en)
 
 
+_PEEK_WALL_ROLE_ALIASES: dict[str, str] = {
+    "папа": "папа",
+    "отец": "папа",
+    "father": "папа",
+    "man/father": "папа",
+    "man": "папа",
+    "husband": "папа",
+    "мужчина": "папа",
+    "мама": "мама",
+    "mother": "мама",
+    "woman/mother": "мама",
+    "woman": "мама",
+    "wife": "мама",
+    "женщина": "мама",
+    "девушка": "мама",
+    "дочка": "дочка",
+    "дочь": "дочка",
+    "daughter": "дочка",
+    "девочка": "дочка",
+    "girl": "дочка",
+    "сын": "сын",
+    "son": "сын",
+    "мальчик": "сын",
+    "boy": "сын",
+}
+
+
+def is_peek_wall_group_scene(user_prompt: str) -> bool:
+    """True when user intent matches vertical wall-peek family composition."""
+    low = (user_prompt or "").strip().lower()
+    if not low:
+        return False
+    if any(marker in low for marker in _VERTICAL_PEEK_MARKERS):
+        return True
+    return any(token in low for token in ("прятки", "пряток", "peek stack", "за стен"))
+
+
+def normalize_peek_wall_role(role: str) -> str:
+    """Normalize free-text / mapper label → canonical peek-wall role."""
+    low = (role or "").strip().lower()
+    if not low:
+        return "person"
+    if low in _PEEK_WALL_ROLE_ALIASES:
+        return _PEEK_WALL_ROLE_ALIASES[low]
+    if any(k in low for k in ("пап", "father", "man/father", "husband", "отец", "мужчин")):
+        if not any(k in low for k in ("мам", "woman")):
+            return "папа"
+    if any(k in low for k in ("мам", "mother", "woman/mother", "wife", "женщин", "девушк")):
+        if not any(k in low for k in ("доч", "daughter")):
+            return "мама"
+    if any(k in low for k in ("доч", "daughter", "девоч")):
+        return "дочка"
+    if any(k in low for k in ("сын", "son", "мальчик")):
+        return "сын"
+    return low
+
+
+def coerce_final_roles(
+    final_roles: dict[int, str] | list[str] | tuple[str, ...],
+) -> list[str]:
+    """``{ref_index: role}`` or ordered list → roles aligned with input_references."""
+    if isinstance(final_roles, dict):
+        if not final_roles:
+            return []
+        indices = sorted(idx for idx in final_roles if idx >= 0)
+        if not indices:
+            return []
+        return [
+            normalize_peek_wall_role(final_roles[i]) if i in final_roles else "person"
+            for i in range(indices[-1] + 1)
+        ]
+    return [normalize_peek_wall_role(role) for role in final_roles]
+
+
+def final_roles_from_layout(layout: SceneLayout, num_refs: int) -> list[str]:
+    """Build ordered role list from SceneLayout characters (index = input_references)."""
+    by_ref = {int(c.ref_index): c.label for c in layout.characters}
+    return [
+        normalize_peek_wall_role(by_ref.get(i, f"Person {i + 1}"))
+        for i in range(max(0, num_refs))
+    ]
+
+
+def _peek_wall_role_marker(idx: int, role: str, *, has_mama: bool) -> str:
+    if role == "папа":
+        return f"Мужчина (папа, input_references[{idx}])"
+    if role == "мама":
+        return f"Женщина (мама, input_references[{idx}])"
+    if role == "дочка":
+        suffix = ", NOT the woman" if has_mama else ""
+        return f"Дочка (девочка, input_references[{idx}]{suffix})"
+    if role == "сын":
+        return f"Сын (мальчик, input_references[{idx}])"
+    return f"Персонаж ({role}, input_references[{idx}])"
+
+
+def _peek_wall_pose_line(idx: int, total: int) -> str:
+    if idx == 0:
+        return " — наклоняет торс из-за стены на самом верху."
+    if idx == total - 1:
+        return " — аккуратно выглядывает на самом нижнем уровне под предыдущим, слегка наклоняясь вперед."
+    return " — высовывает голову еще ниже под предыдущим, наклоняясь вперед."
+
+
+def _peek_wall_clothing(role: str) -> str:
+    if role == "мама":
+        return " ОДЕТА В ЧЕРНУЮ МАЙКУ НА ТОНКИХ БРЕТЕЛЬКАХ."
+    return " Одет(а) в черную футболку."
+
+
+def _peek_wall_emotions(role: str) -> str:
+    if role in ("дочка", "сын"):
+        eyes = "сфокусированные" if role == "сын" else "блестящие"
+        return (
+            " Рот закрыт, милая улыбка без зубов. "
+            f"Глаза невероятно живые, {eyes}, осознанный взгляд строго в камеру "
+            "(engaged eye-contact), четкие блики (crisp catchlights)."
+        )
+    if role == "папа":
+        return (
+            " Рот закрыт, на губах легкая полуулыбка. "
+            "Глаза невероятно живые, осознанный взгляд прямо в камеру "
+            "(engaged eye-contact), в зрачках четкие студийные блики (crisp catchlights)."
+        )
+    if role == "мама":
+        return (
+            " Рот плотно закрыт, спокойная легкая улыбка. "
+            "Глаза невероятно живые, влажные, осознанный взгляд прямо в камеру "
+            "(engaged eye-contact), яркие студийные блики (crisp catchlights) в зрачках."
+        )
+    return (
+        " Рот закрыт, спокойная легкая улыбка. "
+        "Глаза невероятно живые, осознанный взгляд прямо в камеру "
+        "(engaged eye-contact), четкие блики (crisp catchlights)."
+    )
+
+
+def build_structured_multi_ref_prompt(
+    final_roles: dict[int, str] | list[str] | tuple[str, ...],
+) -> str:
+    """
+    Динамический шаблон «прятки за стеной» для multi-ref OpenRouter.
+
+    ``final_roles``: индекс = позиция в ``input_references``, значение = роль
+    (``папа``, ``мама``, ``дочка``, ``сын`` и синонимы).
+    """
+    roles = coerce_final_roles(final_roles)
+    count = len(roles)
+    if count < 2:
+        raise ValueError("build_structured_multi_ref_prompt requires at least 2 roles")
+
+    has_mama = "мама" in roles
+    header = (
+        f"Динамичное групповое фото {count} человек с закрытыми ртами. "
+        "100% точное копирование лиц строго по эталонным фото input_references.\n"
+        f"Композиция «прятки»: слева стоит массивная вертикальная белая стена. "
+        f"Все {count} героя полностью спрятаны ЗА стеной, но их головы и плечи игриво "
+        "ИЗ-ЗА неё ВЫГЛЯДЫВАЮТ на разной высоте, образуя чистую, плавно выровненную "
+        "вертикальную линию.\n"
+        "Физика поз, ОДЕЖДА и ЭМОЦИИ строго сверху вниз:"
+    )
+
+    person_lines: list[str] = []
+    for idx, role in enumerate(roles):
+        line = (
+            f"{idx + 1}. {_peek_wall_role_marker(idx, role, has_mama=has_mama)}"
+            f"{_peek_wall_pose_line(idx, count)}"
+            f"{_peek_wall_clothing(role)}"
+            f"{_peek_wall_emotions(role)}"
+        )
+        person_lines.append(line)
+
+    footer = (
+        "Все герои физически держатся руками за край стены, пальцы детализированы.\n"
+        f"У ВСЕХ {count} ГЕРОЕВ БЕЗ ИСКЛЮЧЕНИЯ рты закрыты (mouths closed), "
+        "полностью отсутствуют удивленные или открытые рты, нет пустых или стеклянных глаз.\n"
+        "Студийный свет, теплый нежный бэкграунд-градиент справа, мягкие тени. "
+        "Детализированная кожа, волосы, бархатистая текстура стены. Размытый фон. "
+        "Все персонажи одеты исключительно в одинаковую черную одежду. "
+        "Вертикальный студийный портрет 4K, формат 9:16"
+    )
+
+    return "\n".join([header, *person_lines, footer])
+
+
 def build_group_slot_layout(
     user_prompt: str,
     face_descriptions: list[str],
