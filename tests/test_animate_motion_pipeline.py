@@ -91,9 +91,12 @@ async def test_expand_motion_prompt_with_gpt_uses_director(monkeypatch) -> None:
     assert "NO yawning" in out
 
 
-def test_default_animate_prompt_blocks_yawning_and_smiling() -> None:
+def test_default_animate_prompt_blocks_hallucinations() -> None:
     assert "NO yawning" in ANIMATE_DEFAULT_PROMPT
     assert "NO smiling" in ANIMATE_DEFAULT_PROMPT
+    assert "NO new hats" in ANIMATE_DEFAULT_PROMPT
+    assert "NO red eyes" in ANIMATE_DEFAULT_PROMPT
+    assert "IDENTICAL to the source" in ANIMATE_DEFAULT_PROMPT
 
 
 def test_infer_ref_count_from_peek_wall_prompt() -> None:

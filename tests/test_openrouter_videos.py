@@ -138,6 +138,7 @@ async def test_generate_openrouter_animate_video_polls_until_completed() -> None
     assert frame["image_url"]["url"].startswith("data:image/jpeg;base64,")
     assert "NO yawning" in body["prompt"]
     assert "NO smiling" in body["prompt"]
+    assert "NO new hats" in body["prompt"]
 
 
 @pytest.mark.asyncio

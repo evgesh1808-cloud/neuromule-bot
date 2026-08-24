@@ -30,13 +30,18 @@ ANIMATE_FRAME_JPEG_QUALITY = 88
 ANIMATE_VIDEO_MAX_BYTES = 50 * 1024 * 1024
 
 ANIMATE_DEFAULT_PROMPT = (
-    "Ultra-subtle cinematic portrait animation: gentle natural eye blinks only, "
-    "soft chest breathing, completely neutral relaxed closed lips, "
-    "faces remain calm and still, minimal micro-movement, no head turns, "
+    "Strict image-to-video: animate ONLY the existing photo exactly as shown in the first frame. "
+    "Ultra-subtle portrait animation: gentle natural eye blinks and soft chest breathing only. "
+    "Keep every face, body, hairstyle, clothing, headwear, accessories, background, and colors "
+    "IDENTICAL to the source image — do NOT add, remove, or change anything. "
+    "NO new hats, NO new headwear, NO new accessories, NO wardrobe changes, NO new objects. "
+    "NO red eyes, NO glowing eyes, NO eye color change, NO demon eyes, NO lens flare on eyes. "
+    "Completely neutral relaxed closed lips, mouths closed, faces calm and still, "
+    "minimal micro-movement, no head turns, "
     "maintain original skin texture and lighting, "
-    "mouths closed, strictly NO yawning, NO open mouths, NO teeth visible, "
-    "NO smiling, NO grinning, NO laughing, NO exaggerated expressions, NO distorted faces, "
-    "100% identity preservation, smooth cinematic video"
+    "strictly NO yawning, NO open mouths, NO teeth visible, "
+    "NO smiling, NO grinning, NO laughing, NO exaggerated expressions, NO distorted faces, NO morphing, "
+    "100% identity preservation, photorealistic, smooth cinematic video"
 )
 
 ANIMATE_MOTION_DIRECTOR_MODEL = "openai/gpt-4o-mini"
@@ -55,13 +60,17 @@ _MOTION_DIRECTOR_SYSTEM_PROMPT = (
     "- Движение из черновика применяй ТОЛЬКО к указанному человеку; остальные — "
     "почти статичны: micro eye-blink и дыхание, neutral closed mouth, NO smile.\n"
     "- Не добавляй улыбки и активную мимику тем, кому пользователь не выбирал движение.\n"
+    "- НИКОГДА не добавляй одежду, шапки, аксессуары, не меняй цвет глаз — всё как на исходном кадре.\n"
     "- В подвал промпта НАМЕРТВО зашей жесткие негативные ограничения: "
-    "'mouths closed, strictly NO yawning, NO open mouths, NO distorted faces, NO screaming, "
-    "100% identity preservation, smooth cinematic video'."
+    "'NO new hats, NO wardrobe changes, NO red eyes, mouths closed, strictly NO yawning, "
+    "NO open mouths, NO distorted faces, NO morphing, 100% identity preservation, smooth cinematic video'."
 )
 
 _MOTION_NEGATIVE_FOOTER = (
-    "mouths closed, strictly NO yawning, NO open mouths, NO distorted faces, NO screaming, "
+    "Keep clothing, headwear, and accessories exactly as in the source photo; "
+    "NO new hats, NO headwear, NO wardrobe changes, NO added or removed objects. "
+    "NO red eyes, NO glowing eyes, NO eye color change. "
+    "mouths closed, strictly NO yawning, NO open mouths, NO distorted faces, NO morphing, "
     "100% identity preservation, smooth cinematic video"
 )
 
