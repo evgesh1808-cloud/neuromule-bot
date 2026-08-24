@@ -5,6 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import aiosqlite
 import pytest
 
 from content import messages as msg
@@ -12,9 +13,9 @@ from platforms.handlers import photo_result_callbacks as handlers
 from services.use_cases.animate_generation_turn import AnimateGenOutcome, AnimateGenResult
 
 
-def _photo_message(*, file_id: str = "AgAC_photo") -> MagicMock:
+def _photo_message(*, file_id: str = "AgAC_photo", chat_id: int = 7001) -> MagicMock:
     message = MagicMock()
-    message.chat.id = 7001
+    message.chat.id = chat_id
     message.photo = [SimpleNamespace(file_id="small"), SimpleNamespace(file_id=file_id)]
     message.document = None
     message.answer = AsyncMock()
@@ -95,3 +96,38 @@ async def test_result_animate_regenerate_uses_last_source() -> None:
     callback.answer.assert_awaited_once_with(msg.TXT_ANIMATE_REGENERATE_STARTED)
     run_turn.assert_awaited_once()
     assert run_turn.await_args.kwargs["telegram_file_id"] == "AgAC_source"
+
+
+@pytest.mark.asyncio
+async def test_result_animate_full_turn_success(repo_module) -> None:
+    from services.billing import init_billing_schema
+
+    uid = 88001
+    await repo_module.ensure_user(uid, username="full_anim")
+    async with aiosqlite.connect(repo_module.DB_PATH) as db:
+        await db.execute(
+            "UPDATE users SET tariff = ?, buy_crystals = ?, crystals = ? WHERE id = ?",
+            ("Ultra", 100, 100, uid),
+        )
+        await db.commit()
+    await init_billing_schema()
+
+    callback = MagicMock()
+    callback.from_user.id = uid
+    callback.message = _photo_message(chat_id=uid)
+    callback.answer = AsyncMock()
+    state = MagicMock()
+
+    mock_bot = MagicMock()
+    mock_bot.send_message = AsyncMock()
+
+    with (
+        patch.object(handlers.deps, "bot", return_value=mock_bot),
+        patch("services.use_cases.animate_generation_turn.fire_animate_job") as fire,
+    ):
+        await handlers.result_animate_photo(callback, state)
+
+    callback.answer.assert_awaited_once_with()
+    fire.assert_called_once()
+    mock_bot.send_message.assert_awaited_once()
+    callback.message.answer.assert_not_awaited()

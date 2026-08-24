@@ -1839,7 +1839,10 @@ async def _animate_stub_worker(task: GenTask) -> None:
         )
     finally:
         if lock_held:
-            await release_animate_video_lock(user_id)
+            try:
+                await release_animate_video_lock(user_id)
+            except Exception:
+                logger.exception("animate lock release failed uid=%s task=%s", user_id, task.task_id)
 
 
 async def _queue_worker() -> None:

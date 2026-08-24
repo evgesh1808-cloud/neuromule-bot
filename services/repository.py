@@ -1938,9 +1938,24 @@ async def chat_lock_release(user_id: int) -> None:
         await db.commit()
 
 
+async def ensure_animate_video_locks_table() -> None:
+    """Идемпотентно создаёт ``animate_video_locks`` (prod-БД до миграции PR-animate)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS animate_video_locks (
+                user_id INTEGER PRIMARY KEY,
+                expires_at REAL NOT NULL
+            )
+            """
+        )
+        await db.commit()
+
+
 async def animate_video_lock_is_active(user_id: int) -> bool:
     import time as _time
 
+    await ensure_animate_video_locks_table()
     now = _time.time()
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("DELETE FROM animate_video_locks WHERE expires_at <= ?", (now,))
@@ -1956,6 +1971,7 @@ async def animate_video_lock_acquire(user_id: int, ttl_sec: int) -> bool:
     """SQLite NX+TTL: один активный animate-job на user_id."""
     import time as _time
 
+    await ensure_animate_video_locks_table()
     now = _time.time()
     expires = now + max(1, int(ttl_sec))
     async with aiosqlite.connect(DB_PATH) as db:
@@ -1978,6 +1994,7 @@ async def animate_video_lock_acquire(user_id: int, ttl_sec: int) -> bool:
 
 
 async def animate_video_lock_release(user_id: int) -> None:
+    await ensure_animate_video_locks_table()
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("DELETE FROM animate_video_locks WHERE user_id = ?", (user_id,))
         await db.commit()

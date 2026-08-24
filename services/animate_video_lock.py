@@ -44,8 +44,9 @@ async def refresh_animate_video_lock(user_id: int, *, ttl_sec: int = DEFAULT_ANI
     """Продлевает TTL (best-effort) пока job в очереди."""
     import aiosqlite
 
-    from services.repository import DB_PATH
+    from services.repository import DB_PATH, ensure_animate_video_locks_table
 
+    await ensure_animate_video_locks_table()
     expires = time.time() + max(60, int(ttl_sec))
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(

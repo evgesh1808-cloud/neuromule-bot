@@ -89,6 +89,9 @@ async def notify_animate_outcome_message(
             reply_markup=paycat.shop_packages_keyboard(),
             parse_mode=ParseMode.HTML,
         )
+        return
+    if outcome is AnimateGenOutcome.INTERNAL_ERROR:
+        await message.answer(msg.TXT_ANIMATE_FAILED)
 
 
 async def _notify_animate_turn_result(callback: CallbackQuery, outcome: AnimateGenOutcome) -> None:
@@ -313,18 +316,18 @@ async def result_animate_photo(callback: CallbackQuery, state: FSMContext) -> No
         return
 
     await callback.answer()
-    try:
-        ar = await run_animate_generation_turn(
-            uid=user.id,
-            telegram_file_id=file_id,
-            bot=deps.bot(),
-            chat_id=callback.message.chat.id,
-            settings=settings,
-        )
-    except Exception:
-        logger.exception("result_animate_photo failed uid=%s", user.id)
-        await callback.message.answer(msg.TXT_ANIMATE_FAILED)
-        return
+    from services.photo_edit_session import pin_session_result_file_id
+
+    if not file_id.startswith(("http://", "https://", "data:")):
+        pin_session_result_file_id(user.id, file_id)
+
+    ar = await run_animate_generation_turn(
+        uid=user.id,
+        telegram_file_id=file_id,
+        bot=deps.bot(),
+        chat_id=callback.message.chat.id,
+        settings=settings,
+    )
     if ar.outcome is not AnimateGenOutcome.SUCCESS:
         await _notify_animate_turn_result(callback, ar.outcome)
 
@@ -345,19 +348,14 @@ async def result_animate_regenerate(callback: CallbackQuery) -> None:
         return
 
     await callback.answer(msg.TXT_ANIMATE_REGENERATE_STARTED)
-    try:
-        ar = await run_animate_generation_turn(
-            uid=user.id,
-            telegram_file_id=last.source_file_id,
-            bot=deps.bot(),
-            chat_id=callback.message.chat.id,
-            settings=settings,
-            motion_prompt=last.motion_prompt,
-        )
-    except Exception:
-        logger.exception("result_animate_regenerate failed uid=%s", user.id)
-        await callback.message.answer(msg.TXT_ANIMATE_FAILED)
-        return
+    ar = await run_animate_generation_turn(
+        uid=user.id,
+        telegram_file_id=last.source_file_id,
+        bot=deps.bot(),
+        chat_id=callback.message.chat.id,
+        settings=settings,
+        motion_prompt=last.motion_prompt,
+    )
     if ar.outcome is not AnimateGenOutcome.SUCCESS:
         await _notify_animate_turn_result(callback, ar.outcome)
 

@@ -22,7 +22,11 @@ OPENROUTER_VIDEOS_URL = "https://openrouter.ai/api/v1/videos"
 OPENROUTER_VIDEOS_ORIGIN = "https://openrouter.ai"
 
 OPENROUTER_ANIMATE_VIDEO_MODEL = "bytedance/seedance-2.0-mini"
+OPENROUTER_ANIMATE_VIDEO_FALLBACK_MODEL = "bytedance/seedance-2.0-fast"
 ANIMATE_FRAME_MAX_BYTES = DEFAULT_MAX_BYTES
+ANIMATE_FRAME_MIN_SIDE_PX = 512
+ANIMATE_FRAME_MAX_SIDE_PX = 2048
+ANIMATE_FRAME_JPEG_QUALITY = 88
 ANIMATE_VIDEO_MAX_BYTES = 50 * 1024 * 1024
 
 ANIMATE_DEFAULT_PROMPT = (
@@ -125,13 +129,18 @@ def _resolve_animate_model(settings: Settings) -> str:
 
 
 def _resolve_animate_model_candidates(settings: Settings) -> tuple[str, ...]:
-    """Primary + fallback из настроек (без дубликатов)."""
+    """Primary + fallback-цепочка из настроек (без дубликатов)."""
     primary = _resolve_animate_model(settings)
-    fallback = (
+    configured_fallback = (
         getattr(settings, "openrouter_animate_video_fallback_model", None) or ""
     ).strip()
     out: list[str] = []
-    for slug in (primary, fallback):
+    for slug in (
+        primary,
+        configured_fallback,
+        OPENROUTER_ANIMATE_VIDEO_FALLBACK_MODEL,
+        "google/veo-3.1-lite",
+    ):
         if slug and slug not in out:
             out.append(slug)
     return tuple(out)
@@ -184,14 +193,50 @@ def _bytes_to_data_url(data: bytes, mime: str = "image/jpeg") -> str:
     return f"data:{mime};base64,{encoded}"
 
 
+def _normalize_frame_bytes_for_api(raw: bytes) -> bytes:
+    """OpenRouter Seedance требует ≥300px; ужимаем крупные кадры для submit JSON."""
+    from PIL import Image
+
+    if not raw:
+        raise ExternalApiError("OpenRouter", "empty image bytes")
+    with Image.open(BytesIO(raw)) as img:
+        rgb = img.convert("RGB")
+        width, height = rgb.size
+        min_side = min(width, height)
+        max_side = max(width, height)
+        if min_side < ANIMATE_FRAME_MIN_SIDE_PX:
+            scale = ANIMATE_FRAME_MIN_SIDE_PX / min_side
+            rgb = rgb.resize(
+                (max(1, int(width * scale)), max(1, int(height * scale))),
+                Image.Resampling.LANCZOS,
+            )
+        elif max_side > ANIMATE_FRAME_MAX_SIDE_PX:
+            scale = ANIMATE_FRAME_MAX_SIDE_PX / max_side
+            rgb = rgb.resize(
+                (max(1, int(width * scale)), max(1, int(height * scale))),
+                Image.Resampling.LANCZOS,
+            )
+        out = BytesIO()
+        rgb.save(out, format="JPEG", quality=ANIMATE_FRAME_JPEG_QUALITY, optimize=True)
+        normalized = out.getvalue()
+    if len(normalized) > ANIMATE_FRAME_MAX_BYTES:
+        raise ExternalApiError("OpenRouter", "frame image exceeds size limit")
+    return normalized
+
+
+async def _frame_bytes_to_data_url(raw: bytes) -> str:
+    loop = asyncio.get_running_loop()
+    normalized = await loop.run_in_executor(None, _normalize_frame_bytes_for_api, raw)
+    return _bytes_to_data_url(normalized, "image/jpeg")
+
+
 async def _download_telegram_file_id(bot: Any, file_id: str) -> str:
     tg_file = await bot.get_file(file_id)
     if not tg_file or not tg_file.file_path:
         raise ExternalApiError("OpenRouter", "Telegram did not return file_path for photo")
     buffer = BytesIO()
     await bot.download_file(tg_file.file_path, buffer)
-    raw = buffer.getvalue()
-    return _bytes_to_data_url(raw, _mime_from_path(tg_file.file_path))
+    return await _frame_bytes_to_data_url(buffer.getvalue())
 
 
 async def _download_http_image_to_data_url(settings: Settings, url: str) -> str:
@@ -206,8 +251,7 @@ async def _download_http_image_to_data_url(settings: Settings, url: str) -> str:
     )
     if not data:
         raise ExternalApiError("OpenRouter", "failed to download frame image")
-    mime = _mime_from_path(url)
-    return _bytes_to_data_url(data, mime)
+    return await _frame_bytes_to_data_url(data)
 
 
 async def photo_ref_to_data_url(settings: Settings, bot: Any, photo_ref: str) -> str:

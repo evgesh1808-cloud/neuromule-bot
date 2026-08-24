@@ -114,3 +114,43 @@ async def test_animate_turn_refunds_crystals_when_lock_acquire_fails(repo_module
             row = await cur.fetchone()
     assert row is not None
     assert int(row[0]) == 100
+
+
+@pytest.mark.asyncio
+async def test_animate_turn_internal_error_refunds_after_enqueue_failure(repo_module) -> None:
+    from config import settings
+    from services.billing import init_billing_schema
+
+    uid = 77004
+    await repo_module.ensure_user(uid, username="anim_internal")
+    async with aiosqlite.connect(repo_module.DB_PATH) as db:
+        await db.execute(
+            "UPDATE users SET tariff = ?, buy_crystals = ?, crystals = ? WHERE id = ?",
+            ("Ultra", 100, 100, uid),
+        )
+        await db.commit()
+    await init_billing_schema()
+
+    bot = MagicMock()
+    bot.send_message = AsyncMock()
+
+    with patch(
+        "services.use_cases.animate_generation_turn.fire_animate_job",
+        side_effect=RuntimeError("queue down"),
+    ):
+        result = await run_animate_generation_turn(
+            uid=uid,
+            telegram_file_id="AgAC_photo_ok",
+            bot=bot,
+            chat_id=uid,
+            settings=settings,
+        )
+
+    assert result.outcome is AnimateGenOutcome.INTERNAL_ERROR
+    async with aiosqlite.connect(repo_module.DB_PATH) as db:
+        async with db.execute(
+            "SELECT buy_crystals FROM users WHERE id = ?", (uid,)
+        ) as cur:
+            row = await cur.fetchone()
+    assert row is not None
+    assert int(row[0]) == 100

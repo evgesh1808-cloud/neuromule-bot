@@ -247,8 +247,8 @@ class Settings(BaseSettings):
         str, _nonempty_str("bytedance/seedance-2.0-mini")
     ] = "bytedance/seedance-2.0-mini"
     openrouter_animate_video_fallback_model: Annotated[
-        str, _nonempty_str("google/veo-3.1-lite")
-    ] = "google/veo-3.1-lite"
+        str, _nonempty_str("bytedance/seedance-2.0-fast")
+    ] = "bytedance/seedance-2.0-fast"
     openrouter_video_poll_interval_sec: Annotated[float, _coerce_float(18.0)] = 18.0
     openrouter_video_poll_timeout_sec: Annotated[float, _coerce_float(600.0)] = 600.0
     openrouter_chat_url: str = "https://openrouter.ai/api/v1/chat/completions"

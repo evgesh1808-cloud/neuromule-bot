@@ -14,12 +14,35 @@ from services.openrouter_videos import (
     generate_openrouter_animate_video,
     photo_ref_to_data_url,
     resolve_animate_duration_for_model,
+    _normalize_frame_bytes_for_api,
 )
+
+
+def _sample_jpeg_bytes(*, size: tuple[int, int] = (640, 480)) -> bytes:
+    from io import BytesIO
+
+    from PIL import Image
+
+    buf = BytesIO()
+    Image.new("RGB", size, color=(10, 20, 30)).save(buf, format="JPEG")
+    return buf.getvalue()
 
 
 def test_resolve_animate_duration_for_veo() -> None:
     assert resolve_animate_duration_for_model("google/veo-3.1-lite") == 4
     assert resolve_animate_duration_for_model("bytedance/seedance-2.0-mini") == 4
+
+
+def test_normalize_frame_bytes_upscales_tiny_image() -> None:
+    from PIL import Image
+    from io import BytesIO
+
+    img = Image.new("RGB", (64, 64), color=(120, 80, 40))
+    buf = BytesIO()
+    img.save(buf, format="JPEG")
+    normalized = _normalize_frame_bytes_for_api(buf.getvalue())
+    with Image.open(BytesIO(normalized)) as out:
+        assert min(out.size) >= 512
 
 
 def test_build_frame_images_uses_openrouter_content_part_schema() -> None:
@@ -35,11 +58,13 @@ def test_build_frame_images_uses_openrouter_content_part_schema() -> None:
 
 @pytest.mark.asyncio
 async def test_photo_ref_to_data_url_from_telegram_file_id() -> None:
+    jpeg_bytes = _sample_jpeg_bytes()
+
     bot = MagicMock()
     tg_file = MagicMock()
     tg_file.file_path = "photos/file.jpg"
     bot.get_file = AsyncMock(return_value=tg_file)
-    bot.download_file = AsyncMock(side_effect=lambda _path, dest: dest.write(b"jpeg-bytes"))
+    bot.download_file = AsyncMock(side_effect=lambda _path, dest: dest.write(jpeg_bytes))
 
     data_url = await photo_ref_to_data_url(
         Settings(tg_token="bot-token"),
@@ -57,7 +82,7 @@ async def test_generate_openrouter_animate_video_polls_until_completed() -> None
     tg_file = MagicMock()
     tg_file.file_path = "photos/file.jpg"
     bot.get_file = AsyncMock(return_value=tg_file)
-    bot.download_file = AsyncMock(side_effect=lambda _path, dest: dest.write(b"jpeg-bytes"))
+    bot.download_file = AsyncMock(side_effect=lambda _path, dest: dest.write(_sample_jpeg_bytes()))
 
     submit_resp = MagicMock()
     submit_resp.status_code = 202
@@ -181,7 +206,7 @@ async def test_generate_openrouter_animate_video_402_raises_quota_error() -> Non
     tg_file = MagicMock()
     tg_file.file_path = "photos/file.jpg"
     bot.get_file = AsyncMock(return_value=tg_file)
-    bot.download_file = AsyncMock(side_effect=lambda _path, dest: dest.write(b"jpeg-bytes"))
+    bot.download_file = AsyncMock(side_effect=lambda _path, dest: dest.write(_sample_jpeg_bytes()))
 
     fail_resp = MagicMock()
     fail_resp.status_code = 402
