@@ -532,3 +532,27 @@ async def get_or_restore_photo_edit_session(
     if peer_id is not None and restored.chat_id is not None and restored.chat_id != peer_id:
         return None
     return restored
+
+
+async def build_refine_edit_prompt_for_job(settings: object, user_text: str) -> str:
+    """Собирает финальный EN edit-промпт до постановки job (режим preserve)."""
+    from services.openrouter_images import translate_photo_user_intent
+
+    cleaned = (user_text or "").strip() or "subtle quality improvements"
+    try:
+        intent_en = await translate_photo_user_intent(settings, cleaned)  # type: ignore[arg-type]
+    except Exception:
+        logger.warning("refine edit prompt translation failed, using raw text", exc_info=True)
+        intent_en = cleaned
+    return build_photo_refine_edit_prompt(intent_en)
+
+
+def pin_session_result_file_id(user_id: int, telegram_file_id: str) -> None:
+    """Обновляет file_id результата из сообщения с кнопкой «Доработать»."""
+    fid = (telegram_file_id or "").strip()
+    if not fid:
+        return
+    sess = get_photo_edit_session(user_id)
+    if sess is None:
+        return
+    _sessions[user_id] = _clone_photo_edit_session(sess, telegram_file_id=fid)

@@ -380,6 +380,55 @@ async def _load_telegram_photo_bytes(bot: "Bot", file_id: str) -> tuple[bytes, s
     return data, mime
 
 
+async def materialize_photo_reference_for_job(
+    bot: "Bot | None",
+    *,
+    telegram_file_id: str | None = None,
+    reference_image_url: str | None = None,
+    reference_image_bytes: bytes | None = None,
+    reference_mime: str = "image/jpeg",
+) -> tuple[str | None, str | None, bytes | None, str]:
+    """
+    Перед постановкой i2i edit-job скачивает референс в bytes (надёжнее file_id/CDN).
+    Возвращает (file_id, url, bytes, mime) — при успешном download только bytes.
+    """
+    if reference_image_bytes is not None:
+        if isinstance(reference_image_bytes, memoryview):
+            raw = reference_image_bytes.tobytes()
+        elif isinstance(reference_image_bytes, (bytes, bytearray)):
+            raw = bytes(reference_image_bytes)
+        else:
+            raw = None
+        if raw:
+            mime = (reference_mime or "image/jpeg").strip() or "image/jpeg"
+            return None, None, raw, mime
+
+    fid = (telegram_file_id or "").strip() or None
+    url = (reference_image_url or "").strip() or None
+    if bot is not None and fid:
+        try:
+            raw, mime = await _load_telegram_photo_bytes(bot, fid)
+            return None, None, raw, mime
+        except ExternalApiError:
+            logger.warning("materialize ref: telegram file_id failed fid=%s", fid[:12], exc_info=True)
+
+    if url:
+        try:
+            raw, mime = await _load_reference_image_bytes(
+                bot=bot,
+                file_id=None,
+                reference_image_url=url,
+                reference_image_bytes=None,
+                reference_mime=reference_mime,
+            )
+            return None, None, raw, mime
+        except ExternalApiError:
+            logger.warning("materialize ref: url download failed", exc_info=True)
+
+    mime = (reference_mime or "image/jpeg").strip() or "image/jpeg"
+    return fid, url, None, mime
+
+
 async def _resolve_reference_data_url(
     bot: "Bot | None",
     file_id: str | None,
@@ -712,7 +761,7 @@ async def _generate_flux_schnell_paid(
     has_ref = bool((reference_data_url or "").strip())
     fallback_models = (
         resolve_identity_i2i_fallback_models(OPENROUTER_FLUX_PAID_MODEL)
-        if has_ref and i2i_reference_mode in ("selfie", "edit")
+        if has_ref and i2i_reference_mode in ("selfie", "edit", "preserve")
         else OPENROUTER_FLUX_STACK_FALLBACKS
     )
     return await _generate_openrouter_photo_model(
@@ -942,7 +991,7 @@ async def _generate_openrouter_photo_model(
     has_ref = bool((reference_data_url or "").strip())
     effective_fallbacks = (
         resolve_identity_i2i_fallback_models(model)
-        if has_ref and i2i_reference_mode in ("selfie", "edit")
+        if has_ref and i2i_reference_mode in ("selfie", "edit", "preserve")
         else fallback_models
     )
 
@@ -1073,7 +1122,8 @@ async def _generate_photo_result(
             )
 
     has_reference = _photo_has_reference(file_id, reference_image_url, reference_image_bytes)
-    if (i2i_reference_mode or "").strip() == "edit" and not has_reference:
+    mode = (i2i_reference_mode or "selfie").strip()
+    if mode in ("edit", "preserve") and not has_reference:
         raise ExternalApiError("PhotoRef", "edit mode requires a reference image")
 
     model_key = resolve_smart_photo_model_key(
@@ -1081,6 +1131,9 @@ async def _generate_photo_result(
         has_reference=has_reference,
         prompt=prompt,
     )
+    if (i2i_reference_mode or "").strip() in ("edit", "preserve") and has_reference:
+        if model_key == "flux_2_pro":
+            model_key = "nano_banana_pro"
     reference_data_url = await _resolve_reference_data_url(
         bot,
         file_id,
@@ -1088,21 +1141,20 @@ async def _generate_photo_result(
         reference_image_bytes,
         reference_mime,
     )
-    if (i2i_reference_mode or "").strip() == "edit" and not reference_data_url:
+    if mode in ("edit", "preserve") and not reference_data_url:
         raise ExternalApiError("PhotoRef", "edit mode reference could not be encoded")
 
     try:
         if model_key == "flux_2_pro":
             if await _free_tier_flux_uses_pollinations(user_id, model_key):
-                if i2i_reference_mode == "edit" and has_reference:
-                    return await _generate_free_tier_photo(
+                if i2i_reference_mode in ("edit", "preserve") and has_reference:
+                    return await _generate_openrouter_photo_model(
+                        OPENROUTER_NANO_BANANA_PRO_MODEL,
                         prompt,
-                        bot=bot,
-                        file_id=file_id,
-                        reference_image_url=reference_image_url,
-                        reference_image_bytes=reference_image_bytes,
-                        reference_mime=reference_mime,
-                        i2i_reference_mode="edit",
+                        aspect_ratio=ar,
+                        reference_data_url=reference_data_url,
+                        fallback_models=NANO_BANANO_PRO_FALLBACKS,
+                        i2i_reference_mode=i2i_reference_mode,  # type: ignore[arg-type]
                     )
                 return await generate_flux_schnell_image(prompt)
             return await _generate_flux_schnell_paid(
@@ -1278,7 +1330,9 @@ async def _photo_stub_worker(task: GenTask) -> None:
         return
 
     model_key = _normalize_photo_model_id(task.image_model_id, task.model_label)
-    is_free = task.used_daily_slot or model_key == FREE_PHOTO_MODEL_KEY
+    edit_mode = (task.i2i_reference_mode or "selfie").strip() == "edit"
+    preserve_mode = (task.i2i_reference_mode or "selfie").strip() == "preserve"
+    is_free = (task.used_daily_slot or model_key == FREE_PHOTO_MODEL_KEY) and not edit_mode and not preserve_mode
 
     logger.info(
         "photo job %s user_id=%s model_id=%s model_key=%s prompt_len=%s file_id=%s ref_url=%s ref_bytes=%s free_slot=%s platform=%s i2i_mode=%s",

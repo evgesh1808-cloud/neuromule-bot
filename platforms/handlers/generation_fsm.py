@@ -835,7 +835,7 @@ async def _try_dispatch_sharpen_upscale_refine(
     return True
 
 
-async def _dispatch_group_refine_from_session(
+async def _dispatch_text_refine_from_session(
     message: Message,
     state: FSMContext,
     *,
@@ -845,8 +845,10 @@ async def _dispatch_group_refine_from_session(
     label: str,
     aspect: str,
 ) -> None:
-    """Text refine after group photo: i2i on the generated result, not a new 4-ref run."""
+    """i2i «Доработать текстом»: один референс = последний результат, preserve-промпт."""
+    from services.generation_jobs import materialize_photo_reference_for_job
     from services.photo_edit_session import (
+        build_refine_edit_prompt_for_job,
         clear_awaiting_text_refine,
         resolve_session_result_reference,
         session_has_result_image,
@@ -856,22 +858,26 @@ async def _dispatch_group_refine_from_session(
         await message.answer(msg.TXT_PHOTO_REFINE_EXPIRED)
         return
 
+    body = (edit_prompt or "").strip()
+    if not body:
+        await message.answer(msg.TXT_CREATE_IMAGE_AFTER_MODEL)
+        return
+
     result_ref = resolve_session_result_reference(session)
-    file_id = result_ref.telegram_file_id
-    ref_url = result_ref.media_url if not file_id else None
-    ref_bytes = (
-        result_ref.reference_image_bytes
-        if not file_id and not ref_url
-        else None
+    bot = deps.bot()
+    file_id, ref_url, ref_bytes, ref_mime = await materialize_photo_reference_for_job(
+        bot,
+        telegram_file_id=result_ref.telegram_file_id,
+        reference_image_url=result_ref.media_url,
+        reference_image_bytes=result_ref.reference_image_bytes,
+        reference_mime=result_ref.reference_mime,
     )
     if not file_id and not ref_url and not ref_bytes:
         await message.answer(msg.TXT_PHOTO_REFINE_EXPIRED)
         return
 
-    combined = (edit_prompt or "").strip()
-    if not combined:
-        await message.answer(msg.TXT_CREATE_IMAGE_AFTER_MODEL)
-        return
+    api_prompt = await build_refine_edit_prompt_for_job(settings, body)
+
     if message.from_user is not None:
         clear_awaiting_text_refine(message.from_user.id)
     await state.update_data(
@@ -883,15 +889,37 @@ async def _dispatch_group_refine_from_session(
     await process_photo_prompt_message(
         message,
         state,
-        model_id=model_id,
-        label=label,
-        prompt=combined,
+        model_id=str(model_id or session.image_model_id or "").strip(),
+        label=str(label or session.image_model_label or "модель"),
+        prompt=api_prompt,
         telegram_file_id=file_id,
         reference_image_url=ref_url,
         reference_image_bytes=ref_bytes,
-        reference_mime=result_ref.reference_mime,
+        reference_mime=ref_mime,
         aspect_ratio=aspect,
-        i2i_reference_mode="edit",
+        i2i_reference_mode="preserve",
+    )
+
+
+async def _dispatch_group_refine_from_session(
+    message: Message,
+    state: FSMContext,
+    *,
+    session: PhotoEditSession,
+    edit_prompt: str,
+    model_id: str,
+    label: str,
+    aspect: str,
+) -> None:
+    """Text refine after group photo: same i2i edit path as single-photo refine."""
+    await _dispatch_text_refine_from_session(
+        message,
+        state,
+        session=session,
+        edit_prompt=edit_prompt,
+        model_id=model_id,
+        label=label,
+        aspect=aspect,
     )
 
 
@@ -1260,11 +1288,9 @@ async def photo_process(message: Message, state: FSMContext) -> None:
     if await _dispatch_nav_or_none(message, state):
         return
     from services.photo_edit_session import (
-        clear_awaiting_text_refine,
         get_or_restore_photo_edit_session,
         get_photo_edit_session,
         resolve_session_result_reference,
-        session_has_group_refs,
         session_has_result_image,
         update_photo_edit_session_aspect_ratio,
     )
@@ -1390,31 +1416,33 @@ async def photo_process(message: Message, state: FSMContext) -> None:
         if refine_from_result and prompt:
             if await _try_dispatch_sharpen_upscale_refine(message, state, prompt=prompt):
                 return
+            if message.from_user is None:
+                return
+            session = await get_or_restore_photo_edit_session(
+                message.from_user.id,
+                peer_id=message.chat.id,
+            )
+            if session and session_has_result_image(session):
+                await _dispatch_text_refine_from_session(
+                    message,
+                    state,
+                    session=session,
+                    edit_prompt=prompt,
+                    model_id=str(model_id),
+                    label=str(label),
+                    aspect=aspect,
+                )
+                return
+            await message.answer(msg.TXT_PHOTO_REFINE_EXPIRED)
+            return
 
-        file_id: str | None = None
+        file_id: str | None = pending_file_id or None
         ref_url: str | None = None
         ref_bytes: bytes | None = None
         ref_mime = "image/jpeg"
-        session = None
         if message.from_user is not None:
-            if refine_from_result:
-                from services.photo_edit_session import get_or_restore_photo_edit_session
-
-                session = await get_or_restore_photo_edit_session(
-                    message.from_user.id,
-                    peer_id=message.chat.id,
-                )
-            else:
-                session = get_photo_edit_session(message.from_user.id, peer_id=message.chat.id)
-                file_id = pending_file_id or None
-
-            if refine_from_result and session and session_has_result_image(session):
-                result_ref = resolve_session_result_reference(session)
-                file_id = result_ref.telegram_file_id
-                ref_url = result_ref.media_url
-                ref_bytes = result_ref.reference_image_bytes
-                ref_mime = result_ref.reference_mime
-            elif not refine_from_result and session and session_has_result_image(session):
+            session = get_photo_edit_session(message.from_user.id, peer_id=message.chat.id)
+            if session and session_has_result_image(session):
                 result_ref = resolve_session_result_reference(session)
                 file_id = file_id or result_ref.telegram_file_id
                 if not file_id:
@@ -1426,22 +1454,6 @@ async def photo_process(message: Message, state: FSMContext) -> None:
             await message.answer(msg.TXT_PHOTO_REFINE_EXPIRED)
             return
 
-        if session and session_has_group_refs(session):
-            if message.from_user is not None:
-                clear_awaiting_text_refine(message.from_user.id)
-            await _dispatch_group_refine_from_session(
-                message,
-                state,
-                session=session,
-                edit_prompt=prompt,
-                model_id=str(model_id),
-                label=str(label),
-                aspect=aspect,
-            )
-            return
-
-        if message.from_user is not None:
-            clear_awaiting_text_refine(message.from_user.id)
         await state.update_data(pending_reference_file_id=None, refine_from_result=None)
         await process_photo_prompt_message(
             message,
@@ -1454,7 +1466,7 @@ async def photo_process(message: Message, state: FSMContext) -> None:
             reference_image_bytes=ref_bytes,
             reference_mime=ref_mime,
             aspect_ratio=aspect,
-            i2i_reference_mode="edit" if refine_from_result else "selfie",
+            i2i_reference_mode="selfie",
         )
         return
 
@@ -1465,36 +1477,23 @@ async def photo_process(message: Message, state: FSMContext) -> None:
         and session_hint.awaiting_text_refine
         and session_has_result_image(session_hint)
     ):
-        result_ref = resolve_session_result_reference(session_hint)
-        file_id = result_ref.telegram_file_id
-        ref_url = result_ref.media_url if not file_id else None
-        ref_bytes = (
-            result_ref.reference_image_bytes
-            if not file_id and not ref_url
-            else None
+        aspect, prompt, aspect_changed = await resolve_photo_edit_prompt(
+            prompt,
+            current_aspect=aspect,
         )
-        if file_id or ref_url or ref_bytes:
-            clear_awaiting_text_refine(message.from_user.id)
-            await state.update_data(
-                pending_reference_file_id=None,
-                pending_object_file_id=None,
-                pending_group_ref_file_ids=[],
-                refine_from_result=None,
-            )
-            await process_photo_prompt_message(
-                message,
-                state,
-                model_id=str(model_id or session_hint.image_model_id),
-                label=str(label or session_hint.image_model_label),
-                prompt=prompt,
-                telegram_file_id=file_id,
-                reference_image_url=ref_url,
-                reference_image_bytes=ref_bytes,
-                reference_mime=result_ref.reference_mime,
-                aspect_ratio=aspect,
-                i2i_reference_mode="edit",
-            )
-            return
+        if aspect_changed:
+            await state.update_data(image_aspect_ratio=aspect)
+            update_photo_edit_session_aspect_ratio(message.from_user.id, aspect)
+        await _dispatch_text_refine_from_session(
+            message,
+            state,
+            session=session_hint,
+            edit_prompt=prompt,
+            model_id=str(model_id or session_hint.image_model_id),
+            label=str(label or session_hint.image_model_label),
+            aspect=aspect,
+        )
+        return
 
     await process_photo_prompt_message(
         message,

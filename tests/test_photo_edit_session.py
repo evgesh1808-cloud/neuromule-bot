@@ -57,6 +57,7 @@ async def test_photo_refine_callback_prefers_generated_result_over_selfie() -> N
     callback.from_user.id = 42
     callback.message = MagicMock()
     callback.message.chat.id = 42
+    callback.message.photo = [MagicMock(file_id="AgAC_from_button")]
     callback.message.answer = AsyncMock()
     callback.answer = AsyncMock()
 
@@ -71,6 +72,7 @@ async def test_photo_refine_callback_prefers_generated_result_over_selfie() -> N
     assert kwargs["refine_from_result"] is True
     sess = get_photo_edit_session(42)
     assert sess is not None
+    assert sess.telegram_file_id == "AgAC_from_button"
     assert sess.awaiting_text_refine is True
 
 
@@ -339,6 +341,16 @@ def test_result_keyboard_has_refine_button() -> None:
     assert msg.BTN_PHOTO_REFINE in texts
 
 
+REFINE_API_PROMPT = (
+    "Using the attached image as the exact visual reference, preserve the same subjects, "
+    "faces, pose, clothing, lighting, background, and overall composition unless the edit "
+    "request explicitly asks to change them. Apply only these edits: lighter wall. "
+    "Do not regenerate from scratch, do not replace with an unrelated scene, "
+    "and do not invent new people or objects unless requested. "
+    "Photorealistic, sharp focus, consistent colors."
+)
+
+
 @pytest.mark.asyncio
 async def test_group_refine_uses_result_image_not_group_multi_ref() -> None:
     from platforms.handlers import generation_fsm
@@ -376,19 +388,31 @@ async def test_group_refine_uses_result_image_not_group_multi_ref() -> None:
         generation_fsm,
         "process_photo_prompt_message",
         new_callable=AsyncMock,
-    ) as proc, patch(
+    ) as proc, patch.object(
+        generation_fsm.deps,
+        "bot",
+        return_value=MagicMock(),
+    ), patch(
         "services.photo_intent_parser.resolve_photo_edit_prompt",
         new_callable=AsyncMock,
         return_value=("9:16", "сделай стену светлее", False),
+    ), patch(
+        "services.generation_jobs.materialize_photo_reference_for_job",
+        new_callable=AsyncMock,
+        return_value=(None, None, b"\xff\xd8\xff", "image/jpeg"),
+    ), patch(
+        "services.photo_edit_session.build_refine_edit_prompt_for_job",
+        new_callable=AsyncMock,
+        return_value=REFINE_API_PROMPT,
     ):
         await generation_fsm.photo_process(message, state)
 
     proc.assert_awaited_once()
     kwargs = proc.await_args.kwargs
-    assert kwargs["telegram_file_id"] == "AgAC_group_result"
-    assert kwargs["i2i_reference_mode"] == "edit"
+    assert kwargs["reference_image_bytes"] == b"\xff\xd8\xff"
+    assert kwargs["i2i_reference_mode"] == "preserve"
     assert kwargs.get("group_multi_ref") is not True
-    assert kwargs["prompt"] == "сделай стену светлее"
+    assert kwargs["prompt"] == REFINE_API_PROMPT
     assert "EDIT REQUEST" not in kwargs["prompt"]
 
 
@@ -428,17 +452,29 @@ async def test_text_refine_uses_session_flag_when_fsm_refine_lost() -> None:
         generation_fsm,
         "process_photo_prompt_message",
         new_callable=AsyncMock,
-    ) as proc, patch(
+    ) as proc, patch.object(
+        generation_fsm.deps,
+        "bot",
+        return_value=MagicMock(),
+    ), patch(
         "services.photo_intent_parser.resolve_photo_edit_prompt",
         new_callable=AsyncMock,
         return_value=("1:1", "добавь солнечные лучи", False),
+    ), patch(
+        "services.generation_jobs.materialize_photo_reference_for_job",
+        new_callable=AsyncMock,
+        return_value=(None, None, b"\xff\xd8\xff", "image/jpeg"),
+    ), patch(
+        "services.photo_edit_session.build_refine_edit_prompt_for_job",
+        new_callable=AsyncMock,
+        return_value=REFINE_API_PROMPT,
     ):
         await generation_fsm.photo_process(message, state)
 
     proc.assert_awaited_once()
     kwargs = proc.await_args.kwargs
-    assert kwargs["telegram_file_id"] == "AgAC_result_only"
-    assert kwargs["i2i_reference_mode"] == "edit"
+    assert kwargs["reference_image_bytes"] == b"\xff\xd8\xff"
+    assert kwargs["i2i_reference_mode"] == "preserve"
     assert get_photo_edit_session(66) is not None
     assert get_photo_edit_session(66).awaiting_text_refine is False
 

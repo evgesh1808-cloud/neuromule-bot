@@ -597,7 +597,7 @@ async def photo_refine_start(callback: CallbackQuery, state: FSMContext) -> None
     from services.photo_edit_session import (
         get_or_restore_photo_edit_session,
         mark_awaiting_text_refine,
-        resolve_session_result_reference,
+        pin_session_result_file_id,
         session_has_result_image,
     )
 
@@ -614,6 +614,8 @@ async def photo_refine_start(callback: CallbackQuery, state: FSMContext) -> None
 
     mark_photo_flow(user.id)
     mark_awaiting_text_refine(user.id)
+    if callback.message and callback.message.photo:
+        pin_session_result_file_id(user.id, callback.message.photo[-1].file_id)
     try:
         await state.update_data(
             image_model_id=session.image_model_id,
