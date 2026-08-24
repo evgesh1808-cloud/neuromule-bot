@@ -313,13 +313,18 @@ async def result_animate_photo(callback: CallbackQuery, state: FSMContext) -> No
         return
 
     await callback.answer()
-    ar = await run_animate_generation_turn(
-        uid=user.id,
-        telegram_file_id=file_id,
-        bot=deps.bot(),
-        chat_id=callback.message.chat.id,
-        settings=settings,
-    )
+    try:
+        ar = await run_animate_generation_turn(
+            uid=user.id,
+            telegram_file_id=file_id,
+            bot=deps.bot(),
+            chat_id=callback.message.chat.id,
+            settings=settings,
+        )
+    except Exception:
+        logger.exception("result_animate_photo failed uid=%s", user.id)
+        await callback.message.answer(msg.TXT_ANIMATE_FAILED)
+        return
     if ar.outcome is not AnimateGenOutcome.SUCCESS:
         await _notify_animate_turn_result(callback, ar.outcome)
 
@@ -340,14 +345,19 @@ async def result_animate_regenerate(callback: CallbackQuery) -> None:
         return
 
     await callback.answer(msg.TXT_ANIMATE_REGENERATE_STARTED)
-    ar = await run_animate_generation_turn(
-        uid=user.id,
-        telegram_file_id=last.source_file_id,
-        bot=deps.bot(),
-        chat_id=callback.message.chat.id,
-        settings=settings,
-        motion_prompt=last.motion_prompt,
-    )
+    try:
+        ar = await run_animate_generation_turn(
+            uid=user.id,
+            telegram_file_id=last.source_file_id,
+            bot=deps.bot(),
+            chat_id=callback.message.chat.id,
+            settings=settings,
+            motion_prompt=last.motion_prompt,
+        )
+    except Exception:
+        logger.exception("result_animate_regenerate failed uid=%s", user.id)
+        await callback.message.answer(msg.TXT_ANIMATE_FAILED)
+        return
     if ar.outcome is not AnimateGenOutcome.SUCCESS:
         await _notify_animate_turn_result(callback, ar.outcome)
 

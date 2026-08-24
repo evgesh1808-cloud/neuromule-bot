@@ -15,6 +15,7 @@ from services.animate_video_lock import (
     try_acquire_animate_video_lock,
 )
 from services.billing import billing
+from services.billing.store import refund_charge
 from services.god_mode import admin_animate_bypass
 from services.generation_jobs import GenTask, fire_animate_job, make_animate_task_id
 from services.repository import get_user_row
@@ -81,7 +82,7 @@ async def run_animate_generation_turn(
 
     if not await try_acquire_animate_video_lock(uid, ttl_sec=DEFAULT_ANIMATE_LOCK_TTL_SEC, settings=cfg):
         if charge.charge_id:
-            await billing.refund_charge(charge.charge_id)
+            await refund_charge(charge.charge_id)
         return AnimateGenResult(outcome=AnimateGenOutcome.ALREADY_GENERATING)
 
     cleaned_prompt = (motion_prompt or "").strip() or None
@@ -102,7 +103,7 @@ async def run_animate_generation_turn(
     except Exception:
         await release_animate_video_lock(uid)
         if charge.charge_id:
-            await billing.refund_charge(charge.charge_id)
+            await refund_charge(charge.charge_id)
         raise
 
     from services.last_animate_request import remember as remember_last_animate

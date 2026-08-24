@@ -1823,13 +1823,18 @@ async def animate_photo_process(message: Message, state: FSMContext) -> None:
         await message.answer(msg.TXT_CREATE_ANIMATE_HINT)
         return
 
-    ar = await run_animate_generation_turn(
-        uid=uid,
-        telegram_file_id=large_photo_file_id,
-        bot=bot,
-        chat_id=message.chat.id,
-        settings=settings,
-    )
+    try:
+        ar = await run_animate_generation_turn(
+            uid=uid,
+            telegram_file_id=large_photo_file_id,
+            bot=bot,
+            chat_id=message.chat.id,
+            settings=settings,
+        )
+    except Exception:
+        logger.exception("animate_photo_process failed uid=%s", uid)
+        await message.answer(msg.TXT_ANIMATE_FAILED)
+        return
     if ar.outcome is AnimateGenOutcome.SUCCESS:
         return
     if ar.outcome is AnimateGenOutcome.NEED_PHOTO:
