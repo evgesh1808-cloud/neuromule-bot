@@ -78,6 +78,9 @@ _GEMINI_MODEL_CHAIN: tuple[str, ...] = (
 _GEMINI_DAILY_TIMEOUT_SEC = 20.0
 _OPENROUTER_DAILY_TIMEOUT_SEC = 45.0
 _OPENROUTER_DAILY_MAX_TOKENS = 900
+_GEMINI_PREMIUM_TIMEOUT_SEC = 90.0
+_OPENROUTER_PREMIUM_TIMEOUT_SEC = 120.0
+_HD_PREMIUM_MAX_OUTPUT_TOKENS = 8192
 _PDF_FONT_NAME = "HDReportFont"
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _PREMIUM_REPORT_KEYS = ("money", "love", "energy", "plan")
@@ -693,7 +696,36 @@ async def try_consume_crystals(user_id: int, amount: int) -> bool:
 
 
 async def generate_premium_report(hd_type: str, birth_data: str) -> dict[str, str]:
-    prompt = (
+    """Полный HD-разбор: Gemini SDK → при сбое OpenRouter (как «Совет дня»)."""
+    prompt = _build_premium_report_prompt(hd_type, birth_data)
+    errors: list[str] = []
+
+    if genai is not None:
+        try:
+            return await _generate_premium_via_gemini(prompt)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Gemini premium report failed, trying OpenRouter: %s", exc)
+            errors.append(f"gemini: {exc!r}")
+    else:
+        logger.error(
+            "Пакет google-genai не установлен — полный разбор через OpenRouter. "
+            "На VDS: pip install 'google-genai>=1.0'"
+        )
+        errors.append("google-genai_missing")
+
+    try:
+        report = await _generate_premium_via_openrouter(prompt)
+        logger.info("HD premium report served via OpenRouter fallback")
+        return report
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("OpenRouter premium report fallback failed")
+        errors.append(f"openrouter: {exc!r}")
+
+    raise RuntimeError("hd_premium_unavailable: " + "; ".join(errors))
+
+
+def _build_premium_report_prompt(hd_type: str, birth_data: str) -> str:
+    return (
         "Ты — ведущий мировой эксперт по Дизайну Человека и стратегическому коучингу. "
         "Твоя задача — создать глубокий, премиальный аналитический разбор, который заменит "
         "пользователю многочасовую консультацию с профи.\n\n"
@@ -723,17 +755,31 @@ async def generate_premium_report(hd_type: str, birth_data: str) -> dict[str, st
         "ВАЖНО: Каждый раздел должен давать ответ на вопрос 'И что мне теперь с этим делать?'. "
         "Разбор должен выглядеть как дорогая инвестиция в себя."
     )
+
+
+def _parse_premium_report_from_llm(raw: str) -> dict[str, str]:
+    parsed = _parse_json_object(raw)
+    return _normalize_premium_report(parsed)
+
+
+async def _generate_premium_via_gemini(prompt: str) -> dict[str, str]:
     client = _configure_genai()
     errors: list[str] = []
+    gen_cfg = {
+        "response_mime_type": "application/json",
+        "max_output_tokens": _HD_PREMIUM_MAX_OUTPUT_TOKENS,
+    }
     for model_name in _GEMINI_MODEL_CHAIN:
         try:
-            response = await client.aio.models.generate_content(
-                model=model_name,
-                contents=prompt,
-                config={"response_mime_type": "application/json"},
+            response = await asyncio.wait_for(
+                client.aio.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config=gen_cfg,
+                ),
+                timeout=_GEMINI_PREMIUM_TIMEOUT_SEC,
             )
-            parsed = _parse_json_object(getattr(response, "text", "") or "")
-            return _normalize_premium_report(parsed)
+            return _parse_premium_report_from_llm(_extract_gemini_text(response))
         except Exception as exc_json:  # noqa: BLE001
             logger.warning(
                 "Gemini %s: JSON-режим или разбор не удались, пробуем обычный ответ: %s",
@@ -742,16 +788,51 @@ async def generate_premium_report(hd_type: str, birth_data: str) -> dict[str, st
             )
             errors.append(f"{model_name}(json): {exc_json!r}")
             try:
-                response = await client.aio.models.generate_content(
-                    model=model_name,
-                    contents=prompt,
+                response = await asyncio.wait_for(
+                    client.aio.models.generate_content(
+                        model=model_name,
+                        contents=prompt,
+                        config={"max_output_tokens": _HD_PREMIUM_MAX_OUTPUT_TOKENS},
+                    ),
+                    timeout=_GEMINI_PREMIUM_TIMEOUT_SEC,
                 )
-                parsed = _parse_json_object(getattr(response, "text", "") or "")
-                return _normalize_premium_report(parsed)
+                return _parse_premium_report_from_llm(_extract_gemini_text(response))
             except Exception as exc_plain:  # noqa: BLE001
                 errors.append(f"{model_name}(plain): {exc_plain!r}")
                 continue
     raise RuntimeError("gemini_unavailable: " + "; ".join(errors))
+
+
+async def _generate_premium_via_openrouter(prompt: str) -> dict[str, str]:
+    from services.ai_text import ask_ai_messages
+
+    max_tokens = max(
+        int(getattr(_app_settings, "openrouter_premium_max_output_tokens", 1500) or 1500),
+        _HD_PREMIUM_MAX_OUTPUT_TOKENS // 2,
+    )
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "Ты — эксперт по Дизайну Человека. Выполни инструкцию пользователя дословно. "
+                "Ответ — только валидный JSON-объект без markdown и пояснений."
+            ),
+        },
+        {"role": "user", "content": prompt},
+    ]
+    completion = await ask_ai_messages(
+        _app_settings,
+        messages,
+        timeout=_OPENROUTER_PREMIUM_TIMEOUT_SEC,
+        models=_openrouter_models_for_daily_advice(),
+        max_tokens=max_tokens,
+        temperature=0.7,
+        response_format={"type": "json_object"},
+    )
+    text = (completion.get("content") or "").strip()
+    if not text:
+        raise RuntimeError("openrouter_premium_report_empty")
+    return _parse_premium_report_from_llm(text)
 
 
 async def generate_hd_report(hd_type: str, birth_data: str) -> str:
