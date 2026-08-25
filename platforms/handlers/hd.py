@@ -40,6 +40,7 @@ from platforms.handlers import deps
 from platforms.telegram_keyboards import (
     cabinet_keyboard,
     channel_gate_markup,
+    channel_subscribe_markup,
     create_menu,
     get_admin_inline_keyboard,
     hd_menu,
@@ -164,7 +165,7 @@ async def hd_premium_buy(callback: CallbackQuery, state: FSMContext) -> None:
         )
         await callback.answer()
         return
-    if not await is_subscribed(uid):
+    if not billing_bypass(uid) and not await is_subscribed(uid):
         await callback.message.answer(
             msg.TXT_HD_NEED_CHANNEL,
             reply_markup=channel_subscribe_markup(),
@@ -173,7 +174,7 @@ async def hd_premium_buy(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.answer(msg.TXT_HD_NEED_CHANNEL_ALERT, show_alert=True)
         return
     crystals = int(user["crystals"] or 0)
-    if crystals < settings.cost_hd:
+    if not billing_bypass(uid) and crystals < settings.cost_hd:
         await callback.message.answer(
             msg.TXT_HD_INSUFFICIENT_CRYSTALS.format(cost=settings.cost_hd),
             reply_markup=paycat.shop_packages_keyboard(),
@@ -471,7 +472,7 @@ async def hd_premium_process(message: Message, state: FSMContext) -> None:
     if not raw:
         await message.answer(msg.TXT_HD_EMPTY_DATA, parse_mode=ParseMode.HTML)
         return
-    if not await is_subscribed(uid):
+    if not billing_bypass(uid) and not await is_subscribed(uid):
         await message.answer(
             msg.TXT_HD_NEED_CHANNEL,
             reply_markup=channel_subscribe_markup(),

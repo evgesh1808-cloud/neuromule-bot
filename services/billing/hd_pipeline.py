@@ -22,6 +22,10 @@ async def spend_hd_advice(user_id: int) -> SpendResult:
 
 
 async def spend_hd_full_report(user_id: int) -> SpendResult:
+    from services.god_mode import billing_bypass, god_mode_spend_result
+
+    if billing_bypass(user_id):
+        return god_mode_spend_result()
     user = await store.load_user_billing(user_id)
     if user.current_tariff is TariffTier.FREE:
         return SpendResult(ok=False, error="free_premium_create_blocked")
@@ -29,6 +33,10 @@ async def spend_hd_full_report(user_id: int) -> SpendResult:
 
 
 async def spend_hd_match(user_id: int) -> SpendResult:
+    from services.god_mode import billing_bypass, god_mode_spend_result
+
+    if billing_bypass(user_id):
+        return god_mode_spend_result()
     user = await store.load_user_billing(user_id)
     if user.current_tariff is TariffTier.FREE:
         return SpendResult(ok=False, error="free_premium_create_blocked")

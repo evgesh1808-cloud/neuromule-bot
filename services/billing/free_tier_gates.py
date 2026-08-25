@@ -60,4 +60,8 @@ async def free_photo_slot_available(user_id: int) -> bool:
 
 async def free_blocks_premium_create(user_id: int) -> bool:
     """True — нужно показать экран блокировки (изображение, анимация, музыка, видео, HD)."""
+    from services.god_mode import billing_bypass
+
+    if billing_bypass(user_id):
+        return False
     return await is_free_user(user_id)

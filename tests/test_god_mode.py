@@ -164,3 +164,19 @@ async def test_channel_subscription_bypass() -> None:
     assert await sub.is_subscribed(GOD_ADMIN_ID) is True
     assert await sub.is_subscribed_cached(GOD_ADMIN_ID) is True
     assert await sub.is_subscribed(NON_ADMIN_ID) is False
+
+
+async def test_spend_hd_full_report_god_mode_bypass(repo_module) -> None:
+    from services.billing.hd_pipeline import spend_hd_full_report
+
+    await repo_module.ensure_user(GOD_ADMIN_ID)
+    result = await spend_hd_full_report(GOD_ADMIN_ID)
+    assert result.ok is True
+    assert result.charge is not None
+    assert result.charge.charge_id == GOD_MODE_CHARGE_ID
+
+
+async def test_free_blocks_premium_create_god_mode_bypass() -> None:
+    from services.billing.free_tier_gates import free_blocks_premium_create
+
+    assert await free_blocks_premium_create(GOD_ADMIN_ID) is False
