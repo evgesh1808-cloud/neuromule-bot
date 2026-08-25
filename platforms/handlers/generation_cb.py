@@ -189,26 +189,47 @@ async def open_existing_hd_report(callback: CallbackQuery) -> None:
     raw = user["hd_report_json"] if "hd_report_json" in user.keys() else None
     from services.hd_logic import is_legacy_hd_report_raw, ensure_modern_hd_report
 
-    if is_legacy_hd_report_raw(raw):
+    legacy = is_legacy_hd_report_raw(raw)
+    if legacy:
+        await callback.answer(msg.TXT_HD_UPGRADING_REPORT_ALERT, show_alert=True)
         await callback.message.answer(msg.TXT_HD_UPGRADING_REPORT, parse_mode=ParseMode.HTML)
+    else:
+        await callback.answer()
     user_name = (callback.from_user.first_name or "").strip() if callback.from_user else "друг"
-    report, upgraded = await ensure_modern_hd_report(uid, user_name=user_name or "друг")
-    if report is None:
-        report = premium_report_from_json(raw)
-    if report is None:
-        await callback.answer(msg.TXT_HD_REPORT_NOT_FOUND_ALERT, show_alert=True)
+    try:
+        if legacy:
+            report, upgraded = await ensure_modern_hd_report(uid, user_name=user_name or "друг")
+        else:
+            report = premium_report_from_json(raw)
+            upgraded = False
+    except Exception:
+        logger.exception("open_existing_hd_report upgrade failed uid=%s", uid)
+        await callback.message.answer(msg.TXT_HD_UPGRADE_FAILED, parse_mode=ParseMode.HTML)
         return
-    intro = msg.TXT_HD_UPGRADED_REPORT if upgraded else msg.TXT_HD_REPORT_READY
+    if report is None:
+        if not legacy:
+            await callback.answer(msg.TXT_HD_REPORT_NOT_FOUND_ALERT, show_alert=True)
+        return
+    if upgraded:
+        from platforms.handlers.hd import _deliver_upgraded_hd_report
+
+        await _deliver_upgraded_hd_report(
+            callback.message,
+            uid,
+            user,
+            report,
+            upgraded=True,
+        )
+        return
     await callback.message.answer(
         format_hd_congrats_html(
             report,
             (user["hd_type"] or "") if "hd_type" in user.keys() else "",
-            intro=intro,
+            intro=msg.TXT_HD_REPORT_READY,
         ),
         reply_markup=hd_report_sections_markup(uid),
         parse_mode=ParseMode.HTML,
     )
-    await callback.answer()
 
 @router.callback_query(F.data == msg.CB_CREATE_TEXT)
 async def create_text_hint(callback: CallbackQuery, state: FSMContext) -> None:

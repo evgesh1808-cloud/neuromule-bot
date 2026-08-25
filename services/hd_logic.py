@@ -99,6 +99,8 @@ _OPENROUTER_DAILY_TIMEOUT_SEC = 45.0
 _OPENROUTER_DAILY_MAX_TOKENS = 900
 _GEMINI_PREMIUM_TIMEOUT_SEC = 90.0
 _OPENROUTER_PREMIUM_TIMEOUT_SEC = 120.0
+_OPENROUTER_PREMIUM_UPGRADE_TIMEOUT_SEC = 50.0
+_HD_UPGRADE_LLM_TIMEOUT_SEC = 150.0
 _HD_PREMIUM_MAX_OUTPUT_TOKENS = 8192
 _PDF_FONT_NAME = "HDReportFont"
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -523,6 +525,25 @@ def _openrouter_models_for_premium() -> list[str]:
     return models
 
 
+def _openrouter_models_for_premium_upgrade() -> list[str]:
+    """Быстрый каскад для апгрейда legacy: без Claude, короткие таймауты."""
+    models: list[str] = []
+    seen: set[str] = set()
+
+    def _add(mid: str) -> None:
+        m = (mid or "").strip()
+        if m and m not in seen:
+            seen.add(m)
+            models.append(m)
+
+    _add("google/gemini-2.5-pro")
+    _add("google/gemini-2.0-pro-exp-02-05:free")
+    from business_catalog import PAID_CHAT_MODEL
+
+    _add(PAID_CHAT_MODEL)
+    return models
+
+
 def _openrouter_models_for_daily_advice() -> list[str]:
     """Каскад OpenRouter: Gemini через OR → lite → живые :free."""
     from business_catalog import PAID_CHAT_MODEL
@@ -902,18 +923,23 @@ async def ensure_modern_hd_report(
         hd_report_schema_version(raw),
         _HD_REPORT_SCHEMA_VERSION,
     )
-    report = await generate_premium_report(hd_type, birth_data, user_name=user_name)
-    math_data = build_hd_math_data(hd_type, birth_data)
-    defined = math_data.get("defined_centers") or []
     try:
-        generate_premium_bodygraph(list(defined), user_id)
+        report = await asyncio.wait_for(
+            generate_premium_report(
+                hd_type,
+                birth_data,
+                user_name=user_name,
+                upgrade_mode=True,
+            ),
+            timeout=_HD_UPGRADE_LLM_TIMEOUT_SEC,
+        )
+    except asyncio.TimeoutError:
+        logger.error("HD report upgrade LLM timeout uid=%s", user_id)
+        raise RuntimeError("hd_upgrade_timeout") from None
     except Exception:
-        logger.warning("bodygraph regen on HD upgrade failed uid=%s", user_id, exc_info=True)
-    story_relpaths: list[str] = []
-    try:
-        story_relpaths = generate_instagram_stories(user_id, report)
-    except Exception:
-        logger.warning("instagram stories regen on HD upgrade failed uid=%s", user_id, exc_info=True)
+        logger.exception("HD report upgrade LLM failed uid=%s", user_id)
+        raise
+
     await update_user(
         user_id,
         hd_report_json=premium_report_to_json(report),
@@ -921,6 +947,16 @@ async def ensure_modern_hd_report(
         hd_birth_data=birth_data,
         has_pro_analysis=1,
     )
+    math_data = build_hd_math_data(hd_type, birth_data)
+    defined = math_data.get("defined_centers") or []
+    loop = asyncio.get_running_loop()
+    try:
+        await loop.run_in_executor(
+            None,
+            lambda d=defined, u=user_id: generate_premium_bodygraph(list(d), u),
+        )
+    except Exception:
+        logger.warning("bodygraph regen on HD upgrade failed uid=%s", user_id, exc_info=True)
     return report, True
 
 
@@ -960,13 +996,24 @@ async def generate_premium_report(
     birth_data: str,
     *,
     user_name: str = "друг",
+    upgrade_mode: bool = False,
 ) -> dict[str, str]:
     """Полный HD-разбор: элитный промпт → Gemini SDK → OpenRouter fallback."""
     math_data = build_hd_math_data(hd_type, birth_data)
     system_prompt, user_prompt = _build_elite_premium_hd_prompt(user_name, math_data)
     errors: list[str] = []
+    or_models = (
+        _openrouter_models_for_premium_upgrade()
+        if upgrade_mode
+        else _openrouter_models_for_premium()
+    )
+    or_timeout = (
+        _OPENROUTER_PREMIUM_UPGRADE_TIMEOUT_SEC
+        if upgrade_mode
+        else _OPENROUTER_PREMIUM_TIMEOUT_SEC
+    )
 
-    if _gemini_configured():
+    if _gemini_configured() and not upgrade_mode:
         try:
             report = await _generate_premium_via_gemini(system_prompt, user_prompt)
             logger.info("HD premium report served via Gemini Pro chain")
@@ -986,7 +1033,12 @@ async def generate_premium_report(
         logger.info("GEMINI_API_KEY не задан — полный разбор сразу через OpenRouter Pro chain")
 
     try:
-        report = await _generate_premium_via_openrouter(system_prompt, user_prompt)
+        report = await _generate_premium_via_openrouter(
+            system_prompt,
+            user_prompt,
+            models=or_models,
+            timeout=or_timeout,
+        )
         logger.info("HD premium report served via OpenRouter")
         return report
     except Exception as exc:  # noqa: BLE001
@@ -1051,7 +1103,13 @@ async def _generate_premium_via_gemini(system_prompt: str, user_prompt: str) -> 
     raise RuntimeError("gemini_unavailable: " + "; ".join(errors))
 
 
-async def _generate_premium_via_openrouter(system_prompt: str, user_prompt: str) -> dict[str, Any]:
+async def _generate_premium_via_openrouter(
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    models: list[str] | None = None,
+    timeout: float | None = None,
+) -> dict[str, Any]:
     from services.ai_text import ask_ai_messages
 
     messages = [
@@ -1061,8 +1119,8 @@ async def _generate_premium_via_openrouter(system_prompt: str, user_prompt: str)
     completion = await ask_ai_messages(
         _app_settings,
         messages,
-        timeout=_OPENROUTER_PREMIUM_TIMEOUT_SEC,
-        models=_openrouter_models_for_premium(),
+        timeout=timeout if timeout is not None else _OPENROUTER_PREMIUM_TIMEOUT_SEC,
+        models=models or _openrouter_models_for_premium(),
         max_tokens=_HD_PREMIUM_MAX_OUTPUT_TOKENS,
         temperature=0.7,
         response_format={"type": "json_object"},
@@ -1941,7 +1999,7 @@ def generate_instagram_stories(uid: int, report: dict[str, Any]) -> list[str]:
         bg_w = int(bg_src.width * scale)
         bg_h = int(bg_src.height * scale)
         bg_scaled = bg_src.resize((bg_w, bg_h), Image.Resampling.LANCZOS)
-        bg_blurred = bg_scaled.filter(ImageFilter.GaussianBlur(radius=70))
+        bg_blurred = bg_scaled.filter(ImageFilter.GaussianBlur(radius=35))
         bx = (_STORY_CANVAS_SIZE[0] - bg_w) // 2
         by = (_STORY_CANVAS_SIZE[1] - bg_h) // 2
         card1.paste(bg_blurred, (bx, by), bg_blurred)
@@ -1988,6 +2046,12 @@ def generate_instagram_stories(uid: int, report: dict[str, Any]) -> list[str]:
     card2.convert("RGB").save(out2, format="PNG")
     paths.append(f"tmp/story_{uid}_2.png")
     return paths
+
+
+async def generate_instagram_stories_async(uid: int, report: dict[str, Any]) -> list[str]:
+    """Pillow offloaded в executor — не блокирует event loop на VDS."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, lambda: generate_instagram_stories(uid, report))
 
 
 def _build_compatibility_prompt(

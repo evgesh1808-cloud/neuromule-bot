@@ -1,6 +1,7 @@
 """Telegram handlers."""
 from __future__ import annotations
 
+import asyncio
 import html
 import logging
 import random
@@ -87,6 +88,7 @@ from services.hd_logic import (
     format_hd_congrats_html,
     generate_compatibility_report,
     generate_instagram_stories,
+    generate_instagram_stories_async,
     generate_premium_bodygraph,
     generate_premium_report,
     get_dynamic_cta_for_today,
@@ -188,8 +190,46 @@ async def _resolve_hd_report(
     if not is_legacy_hd_report_raw(raw):
         return premium_report_from_json(raw), False
     await deps.bot().send_chat_action(chat_id, "typing")
-    report, upgraded = await ensure_modern_hd_report(uid, user_name=user_name)
+    try:
+        report, upgraded = await ensure_modern_hd_report(uid, user_name=user_name)
+    except Exception:
+        logger.exception("HD legacy upgrade failed uid=%s", uid)
+        raise
     return report, upgraded
+
+
+async def _deliver_upgraded_hd_report(
+    target: Message,
+    uid: int,
+    user_row,
+    report: dict,
+    *,
+    upgraded: bool,
+) -> None:
+    birth_data = (user_row["hd_birth_data"] or "").strip() if "hd_birth_data" in user_row.keys() else ""
+    hd_type = (user_row["hd_type"] or "") if "hd_type" in user_row.keys() else ""
+    await target.answer(
+        format_hd_congrats_html(
+            report,
+            hd_type,
+            intro=msg.TXT_HD_UPGRADED_REPORT if upgraded else msg.TXT_HD_REPORT_READY,
+        ),
+        reply_markup=hd_report_sections_markup(uid),
+        parse_mode=ParseMode.HTML,
+    )
+    if upgraded:
+        await _send_hd_premium_pdf(target, uid, report, birth_data, hd_type)
+        try:
+            story_relpaths = await generate_instagram_stories_async(uid, report)
+        except Exception:
+            logger.warning("instagram stories after upgrade failed uid=%s", uid, exc_info=True)
+            story_relpaths = []
+        await _send_hd_instagram_stories_album(
+            target,
+            uid,
+            _hd_user_display_name(target, user_row),
+            story_relpaths,
+        )
 
 
 @router.callback_query(F.data == msg.CB_HD_PREMIUM_BUY)
@@ -204,26 +244,26 @@ async def hd_premium_buy(callback: CallbackQuery, state: FSMContext) -> None:
             if birth_data:
                 await callback.answer(msg.TXT_HD_UPGRADING_REPORT_ALERT, show_alert=True)
                 await callback.message.answer(msg.TXT_HD_UPGRADING_REPORT, parse_mode=ParseMode.HTML)
-                report, upgraded = await _resolve_hd_report(
-                    uid,
-                    user,
-                    actor=callback,
-                    chat_id=callback.message.chat.id,
-                )
-                if report and upgraded:
-                    hd_type = (user["hd_type"] or "") if "hd_type" in user.keys() else ""
+                try:
+                    report, upgraded = await _resolve_hd_report(
+                        uid,
+                        user,
+                        actor=callback,
+                        chat_id=callback.message.chat.id,
+                    )
+                except Exception:
                     await callback.message.answer(
-                        format_hd_congrats_html(report, hd_type, intro=msg.TXT_HD_UPGRADED_REPORT),
-                        reply_markup=hd_report_sections_markup(uid),
+                        msg.TXT_HD_UPGRADE_FAILED,
                         parse_mode=ParseMode.HTML,
                     )
-                    await _send_hd_premium_pdf(callback.message, uid, report, birth_data, hd_type)
-                    story_relpaths = generate_instagram_stories(uid, report)
-                    await _send_hd_instagram_stories_album(
+                    return
+                if report and upgraded:
+                    await _deliver_upgraded_hd_report(
                         callback.message,
                         uid,
-                        _hd_user_display_name(callback, user),
-                        story_relpaths,
+                        user,
+                        report,
+                        upgraded=True,
                     )
                 elif report:
                     await callback.message.answer(
@@ -666,17 +706,6 @@ async def hd_premium_process(message: Message, state: FSMContext) -> None:
             report = await generate_premium_report(hd_type, birth_data, user_name=user_name)
         if not report:
             raise RuntimeError("Gemini returned empty HD report")
-        math_data = build_hd_math_data(hd_type, birth_data)
-        defined = math_data.get("defined_centers") or []
-        try:
-            generate_premium_bodygraph(list(defined), uid)
-        except Exception:
-            logger.warning("bodygraph generation failed uid=%s", uid, exc_info=True)
-        story_relpaths: list[str] = []
-        try:
-            story_relpaths = generate_instagram_stories(uid, report)
-        except Exception:
-            logger.warning("instagram stories generation failed uid=%s", uid, exc_info=True)
         await update_user(
             uid,
             hd_report_json=premium_report_to_json(report),
@@ -684,6 +713,21 @@ async def hd_premium_process(message: Message, state: FSMContext) -> None:
             hd_birth_data=birth_data,
             has_pro_analysis=1,
         )
+        math_data = build_hd_math_data(hd_type, birth_data)
+        defined = math_data.get("defined_centers") or []
+        loop = asyncio.get_running_loop()
+        try:
+            await loop.run_in_executor(
+                None,
+                lambda d=defined, u=uid: generate_premium_bodygraph(list(d), u),
+            )
+        except Exception:
+            logger.warning("bodygraph generation failed uid=%s", uid, exc_info=True)
+        story_relpaths: list[str] = []
+        try:
+            story_relpaths = await generate_instagram_stories_async(uid, report)
+        except Exception:
+            logger.warning("instagram stories generation failed uid=%s", uid, exc_info=True)
         await message.answer(
             format_hd_congrats_html(
                 report,
@@ -784,17 +828,26 @@ async def match_need_text(message: Message) -> None:
 async def hd_report_section(callback: CallbackQuery) -> None:
     uid = callback.from_user.id
     user = await get_user(uid)
-    report, upgraded = await _resolve_hd_report(
-        uid,
-        user,
-        actor=callback,
-        chat_id=callback.message.chat.id,
-    )
+    try:
+        report, upgraded = await _resolve_hd_report(
+            uid,
+            user,
+            actor=callback,
+            chat_id=callback.message.chat.id,
+        )
+    except Exception:
+        logger.exception("hd_report_section upgrade failed uid=%s", uid)
+        await callback.answer()
+        await callback.message.answer(msg.TXT_HD_UPGRADE_FAILED, parse_mode=ParseMode.HTML)
+        return
     if report is None:
         await callback.answer(msg.TXT_HD_REPORT_NOT_FOUND_ALERT, show_alert=True)
         return
     if upgraded:
-        await callback.message.answer(msg.TXT_HD_UPGRADED_REPORT, parse_mode=ParseMode.HTML)
+        await callback.message.answer(msg.TXT_HD_UPGRADING_REPORT, parse_mode=ParseMode.HTML)
+        await _deliver_upgraded_hd_report(callback.message, uid, user, report, upgraded=True)
+        await callback.answer()
+        return
 
     section = (callback.data or "").removeprefix(msg.CB_HD_REPORT_PREFIX)
     titles = {
