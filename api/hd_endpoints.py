@@ -11,6 +11,7 @@ from api.auth import require_telegram_user
 from services.hd_logic import (
     build_hd_math_data,
     compute_energy_scales_from_math,
+    ensure_modern_hd_report,
     generate_premium_bodygraph,
     hd_profile_metadata,
     premium_report_from_json,
@@ -56,7 +57,12 @@ async def get_hd_report(
     if row is None or not row.has_pro_analysis:
         raise HTTPException(status_code=404, detail="HD report not purchased")
 
-    report = premium_report_from_json(row.hd_report_json)
+    report, _upgraded = await ensure_modern_hd_report(telegram_user_id)
+    row = await get_user_row(telegram_user_id)
+    if row is None or not row.has_pro_analysis:
+        raise HTTPException(status_code=404, detail="HD report not purchased")
+    if report is None:
+        report = premium_report_from_json(row.hd_report_json)
     if report is None:
         raise HTTPException(status_code=404, detail="HD report data invalid")
 

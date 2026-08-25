@@ -38,11 +38,13 @@ def _cfo_build_tag() -> str:
 
 def get_build_info_text() -> str:
     from content import messages as msg
+    from services.hd_logic import _HD_REPORT_SCHEMA_VERSION
 
     rev = _git_rev_short()
     cfo = _cfo_build_tag()
     return (
-        f"🛠 <b>NeuroMule</b> <code>{rev}</code> · CFO <code>{cfo}</code>\n"
+        f"🛠 <b>NeuroMule</b> <code>{rev}</code> · CFO <code>{cfo}</code> · "
+        f"HD schema <code>v{_HD_REPORT_SCHEMA_VERSION}</code>\n"
         f"{msg.BTN_REPLY_NEUROTEXT} · {msg.BTN_TEXT_ROLE_TABLE}"
     )
 

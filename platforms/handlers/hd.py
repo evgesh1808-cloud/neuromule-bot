@@ -79,8 +79,9 @@ from services.hd_logic import (
     build_hd_math_data,
     change_user_crystals,
     compatibility_report_to_json,
-    create_pdf,
+    create_hd_premium_pdf,
     daily_advice_user_profile_from_repo_user,
+    ensure_modern_hd_report,
     format_compatibility_telegram_html,
     format_premium_report,
     format_hd_congrats_html,
@@ -95,6 +96,7 @@ from services.hd_logic import (
     parse_hd_request,
     premium_report_from_json,
     premium_report_to_json,
+    is_legacy_hd_report_raw,
     today_iso,
     try_consume_crystals,
     update_user,
@@ -158,12 +160,88 @@ def _is_admin(user_id: int) -> bool:
     return is_admin_user(user_id)
 
 
+def _hd_user_display_name(target: Message | CallbackQuery, user_row) -> str:
+    if isinstance(target, CallbackQuery) and target.from_user is not None:
+        name = (target.from_user.first_name or "").strip()
+        if name:
+            return name
+    if isinstance(target, Message) and target.from_user is not None:
+        name = (target.from_user.first_name or "").strip()
+        if name:
+            return name
+    keys = user_row.keys() if hasattr(user_row, "keys") else ()
+    if "username" in keys and user_row["username"]:
+        return str(user_row["username"]).strip()
+    return "друг"
+
+
+async def _resolve_hd_report(
+    uid: int,
+    user_row,
+    *,
+    actor: Message | CallbackQuery,
+    chat_id: int,
+) -> tuple[dict | None, bool]:
+    """Загружает отчёт; legacy v1 апгрейдит через Pro-движок без повторной оплаты."""
+    user_name = _hd_user_display_name(actor, user_row)
+    raw = user_row["hd_report_json"] if "hd_report_json" in user_row.keys() else None
+    if not is_legacy_hd_report_raw(raw):
+        return premium_report_from_json(raw), False
+    await deps.bot().send_chat_action(chat_id, "typing")
+    report, upgraded = await ensure_modern_hd_report(uid, user_name=user_name)
+    return report, upgraded
+
+
 @router.callback_query(F.data == msg.CB_HD_PREMIUM_BUY)
 async def hd_premium_buy(callback: CallbackQuery, state: FSMContext) -> None:
     uid = callback.from_user.id
     user = await get_user(uid)
     has_pro = bool(user["has_pro_analysis"]) if "has_pro_analysis" in user.keys() else False
     if has_pro:
+        raw = user["hd_report_json"] if "hd_report_json" in user.keys() else None
+        if is_legacy_hd_report_raw(raw):
+            birth_data = (user["hd_birth_data"] or "").strip() if "hd_birth_data" in user.keys() else ""
+            if birth_data:
+                await callback.answer(msg.TXT_HD_UPGRADING_REPORT_ALERT, show_alert=True)
+                await callback.message.answer(msg.TXT_HD_UPGRADING_REPORT, parse_mode=ParseMode.HTML)
+                report, upgraded = await _resolve_hd_report(
+                    uid,
+                    user,
+                    actor=callback,
+                    chat_id=callback.message.chat.id,
+                )
+                if report and upgraded:
+                    hd_type = (user["hd_type"] or "") if "hd_type" in user.keys() else ""
+                    await callback.message.answer(
+                        format_hd_congrats_html(report, hd_type, intro=msg.TXT_HD_UPGRADED_REPORT),
+                        reply_markup=hd_report_sections_markup(uid),
+                        parse_mode=ParseMode.HTML,
+                    )
+                    await _send_hd_premium_pdf(callback.message, uid, report, birth_data, hd_type)
+                    story_relpaths = generate_instagram_stories(uid, report)
+                    await _send_hd_instagram_stories_album(
+                        callback.message,
+                        uid,
+                        _hd_user_display_name(callback, user),
+                        story_relpaths,
+                    )
+                elif report:
+                    await callback.message.answer(
+                        msg.TXT_HD_ALREADY_PURCHASED,
+                        reply_markup=hd_menu(True),
+                        parse_mode=ParseMode.HTML,
+                    )
+                else:
+                    await callback.message.answer(msg.TXT_HD_REPORT_NOT_FOUND, parse_mode=ParseMode.HTML)
+                return
+            await state.set_state(UserFlow.waiting_hd_birth_data)
+            await state.update_data(hd_regenerate=True)
+            await callback.message.answer(
+                msg.TXT_HD_REGENERATE_NEED_BIRTH.format(cost=settings.cost_hd),
+                parse_mode=ParseMode.HTML,
+            )
+            await callback.answer()
+            return
         await callback.message.answer(
             msg.TXT_HD_ALREADY_PURCHASED,
             reply_markup=hd_menu(True),
@@ -480,9 +558,9 @@ async def _send_hd_premium_pdf(message: Message, uid: int, report: dict, birth_d
     pdf_path: str | None = None
     try:
         async with chat_action_loop(deps.bot(), message.chat.id, "upload_document"):
-            pdf_path = create_pdf(
+            pdf_path = create_hd_premium_pdf(
                 uid,
-                format_premium_report(report),
+                report,
                 birth_data,
                 hd_type=hd_type,
             )
@@ -543,6 +621,8 @@ async def hd_premium_process(message: Message, state: FSMContext) -> None:
         return
     uid = message.from_user.id
     raw = (message.text or "").strip()
+    data = await state.get_data()
+    regenerate = bool(data.get("hd_regenerate"))
     if not raw:
         await message.answer(msg.TXT_HD_EMPTY_DATA, parse_mode=ParseMode.HTML)
         return
@@ -553,7 +633,17 @@ async def hd_premium_process(message: Message, state: FSMContext) -> None:
             parse_mode=ParseMode.HTML,
         )
         return
-    spend = await billing.spend_hd_full_report(uid)
+    if regenerate:
+        from services.billing.types import SpendResult
+
+        user = await get_user(uid)
+        has_pro = bool(user["has_pro_analysis"]) if "has_pro_analysis" in user.keys() else False
+        if has_pro:
+            spend = SpendResult(ok=True, charge=None)
+        else:
+            regenerate = False
+    if not regenerate:
+        spend = await billing.spend_hd_full_report(uid)
     if not spend.ok:
         if spend.error == "free_premium_create_blocked":
             from platforms.telegram_utils import send_free_create_blocked
@@ -595,7 +685,11 @@ async def hd_premium_process(message: Message, state: FSMContext) -> None:
             has_pro_analysis=1,
         )
         await message.answer(
-            format_hd_congrats_html(report, hd_type, intro=msg.TXT_HD_REPORT_READY),
+            format_hd_congrats_html(
+                report,
+                hd_type,
+                intro=msg.TXT_HD_UPGRADED_REPORT if regenerate else msg.TXT_HD_REPORT_READY,
+            ),
             reply_markup=hd_report_sections_markup(uid),
             parse_mode=ParseMode.HTML,
         )
@@ -690,10 +784,17 @@ async def match_need_text(message: Message) -> None:
 async def hd_report_section(callback: CallbackQuery) -> None:
     uid = callback.from_user.id
     user = await get_user(uid)
-    report = premium_report_from_json(user["hd_report_json"] if "hd_report_json" in user.keys() else None)
+    report, upgraded = await _resolve_hd_report(
+        uid,
+        user,
+        actor=callback,
+        chat_id=callback.message.chat.id,
+    )
     if report is None:
         await callback.answer(msg.TXT_HD_REPORT_NOT_FOUND_ALERT, show_alert=True)
         return
+    if upgraded:
+        await callback.message.answer(msg.TXT_HD_UPGRADED_REPORT, parse_mode=ParseMode.HTML)
 
     section = (callback.data or "").removeprefix(msg.CB_HD_REPORT_PREFIX)
     titles = {
@@ -708,9 +809,9 @@ async def hd_report_section(callback: CallbackQuery) -> None:
             birth_data = (user["hd_birth_data"] or "").strip() if "hd_birth_data" in user.keys() else None
             hd_type_val = (user["hd_type"] or "") if "hd_type" in user.keys() else ""
             async with chat_action_loop(deps.bot(), callback.message.chat.id, "upload_document"):
-                pdf_path = create_pdf(
+                pdf_path = create_hd_premium_pdf(
                     uid,
-                    format_premium_report(report),
+                    report,
                     birth_data,
                     hd_type=hd_type_val,
                 )

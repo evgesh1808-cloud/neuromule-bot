@@ -186,15 +186,24 @@ async def open_hd_section(callback: CallbackQuery) -> None:
 async def open_existing_hd_report(callback: CallbackQuery) -> None:
     uid = callback.from_user.id
     user = await get_user(uid)
-    report = premium_report_from_json(user["hd_report_json"] if "hd_report_json" in user.keys() else None)
+    raw = user["hd_report_json"] if "hd_report_json" in user.keys() else None
+    from services.hd_logic import is_legacy_hd_report_raw, ensure_modern_hd_report
+
+    if is_legacy_hd_report_raw(raw):
+        await callback.message.answer(msg.TXT_HD_UPGRADING_REPORT, parse_mode=ParseMode.HTML)
+    user_name = (callback.from_user.first_name or "").strip() if callback.from_user else "друг"
+    report, upgraded = await ensure_modern_hd_report(uid, user_name=user_name or "друг")
+    if report is None:
+        report = premium_report_from_json(raw)
     if report is None:
         await callback.answer(msg.TXT_HD_REPORT_NOT_FOUND_ALERT, show_alert=True)
         return
+    intro = msg.TXT_HD_UPGRADED_REPORT if upgraded else msg.TXT_HD_REPORT_READY
     await callback.message.answer(
         format_hd_congrats_html(
             report,
             (user["hd_type"] or "") if "hd_type" in user.keys() else "",
-            intro=msg.TXT_HD_REPORT_READY,
+            intro=intro,
         ),
         reply_markup=hd_report_sections_markup(uid),
         parse_mode=ParseMode.HTML,

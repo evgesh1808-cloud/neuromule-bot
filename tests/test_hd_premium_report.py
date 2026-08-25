@@ -95,6 +95,22 @@ def test_parse_hd_request_normalizes_user_input(raw: str, hd_type: str, birth_da
     assert hd_logic._extract_birth_numbers(parsed_birth) is not None
 
 
+def test_premium_report_json_schema_version() -> None:
+    raw = hd_logic.premium_report_to_json(_SAMPLE_REPORT)
+    assert hd_logic.hd_report_schema_version(raw) == hd_logic._HD_REPORT_SCHEMA_VERSION
+    assert hd_logic.is_legacy_hd_report_raw(raw) is False
+
+
+def test_legacy_hd_report_detected_without_schema_version() -> None:
+    legacy = hd_logic.premium_report_to_json(_SAMPLE_REPORT)
+    import json
+
+    payload = json.loads(legacy)
+    payload.pop("schema_version", None)
+    raw = json.dumps(payload, ensure_ascii=False)
+    assert hd_logic.is_legacy_hd_report_raw(raw) is True
+
+
 def test_elite_premium_prompt_forbids_type_guessing() -> None:
     system_prompt, user_prompt = hd_logic._build_elite_premium_hd_prompt(
         "Тест",

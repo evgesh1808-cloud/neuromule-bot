@@ -103,6 +103,8 @@ _HD_PREMIUM_MAX_OUTPUT_TOKENS = 8192
 _PDF_FONT_NAME = "HDReportFont"
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _PREMIUM_REPORT_KEYS = ("fast_facts", "money", "love", "energy", "plan")
+_HD_REPORT_SCHEMA_VERSION = 2
+_LEGACY_HD_REPORT_PLACEHOLDER = "⚡ Экспресс-анализ доступен в интерактивном разборе."
 _FAST_FACTS_MAX_LEN = 300
 _HD_GATE_SEQUENCE = (
     25,
@@ -760,6 +762,35 @@ def hd_profile_metadata(math_data: dict[str, object]) -> dict[str, str | list[st
     }
 
 
+def hd_report_schema_version(raw: str | None) -> int:
+    if not raw:
+        return 0
+    try:
+        parsed = _parse_json_object(raw)
+        if isinstance(parsed, dict):
+            return int(parsed.get("schema_version") or 1)
+    except Exception:
+        return 0
+    return 1
+
+
+def is_legacy_hd_report_raw(raw: str | None) -> bool:
+    """True для отчётов до elite v2 (без schema_version или placeholder fast_facts)."""
+    if not raw:
+        return True
+    version = hd_report_schema_version(raw)
+    if version < _HD_REPORT_SCHEMA_VERSION:
+        return True
+    try:
+        parsed = _parse_json_object(raw)
+        fast = str(parsed.get("fast_facts") or "").strip()
+        if fast == _LEGACY_HD_REPORT_PLACEHOLDER:
+            return True
+    except Exception:
+        return True
+    return False
+
+
 def premium_report_to_json(report: dict[str, Any]) -> str:
     if all(k in report for k in _PREMIUM_REPORT_KEYS) and "energy_scales" in report:
         payload: dict[str, Any] = {
@@ -768,6 +799,7 @@ def premium_report_to_json(report: dict[str, Any]) -> str:
         }
     else:
         payload = _normalize_premium_report(report)
+    payload["schema_version"] = _HD_REPORT_SCHEMA_VERSION
     return json.dumps(payload, ensure_ascii=False)
 
 
@@ -784,7 +816,7 @@ def premium_report_from_json(raw: str | None) -> dict[str, Any] | None:
             if isinstance(parsed, dict) and all(parsed.get(k) for k in legacy_keys):
                 legacy_report: dict[str, Any] = {k: str(parsed[k]).strip() for k in legacy_keys}
                 legacy_report["fast_facts"] = str(parsed.get("fast_facts") or "").strip() or (
-                    "⚡ Экспресс-анализ доступен в интерактивном разборе."
+                    _LEGACY_HD_REPORT_PLACEHOLDER
                 )
                 legacy_report["energy_scales"] = _normalize_energy_scales(parsed.get("energy_scales"))
                 return legacy_report
@@ -838,6 +870,58 @@ async def get_user(user_id: int):
         await db.commit()
         async with db.execute("SELECT * FROM users WHERE id = ?", (user_id,)) as cursor:
             return await cursor.fetchone()
+
+
+async def ensure_modern_hd_report(
+    user_id: int,
+    *,
+    user_name: str = "друг",
+) -> tuple[dict[str, Any] | None, bool]:
+    """
+    Возвращает (report, upgraded).
+
+    Legacy-отчёты (schema v1) перегенерируются через Pro-движок без повторного списания 💎,
+    если в БД сохранены дата/время/город рождения.
+    """
+    user = await get_user(user_id)
+    keys = user.keys() if hasattr(user, "keys") else ()
+    raw = user["hd_report_json"] if "hd_report_json" in keys else None
+    if not raw:
+        return None, False
+    if not is_legacy_hd_report_raw(raw):
+        return premium_report_from_json(raw), False
+
+    birth_data = (user["hd_birth_data"] or "").strip() if "hd_birth_data" in keys else ""
+    if not birth_data:
+        return premium_report_from_json(raw), False
+
+    hd_type = (user["hd_type"] or "не указан") if "hd_type" in keys else "не указан"
+    logger.info(
+        "HD report auto-upgrade uid=%s schema v%s→v%s",
+        user_id,
+        hd_report_schema_version(raw),
+        _HD_REPORT_SCHEMA_VERSION,
+    )
+    report = await generate_premium_report(hd_type, birth_data, user_name=user_name)
+    math_data = build_hd_math_data(hd_type, birth_data)
+    defined = math_data.get("defined_centers") or []
+    try:
+        generate_premium_bodygraph(list(defined), user_id)
+    except Exception:
+        logger.warning("bodygraph regen on HD upgrade failed uid=%s", user_id, exc_info=True)
+    story_relpaths: list[str] = []
+    try:
+        story_relpaths = generate_instagram_stories(user_id, report)
+    except Exception:
+        logger.warning("instagram stories regen on HD upgrade failed uid=%s", user_id, exc_info=True)
+    await update_user(
+        user_id,
+        hd_report_json=premium_report_to_json(report),
+        hd_type=hd_type,
+        hd_birth_data=birth_data,
+        has_pro_analysis=1,
+    )
+    return report, True
 
 
 async def update_user(user_id: int, **kwargs) -> None:
@@ -1679,6 +1763,27 @@ def _draw_wrapped_text(
             pdf.drawString(left, y, line)
             y -= line_height
     _draw_pdf_footer(pdf, font_name, width)
+
+
+def create_hd_premium_pdf(
+    user_id: int,
+    report: dict[str, Any],
+    birth_data: str | None,
+    *,
+    hd_type: str = "",
+) -> str:
+    """PDF с легендой Swiss Ephemeris (тип, профиль, авторитет, стратегия)."""
+    math_data = build_hd_math_data(hd_type or "не указан", birth_data or "")
+    meta = hd_profile_metadata(math_data)
+    return create_pdf(
+        user_id,
+        format_premium_report(report),
+        birth_data,
+        hd_type=str(meta["hd_type"]),
+        profile=str(meta["profile"]),
+        authority=str(meta["authority"]),
+        strategy=str(meta["strategy"]),
+    )
 
 
 def create_pdf(
