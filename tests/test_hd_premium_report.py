@@ -111,6 +111,24 @@ def test_legacy_hd_report_detected_without_schema_version() -> None:
     assert hd_logic.is_legacy_hd_report_raw(raw) is True
 
 
+def test_strip_hd_markdown_for_plain() -> None:
+    raw = "### Боль\n**1. Правило:** текст с **звёздочками** и `#` символом"
+    clean = hd_logic.strip_hd_markdown_for_plain(raw)
+    assert "###" not in clean
+    assert "**" not in clean
+    assert "1. Правило:" in clean
+    assert "звёздочками" in clean
+
+
+def test_format_premium_report_strips_markdown() -> None:
+    report = dict(_SAMPLE_REPORT)
+    report["money"] = "### Боль\n**Совет:** делай так."
+    text = hd_logic.format_premium_report(report)
+    assert "###" not in text
+    assert "**" not in text
+    assert "Совет:" in text
+
+
 def test_elite_premium_prompt_forbids_type_guessing() -> None:
     system_prompt, user_prompt = hd_logic._build_elite_premium_hd_prompt(
         "Тест",
@@ -128,4 +146,5 @@ def test_elite_premium_prompt_forbids_type_guessing() -> None:
     assert "если передан явно" not in user_prompt.lower()
     assert "energy_scales" in system_prompt
     assert "capacity" in system_prompt
+    assert "БЕЗ markdown" in system_prompt
     assert "Генератор" in user_prompt

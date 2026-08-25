@@ -90,6 +90,7 @@ _GEMINI_PREMIUM_MODEL_CHAIN: tuple[str, ...] = (
 # Обратная совместимость для daily_advice_pool (ночной cron).
 _GEMINI_MODEL_CHAIN = _GEMINI_DAILY_MODEL_CHAIN
 _HD_WATERMARK = "🧬 Создано в @neuromule_bot"
+_HD_WATERMARK_PLAIN = "Создано в @neuromule_bot"
 _HD_NEON_HEX = "#8B5CF6"
 _ENERGY_SCALE_KEYS = ("capacity", "immunity", "scale")
 _COMPAT_REPORT_KEYS = ("attraction", "conflicts", "growth")
@@ -708,6 +709,22 @@ def compute_energy_scales_from_math(math_data: dict[str, object]) -> dict[str, i
     return {"capacity": capacity, "immunity": immunity, "scale": scale}
 
 
+def strip_hd_markdown_for_plain(text: str) -> str:
+    """Убирает markdown (** ### #) для PDF, Instagram Stories и plain-текста."""
+    if not text:
+        return ""
+    out = str(text)
+    out = re.sub(r"^#{1,6}\s*", "", out, flags=re.MULTILINE)
+    out = re.sub(r"\*\*(.+?)\*\*", r"\1", out, flags=re.DOTALL)
+    out = re.sub(r"__(.+?)__", r"\1", out, flags=re.DOTALL)
+    out = re.sub(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)", r"\1", out)
+    out = re.sub(r"`([^`]+)`", r"\1", out)
+    out = out.replace("**", "").replace("__", "")
+    out = re.sub(r"[ \t]+\n", "\n", out)
+    out = re.sub(r"\n{3,}", "\n\n", out)
+    return out.strip()
+
+
 def _normalize_premium_report(parsed: dict[str, object]) -> dict[str, Any]:
     report: dict[str, Any] = {}
     for key in _PREMIUM_REPORT_KEYS:
@@ -734,13 +751,15 @@ def _normalize_compat_report(parsed: dict[str, object]) -> dict[str, str]:
 def format_premium_report(report: dict[str, Any]) -> str:
     parts = []
     if report.get("fast_facts"):
-        parts.append("⚡ Экспресс-анализ\n" + str(report["fast_facts"]))
+        parts.append(
+            "⚡ Экспресс-анализ\n" + strip_hd_markdown_for_plain(str(report["fast_facts"]))
+        )
     parts.extend(
         [
-            "💎 Деньги\n" + str(report["money"]),
-            "❤️ Отношения\n" + str(report["love"]),
-            "⚡️ Энергия\n" + str(report["energy"]),
-            "📅 План на 30 дней\n" + str(report["plan"]),
+            "💎 Деньги\n" + strip_hd_markdown_for_plain(str(report["money"])),
+            "❤️ Отношения\n" + strip_hd_markdown_for_plain(str(report["love"])),
+            "⚡️ Энергия\n" + strip_hd_markdown_for_plain(str(report["energy"])),
+            "📅 План на 30 дней\n" + strip_hd_markdown_for_plain(str(report["plan"])),
         ]
     )
     return "\n\n".join(parts)
@@ -1642,13 +1661,14 @@ def _build_elite_premium_hd_prompt(user_name: str, math_data: dict) -> tuple[str
         "- fast_facts: до 300 символов, три строки в одном поле: "
         "'⚡ Главный баг прошивки: …', '💼 Триггер больших денег: …', '🔋 Идеальная перезагрузка: …'. "
         "Переводи номера каналов/ворот в понятные психологические суперсилы — БЕЗ сухих кодов "
-        "вида '34-20', '19-49', 'Gate 57'.\n"
+        "вида '34-20', '19-49', 'Gate 57'. БЕЗ markdown (** ### #) — только plain text и эмодзи.\n"
         "- energy_scales: три целых числа 1–100 — capacity (ёмкость ауры по моторам), "
         "immunity (стойкость к чужому мнению по открытым центрам), scale (индекс харизмы/влияния).\n"
-        "- money, love, energy: Markdown-строки с ### подзаголовками и **жирным**; "
+        "- money, love, energy: plain text с подзаголовками «Боль» и «Что делать» (без ### и **). "
         "КАЖДЫЙ раздел начинается с честной психологической боли из-за Ложного Я этой механики. "
         "Объём каждого раздела — от 1200 до 3000 символов, стиль ICF-коучинг без эзотерики.\n"
-        "- plan: Markdown-план на 30 дней (блоки 1–5 / 6–15 / 16–30) с действиями и метриками.\n"
+        "- plan: plain text план на 30 дней (блоки 1–5 / 6–15 / 16–30) с действиями и метриками. "
+        "Без markdown-синтаксиса.\n"
         "Каждый раздел — плотный, без воды; в каждом есть ответ «что делать дальше»."
     )
 
@@ -1675,7 +1695,7 @@ def _draw_pdf_footer(pdf, font_name: str, page_width: float) -> None:
     pdf.setFont(font_name, 8)
     if colors is not None:
         pdf.setFillColor(colors.HexColor("#777777"))
-    pdf.drawCentredString(page_width / 2, 24, _HD_WATERMARK)
+    pdf.drawCentredString(page_width / 2, 24, _HD_WATERMARK_PLAIN)
     if colors is not None:
         pdf.setFillColor(colors.black)
 
@@ -1972,9 +1992,10 @@ def _load_story_font(size: int) -> Any:
 def _draw_story_watermark(draw: Any, width: int, height: int, font: Any) -> None:
     if ImageDraw is None:
         return
-    bbox = draw.textbbox((0, 0), _HD_WATERMARK, font=font)
+    label = _HD_WATERMARK_PLAIN
+    bbox = draw.textbbox((0, 0), label, font=font)
     tw = bbox[2] - bbox[0]
-    draw.text(((width - tw) // 2, height - 80), _HD_WATERMARK, fill=(200, 200, 210, 220), font=font)
+    draw.text(((width - tw) // 2, height - 80), label, fill=(200, 200, 210, 220), font=font)
 
 
 def generate_instagram_stories(uid: int, report: dict[str, Any]) -> list[str]:
@@ -2025,10 +2046,13 @@ def generate_instagram_stories(uid: int, report: dict[str, Any]) -> list[str]:
     draw2 = ImageDraw.Draw(card2)
     header_font = _load_story_font(36)
     body_font = _load_story_font(26)
-    fast_facts = str(report.get("fast_facts") or "").strip() or "⚡ Персональный экспресс-анализ"
+    fast_facts = strip_hd_markdown_for_plain(
+        str(report.get("fast_facts") or "").strip() or "⚡ Персональный экспресс-анализ"
+    )
     blocks = [b.strip() for b in re.split(r"(?=⚡|💼|🔋)", fast_facts) if b.strip()] or [fast_facts]
     y_pos = 120
     for block in blocks[:4]:
+        block = strip_hd_markdown_for_plain(block)
         lines = textwrap.wrap(block, width=38) or [block]
         box_h = 28 + len(lines) * 34
         draw2.rounded_rectangle((48, y_pos, 1032, y_pos + box_h), radius=24, fill=(0, 0, 0, 140))
@@ -2038,7 +2062,7 @@ def generate_instagram_stories(uid: int, report: dict[str, Any]) -> list[str]:
         draw2.text((72, y_pos + 14), accent, fill=_HD_NEON_HEX, font=header_font)
         ty = y_pos + 52
         for line in ([body] + lines[1:]):
-            draw2.text((72, ty), line, fill=(235, 235, 245, 255), font=body_font)
+            draw2.text((72, ty), strip_hd_markdown_for_plain(line), fill=(235, 235, 245, 255), font=body_font)
             ty += 34
         y_pos += box_h + 24
     _draw_story_watermark(draw2, _STORY_CANVAS_SIZE[0], _STORY_CANVAS_SIZE[1], _load_story_font(22))
