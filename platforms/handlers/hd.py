@@ -208,19 +208,27 @@ async def _deliver_upgraded_hd_report(
 ) -> None:
     birth_data = (user_row["hd_birth_data"] or "").strip() if "hd_birth_data" in user_row.keys() else ""
     hd_type = (user_row["hd_type"] or "") if "hd_type" in user_row.keys() else ""
+    math_data = build_hd_math_data(hd_type, birth_data)
+    resolved_type = str(math_data.get("hd_type") or hd_type)
     await target.answer(
         format_hd_congrats_html(
             report,
-            hd_type,
+            resolved_type,
             intro=msg.TXT_HD_UPGRADED_REPORT if upgraded else msg.TXT_HD_REPORT_READY,
         ),
         reply_markup=hd_report_sections_markup(uid),
         parse_mode=ParseMode.HTML,
     )
     if upgraded:
-        await _send_hd_premium_pdf(target, uid, report, birth_data, hd_type)
+        await _send_hd_premium_pdf(target, uid, report, birth_data, resolved_type)
         try:
-            story_relpaths = await generate_instagram_stories_async(uid, report)
+            story_relpaths = await generate_instagram_stories_async(
+                uid,
+                report,
+                math_data=math_data,
+                hd_type=resolved_type,
+                birth_data=birth_data,
+            )
         except Exception:
             logger.warning("instagram stories after upgrade failed uid=%s", uid, exc_info=True)
             story_relpaths = []
@@ -603,6 +611,7 @@ async def _send_hd_premium_pdf(message: Message, uid: int, report: dict, birth_d
                 report,
                 birth_data,
                 hd_type=hd_type,
+                user_name=(message.from_user.first_name or "").strip() if message.from_user else "",
             )
             await message.answer_document(
                 FSInputFile(pdf_path),
@@ -706,14 +715,15 @@ async def hd_premium_process(message: Message, state: FSMContext) -> None:
             report = await generate_premium_report(hd_type, birth_data, user_name=user_name)
         if not report:
             raise RuntimeError("Gemini returned empty HD report")
+        math_data = build_hd_math_data(hd_type, birth_data)
+        resolved_type = str(math_data.get("hd_type") or hd_type)
         await update_user(
             uid,
             hd_report_json=premium_report_to_json(report),
-            hd_type=hd_type,
+            hd_type=resolved_type,
             hd_birth_data=birth_data,
             has_pro_analysis=1,
         )
-        math_data = build_hd_math_data(hd_type, birth_data)
         defined = math_data.get("defined_centers") or []
         loop = asyncio.get_running_loop()
         try:
@@ -725,19 +735,25 @@ async def hd_premium_process(message: Message, state: FSMContext) -> None:
             logger.warning("bodygraph generation failed uid=%s", uid, exc_info=True)
         story_relpaths: list[str] = []
         try:
-            story_relpaths = await generate_instagram_stories_async(uid, report)
+            story_relpaths = await generate_instagram_stories_async(
+                uid,
+                report,
+                math_data=math_data,
+                hd_type=resolved_type,
+                birth_data=birth_data,
+            )
         except Exception:
             logger.warning("instagram stories generation failed uid=%s", uid, exc_info=True)
         await message.answer(
             format_hd_congrats_html(
                 report,
-                hd_type,
+                resolved_type,
                 intro=msg.TXT_HD_UPGRADED_REPORT if regenerate else msg.TXT_HD_REPORT_READY,
             ),
             reply_markup=hd_report_sections_markup(uid),
             parse_mode=ParseMode.HTML,
         )
-        await _send_hd_premium_pdf(message, uid, report, birth_data, hd_type)
+        await _send_hd_premium_pdf(message, uid, report, birth_data, resolved_type)
         await _send_hd_instagram_stories_album(message, uid, user_name, story_relpaths)
     except Exception:
         logger.exception("hd_premium_failed user_id=%s", uid)
@@ -867,6 +883,7 @@ async def hd_report_section(callback: CallbackQuery) -> None:
                     report,
                     birth_data,
                     hd_type=hd_type_val,
+                    user_name=_hd_user_display_name(callback, user),
                 )
                 await callback.message.answer_document(
                     FSInputFile(pdf_path),

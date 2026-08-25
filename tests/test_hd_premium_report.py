@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
+from pathlib import Path
+
 import pytest
 
 from services import hd_logic
@@ -146,5 +148,72 @@ def test_elite_premium_prompt_forbids_type_guessing() -> None:
     assert "если передан явно" not in user_prompt.lower()
     assert "energy_scales" in system_prompt
     assert "capacity" in system_prompt
-    assert "БЕЗ markdown" in system_prompt
+    assert "ГЕНЕТИЧЕСКИЙ СИНТЕЗ" in system_prompt
     assert "Генератор" in user_prompt
+
+
+def test_md_to_reportlab_html_bold() -> None:
+    html = hd_logic._md_to_reportlab_html("**Боль:** текст")
+    assert "<b>" in html
+    assert "**" not in html
+
+
+def test_create_hd_premium_pdf_multipage(tmp_path, monkeypatch) -> None:
+    if hd_logic.BaseDocTemplate is None:
+        pytest.skip("reportlab not installed")
+    out_dir = tmp_path / "tmp"
+    out_dir.mkdir()
+    monkeypatch.setattr(hd_logic, "_HD_BODYGRAPH_OUTPUT_DIR", out_dir)
+    monkeypatch.setattr(hd_logic, "_HD_BODYGRAPH_TEMPLATE_PATH", out_dir / "missing.png")
+    report = dict(_SAMPLE_REPORT)
+    report["money"] = "**Боль:** длинный блок " * 40
+    path = hd_logic.create_hd_premium_pdf(
+        777,
+        report,
+        "15.03.1990 14:30 Москва",
+        hd_type="Генератор",
+        user_name="Тест",
+    )
+    pdf_file = Path(path)
+    assert pdf_file.is_file()
+    assert pdf_file.stat().st_size > 1500
+
+
+@pytest.mark.skipif(hd_logic.swe is None, reason="pyswisseph not installed")
+def test_build_hd_math_data_derives_type_and_profile_when_missing() -> None:
+    math_data = hd_logic.build_hd_math_data("не указан", "15.03.1990 14:30 Москва")
+    assert math_data["hd_type"] not in {"", "не указан"}
+    assert math_data.get("profile")
+    assert math_data.get("authority")
+    assert math_data.get("strategy")
+    meta = hd_logic.hd_profile_metadata(math_data)
+    assert meta["hd_type"] not in {"", "—"}
+    assert meta["profile"] not in {"", "—"}
+
+
+@pytest.mark.skipif(hd_logic.swe is None, reason="pyswisseph not installed")
+def test_derive_hd_chart_from_birth_returns_strategy_for_type() -> None:
+    chart = hd_logic.derive_hd_chart_from_birth("15.03.1990 14:30 Москва")
+    assert chart["hd_type"]
+    assert chart["strategy"]
+    assert "/" in chart["profile"]
+
+
+def test_generate_instagram_stories_writes_two_cards(tmp_path, monkeypatch) -> None:
+    if hd_logic.Image is None:
+        pytest.skip("Pillow not installed")
+    out_dir = tmp_path / "tmp"
+    monkeypatch.setattr(hd_logic, "_HD_BODYGRAPH_OUTPUT_DIR", out_dir)
+    math_data = {
+        "hd_type": "Генератор",
+        "birth_data": "15.03.1990 14:30 Москва",
+        "profile": "3/5",
+        "authority": "Сакральный",
+        "strategy": "Ждать отклик",
+    }
+    report = dict(_SAMPLE_REPORT)
+    report["money"] = "Подробный блок про деньги " * 20
+    paths = hd_logic.generate_instagram_stories(999, report, math_data=math_data)
+    assert len(paths) == 2
+    assert (out_dir / "story_999_1.png").is_file()
+    assert (out_dir / "story_999_2.png").is_file()

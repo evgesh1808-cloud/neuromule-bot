@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import html as html_module
 import json
 import logging
 import os
@@ -37,18 +38,48 @@ except ImportError:  # pragma: no cover - surfaced at runtime in the handler.
 
 try:
     from reportlab.lib import colors
+    from reportlab.lib.enums import TA_CENTER
     from reportlab.lib.pagesizes import A4
-    from reportlab.lib.utils import simpleSplit
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.units import mm
+    from reportlab.lib.utils import ImageReader, simpleSplit
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
     from reportlab.pdfgen import canvas
+    from reportlab.platypus import (
+        BaseDocTemplate,
+        Frame,
+        Image as RLImage,
+        PageBreak,
+        PageTemplate,
+        Paragraph,
+        Spacer,
+        Table,
+        TableStyle,
+    )
+    from reportlab.platypus.doctemplate import NextPageTemplate
+    from reportlab.platypus.flowables import Flowable
 except ImportError:  # pragma: no cover - surfaced at runtime in the handler.
     colors = None
+    TA_CENTER = None
     A4 = None
+    ParagraphStyle = None
+    mm = None
     simpleSplit = None
     pdfmetrics = None
     TTFont = None
     canvas = None
+    BaseDocTemplate = None
+    Frame = None
+    RLImage = None
+    PageBreak = None
+    PageTemplate = None
+    Paragraph = None
+    Spacer = None
+    Table = None
+    TableStyle = None
+    NextPageTemplate = None
+    Flowable = None
 
 try:
     from services.repository import DB_PATH as REPOSITORY_DB_PATH
@@ -104,6 +135,16 @@ _OPENROUTER_PREMIUM_UPGRADE_TIMEOUT_SEC = 50.0
 _HD_UPGRADE_LLM_TIMEOUT_SEC = 150.0
 _HD_PREMIUM_MAX_OUTPUT_TOKENS = 8192
 _PDF_FONT_NAME = "HDReportFont"
+_PDF_COVER_BG = "#0D0E12"
+_PDF_CONTENT_BG = "#FAFAFA"
+_PDF_BODYGRAPH_WIDTH_PX = 430
+_PDF_BODYGRAPH_MAX_BYTES = 300 * 1024
+_PDF_CHAPTER_SPECS: tuple[tuple[str, str, str], ...] = (
+    ("money", "💼 Раздел: Финансовый Аудит", "hd_ch_money"),
+    ("love", "❤️ Раздел: Отношения и Партнёрство", "hd_ch_love"),
+    ("energy", "⚡ Раздел: Энергетическая Архитектура", "hd_ch_energy"),
+    ("plan", "📅 Раздел: План на 30 дней", "hd_ch_plan"),
+)
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _PREMIUM_REPORT_KEYS = ("fast_facts", "money", "love", "energy", "plan")
 _HD_REPORT_SCHEMA_VERSION = 2
@@ -769,22 +810,31 @@ def build_hd_math_data(hd_type: str, birth_data: str) -> dict[str, object]:
     """Собирает math_data для элитного промпта и API-ответа."""
     gates: dict[str, object] = {}
     defined_set: set[str] = set()
+    derived: dict[str, str] = {}
     try:
         gates_payload = get_calculated_gates(birth_data)
         raw_gates = gates_payload.get("gates")
         if isinstance(raw_gates, dict):
             gates = raw_gates
         defined_set, _ = _defined_centers_from_birth_data(birth_data)
+        if birth_data.strip():
+            derived = derive_hd_chart_from_birth(birth_data)
     except Exception:
         logger.debug("build_hd_math_data: ephemeris/gates unavailable", exc_info=True)
     defined_centers = sorted(defined_set)
     open_centers = [name for name in _ALL_HD_CENTER_NAMES if name not in defined_set]
+    resolved_type = hd_type
+    if not resolved_type or resolved_type.strip().lower() in {"не указан", "неизвестно", ""}:
+        resolved_type = derived.get("hd_type") or hd_type
     return {
-        "hd_type": hd_type,
+        "hd_type": resolved_type,
         "birth_data": birth_data,
         "defined_centers": defined_centers,
         "open_centers": open_centers,
         "gates": gates,
+        "profile": derived.get("profile", ""),
+        "authority": derived.get("authority", ""),
+        "strategy": derived.get("strategy", ""),
     }
 
 
@@ -959,14 +1009,15 @@ async def ensure_modern_hd_report(
         logger.exception("HD report upgrade LLM failed uid=%s", user_id)
         raise
 
+    math_data = build_hd_math_data(hd_type, birth_data)
+    resolved_type = str(math_data.get("hd_type") or hd_type)
     await update_user(
         user_id,
         hd_report_json=premium_report_to_json(report),
-        hd_type=hd_type,
+        hd_type=resolved_type,
         hd_birth_data=birth_data,
         has_pro_analysis=1,
     )
-    math_data = build_hd_math_data(hd_type, birth_data)
     defined = math_data.get("defined_centers") or []
     loop = asyncio.get_running_loop()
     try:
@@ -1235,6 +1286,94 @@ def get_calculated_gates(birth_data: str) -> dict[str, object]:
         "julian_day": snapshot["julian_day"],
         "gates": gates,
     }
+
+
+_HD_DESIGN_DAYS_OFFSET = 88.0
+
+_HD_TYPE_STRATEGIES: dict[str, str] = {
+    "генератор": "Ждать отклик и отвечать телом",
+    "манифестирующий генератор": "Ждать отклик, затем информировать и действовать",
+    "манифестор": "Информировать окружающих перед действием",
+    "проектор": "Ждать приглашения и признания",
+    "рефлектор": "Ждать лунный цикл (28 дней) для важных решений",
+}
+
+
+def _infer_hd_type_from_centers(defined: set[str]) -> str:
+    if not defined:
+        return "Рефлектор"
+    motors_throat = {"Эго", "Солнечное сплетение", "Корень"}
+    if "Сакрал" in defined:
+        if "Горло" in defined and defined & motors_throat:
+            return "Манифестирующий Генератор"
+        return "Генератор"
+    if "Горло" in defined and defined & motors_throat:
+        return "Манифестор"
+    return "Проектор"
+
+
+def _infer_authority_from_centers(defined: set[str]) -> str:
+    if not defined:
+        return "Лунный"
+    if "Солнечное сплетение" in defined:
+        return "Эмоциональный"
+    if "Сакрал" in defined:
+        return "Сакральный"
+    if "Селезенка" in defined:
+        return "Селезеночный"
+    if "Эго" in defined:
+        return "Эго"
+    if "G-центр" in defined:
+        return "Самопроецируемый"
+    return "Внутренний (уточняется по каналам)"
+
+
+def _strategy_for_hd_type(hd_type: str) -> str:
+    key = (hd_type or "").strip().lower()
+    for pattern, strategy in _HD_TYPE_STRATEGIES.items():
+        if pattern in key:
+            return strategy
+    return "Следовать стратегии своего типа"
+
+
+def _sun_line_for_birth_data(birth_data: str, *, design: bool = False) -> int:
+    sw = _require_swe()
+    parts = _extract_birth_numbers(birth_data)
+    if parts is None:
+        raise ValueError("invalid_birth_data")
+    year, month, day, hour, minute = parts
+    jd = sw.julday(year, month, day, hour + minute / 60.0)
+    if design:
+        jd -= _HD_DESIGN_DAYS_OFFSET
+    pos, _flags = sw.calc_ut(jd, sw.SUN)
+    line = _longitude_to_gate(float(pos[0])).get("line", 1)
+    return int(line) if isinstance(line, int) else 1
+
+
+def derive_hd_chart_from_birth(birth_data: str) -> dict[str, str]:
+    """Swiss Ephemeris: тип, профиль, авторитет, стратегия для легенды PDF и Stories."""
+    defined, _warn = _defined_centers_from_birth_data(birth_data)
+    hd_type = _infer_hd_type_from_centers(defined)
+    authority = _infer_authority_from_centers(defined)
+    strategy = _strategy_for_hd_type(hd_type)
+    profile = ""
+    try:
+        line_p = _sun_line_for_birth_data(birth_data, design=False)
+        line_d = _sun_line_for_birth_data(birth_data, design=True)
+        profile = f"{line_p}/{line_d}"
+    except Exception:
+        logger.debug("HD profile lines unavailable", exc_info=True)
+    return {
+        "hd_type": hd_type,
+        "profile": profile,
+        "authority": authority,
+        "strategy": strategy,
+    }
+
+
+def resolve_hd_math_data(hd_type: str, birth_data: str) -> dict[str, object]:
+    """Канонический math_data с авто-расчётом типа/профиля, если в БД «не указан»."""
+    return build_hd_math_data(hd_type, birth_data)
 
 
 def calculate_composite(first_birth_data: str, second_birth_data: str) -> dict[str, object]:
@@ -1661,14 +1800,20 @@ def _build_elite_premium_hd_prompt(user_name: str, math_data: dict) -> tuple[str
         "- fast_facts: до 300 символов, три строки в одном поле: "
         "'⚡ Главный баг прошивки: …', '💼 Триггер больших денег: …', '🔋 Идеальная перезагрузка: …'. "
         "Переводи номера каналов/ворот в понятные психологические суперсилы — БЕЗ сухих кодов "
-        "вида '34-20', '19-49', 'Gate 57'. БЕЗ markdown (** ### #) — только plain text и эмодзи.\n"
+        "вида '34-20', '19-49', 'Gate 57'. Без ### и # — только plain text, эмодзи и **жирный**.\n"
         "- energy_scales: три целых числа 1–100 — capacity (ёмкость ауры по моторам), "
         "immunity (стойкость к чужому мнению по открытым центрам), scale (индекс харизмы/влияния).\n"
-        "- money, love, energy: plain text с подзаголовками «Боль» и «Что делать» (без ### и **). "
+        "- money, love, energy: plain text с подзаголовками «Боль» и «Что делать». "
+        "Для **жирного акцента** используй только парные **звёздочки** (без ### и #). "
         "КАЖДЫЙ раздел начинается с честной психологической боли из-за Ложного Я этой механики. "
-        "Объём каждого раздела — от 1200 до 3000 символов, стиль ICF-коучинг без эзотерики.\n"
+        "Объём каждого раздела — от 2500 до 6000 символов; суммарно отчёт должен давать "
+        "30–40 страниц PDF при верстке.\n"
+        "- ГЕНЕТИЧЕСКИЙ СИНТЕЗ (обязательно): каждый открытый центр описывай только в жёсткой "
+        "связке с определёнными моторами и каналами клиента — например, открытое Эго на фоне "
+        "определённого Сакрала, открытая Голова при определённом Корне. Никаких абстрактных "
+        "описаний центров «в вакууме» — только персональные паттерны этой карты.\n"
         "- plan: plain text план на 30 дней (блоки 1–5 / 6–15 / 16–30) с действиями и метриками. "
-        "Без markdown-синтаксиса.\n"
+        "Допускается **жирный** через **звёздочки**, без ###.\n"
         "Каждый раздел — плотный, без воды; в каждом есть ответ «что делать дальше»."
     )
 
@@ -1691,156 +1836,352 @@ def _build_elite_premium_hd_prompt(user_name: str, math_data: dict) -> tuple[str
     return system_prompt, user_prompt
 
 
-def _draw_pdf_footer(pdf, font_name: str, page_width: float) -> None:
-    pdf.setFont(font_name, 8)
-    if colors is not None:
-        pdf.setFillColor(colors.HexColor("#777777"))
-    pdf.drawCentredString(page_width / 2, 24, _HD_WATERMARK_PLAIN)
-    if colors is not None:
-        pdf.setFillColor(colors.black)
+def _pdf_clean_meta_value(value: object) -> str:
+    text = str(value or "").strip()
+    lowered = text.lower()
+    if not text or lowered in {
+        "не указан",
+        "не указаны",
+        "не передан",
+        "не передана",
+        "—",
+        "-",
+        "unknown",
+    }:
+        return ""
+    return text
 
 
-def _draw_hd_legend_table(
-    pdf,
-    font_name: str,
-    x: float,
-    y: float,
-    *,
-    hd_type: str,
-    profile: str,
-    authority: str,
-    strategy: str,
-) -> float:
-    """Контрастная таблица-легенда параметров карты на первой странице PDF."""
-    if colors is None:
-        return y
-    rows = (
-        ("Тип", hd_type or "—"),
-        ("Профиль", profile or "—"),
-        ("Авторитет", authority or "—"),
-        ("Стратегия", strategy or "—"),
-    )
-    row_h = 18
-    col_w = (220, 280)
-    table_h = row_h * len(rows) + 8
-    top = y
-    pdf.setFillColor(colors.HexColor("#1A1A24"))
-    pdf.roundRect(x, top - table_h, sum(col_w), table_h, 6, fill=1, stroke=0)
-    pdf.setFillColor(colors.HexColor(_HD_NEON_HEX))
-    pdf.setFont(font_name, 10)
-    pdf.drawString(x + 8, top - 14, "Параметры карты")
-    pdf.setFillColor(colors.white)
-    pdf.setFont(font_name, 9)
-    cy = top - 28
-    for label, value in rows:
-        pdf.drawString(x + 10, cy, label)
-        pdf.drawString(x + col_w[0] + 6, cy, (value or "—")[:42])
-        cy -= row_h
-    return top - table_h - 12
-
-
-def _draw_bodygraph(
-    pdf,
-    birth_data: str | None,
-    font_name: str,
-    x: float,
-    y: float,
-    *,
-    user_id: int,
-) -> float:
-    defined, warning = _defined_centers_from_birth_data(birth_data)
-    pdf.setFont(font_name, 13)
-    pdf.drawString(x, y, "Бодиграф")
-    y -= 16
-
-    img_width = 220.0
-    img_height = 220.0
-    try:
-        rel_path = generate_premium_bodygraph(sorted(defined), user_id)
-        img_path = _PROJECT_ROOT / rel_path
-        from reportlab.lib.utils import ImageReader
-
-        pdf.drawImage(
-            ImageReader(str(img_path)),
-            x,
-            y - img_height,
-            width=img_width,
-            height=img_height,
-            preserveAspectRatio=True,
-            mask="auto",
-        )
-        y -= img_height + 12
-    except Exception as exc:
-        logger.warning("premium bodygraph render failed uid=%s: %s", user_id, exc, exc_info=True)
-        pdf.setFont(font_name, 9)
-        pdf.drawString(x, y, "Схема бодиграфа временно недоступна.")
-        y -= 16
-
-    pdf.setFont(font_name, 9)
-    summary = "Закрашенные центры: " + (", ".join(sorted(defined)) if defined else "не определены")
-    pdf.drawString(x, y, summary[:90])
-    if warning:
-        pdf.drawString(x, y - 14, warning[:90])
-        y -= 28
-    else:
-        y -= 14
-    return y - 8
-
-
-def _draw_wrapped_text(
-    pdf,
-    text: str,
-    font_name: str,
-    font_size: int,
-    birth_data: str | None = None,
-    *,
-    user_id: int = 0,
-    hd_type: str = "",
-    profile: str = "",
-    authority: str = "",
-    strategy: str = "",
-) -> None:
-    if simpleSplit is None or A4 is None:
-        raise RuntimeError("Установите пакет reportlab для PDF-отчетов.")
-    width, height = A4
-    left = 48
-    right = 48
-    top = height - 56
-    bottom = 56
-    line_height = font_size + 5
-    y = top
-
-    pdf.setFont(font_name, 16)
-    pdf.drawString(left, y, "Ваш Дизайн Человека")
-    y -= 28
-    y = _draw_hd_legend_table(
-        pdf,
-        font_name,
-        left,
-        y,
-        hd_type=hd_type,
-        profile=profile,
-        authority=authority,
-        strategy=strategy,
-    )
-    y = _draw_bodygraph(pdf, birth_data, font_name, left, y, user_id=user_id)
-    pdf.setFont(font_name, font_size)
-
-    paragraphs = text.splitlines() or [text]
-    for paragraph in paragraphs:
-        paragraph = paragraph.strip()
-        if not paragraph:
-            y -= line_height
+def _md_to_reportlab_html(text: object) -> str:
+    """Конвертирует ограниченный markdown (**жирный**, переносы) в HTML для Paragraph."""
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    chunks: list[str] = []
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            chunks.append("<br/>")
             continue
-        for line in simpleSplit(paragraph, font_name, font_size, width - left - right):
-            if y <= bottom:
-                _draw_pdf_footer(pdf, font_name, width)
-                pdf.showPage()
-                pdf.setFont(font_name, font_size)
-                y = top
-            pdf.drawString(left, y, line)
-            y -= line_height
-    _draw_pdf_footer(pdf, font_name, width)
+        escaped = html_module.escape(stripped)
+        escaped = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", escaped)
+        if stripped.startswith("### "):
+            escaped = f"<b><font size='12'>{html_module.escape(stripped[4:])}</font></b>"
+        elif stripped.startswith("## "):
+            escaped = f"<b><font size='13'>{html_module.escape(stripped[3:])}</font></b>"
+        chunks.append(escaped)
+    return "<br/>".join(chunks)
+
+
+_PdfFlowableBase = Flowable if Flowable is not None else object
+
+
+class _HdPdfBookmark(_PdfFlowableBase):
+    """Нулевой flowable: регистрирует интерактивную закладку PDF."""
+
+    height = width = 0
+
+    def __init__(self, title: str, key: str) -> None:
+        super().__init__()
+        self.title = title
+        self.key = key
+
+    def draw(self) -> None:
+        self.canv.bookmarkPage(self.key)
+        self.canv.addOutlineEntry(self.title, self.key, level=0)
+
+
+class _HdAccentBarFlowable(_PdfFlowableBase):
+    """Горизонтальная фиолетовая полоса под заголовком главы."""
+
+    def __init__(self, width: float = 480, *, bar_height: float = 4) -> None:
+        super().__init__()
+        self.width = width
+        self.bar_height = bar_height
+        self.height = bar_height + 10
+
+    def draw(self) -> None:
+        if colors is None:
+            return
+        self.canv.setFillColor(colors.HexColor(_HD_NEON_HEX))
+        self.canv.roundRect(0, 4, self.width, self.bar_height, 2, fill=1, stroke=0)
+
+
+class _HdEnergyScalesFlowable(_PdfFlowableBase):
+    """Три progress bar по energy_scales (capacity, immunity, scale)."""
+
+    _LABELS: tuple[tuple[str, str], ...] = (
+        ("capacity", "Ёмкость ауры"),
+        ("immunity", "Иммунитет к чужому мнению"),
+        ("scale", "Индекс харизмы"),
+    )
+
+    def __init__(
+        self,
+        scales: dict[str, object],
+        *,
+        width: float = 460,
+        font_name: str = "Helvetica",
+    ) -> None:
+        super().__init__()
+        self.scales = scales if isinstance(scales, dict) else {}
+        self.width = width
+        self.font_name = font_name
+        self.bar_h = 12.0
+        self.row_gap = 30.0
+        self.height = self.row_gap * len(self._LABELS) + 16
+
+    def draw(self) -> None:
+        if colors is None:
+            return
+        bar_max_w = self.width - 130
+        y = self.height - 18
+        for key, label in self._LABELS:
+            pct = _clamp_scale(self.scales.get(key), default=50)
+            fill_w = max(2.0, bar_max_w * pct / 100.0)
+            self.canv.setFont(self.font_name, 9)
+            self.canv.setFillColor(colors.HexColor("#555566"))
+            self.canv.drawString(0, y + 2, label)
+            bx = 130
+            self.canv.setFillColor(colors.HexColor("#D8D8E0"))
+            self.canv.roundRect(bx, y, bar_max_w, self.bar_h, 3, fill=1, stroke=0)
+            self.canv.setFillColor(colors.HexColor(_HD_NEON_HEX))
+            self.canv.roundRect(bx, y, fill_w, self.bar_h, 3, fill=1, stroke=0)
+            self.canv.setFillColor(colors.HexColor("#1A1A24"))
+            self.canv.drawRightString(bx + bar_max_w + 36, y + 2, f"{pct}%")
+            y -= self.row_gap
+
+
+class _HdPremiumPdfDoc(BaseDocTemplate):
+    """Platypus-документ с тёмной обложкой, светлыми главами и сквозным футером."""
+
+    def __init__(
+        self,
+        filename: str,
+        *,
+        user_name: str,
+        birth_data: str,
+        font_name: str,
+    ) -> None:
+        if BaseDocTemplate is None or Frame is None or PageTemplate is None or A4 is None:
+            raise RuntimeError("Установите пакет reportlab для PDF-отчетов.")
+        self.hd_user_name = (user_name or "").strip() or "друг"
+        self.hd_birth_data = (birth_data or "").strip()
+        self.hd_font_name = font_name
+        super().__init__(
+            filename,
+            pagesize=A4,
+            leftMargin=48,
+            rightMargin=48,
+            topMargin=56,
+            bottomMargin=56,
+        )
+        frame = Frame(
+            self.leftMargin,
+            self.bottomMargin,
+            self.width,
+            self.height,
+            id="hd_main",
+        )
+        self.addPageTemplates(
+            [
+                PageTemplate(id="Cover", frames=[frame], onPage=self._on_cover_page),
+                PageTemplate(id="Content", frames=[frame], onPage=self._on_content_page),
+            ]
+        )
+
+    def _on_cover_page(self, canv: Any, doc: Any) -> None:
+        if colors is None or A4 is None:
+            return
+        w, h = A4
+        canv.saveState()
+        canv.setFillColor(colors.HexColor(_PDF_COVER_BG))
+        canv.rect(0, 0, w, h, fill=1, stroke=0)
+        name = self.hd_user_name.strip() or "друг"
+        title = f"{name.upper()}. ПЕРСОНАЛЬНЫЙ НАВИГАТОР ЛИЧНОСТИ"
+        canv.setFillColor(colors.HexColor(_HD_NEON_HEX))
+        canv.setFont(self.hd_font_name, 20)
+        canv.drawCentredString(w / 2, h * 0.58, title[:72])
+        canv.setFillColor(colors.HexColor("#C8C8D8"))
+        canv.setFont(self.hd_font_name, 13)
+        canv.drawCentredString(w / 2, h * 0.50, "Квантовый аудит энергетической архитектуры")
+        if self.hd_birth_data:
+            canv.setFont(self.hd_font_name, 11)
+            canv.drawCentredString(w / 2, h * 0.44, self.hd_birth_data[:90])
+        canv.setFillColor(colors.HexColor("#888899"))
+        canv.setFont(self.hd_font_name, 9)
+        canv.drawCentredString(w / 2, 72, _HD_WATERMARK)
+        canv.restoreState()
+
+    def _on_content_page(self, canv: Any, doc: Any) -> None:
+        if colors is None or A4 is None:
+            return
+        w, _h = A4
+        canv.saveState()
+        canv.setFillColor(colors.HexColor(_PDF_CONTENT_BG))
+        canv.rect(0, 0, w, A4[1], fill=1, stroke=0)
+        canv.setFont(self.hd_font_name, 8)
+        canv.setFillColor(colors.HexColor("#888899"))
+        canv.drawString(48, 24, _HD_WATERMARK)
+        canv.drawRightString(w - 48, 24, str(canv.getPageNumber()))
+        canv.restoreState()
+
+
+def _prepare_bodygraph_for_pdf(user_id: int, birth_data: str | None) -> str | None:
+    """JPEG ~430 px, ≤300 KB для быстрой загрузки в Telegram."""
+    if Image is None:
+        return None
+    try:
+        defined, _ = _defined_centers_from_birth_data(birth_data or "")
+        generate_premium_bodygraph(sorted(defined), user_id)
+        src = _HD_BODYGRAPH_OUTPUT_DIR / f"ready_hd_{user_id}.png"
+        if not src.is_file():
+            return None
+        with Image.open(src) as img:
+            ratio = _PDF_BODYGRAPH_WIDTH_PX / max(img.width, 1)
+            new_size = (_PDF_BODYGRAPH_WIDTH_PX, max(1, int(img.height * ratio)))
+            resized = img.convert("RGB").resize(new_size, Image.Resampling.LANCZOS)
+        out = Path(tempfile.gettempdir()) / f"hd_bg_pdf_{user_id}.jpg"
+        for quality in (88, 82, 75, 68, 60):
+            resized.save(out, format="JPEG", quality=quality, optimize=True)
+            if out.stat().st_size <= _PDF_BODYGRAPH_MAX_BYTES:
+                break
+        return str(out)
+    except Exception:
+        logger.warning("bodygraph pdf optimize failed uid=%s", user_id, exc_info=True)
+        return None
+
+
+def _build_chart_overview_table(
+    meta: dict[str, object],
+    font_name: str,
+) -> Table:
+    rows: list[list[str]] = []
+    for label, raw in (
+        ("Истинный Тип", meta.get("hd_type")),
+        ("Профиль", meta.get("profile")),
+        ("Внутренний Авторитет", meta.get("authority")),
+        ("Стратегия", meta.get("strategy")),
+    ):
+        value = _pdf_clean_meta_value(raw)
+        if value:
+            rows.append([label, value])
+    defined = meta.get("defined_centers")
+    if isinstance(defined, list) and defined:
+        rows.append(["Определённые центры", ", ".join(str(c) for c in defined[:9])])
+    if not rows:
+        rows.append(["Карта", "Параметры рассчитаны по дате рождения"])
+    table = Table(rows, colWidths=[150, 330])
+    if colors is not None and TableStyle is not None:
+        table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#EDE9FE")),
+                    ("BACKGROUND", (0, 0), (-1, -1), colors.white),
+                    ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#D4D4DC")),
+                    ("INNERGRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#E8E8EE")),
+                    ("FONTNAME", (0, 0), (-1, -1), font_name),
+                    ("FONTSIZE", (0, 0), (-1, -1), 10),
+                    ("FONTNAME", (0, 0), (0, -1), font_name),
+                    ("TEXTCOLOR", (0, 0), (0, -1), colors.HexColor("#555566")),
+                    ("TEXTCOLOR", (1, 0), (1, -1), colors.HexColor("#1A1A24")),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 10),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+                    ("TOPPADDING", (0, 0), (-1, -1), 8),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+                ]
+            )
+        )
+    return table
+
+
+def _build_hd_premium_pdf_story(
+    user_id: int,
+    report: dict[str, Any],
+    *,
+    user_name: str,
+    birth_data: str | None,
+    meta: dict[str, object],
+    font_name: str,
+) -> list[Any]:
+    if (
+        Paragraph is None
+        or PageBreak is None
+        or Spacer is None
+        or NextPageTemplate is None
+        or ParagraphStyle is None
+        or RLImage is None
+    ):
+        raise RuntimeError("Установите пакет reportlab для PDF-отчетов.")
+
+    title_style = ParagraphStyle(
+        "HdChapterTitle",
+        fontName=font_name,
+        fontSize=16,
+        leading=20,
+        textColor=colors.HexColor("#1A1A24") if colors else None,
+        spaceAfter=4,
+    )
+    overview_style = ParagraphStyle(
+        "HdOverviewTitle",
+        fontName=font_name,
+        fontSize=18,
+        leading=22,
+        textColor=colors.HexColor(_HD_NEON_HEX) if colors else None,
+        spaceAfter=10,
+    )
+    body_style = ParagraphStyle(
+        "HdBody",
+        fontName=font_name,
+        fontSize=11,
+        leading=15,
+        textColor=colors.HexColor("#1A1A24") if colors else None,
+        spaceAfter=8,
+    )
+
+    story: list[Any] = [Spacer(1, 1)]
+    story.append(NextPageTemplate("Content"))
+    story.append(PageBreak())
+
+    story.append(_HdPdfBookmark("Chart Overview", "hd_overview"))
+    story.append(Paragraph("Chart Overview", overview_style))
+    story.append(Spacer(1, 8))
+    story.append(_build_chart_overview_table(meta, font_name))
+    story.append(Spacer(1, 16))
+
+    bg_path = _prepare_bodygraph_for_pdf(user_id, birth_data)
+    if bg_path:
+        display_w = _PDF_BODYGRAPH_WIDTH_PX * 0.72
+        img = RLImage(bg_path, width=display_w, height=display_w, kind="proportional")
+        img.hAlign = "CENTER"
+        story.append(img)
+        story.append(Spacer(1, 12))
+
+    scales = report.get("energy_scales")
+    if isinstance(scales, dict):
+        story.append(Paragraph("<b>Energy Scales</b>", body_style))
+        story.append(_HdEnergyScalesFlowable(scales, font_name=font_name))
+    story.append(PageBreak())
+
+    chapter_blocks: list[tuple[str, str, str, str]] = []
+    for key, chapter_title, bookmark_key in _PDF_CHAPTER_SPECS:
+        body = report.get(key)
+        if body:
+            chapter_blocks.append((key, chapter_title, bookmark_key, str(body)))
+
+    for idx, (_key, chapter_title, bookmark_key, body) in enumerate(chapter_blocks):
+        story.append(_HdPdfBookmark(chapter_title, bookmark_key))
+        story.append(Paragraph(html_module.escape(chapter_title), title_style))
+        story.append(_HdAccentBarFlowable(width=480))
+        story.append(Spacer(1, 10))
+        html_body = _md_to_reportlab_html(body)
+        if html_body:
+            story.append(Paragraph(html_body, body_style))
+        if idx < len(chapter_blocks) - 1:
+            story.append(PageBreak())
+
+    return story
 
 
 def create_hd_premium_pdf(
@@ -1849,19 +2190,31 @@ def create_hd_premium_pdf(
     birth_data: str | None,
     *,
     hd_type: str = "",
+    user_name: str = "",
 ) -> str:
-    """PDF с легендой Swiss Ephemeris (тип, профиль, авторитет, стратегия)."""
+    """Премиальный PDF: обложка, Chart Overview, energy scales, главы с закладками."""
+    if BaseDocTemplate is None or A4 is None:
+        raise RuntimeError("Установите пакет reportlab для PDF-отчетов.")
     math_data = build_hd_math_data(hd_type or "не указан", birth_data or "")
     meta = hd_profile_metadata(math_data)
-    return create_pdf(
-        user_id,
-        format_premium_report(report),
-        birth_data,
-        hd_type=str(meta["hd_type"]),
-        profile=str(meta["profile"]),
-        authority=str(meta["authority"]),
-        strategy=str(meta["strategy"]),
+    path = Path(tempfile.gettempdir()) / f"report_{user_id}.pdf"
+    font_name = _register_pdf_font()
+    doc = _HdPremiumPdfDoc(
+        str(path),
+        user_name=user_name,
+        birth_data=str(meta.get("birth_data") or birth_data or ""),
+        font_name=font_name,
     )
+    story = _build_hd_premium_pdf_story(
+        user_id,
+        report,
+        user_name=user_name,
+        birth_data=birth_data,
+        meta=meta,
+        font_name=font_name,
+    )
+    doc.build(story)
+    return str(path)
 
 
 def create_pdf(
@@ -1873,26 +2226,24 @@ def create_pdf(
     profile: str = "",
     authority: str = "",
     strategy: str = "",
+    user_name: str = "",
 ) -> str:
-    if canvas is None or A4 is None:
-        raise RuntimeError("Установите пакет reportlab для PDF-отчетов.")
-    path = Path(tempfile.gettempdir()) / f"report_{user_id}.pdf"
-    font_name = _register_pdf_font()
-    pdf = canvas.Canvas(str(path), pagesize=A4)
-    _draw_wrapped_text(
-        pdf,
-        text,
-        font_name,
-        11,
+    """Обратная совместимость: собирает report-dict из plain text и вызывает premium PDF."""
+    _ = (text, profile, authority, strategy)
+    report = {
+        "money": text,
+        "love": "",
+        "energy": "",
+        "plan": "",
+        "energy_scales": {"capacity": 50, "immunity": 50, "scale": 50},
+    }
+    return create_hd_premium_pdf(
+        user_id,
+        report,
         birth_data,
-        user_id=user_id,
         hd_type=hd_type,
-        profile=profile,
-        authority=authority,
-        strategy=strategy,
+        user_name=user_name,
     )
-    pdf.save()
-    return str(path)
 
 
 _HD_BIRTH_NOISE_RE: tuple[re.Pattern[str], ...] = (
@@ -1998,73 +2349,168 @@ def _draw_story_watermark(draw: Any, width: int, height: int, font: Any) -> None
     draw.text(((width - tw) // 2, height - 80), label, fill=(200, 200, 210, 220), font=font)
 
 
-def generate_instagram_stories(uid: int, report: dict[str, Any]) -> list[str]:
+def _create_story_gradient(size: tuple[int, int]) -> Any:
+    """Вертикальный неоновый градиент для Stories (фиолетовый → тёмно-синий)."""
+    if Image is None or ImageDraw is None:
+        raise RuntimeError("Pillow required")
+    w, h = size
+    base = Image.new("RGBA", size, (12, 8, 32, 255))
+    draw = ImageDraw.Draw(base)
+    for y in range(h):
+        t = y / max(h - 1, 1)
+        r = int(72 * (1 - t) + 10 * t)
+        g = int(18 * (1 - t) + 14 * t)
+        b = int(110 * (1 - t) + 36 * t)
+        draw.line([(0, y), (w, y)], fill=(r, g, b, 255))
+    glow = Image.new("RGBA", size, (0, 0, 0, 0))
+    glow_draw = ImageDraw.Draw(glow)
+    glow_draw.ellipse((w // 2 - 420, h // 3 - 280, w // 2 + 420, h // 3 + 280), fill=(139, 92, 246, 48))
+    glow_draw.ellipse((w // 4 - 200, h * 2 // 3 - 160, w // 4 + 200, h * 2 // 3 + 160), fill=(56, 189, 248, 32))
+    return Image.alpha_composite(base, glow)
+
+
+def _story_excerpt(text: object, *, max_chars: int = 380) -> str:
+    clean = strip_hd_markdown_for_plain(str(text or "").strip())
+    if not clean:
+        return ""
+    if len(clean) <= max_chars:
+        return clean
+    cut = clean[:max_chars].rsplit(" ", 1)[0]
+    return f"{cut}…"
+
+
+def _draw_story_meta_panel(
+    draw: Any,
+    math_data: dict[str, object],
+    *,
+    y_top: int,
+    label_font: Any,
+    value_font: Any,
+) -> None:
+    meta = hd_profile_metadata(math_data)
+    rows = (
+        ("Тип", str(meta.get("hd_type") or "—")),
+        ("Профиль", str(meta.get("profile") or "—")),
+        ("Авторитет", str(meta.get("authority") or "—")),
+        ("Стратегия", str(meta.get("strategy") or "—")),
+    )
+    panel_x, panel_w = 48, 984
+    row_h = 52
+    panel_h = 36 + row_h * len(rows)
+    y0 = y_top
+    draw.rounded_rectangle((panel_x, y0, panel_x + panel_w, y0 + panel_h), radius=28, fill=(8, 8, 18, 210))
+    draw.text((panel_x + 24, y0 + 16), "Параметры карты", fill=_HD_NEON_HEX, font=label_font)
+    cy = y0 + 48
+    for label, value in rows:
+        draw.text((panel_x + 24, cy), label, fill=(180, 180, 200, 255), font=value_font)
+        wrapped = textwrap.wrap(value, width=34) or [value]
+        draw.text((panel_x + 200, cy), wrapped[0], fill=(245, 245, 252, 255), font=value_font)
+        cy += row_h
+
+
+def generate_instagram_stories(
+    uid: int,
+    report: dict[str, Any],
+    *,
+    math_data: dict[str, object] | None = None,
+    hd_type: str = "",
+    birth_data: str = "",
+) -> list[str]:
     """
-    Instagram Stories: glassmorphism-карточка с бодиграфом + текстовая карточка fast_facts.
+    Instagram Stories: бодиграф + параметры карты; подробные выдержки из разделов отчёта.
 
     Returns:
-        Список относительных путей ``tmp/story_{uid}_1.png``, ``tmp/story_{uid}_2.png``.
+        ``tmp/story_{uid}_1.png``, ``tmp/story_{uid}_2.png``.
     """
     if Image is None or ImageDraw is None or ImageFilter is None:
         raise RuntimeError("Установите пакет Pillow для Instagram Stories.")
 
+    if math_data is None:
+        math_data = build_hd_math_data(hd_type or "не указан", birth_data or "")
+
     os.makedirs(str(_HD_BODYGRAPH_OUTPUT_DIR), exist_ok=True)
     bodygraph_path = _HD_BODYGRAPH_OUTPUT_DIR / f"ready_hd_{uid}.png"
     paths: list[str] = []
+    title_font = _load_story_font(44)
+    subtitle_font = _load_story_font(24)
+    label_font = _load_story_font(28)
+    value_font = _load_story_font(24)
+    section_font = _load_story_font(30)
+    body_font = _load_story_font(24)
+    meta = hd_profile_metadata(math_data)
+    display_type = str(meta.get("hd_type") or hd_type or "Human Design")
 
-    # --- Карточка 1: Glassmorphism + бодиграф ---
-    card1 = Image.new("RGBA", _STORY_CANVAS_SIZE, (10, 10, 18, 255))
+    # --- Карточка 1: градиент + бодиграф + параметры ---
+    card1 = _create_story_gradient(_STORY_CANVAS_SIZE)
     if bodygraph_path.is_file():
         bg_src = Image.open(bodygraph_path).convert("RGBA")
-        scale = 2.5
-        bg_w = int(bg_src.width * scale)
-        bg_h = int(bg_src.height * scale)
-        bg_scaled = bg_src.resize((bg_w, bg_h), Image.Resampling.LANCZOS)
-        bg_blurred = bg_scaled.filter(ImageFilter.GaussianBlur(radius=35))
-        bx = (_STORY_CANVAS_SIZE[0] - bg_w) // 2
-        by = (_STORY_CANVAS_SIZE[1] - bg_h) // 2
-        card1.paste(bg_blurred, (bx, by), bg_blurred)
-        sharp_w = min(_STORY_CANVAS_SIZE[0] - 120, bg_src.width)
-        sharp_h = int(sharp_w * bg_src.height / max(bg_src.width, 1))
-        sharp = bg_src.resize((sharp_w, sharp_h), Image.Resampling.LANCZOS)
-        sx = (_STORY_CANVAS_SIZE[0] - sharp_w) // 2
-        sy = (_STORY_CANVAS_SIZE[1] - sharp_h) // 2
-        card1.paste(sharp, (sx, sy), sharp)
+        graph_w = min(760, _STORY_CANVAS_SIZE[0] - 160)
+        graph_h = int(graph_w * bg_src.height / max(bg_src.width, 1))
+        graph = bg_src.resize((graph_w, graph_h), Image.Resampling.LANCZOS)
+        glow_layer = graph.copy()
+        glow_layer = glow_layer.filter(ImageFilter.GaussianBlur(radius=18))
+        gx = (_STORY_CANVAS_SIZE[0] - graph_w) // 2
+        gy = 280
+        card1.paste(glow_layer, (gx - 8, gy - 8), glow_layer)
+        card1.paste(graph, (gx, gy), graph)
 
-    overlay = Image.new("RGBA", _STORY_CANVAS_SIZE, (10, 10, 18, 80))
-    card1 = Image.alpha_composite(card1, overlay)
     draw1 = ImageDraw.Draw(card1)
-    title_font = _load_story_font(42)
+    draw1.text((60, 100), "Human Design Premium", fill=_HD_NEON_HEX, font=title_font)
+    birth_line = strip_hd_markdown_for_plain(str(meta.get("birth_data") or birth_data or "").strip())
+    if birth_line:
+        draw1.text((60, 158), birth_line[:48], fill=(210, 210, 225, 230), font=subtitle_font)
+    draw1.text((60, 200), display_type, fill=(255, 255, 255, 255), font=label_font)
+    _draw_story_meta_panel(
+        draw1,
+        math_data,
+        y_top=1180,
+        label_font=label_font,
+        value_font=value_font,
+    )
     _draw_story_watermark(draw1, _STORY_CANVAS_SIZE[0], _STORY_CANVAS_SIZE[1], _load_story_font(22))
-    draw1.text((60, 90), "Human Design Premium", fill=_HD_NEON_HEX, font=title_font)
     out1 = _HD_BODYGRAPH_OUTPUT_DIR / f"story_{uid}_1.png"
     card1.convert("RGB").save(out1, format="PNG")
     paths.append(f"tmp/story_{uid}_1.png")
 
-    # --- Карточка 2: fast_facts на матовых плашках ---
-    card2 = Image.new("RGBA", _STORY_CANVAS_SIZE, (8, 8, 14, 255))
+    # --- Карточка 2: подробные выдержки money / love / energy ---
+    card2 = _create_story_gradient(_STORY_CANVAS_SIZE)
     draw2 = ImageDraw.Draw(card2)
-    header_font = _load_story_font(36)
-    body_font = _load_story_font(26)
-    fast_facts = strip_hd_markdown_for_plain(
-        str(report.get("fast_facts") or "").strip() or "⚡ Персональный экспресс-анализ"
+    draw2.text((60, 100), display_type, fill=_HD_NEON_HEX, font=title_font)
+    draw2.text((60, 158), "Ключевые инсайты разбора", fill=(210, 210, 225, 230), font=subtitle_font)
+
+    sections = (
+        ("💼 Деньги и ресурс", _story_excerpt(report.get("money"), max_chars=420)),
+        ("❤️ Отношения", _story_excerpt(report.get("love"), max_chars=420)),
+        ("⚡ Энергия и режим", _story_excerpt(report.get("energy"), max_chars=360)),
     )
-    blocks = [b.strip() for b in re.split(r"(?=⚡|💼|🔋)", fast_facts) if b.strip()] or [fast_facts]
-    y_pos = 120
-    for block in blocks[:4]:
-        block = strip_hd_markdown_for_plain(block)
-        lines = textwrap.wrap(block, width=38) or [block]
-        box_h = 28 + len(lines) * 34
-        draw2.rounded_rectangle((48, y_pos, 1032, y_pos + box_h), radius=24, fill=(0, 0, 0, 140))
-        first = lines[0]
-        accent = first.split(":", 1)[0] + ":" if ":" in first else "⚡ Insight:"
-        body = first.split(":", 1)[1].strip() if ":" in first else first
-        draw2.text((72, y_pos + 14), accent, fill=_HD_NEON_HEX, font=header_font)
-        ty = y_pos + 52
-        for line in ([body] + lines[1:]):
-            draw2.text((72, ty), strip_hd_markdown_for_plain(line), fill=(235, 235, 245, 255), font=body_font)
-            ty += 34
-        y_pos += box_h + 24
+    y_pos = 240
+    for title, body in sections:
+        if not body:
+            continue
+        lines = textwrap.wrap(body, width=38) or [body]
+        box_h = 56 + len(lines) * 32
+        if y_pos + box_h > _STORY_CANVAS_SIZE[1] - 120:
+            break
+        draw2.rounded_rectangle((48, y_pos, 1032, y_pos + box_h), radius=24, fill=(8, 8, 18, 215))
+        draw2.text((72, y_pos + 16), title, fill=_HD_NEON_HEX, font=section_font)
+        ty = y_pos + 56
+        for line in lines:
+            draw2.text((72, ty), line, fill=(235, 235, 245, 255), font=body_font)
+            ty += 32
+        y_pos += box_h + 20
+
+    if y_pos < 900:
+        fast = _story_excerpt(report.get("fast_facts"), max_chars=280)
+        if fast:
+            lines = textwrap.wrap(fast, width=38)
+            box_h = 56 + len(lines) * 32
+            draw2.rounded_rectangle((48, y_pos, 1032, y_pos + box_h), radius=24, fill=(8, 8, 18, 215))
+            draw2.text((72, y_pos + 16), "⚡ Экспресс-вывод", fill=_HD_NEON_HEX, font=section_font)
+            ty = y_pos + 56
+            for line in lines:
+                draw2.text((72, ty), line, fill=(235, 235, 245, 255), font=body_font)
+                ty += 32
+
     _draw_story_watermark(draw2, _STORY_CANVAS_SIZE[0], _STORY_CANVAS_SIZE[1], _load_story_font(22))
     out2 = _HD_BODYGRAPH_OUTPUT_DIR / f"story_{uid}_2.png"
     card2.convert("RGB").save(out2, format="PNG")
@@ -2072,10 +2518,26 @@ def generate_instagram_stories(uid: int, report: dict[str, Any]) -> list[str]:
     return paths
 
 
-async def generate_instagram_stories_async(uid: int, report: dict[str, Any]) -> list[str]:
+async def generate_instagram_stories_async(
+    uid: int,
+    report: dict[str, Any],
+    *,
+    math_data: dict[str, object] | None = None,
+    hd_type: str = "",
+    birth_data: str = "",
+) -> list[str]:
     """Pillow offloaded в executor — не блокирует event loop на VDS."""
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, lambda: generate_instagram_stories(uid, report))
+    return await loop.run_in_executor(
+        None,
+        lambda: generate_instagram_stories(
+            uid,
+            report,
+            math_data=math_data,
+            hd_type=hd_type,
+            birth_data=birth_data,
+        ),
+    )
 
 
 def _build_compatibility_prompt(
