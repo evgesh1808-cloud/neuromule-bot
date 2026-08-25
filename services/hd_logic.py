@@ -76,12 +76,19 @@ HD_REPORT_COST = get_hd_report_cost()
 MATCH_REPORT_COST = get_match_report_cost()
 PRICE_UPSCALE = _app_settings.cost_upscale
 
-# Канал B (Gemini): флагманские Pro-модели для премиум-разбора и совместимости.
-_GEMINI_MODEL_CHAIN: tuple[str, ...] = (
+# Канал B (Gemini SDK): отдельные каскады для «Совета дня» (Flash) и премиум-разбора (Pro).
+_GEMINI_DAILY_MODEL_CHAIN: tuple[str, ...] = (
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+    "gemini-1.5-flash-latest",
+)
+_GEMINI_PREMIUM_MODEL_CHAIN: tuple[str, ...] = (
     "gemini-2.5-pro",
     "gemini-2.0-pro-exp-02-15",
     "gemini-1.5-pro-latest",
 )
+# Обратная совместимость для daily_advice_pool (ночной cron).
+_GEMINI_MODEL_CHAIN = _GEMINI_DAILY_MODEL_CHAIN
 _HD_WATERMARK = "🧬 Создано в @neuromule_bot"
 _HD_NEON_HEX = "#8B5CF6"
 _ENERGY_SCALE_KEYS = ("capacity", "immunity", "scale")
@@ -447,11 +454,26 @@ _USER_COLUMNS = {
 }
 
 
+def _gemini_api_key() -> str:
+    return (_app_settings.gemini_api_key or os.getenv("GEMINI_API_KEY", "")).strip()
+
+
+def _gemini_configured() -> bool:
+    key = _gemini_api_key()
+    return bool(key and not key.startswith(("your_", "ваш_")) and genai is not None)
+
+
+def _openrouter_configured() -> bool:
+    from services.billing.chat_pipeline import _collect_openrouter_keys
+
+    return bool(_collect_openrouter_keys(_app_settings))
+
+
 def _configure_genai() -> "genai.Client":
     """Клиент Google Gen AI SDK (только канал B, без OpenRouter)."""
     if genai is None:
         raise RuntimeError("Установите пакет google-genai для HD-отчетов и совета дня.")
-    api_key = (_app_settings.gemini_api_key or os.getenv("GEMINI_API_KEY", "")).strip()
+    api_key = _gemini_api_key()
     if not api_key or api_key.startswith(("your_", "ваш_")):
         raise RuntimeError("Задайте GEMINI_API_KEY в .env.")
     return genai.Client(api_key=api_key)
@@ -534,7 +556,7 @@ async def _generate_daily_via_gemini(prompt: str) -> str:
     """Прямой Gemini SDK; пустая строка / исключение — вызывающий код уйдёт в fallback."""
     client = _configure_genai()
     errors: list[str] = []
-    for model_name in _GEMINI_MODEL_CHAIN:
+    for model_name in _GEMINI_DAILY_MODEL_CHAIN:
         try:
             response = await asyncio.wait_for(
                 client.aio.models.generate_content(
@@ -590,7 +612,7 @@ async def gemini_generate_plain_text(prompt: str) -> str:
     """
     client = _configure_genai()
     errors: list[str] = []
-    for model_name in _GEMINI_MODEL_CHAIN:
+    for model_name in _GEMINI_PREMIUM_MODEL_CHAIN:
         try:
             response = await client.aio.models.generate_content(
                 model=model_name,
@@ -860,22 +882,28 @@ async def generate_premium_report(
     system_prompt, user_prompt = _build_elite_premium_hd_prompt(user_name, math_data)
     errors: list[str] = []
 
-    if genai is not None:
+    if _gemini_configured():
         try:
-            return await _generate_premium_via_gemini(system_prompt, user_prompt)
+            report = await _generate_premium_via_gemini(system_prompt, user_prompt)
+            logger.info("HD premium report served via Gemini Pro chain")
+            return report
         except Exception as exc:  # noqa: BLE001
             logger.warning("Gemini premium report failed, trying OpenRouter: %s", exc)
             errors.append(f"gemini: {exc!r}")
-    else:
-        logger.error(
+    elif genai is None:
+        logger.info(
             "Пакет google-genai не установлен — полный разбор через OpenRouter. "
             "На VDS: pip install 'google-genai>=1.0'"
         )
         errors.append("google-genai_missing")
+    elif not _openrouter_configured():
+        raise RuntimeError("hd_premium_unavailable: задайте GEMINI_API_KEY или OPENROUTER_API_KEY")
+    else:
+        logger.info("GEMINI_API_KEY не задан — полный разбор сразу через OpenRouter Pro chain")
 
     try:
         report = await _generate_premium_via_openrouter(system_prompt, user_prompt)
-        logger.info("HD premium report served via OpenRouter fallback")
+        logger.info("HD premium report served via OpenRouter")
         return report
     except Exception as exc:  # noqa: BLE001
         logger.exception("OpenRouter premium report fallback failed")
@@ -902,7 +930,7 @@ async def _generate_premium_via_gemini(system_prompt: str, user_prompt: str) -> 
         "max_output_tokens": _HD_PREMIUM_MAX_OUTPUT_TOKENS,
         "system_instruction": system_prompt,
     }
-    for model_name in _GEMINI_MODEL_CHAIN:
+    for model_name in _GEMINI_PREMIUM_MODEL_CHAIN:
         try:
             response = await asyncio.wait_for(
                 client.aio.models.generate_content(
@@ -912,7 +940,9 @@ async def _generate_premium_via_gemini(system_prompt: str, user_prompt: str) -> 
                 ),
                 timeout=_GEMINI_PREMIUM_TIMEOUT_SEC,
             )
-            return _parse_premium_report_from_llm(_extract_gemini_text(response))
+            report = _parse_premium_report_from_llm(_extract_gemini_text(response))
+            logger.info("HD premium Gemini model=%s", model_name)
+            return report
         except Exception as exc_json:  # noqa: BLE001
             logger.warning(
                 "Gemini %s: JSON-режим или разбор не удались, пробуем обычный ответ: %s",
@@ -1069,18 +1099,20 @@ async def generate_daily_forecast(
     prompt = build_daily_advice_prompt(user_profile, current_cta_text=current_cta_text)
     errors: list[str] = []
 
-    if genai is not None:
+    if _gemini_configured():
         try:
             return await _generate_daily_via_gemini(prompt)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Gemini daily advice failed, trying OpenRouter: %s", exc)
             errors.append(f"gemini: {exc!r}")
-    else:
-        logger.error(
+    elif genai is None:
+        logger.info(
             "Пакет google-genai не установлен — «Совет дня» через OpenRouter. "
             "На VDS: pip install 'google-genai>=1.0'"
         )
         errors.append("google-genai_missing")
+    elif not _openrouter_configured():
+        raise RuntimeError("daily_advice_unavailable: задайте GEMINI_API_KEY или OPENROUTER_API_KEY")
 
     try:
         text = await _generate_daily_via_openrouter(prompt)
@@ -1889,7 +1921,7 @@ async def _generate_compat_via_gemini(system_prompt: str, user_prompt: str) -> d
         "system_instruction": system_prompt,
     }
     errors: list[str] = []
-    for model_name in _GEMINI_MODEL_CHAIN:
+    for model_name in _GEMINI_PREMIUM_MODEL_CHAIN:
         try:
             response = await asyncio.wait_for(
                 client.aio.models.generate_content(
@@ -1899,7 +1931,9 @@ async def _generate_compat_via_gemini(system_prompt: str, user_prompt: str) -> d
                 ),
                 timeout=_GEMINI_PREMIUM_TIMEOUT_SEC,
             )
-            return _parse_compat_report_from_llm(_extract_gemini_text(response))
+            report = _parse_compat_report_from_llm(_extract_gemini_text(response))
+            logger.info("HD compatibility Gemini model=%s", model_name)
+            return report
         except Exception as exc:  # noqa: BLE001
             errors.append(f"{model_name}: {exc!r}")
             continue
@@ -1950,11 +1984,16 @@ async def generate_compatibility_report(
         partner_math,
         composite,
     )
-    if genai is not None:
+    if _gemini_configured():
         try:
-            return await _generate_compat_via_gemini(system_prompt, user_prompt)
+            report = await _generate_compat_via_gemini(system_prompt, user_prompt)
+            return report
         except Exception as exc:  # noqa: BLE001
             logger.warning("Gemini compatibility failed, OpenRouter fallback: %s", exc)
+    elif not _openrouter_configured():
+        raise RuntimeError("hd_compat_unavailable: задайте GEMINI_API_KEY или OPENROUTER_API_KEY")
+    else:
+        logger.info("GEMINI_API_KEY не задан — совместимость сразу через OpenRouter Pro chain")
     return await _generate_compat_via_openrouter(system_prompt, user_prompt)
 
 

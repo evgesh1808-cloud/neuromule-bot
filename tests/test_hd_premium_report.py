@@ -35,8 +35,32 @@ async def test_premium_report_falls_back_to_openrouter_when_gemini_missing() -> 
 
 
 @pytest.mark.asyncio
+async def test_premium_report_skips_gemini_when_key_missing() -> None:
+    with (
+        patch.object(hd_logic, "genai", object()),
+        patch.object(hd_logic, "_gemini_configured", return_value=False),
+        patch.object(hd_logic, "_openrouter_configured", return_value=True),
+        patch.object(
+            hd_logic,
+            "_generate_premium_via_gemini",
+            new=AsyncMock(),
+        ) as gemini_mock,
+        patch.object(
+            hd_logic,
+            "_generate_premium_via_openrouter",
+            new=AsyncMock(return_value=_SAMPLE_REPORT),
+        ) as or_mock,
+    ):
+        report = await hd_logic.generate_premium_report("Генератор", "15.03.1990 14:30 Москва")
+    assert report == _SAMPLE_REPORT
+    gemini_mock.assert_not_awaited()
+    or_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_premium_report_falls_back_when_gemini_raises() -> None:
     with (
+        patch.object(hd_logic, "_gemini_configured", return_value=True),
         patch.object(
             hd_logic,
             "_generate_premium_via_gemini",
