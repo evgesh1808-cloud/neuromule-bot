@@ -318,8 +318,12 @@ async def test_sharpen_refine_uses_upscale_api() -> None:
         patch.object(generation_fsm.deps, "bot", return_value=bot),
         patch.object(generation_fsm.billing, "spend_upscale", AsyncMock(return_value=MagicMock(ok=True, charge=MagicMock(charge_id="c1")))),
         patch(
-            "services.openrouter_images.resolve_openrouter_reference_url",
+            "services.photo_edit_session.resolve_openrouter_reference_for_result",
             AsyncMock(return_value="https://cdn.example/base.png"),
+        ),
+        patch(
+            "services.openrouter_images.openrouter_images_configured",
+            return_value=True,
         ),
         patch(
             "services.openrouter_images.upscale_openrouter_image_url",
@@ -396,21 +400,31 @@ async def test_group_refine_uses_result_image_not_group_multi_ref() -> None:
         generation_fsm,
         "process_photo_prompt_message",
         new_callable=AsyncMock,
-    ) as proc, patch(
+    ) as proc, patch.object(
+        generation_fsm.deps,
+        "bot",
+        return_value=MagicMock(),
+    ), patch(
         "services.photo_intent_parser.resolve_photo_edit_prompt",
         new_callable=AsyncMock,
         return_value=("9:16", "сделай стену светлее", False),
+    ), patch(
+        "services.generation_jobs.materialize_photo_reference_for_job",
+        new_callable=AsyncMock,
+        return_value=(None, None, b"\xff\xd8\xff", "image/jpeg"),
+    ), patch(
+        "services.photo_edit_session.build_refine_edit_prompt_for_job",
+        new_callable=AsyncMock,
+        return_value=REFINE_API_PROMPT,
     ):
         await generation_fsm.photo_process(message, state)
 
     proc.assert_awaited_once()
     kwargs = proc.await_args.kwargs
-    assert kwargs.get("group_multi_ref") is True
-    assert kwargs["group_ref_file_ids"] == ["ref0", "ref1", "ref2", "ref3"]
-    assert "family peek scene" in kwargs["prompt"]
-    assert "сделай стену светлее" in kwargs["prompt"]
-    assert "EDIT REQUEST" in kwargs["prompt"]
-    assert kwargs.get("i2i_reference_mode", "selfie") != "preserve"
+    assert kwargs.get("group_multi_ref") is not True
+    assert kwargs.get("group_ref_file_ids") in (None, [], ())
+    assert kwargs["i2i_reference_mode"] == "preserve"
+    assert kwargs["reference_image_bytes"] == b"\xff\xd8\xff"
 
 
 @pytest.mark.asyncio
@@ -515,3 +529,53 @@ async def test_resolve_openrouter_reference_prefers_bytes_over_file_id() -> None
         url = await resolve_openrouter_reference_for_result(MagicMock(), ref)
 
     assert url == "data:image/jpeg;base64,abc"
+
+
+@pytest.mark.asyncio
+async def test_persist_non_group_photo_clears_stale_group_refs() -> None:
+    """После group-фото одиночная генерация не должна наследовать group_refs."""
+    from services.generation_jobs import GenTask, _persist_task_photo_edit_session
+    from services.photo_edit_session import get_photo_edit_session, reset_photo_edit_sessions_for_tests
+
+    reset_photo_edit_sessions_for_tests()
+    save_photo_edit_session(
+        101,
+        image_model_id="nano_banana_pro",
+        image_model_label="Nano Banana Pro",
+        aspect_ratio="1:1",
+        telegram_file_id="AgAC_old_group",
+        group_ref_file_ids=("g0", "g1", "g2"),
+        group_base_prompt="family",
+        final_roles=("mom", "dad", "kid"),
+    )
+
+    task = GenTask(
+        task_id="t-single",
+        bot=None,
+        chat_id=101,
+        user_id=101,
+        task_type="photo",
+        prompt="cat portrait",
+        image_model_id="flux_schnell",
+        model_label="Flux",
+        aspect_ratio="1:1",
+        group_multi_ref=False,
+    )
+    with (
+        patch("services.repository.save_last_generated_image", new_callable=AsyncMock),
+        patch("services.repository.get_last_generated_image", new_callable=AsyncMock, return_value=None),
+    ):
+        await _persist_task_photo_edit_session(
+            task,
+            telegram_file_id="AgAC_single",
+            media_url=None,
+            message_id=7,
+            chat_id=101,
+        )
+
+    sess = get_photo_edit_session(101)
+    assert sess is not None
+    assert sess.telegram_file_id == "AgAC_single"
+    assert sess.group_ref_file_ids == ()
+    assert sess.group_base_prompt is None
+    assert sess.final_roles == ()

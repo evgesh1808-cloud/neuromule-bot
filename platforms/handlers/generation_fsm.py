@@ -848,50 +848,23 @@ async def _dispatch_text_refine_from_session(
     label: str,
     aspect: str,
 ) -> None:
-    """«Доработать текстом»: group → multi-ref с исходными рефами; одиночное фото → preserve i2i."""
+    """«Доработать текстом»: i2i-edit последнего результата (preserve), не новая multi-ref генерация.
+
+    Group-рефы оставляем в сессии для animate/identity, но кнопка под готовым кадром
+    всегда правит именно этот кадр — иначе UX «доработать» превращается в regenerate.
+    """
     from services.generation_jobs import materialize_photo_reference_for_job
     from services.photo_edit_session import (
-        build_group_refine_user_prompt,
         build_refine_edit_prompt_for_job,
         clear_awaiting_text_refine,
-        resolve_group_refine_model,
         resolve_session_result_reference,
-        session_has_group_refs,
         session_has_result_image,
     )
-    from services.photo_multi_ref_routing import MAX_GROUP_REFS
 
     body = (edit_prompt or "").strip()
     if not body:
         await message.answer(msg.TXT_CREATE_IMAGE_AFTER_MODEL)
         return
-
-    if session_has_group_refs(session):
-        base = (session.group_base_prompt or session.user_prompt or "").strip()
-        combined = build_group_refine_user_prompt(base, body)
-        refs = list(session.group_ref_file_ids)[:MAX_GROUP_REFS]
-        if len(refs) >= 2:
-            refine_model_id, refine_label = resolve_group_refine_model(session, model_id)
-            if message.from_user is not None:
-                clear_awaiting_text_refine(message.from_user.id)
-            await state.update_data(
-                pending_reference_file_id=None,
-                pending_object_file_id=None,
-                pending_group_ref_file_ids=[],
-                refine_from_result=None,
-            )
-            await process_photo_prompt_message(
-                message,
-                state,
-                model_id=refine_model_id,
-                label=str(label or refine_label),
-                prompt=combined,
-                aspect_ratio=aspect,
-                group_multi_ref=True,
-                group_ref_file_ids=refs,
-                group_base_prompt=base or None,
-            )
-            return
 
     if not session_has_result_image(session):
         await message.answer(msg.TXT_PHOTO_REFINE_EXPIRED)

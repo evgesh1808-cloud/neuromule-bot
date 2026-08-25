@@ -523,6 +523,8 @@ async def persist_photo_edit_session(
 ) -> PhotoEditSession | None:
     """In-memory сессия + долговременный якорь в БД (Telegram)."""
     roles_tuple = tuple((r or "").strip() for r in (final_roles or ()) if (r or "").strip())
+    # None = «не задано, можно наследовать»; () / list = явное значение (в т.ч. очистка).
+    inherit_group_context = group_ref_file_ids is None
     refs_tuple = tuple(
         (fid or "").strip()
         for fid in (group_ref_file_ids or ())
@@ -530,30 +532,31 @@ async def persist_photo_edit_session(
     )
     base_prompt = (group_base_prompt or "").strip() or None
 
-    existing = get_photo_edit_session(user_id)
-    if existing is not None:
-        if not roles_tuple and existing.final_roles:
-            roles_tuple = existing.final_roles
-        if len(refs_tuple) < 2 and len(existing.group_ref_file_ids) >= 2:
-            refs_tuple = existing.group_ref_file_ids
-        if not base_prompt:
-            base_prompt = existing.group_base_prompt
-
-    if not roles_tuple or len(refs_tuple) < 2:
-        from services.repository import get_last_generated_image
-
-        persisted = await get_last_generated_image(user_id)
-        if persisted:
-            if not roles_tuple:
-                db_roles = persisted.get("final_roles") or []
-                roles_tuple = tuple(r for r in db_roles if str(r).strip())
-            db_refs = persisted.get("group_ref_file_ids") or []
-            if len(refs_tuple) < 2 and len(db_refs) >= 2:
-                refs_tuple = tuple(str(x).strip() for x in db_refs if str(x).strip())
+    if inherit_group_context:
+        existing = get_photo_edit_session(user_id)
+        if existing is not None:
+            if not roles_tuple and existing.final_roles:
+                roles_tuple = existing.final_roles
+            if len(refs_tuple) < 2 and len(existing.group_ref_file_ids) >= 2:
+                refs_tuple = existing.group_ref_file_ids
             if not base_prompt:
-                base_prompt = str(persisted.get("group_base_prompt") or "").strip() or None
+                base_prompt = existing.group_base_prompt
 
-    if not roles_tuple:
+        if not roles_tuple or len(refs_tuple) < 2:
+            from services.repository import get_last_generated_image
+
+            persisted = await get_last_generated_image(user_id)
+            if persisted:
+                if not roles_tuple:
+                    db_roles = persisted.get("final_roles") or []
+                    roles_tuple = tuple(r for r in db_roles if str(r).strip())
+                db_refs = persisted.get("group_ref_file_ids") or []
+                if len(refs_tuple) < 2 and len(db_refs) >= 2:
+                    refs_tuple = tuple(str(x).strip() for x in db_refs if str(x).strip())
+                if not base_prompt:
+                    base_prompt = str(persisted.get("group_base_prompt") or "").strip() or None
+
+    if not roles_tuple and len(refs_tuple) >= 2:
         from services.animate_motion import resolve_final_roles_from_context
 
         roles_tuple = tuple(
