@@ -239,6 +239,7 @@ CB_UPSCALE_START = "upscale_start"
 CB_HD_PREMIUM_BUY = "hd_premium_buy"
 CB_HD_FREE_ADVICE = "hd_free_advice"
 CB_MATCH_START = "match_start"
+CB_HD_COMPATIBILITY_START = "hd_compatibility_start"
 CB_HD_MATCH_FAMILY_PREFIX = "hd_match_fam:"
 CB_HD_MATCH_MANUAL = "hd_match_manual"
 CB_HD_REPORT_PREFIX = "hd_report:"
@@ -550,11 +551,12 @@ TXT_HD_ALREADY_PURCHASED = (
 TXT_HD_INLINE_FULL_REPORT = "🗺️ Полный разбор личности — {cost} 💎"
 TXT_HD_INLINE_VIEW_REPORT = "🗺️ Посмотреть мой разбор"
 TXT_HD_INLINE_COMPATIBILITY = "💞 Рассчитать Совместимость (50 💎)"
+TXT_HD_BTN_WEBAPP = "🚀 Открыть Панель Управления (Super App)"
 TXT_HD_BTN_REPORT_MONEY = "💰 Мои деньги"
 TXT_HD_BTN_REPORT_LOVE = "❤️ Отношения"
 TXT_HD_BTN_REPORT_ENERGY = "⚡️ Энергия"
 TXT_HD_BTN_REPORT_PLAN = "📅 План на 30 дней"
-TXT_HD_BTN_REPORT_PDF = "📄 Скачать PDF версию"
+TXT_HD_BTN_REPORT_PDF = "📄 Скачать PDF-журнал"
 
 SUPPORT_TOPICS = (
     "Технические сбои и ошибки",

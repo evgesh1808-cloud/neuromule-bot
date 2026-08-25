@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
+  <title>NeuroMule Super App</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    :root {
+      --accent: #8b5cf6;
+      --accent-soft: rgba(139, 92, 246, 0.18);
+      --nav-h: 48px;
+      color-scheme: dark;
+    }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html, body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+      background: var(--tg-theme-bg-color, #0a0a0f);
+      color: var(--tg-theme-text-color, #f5f5f7);
+    }
+    .hub-shell {
+      max-width: 520px;
+      margin: 0 auto;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+    }
+    .hub-nav {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      display: flex;
+      gap: 6px;
+      padding: 8px 10px calc(8px + env(safe-area-inset-top));
+      background: color-mix(in srgb, var(--tg-theme-bg-color, #0a0a0f) 88%, transparent);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid rgba(139, 92, 246, 0.22);
+    }
+    .hub-tab {
+      flex: 1 1 0;
+      min-width: 0;
+      border: 1px solid transparent;
+      border-radius: 999px;
+      padding: 8px 6px;
+      font-size: 0.72rem;
+      font-weight: 650;
+      line-height: 1.15;
+      text-align: center;
+      cursor: pointer;
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--tg-theme-hint-color, #9898a0);
+      transition: background 0.2s, color 0.2s, border-color 0.2s, transform 0.15s;
+    }
+    .hub-tab.active {
+      background: var(--accent-soft);
+      border-color: var(--accent);
+      color: #fff;
+      transform: scale(1.02);
+    }
+    .hub-viewport {
+      flex: 1 1 auto;
+      min-height: 0;
+    }
+    .hub-frame {
+      width: 100%;
+      height: calc(100vh - var(--nav-h) - env(safe-area-inset-top));
+      border: 0;
+      background: transparent;
+    }
+    .text-hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <div class="hub-shell">
+    <nav class="hub-nav" role="tablist" aria-label="NeuroMule Super App">
+      <button type="button" class="hub-tab active" data-tab="studio" role="tab" aria-selected="true">🎨 Studio</button>
+      <button type="button" class="hub-tab" data-tab="table" role="tab" aria-selected="false">📊 Таблицы WB/Ozon</button>
+      <button type="button" class="hub-tab" data-tab="hd" role="tab" aria-selected="false">🧬 Дизайн Человека</button>
+    </nav>
+    <div class="hub-viewport">
+      <iframe id="viewport-studio" class="hub-frame" title="NeuroMule Studio" loading="lazy"></iframe>
+      <iframe id="viewport-table" class="hub-frame text-hidden" title="NeuroMule Tables" loading="lazy"></iframe>
+      <iframe id="viewport-hd" class="hub-frame text-hidden" title="Human Design Report" loading="lazy"></iframe>
+    </div>
+  </div>
+  <script>
+  (function () {
+    "use strict";
+
+    var tg = window.Telegram && window.Telegram.WebApp;
+    var state = { tab: "studio", apiBase: "", framesBound: false };
+
+    function resolveApiBase() {
+      var params = new URLSearchParams(window.location.search);
+      var fromQuery = (params.get("api_base") || "").trim().replace(/\/$/, "");
+      if (fromQuery) return fromQuery;
+      return window.location.origin.replace(/\/$/, "");
+    }
+
+    function resolveInitialTab() {
+      var raw = (new URLSearchParams(window.location.search).get("tab") || "").trim().toLowerCase();
+      if (raw === "table" || raw === "tables" || raw === "wb") return "table";
+      if (raw === "hd" || raw === "human_design") return "hd";
+      return "studio";
+    }
+
+    function frameSrc(path) {
+      var base = state.apiBase.replace(/\/$/, "");
+      return base + path + "?api_base=" + encodeURIComponent(state.apiBase);
+    }
+
+    function bindFrameSources() {
+      if (state.framesBound) return;
+      document.getElementById("viewport-studio").src = frameSrc("/webapp/index.html");
+      document.getElementById("viewport-table").src = frameSrc("/neuromule-table/index.html");
+      document.getElementById("viewport-hd").src = frameSrc("/hd-report/index.html");
+      state.framesBound = true;
+    }
+
+    function setTab(tab) {
+      state.tab = tab;
+      var map = {
+        studio: "viewport-studio",
+        table: "viewport-table",
+        hd: "viewport-hd",
+      };
+      Object.keys(map).forEach(function (key) {
+        var frame = document.getElementById(map[key]);
+        var active = key === tab;
+        frame.classList.toggle("text-hidden", !active);
+      });
+      document.querySelectorAll(".hub-tab").forEach(function (btn) {
+        var active = btn.dataset.tab === tab;
+        btn.classList.toggle("active", active);
+        btn.setAttribute("aria-selected", active ? "true" : "false");
+      });
+    }
+
+    function bindTabs() {
+      document.querySelectorAll(".hub-tab").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          setTab(btn.dataset.tab || "studio");
+        });
+      });
+    }
+
+    document.addEventListener("DOMContentLoaded", function () {
+      if (tg) {
+        tg.ready();
+        tg.expand();
+      }
+      state.apiBase = resolveApiBase();
+      bindFrameSources();
+      bindTabs();
+      setTab(resolveInitialTab());
+    });
+  })();
+  </script>
+</body>
+</html>

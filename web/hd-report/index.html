@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
+  <title>NeuroMule — HD Premium</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    :root {
+      --accent: #8b5cf6;
+      --accent-soft: rgba(139, 92, 246, 0.16);
+      --accent-glow: rgba(139, 92, 246, 0.35);
+      --radius: 14px;
+      --radius-sm: 10px;
+      --shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+      color-scheme: dark;
+    }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+      background: var(--tg-theme-bg-color, #0a0a0f);
+      color: var(--tg-theme-text-color, #f5f5f7);
+      padding: 14px 16px calc(28px + env(safe-area-inset-bottom));
+      -webkit-font-smoothing: antialiased;
+    }
+    .app-shell { max-width: 520px; margin: 0 auto; }
+    .eyebrow {
+      margin: 0 0 6px;
+      font-size: 0.72rem;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--accent);
+    }
+    .header h1 {
+      margin: 0 0 4px;
+      font-size: 1.35rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+    .header p {
+      margin: 0;
+      font-size: 0.86rem;
+      color: var(--tg-theme-hint-color, #9898a0);
+    }
+    .card {
+      background: var(--tg-theme-secondary-bg-color, #14141c);
+      border-radius: var(--radius);
+      padding: 16px;
+      margin-bottom: 14px;
+      box-shadow: var(--shadow);
+      border: 1px solid rgba(139, 92, 246, 0.18);
+    }
+    .bodygraph-wrap {
+      text-align: center;
+      padding: 8px 0 4px;
+    }
+    .bodygraph-wrap img {
+      width: min(100%, 320px);
+      height: auto;
+      border-radius: var(--radius-sm);
+      box-shadow: 0 0 40px var(--accent-glow);
+    }
+    .fast-facts {
+      font-size: 0.88rem;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      color: var(--tg-theme-text-color, #e8e8ed);
+    }
+    .tabs {
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      padding-bottom: 4px;
+      margin-bottom: 12px;
+      scrollbar-width: none;
+    }
+    .tabs::-webkit-scrollbar { display: none; }
+    .tab-btn {
+      flex: 0 0 auto;
+      border: 1px solid transparent;
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--tg-theme-hint-color, #9898a0);
+      border-radius: 999px;
+      padding: 10px 14px;
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s, color 0.2s, border-color 0.2s, transform 0.15s;
+    }
+    .tab-btn.active {
+      background: var(--accent-soft);
+      border-color: var(--accent);
+      color: #fff;
+      transform: scale(1.02);
+    }
+    .tab-content {
+      font-size: 0.92rem;
+      line-height: 1.6;
+      min-height: 120px;
+      animation: fadeIn 0.25s ease;
+    }
+    .tab-content h3 {
+      margin: 14px 0 8px;
+      font-size: 1rem;
+      color: var(--accent);
+    }
+    .tab-content h3:first-child { margin-top: 0; }
+    .tab-content strong { color: #fff; font-weight: 650; }
+    .tab-content p { margin: 0 0 10px; }
+    .skeleton {
+      background: linear-gradient(90deg, rgba(255,255,255,0.04) 25%, rgba(255,255,255,0.1) 50%, rgba(255,255,255,0.04) 75%);
+      background-size: 200% 100%;
+      animation: shimmer 1.2s infinite;
+      border-radius: 8px;
+      height: 14px;
+      margin-bottom: 10px;
+    }
+    .skeleton.tall { height: 180px; }
+    .toast {
+      position: fixed;
+      left: 16px;
+      right: 16px;
+      bottom: calc(16px + env(safe-area-inset-bottom));
+      max-width: 488px;
+      margin: 0 auto;
+      padding: 12px 14px;
+      border-radius: var(--radius-sm);
+      background: #1c1c24;
+      border: 1px solid rgba(255, 59, 48, 0.4);
+      color: #ff6b6b;
+      font-size: 0.85rem;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.25s;
+      z-index: 20;
+    }
+    .toast.visible { opacity: 1; }
+    @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+  </style>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="header">
+      <p class="eyebrow">Human Design Premium</p>
+      <h1 id="hdType">Загрузка…</h1>
+      <p id="hdMeta">Профиль и данные рождения</p>
+    </header>
+
+    <section class="card bodygraph-wrap">
+      <img id="bodygraphImg" loading="lazy" alt="Бодиграф" src="" hidden>
+      <div id="bodygraphSkeleton" class="skeleton tall"></div>
+    </section>
+
+    <section class="card">
+      <p class="eyebrow">Экспресс-анализ</p>
+      <div id="fastFacts" class="fast-facts">…</div>
+    </section>
+
+    <section class="card">
+      <div class="tabs" id="tabBar" role="tablist">
+        <button type="button" class="tab-btn active" data-tab="money" role="tab">💰 Деньги</button>
+        <button type="button" class="tab-btn" data-tab="love" role="tab">❤️ Отношения</button>
+        <button type="button" class="tab-btn" data-tab="energy" role="tab">⚡ Энергия</button>
+        <button type="button" class="tab-btn" data-tab="plan" role="tab">📅 План 30 дней</button>
+      </div>
+      <div id="tabContent" class="tab-content" role="tabpanel"></div>
+    </section>
+  </div>
+  <div id="toast" class="toast" aria-live="polite"></div>
+
+  <script>
+  (function () {
+    "use strict";
+
+    var tg = window.Telegram && window.Telegram.WebApp;
+    var state = { report: null, activeTab: "money", apiBase: "" };
+
+    function $(id) { return document.getElementById(id); }
+
+    function resolveApiBase() {
+      var params = new URLSearchParams(window.location.search);
+      var fromQuery = (params.get("api_base") || "").trim().replace(/\/$/, "");
+      if (fromQuery) return fromQuery;
+      var host = (window.location.hostname || "").toLowerCase();
+      if (host === "localhost" || host === "127.0.0.1") {
+        return window.location.origin;
+      }
+      return window.location.origin;
+    }
+
+    function showToast(msg) {
+      var el = $("toast");
+      el.textContent = msg;
+      el.classList.add("visible");
+      clearTimeout(showToast._t);
+      showToast._t = setTimeout(function () { el.classList.remove("visible"); }, 3600);
+    }
+
+    function escapeHtml(text) {
+      return String(text || "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    function mdToHtml(raw) {
+      var text = escapeHtml(raw || "");
+      text = text.replace(/^### (.+)$/gm, "<h3>$1</h3>");
+      text = text.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+      text = text.split(/\n\n+/).map(function (block) {
+        block = block.trim();
+        if (!block) return "";
+        if (block.indexOf("<h3>") === 0) return block;
+        return "<p>" + block.replace(/\n/g, "<br>") + "</p>";
+      }).join("");
+      return text;
+    }
+
+    function setActiveTab(tab) {
+      state.activeTab = tab;
+      document.querySelectorAll(".tab-btn").forEach(function (btn) {
+        btn.classList.toggle("active", btn.dataset.tab === tab);
+      });
+      var body = state.report && state.report[tab] ? state.report[tab] : "";
+      $("tabContent").innerHTML = mdToHtml(body);
+    }
+
+    function bindTabs() {
+      document.querySelectorAll(".tab-btn").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          setActiveTab(btn.dataset.tab || "money");
+        });
+      });
+    }
+
+    function renderReport(data) {
+      state.report = data.report || {};
+      var profile = (data.profile || "").trim();
+      var typeLine = (data.hd_type || "Human Design").trim();
+      $("hdType").textContent = typeLine;
+      var metaParts = [];
+      if (profile) metaParts.push("Профиль " + profile);
+      if (data.birth_data) metaParts.push(data.birth_data);
+      $("hdMeta").textContent = metaParts.join(" · ") || "Персональный разбор";
+
+      $("fastFacts").textContent = state.report.fast_facts || "—";
+
+      var img = $("bodygraphImg");
+      var sk = $("bodygraphSkeleton");
+      if (data.bodygraph_url) {
+        img.onload = function () {
+          sk.hidden = true;
+          img.hidden = false;
+        };
+        img.onerror = function () {
+          sk.hidden = true;
+        };
+        img.src = data.bodygraph_url;
+      } else {
+        sk.hidden = true;
+      }
+
+      setActiveTab(state.activeTab);
+    }
+
+    function showLoadingSkeleton() {
+      $("hdType").textContent = "Загрузка разбора…";
+      $("fastFacts").innerHTML = '<div class="skeleton"></div><div class="skeleton"></div>';
+      $("tabContent").innerHTML = '<div class="skeleton tall"></div>';
+    }
+
+    async function loadReport() {
+      if (!tg || !tg.initData) {
+        showToast("Откройте страницу из Telegram Mini App");
+        return;
+      }
+      tg.ready();
+      tg.expand();
+      showLoadingSkeleton();
+
+      try {
+        var resp = await fetch(state.apiBase + "/api/v1/hd/report", {
+          method: "GET",
+          headers: { Authorization: "tma " + tg.initData },
+        });
+        if (resp.status === 401) {
+          showToast("Сессия недействительна. Перезапустите Mini App.");
+          return;
+        }
+        if (resp.status === 404) {
+          showToast("Разбор не найден. Оформите его в боте.");
+          return;
+        }
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        var data = await resp.json();
+        renderReport(data);
+      } catch (e) {
+        console.error(e);
+        showToast("Не удалось загрузить разбор");
+      }
+    }
+
+    document.addEventListener("DOMContentLoaded", function () {
+      state.apiBase = resolveApiBase();
+      bindTabs();
+      loadReport();
+    });
+  })();
+  </script>
+</body>
+</html>

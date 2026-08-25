@@ -61,6 +61,16 @@ def test_webapp_static_index(mini_app_client) -> None:
     assert "Создать арт" in resp.text
 
 
+def test_super_app_hub_index(mini_app_client) -> None:
+    resp = mini_app_client.get("/web/")
+    assert resp.status_code == 200
+    assert "NeuroMule Super App" in resp.text
+    assert "viewport-studio" in resp.text
+    assert "viewport-table" in resp.text
+    assert "viewport-hd" in resp.text
+    assert "/webapp/index.html" in resp.text
+
+
 def test_webapp_generate_telegram(mini_app_client, monkeypatch) -> None:
     pipeline_calls: list[dict] = []
 

@@ -26,6 +26,13 @@ except ImportError:  # pragma: no cover - surfaced at runtime in the handler.
     swe = None
 
 try:
+    from PIL import Image, ImageDraw, ImageFilter
+except ImportError:  # pragma: no cover - surfaced at runtime in the handler.
+    Image = None  # type: ignore[misc, assignment]
+    ImageDraw = None  # type: ignore[misc, assignment]
+    ImageFilter = None  # type: ignore[misc, assignment]
+
+try:
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.utils import simpleSplit
@@ -83,7 +90,8 @@ _OPENROUTER_PREMIUM_TIMEOUT_SEC = 120.0
 _HD_PREMIUM_MAX_OUTPUT_TOKENS = 8192
 _PDF_FONT_NAME = "HDReportFont"
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
-_PREMIUM_REPORT_KEYS = ("money", "love", "energy", "plan")
+_PREMIUM_REPORT_KEYS = ("fast_facts", "money", "love", "energy", "plan")
+_FAST_FACTS_MAX_LEN = 300
 _HD_GATE_SEQUENCE = (
     25,
     17,
@@ -609,20 +617,61 @@ def _normalize_premium_report(parsed: dict[str, object]) -> dict[str, str]:
         if not isinstance(value, str) or not value.strip():
             raise ValueError(f"Gemini JSON response is missing non-empty {key!r}")
         report[key] = value.strip()
+    if len(report["fast_facts"]) > _FAST_FACTS_MAX_LEN:
+        report["fast_facts"] = report["fast_facts"][: _FAST_FACTS_MAX_LEN - 1].rstrip() + "…"
     return report
 
 
 def format_premium_report(report: dict[str, str]) -> str:
-    return (
-        "💎 Деньги\n"
-        f"{report['money']}\n\n"
-        "❤️ Отношения\n"
-        f"{report['love']}\n\n"
-        "⚡️ Энергия\n"
-        f"{report['energy']}\n\n"
-        "📅 План на 30 дней\n"
-        f"{report['plan']}"
+    parts = []
+    if report.get("fast_facts"):
+        parts.append("⚡ Экспресс-анализ\n" + report["fast_facts"])
+    parts.extend(
+        [
+            "💎 Деньги\n" + report["money"],
+            "❤️ Отношения\n" + report["love"],
+            "⚡️ Энергия\n" + report["energy"],
+            "📅 План на 30 дней\n" + report["plan"],
+        ]
     )
+    return "\n\n".join(parts)
+
+
+def build_hd_math_data(hd_type: str, birth_data: str) -> dict[str, object]:
+    """Собирает math_data для элитного промпта и API-ответа."""
+    gates: dict[str, object] = {}
+    defined_set: set[str] = set()
+    try:
+        gates_payload = get_calculated_gates(birth_data)
+        raw_gates = gates_payload.get("gates")
+        if isinstance(raw_gates, dict):
+            gates = raw_gates
+        defined_set, _ = _defined_centers_from_birth_data(birth_data)
+    except Exception:
+        logger.debug("build_hd_math_data: ephemeris/gates unavailable", exc_info=True)
+    defined_centers = sorted(defined_set)
+    open_centers = [name for name in _ALL_HD_CENTER_NAMES if name not in defined_set]
+    return {
+        "hd_type": hd_type,
+        "birth_data": birth_data,
+        "defined_centers": defined_centers,
+        "open_centers": open_centers,
+        "gates": gates,
+    }
+
+
+def hd_profile_metadata(math_data: dict[str, object]) -> dict[str, str | list[str]]:
+    """Метаданные карты для REST API и UI."""
+    defined, open_centers = _centers_from_math_data(math_data)
+    return {
+        "hd_type": str(math_data.get("hd_type") or ""),
+        "birth_data": str(math_data.get("birth_data") or ""),
+        "defined_centers": defined,
+        "open_centers": open_centers,
+        "strategy": str(math_data.get("strategy") or ""),
+        "authority": str(math_data.get("authority") or ""),
+        "profile": str(math_data.get("profile") or ""),
+    }
 
 
 def premium_report_to_json(report: dict[str, str]) -> str:
@@ -636,7 +685,40 @@ def premium_report_from_json(raw: str | None) -> dict[str, str] | None:
         parsed = _parse_json_object(raw)
         return _normalize_premium_report(parsed)
     except Exception:
+        try:
+            parsed = _parse_json_object(raw)
+            legacy_keys = ("money", "love", "energy", "plan")
+            if isinstance(parsed, dict) and all(parsed.get(k) for k in legacy_keys):
+                report = {k: str(parsed[k]).strip() for k in legacy_keys}
+                report["fast_facts"] = str(parsed.get("fast_facts") or "").strip() or (
+                    "⚡ Экспресс-анализ доступен в интерактивном разборе."
+                )
+                return report
+        except Exception:
+            return None
         return None
+
+
+def md_to_telegram_html(text: str) -> str:
+    """Минимальный Markdown → Telegram HTML (** и ###)."""
+    import html as html_mod
+
+    escaped = html_mod.escape(text or "")
+    escaped = re.sub(r"^### (.+)$", r"<b>\1</b>", escaped, flags=re.MULTILINE)
+    escaped = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", escaped)
+    return escaped
+
+
+def format_hd_congrats_html(report: dict[str, str], hd_type: str, *, intro: str) -> str:
+    """Текст поздравления после покупки HD-разбора."""
+    import html as html_mod
+
+    fast = report.get("fast_facts", "").strip()
+    lead = intro.strip()
+    if fast:
+        return f"{lead}\n\n{md_to_telegram_html(fast)}"
+    type_hint = html_mod.escape(hd_type.strip()) if hd_type else "Human Design"
+    return f"{lead}\n\n<b>{type_hint}</b> — выбери раздел ниже или открой интерактивный разбор."
 
 
 async def get_user(user_id: int):
@@ -695,14 +777,20 @@ async def try_consume_crystals(user_id: int, amount: int) -> bool:
     return await _repo_spend(user_id, amount)
 
 
-async def generate_premium_report(hd_type: str, birth_data: str) -> dict[str, str]:
-    """Полный HD-разбор: Gemini SDK → при сбое OpenRouter (как «Совет дня»)."""
-    prompt = _build_premium_report_prompt(hd_type, birth_data)
+async def generate_premium_report(
+    hd_type: str,
+    birth_data: str,
+    *,
+    user_name: str = "друг",
+) -> dict[str, str]:
+    """Полный HD-разбор: элитный промпт → Gemini SDK → OpenRouter fallback."""
+    math_data = build_hd_math_data(hd_type, birth_data)
+    system_prompt, user_prompt = _build_elite_premium_hd_prompt(user_name, math_data)
     errors: list[str] = []
 
     if genai is not None:
         try:
-            return await _generate_premium_via_gemini(prompt)
+            return await _generate_premium_via_gemini(system_prompt, user_prompt)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Gemini premium report failed, trying OpenRouter: %s", exc)
             errors.append(f"gemini: {exc!r}")
@@ -714,7 +802,7 @@ async def generate_premium_report(hd_type: str, birth_data: str) -> dict[str, st
         errors.append("google-genai_missing")
 
     try:
-        report = await _generate_premium_via_openrouter(prompt)
+        report = await _generate_premium_via_openrouter(system_prompt, user_prompt)
         logger.info("HD premium report served via OpenRouter fallback")
         return report
     except Exception as exc:  # noqa: BLE001
@@ -724,57 +812,25 @@ async def generate_premium_report(hd_type: str, birth_data: str) -> dict[str, st
     raise RuntimeError("hd_premium_unavailable: " + "; ".join(errors))
 
 
-def _build_premium_report_prompt(hd_type: str, birth_data: str) -> str:
-    return (
-        "Ты — ведущий мировой эксперт по Дизайну Человека и стратегическому коучингу. "
-        "Твоя задача — создать глубокий, премиальный аналитический разбор, который заменит "
-        "пользователю многочасовую консультацию с профи.\n\n"
-        f"Тип: {hd_type}\n"
-        f"Данные рождения и контекст: {birth_data}\n\n"
-        "Верни только валидный JSON без markdown. Схема:\n"
-        '{ "money": "текст", "love": "текст", "energy": "текст", "plan": "текст" }\n\n'
-        "ТРЕБОВАНИЯ К КОНТЕНТУ (УРОВЕНЬ СУПЕР-ЭКСПЕРТ):\n"
-        "1. СТИЛЬ: Никакой «воды» и общих фраз. Пиши дерзко, глубоко, точно в цель, в стиле NeuroMule. "
-        "Используй термины HD, но сразу объясняй их прикладное значение для жизни.\n"
-        "2. СТРАТЕГИЯ И АВТОРИТЕТ: Это фундамент. Вплети их так, чтобы пользователь понял: это "
-        "единственный верный для него способ проживать жизнь без сопротивления.\n"
-        "3. АНАЛИЗ 9 ЦЕНТРОВ (Глубокое погружение):\n"
-        "   - Для ОПРЕДЕЛЕННЫХ центров: Опиши их как «вечные двигатели» пользователя. "
-        "Как именно на этой энергии делать деньги и строить влияние?\n"
-        "   - Для ОТКРЫТЫХ центров: Опиши их как места «мудрости через уязвимость». "
-        "Четко укажи на ложное «Я» — где пользователь пытается быть тем, кем не является, "
-        "и сливает на этом ресурсы.\n"
-        "4. MONEY: Проанализируй финансовый потенциал. Как этому Типу продавать, не выгорая? "
-        "Где его «золотая жила» в карьере? (учитывай Эго и Сакрал).\n"
-        "5. LOVE: Как взаимодействовать с аурой других людей. В чем главная ошибка пользователя "
-        "в коммуникации согласно его Профилю? Как найти баланс между собой и партнером?\n"
-        "6. ENERGY: Точный биохакинг. Где брать силы и как правильно отдыхать именно этому Типу "
-        "(учитывай Корень и Селезенку).\n"
-        "7. PLAN (30 ДНЕЙ): Это должна быть пошаговая инструкция трансформации. "
-        "Не 'думай позитивно', а 'в день 1-5 делай ЭТО, отслеживай ТАКУЮ реакцию тела'.\n\n"
-        "ВАЖНО: Каждый раздел должен давать ответ на вопрос 'И что мне теперь с этим делать?'. "
-        "Разбор должен выглядеть как дорогая инвестиция в себя."
-    )
-
-
 def _parse_premium_report_from_llm(raw: str) -> dict[str, str]:
     parsed = _parse_json_object(raw)
     return _normalize_premium_report(parsed)
 
 
-async def _generate_premium_via_gemini(prompt: str) -> dict[str, str]:
+async def _generate_premium_via_gemini(system_prompt: str, user_prompt: str) -> dict[str, str]:
     client = _configure_genai()
     errors: list[str] = []
     gen_cfg = {
         "response_mime_type": "application/json",
         "max_output_tokens": _HD_PREMIUM_MAX_OUTPUT_TOKENS,
+        "system_instruction": system_prompt,
     }
     for model_name in _GEMINI_MODEL_CHAIN:
         try:
             response = await asyncio.wait_for(
                 client.aio.models.generate_content(
                     model=model_name,
-                    contents=prompt,
+                    contents=user_prompt,
                     config=gen_cfg,
                 ),
                 timeout=_GEMINI_PREMIUM_TIMEOUT_SEC,
@@ -788,10 +844,11 @@ async def _generate_premium_via_gemini(prompt: str) -> dict[str, str]:
             )
             errors.append(f"{model_name}(json): {exc_json!r}")
             try:
+                combined = f"{system_prompt}\n\n---\n\n{user_prompt}"
                 response = await asyncio.wait_for(
                     client.aio.models.generate_content(
                         model=model_name,
-                        contents=prompt,
+                        contents=combined,
                         config={"max_output_tokens": _HD_PREMIUM_MAX_OUTPUT_TOKENS},
                     ),
                     timeout=_GEMINI_PREMIUM_TIMEOUT_SEC,
@@ -803,7 +860,7 @@ async def _generate_premium_via_gemini(prompt: str) -> dict[str, str]:
     raise RuntimeError("gemini_unavailable: " + "; ".join(errors))
 
 
-async def _generate_premium_via_openrouter(prompt: str) -> dict[str, str]:
+async def _generate_premium_via_openrouter(system_prompt: str, user_prompt: str) -> dict[str, str]:
     from services.ai_text import ask_ai_messages
 
     max_tokens = max(
@@ -811,14 +868,8 @@ async def _generate_premium_via_openrouter(prompt: str) -> dict[str, str]:
         _HD_PREMIUM_MAX_OUTPUT_TOKENS // 2,
     )
     messages = [
-        {
-            "role": "system",
-            "content": (
-                "Ты — эксперт по Дизайну Человека. Выполни инструкцию пользователя дословно. "
-                "Ответ — только валидный JSON-объект без markdown и пояснений."
-            ),
-        },
-        {"role": "user", "content": prompt},
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
     ]
     completion = await ask_ai_messages(
         _app_settings,
@@ -1077,6 +1128,107 @@ _GATE_TO_CENTER = {
 }
 
 
+_HD_BODYGRAPH_TEMPLATE_PATH = _PROJECT_ROOT / "assets" / "hd_blank_template.png"
+_HD_BODYGRAPH_OUTPUT_DIR = _PROJECT_ROOT / "tmp"
+_HD_GLOW_COLOR = (139, 92, 246, 70)
+_HD_FILL_COLOR = (139, 92, 246, 180)
+_HD_OUTLINE_COLOR = (255, 255, 255, 255)
+_HD_GLOW_BLUR_RADIUS = 15
+_HD_GLOW_STROKE_WIDTH = 25
+_HD_FILL_OUTLINE_WIDTH = 2
+
+# Полигоны (x, y) под шаблон 1024×1024 — стеклянный силуэт, центр кадра ~512.
+center_coordinates: dict[str, tuple[tuple[int, int], ...]] = {
+    "Голова": ((512, 88), (440, 188), (584, 188)),
+    "Аджна": ((445, 198), (579, 198), (512, 278)),
+    "Горло": ((465, 288), (559, 288), (559, 348), (465, 348)),
+    "G-центр": ((512, 368), (578, 425), (512, 482), (446, 425)),
+    "Эго": ((558, 408), (648, 448), (558, 488)),
+    "Селезенка": ((498, 478), (358, 548), (498, 618)),
+    "Солнечное сплетение": ((526, 478), (666, 548), (526, 618)),
+    "Сакрал": ((458, 608), (566, 608), (566, 708), (458, 708)),
+    "Корень": ((458, 732), (566, 732), (566, 852), (458, 852)),
+}
+
+_CENTER_NAME_ALIASES: dict[str, str] = {
+    "g-центр": "G-центр",
+    "g центр": "G-центр",
+    "джи-центр": "G-центр",
+    "джи центр": "G-центр",
+    "солнечное сплетение": "Солнечное сплетение",
+    "селезенка": "Селезенка",
+    "голова": "Голова",
+    "аджна": "Аджна",
+    "горло": "Горло",
+    "эgo": "Эго",
+    "эго": "Эго",
+    "сакрал": "Сакрал",
+    "корень": "Корень",
+}
+
+
+def _normalize_defined_center_names(defined_centers: list[str]) -> list[str]:
+    out: list[str] = []
+    for raw in defined_centers or []:
+        name = (raw or "").strip()
+        if not name:
+            continue
+        canonical = _CENTER_NAME_ALIASES.get(name.lower(), name)
+        if canonical in center_coordinates and canonical not in out:
+            out.append(canonical)
+    return out
+
+
+def generate_premium_bodygraph(defined_centers: list, uid: int) -> str:
+    """
+    Премиальный бодиграф: неоновое свечение + полупрозрачная заливка поверх 3D-шаблона.
+
+    Returns:
+        Относительный путь ``tmp/ready_hd_{uid}.png`` от корня проекта.
+    """
+    if Image is None or ImageDraw is None or ImageFilter is None:
+        raise RuntimeError("Установите пакет Pillow для генерации бодиграфа.")
+
+    template_path = _HD_BODYGRAPH_TEMPLATE_PATH
+    if not template_path.is_file():
+        raise RuntimeError(f"HD bodygraph template not found: {template_path}")
+
+    active = _normalize_defined_center_names(list(defined_centers))
+    base = Image.open(template_path).convert("RGBA")
+    width, height = base.size
+
+    glow_layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    glow_draw = ImageDraw.Draw(glow_layer)
+    for center_name in active:
+        polygon = center_coordinates[center_name]
+        glow_draw.polygon(
+            polygon,
+            fill=_HD_GLOW_COLOR,
+            outline=_HD_GLOW_COLOR,
+            width=_HD_GLOW_STROKE_WIDTH,
+        )
+    glow_blurred = glow_layer.filter(ImageFilter.GaussianBlur(radius=_HD_GLOW_BLUR_RADIUS))
+
+    fill_layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    fill_draw = ImageDraw.Draw(fill_layer)
+    for center_name in active:
+        polygon = center_coordinates[center_name]
+        fill_draw.polygon(polygon, fill=_HD_FILL_COLOR)
+        fill_draw.polygon(
+            polygon,
+            outline=_HD_OUTLINE_COLOR,
+            width=_HD_FILL_OUTLINE_WIDTH,
+        )
+
+    composed = Image.alpha_composite(base, glow_blurred)
+    composed = Image.alpha_composite(composed, fill_layer)
+
+    os.makedirs(str(_HD_BODYGRAPH_OUTPUT_DIR), exist_ok=True)
+    out_path = _HD_BODYGRAPH_OUTPUT_DIR / f"ready_hd_{uid}.png"
+    composed.save(out_path, format="PNG")
+    return f"tmp/ready_hd_{uid}.png"
+
+
 def _defined_centers_from_birth_data(birth_data: str | None) -> tuple[set[str], str | None]:
     if not birth_data:
         return set(), "Данные рождения не переданы для схемы."
@@ -1094,6 +1246,171 @@ def _defined_centers_from_birth_data(birth_data: str | None) -> tuple[set[str], 
     return defined, None
 
 
+_ALL_HD_CENTER_NAMES: tuple[str, ...] = tuple(center_coordinates.keys())
+
+_ELITE_HD_BANNED_MARKERS: tuple[str, ...] = (
+    "вибраци",
+    "карма",
+    "космос",
+    "нейтрино",
+    "обуславливан",
+    "вселенн",
+    "астрал",
+    "chakra",
+    "чakra",
+    "эфир",
+    "судьб",
+    "karm",
+)
+
+
+def _centers_from_math_data(math_data: dict) -> tuple[list[str], list[str]]:
+    """Возвращает (defined_centers, open_centers) из math_data или расчёта по birth_data."""
+    raw_defined = math_data.get("defined_centers")
+    if raw_defined is None and math_data.get("defined"):
+        raw_defined = math_data.get("defined")
+    defined = _normalize_defined_center_names(list(raw_defined or []))
+
+    birth_data = str(math_data.get("birth_data") or "").strip()
+    if not defined and birth_data:
+        defined_set, _ = _defined_centers_from_birth_data(birth_data)
+        defined = sorted(defined_set)
+
+    raw_open = math_data.get("open_centers")
+    if raw_open is None and math_data.get("open"):
+        raw_open = math_data.get("open")
+    if raw_open is not None:
+        open_centers = _normalize_defined_center_names(list(raw_open or []))
+    else:
+        open_centers = [name for name in _ALL_HD_CENTER_NAMES if name not in set(defined)]
+    return defined, open_centers
+
+
+def _format_gates_block(gates: object) -> str:
+    if not isinstance(gates, dict) or not gates:
+        return "Ворота: не переданы (опирайся только на списки центров)."
+    lines: list[str] = []
+    for planet, payload in sorted(gates.items(), key=lambda item: str(item[0])):
+        if not isinstance(payload, dict):
+            continue
+        gate = payload.get("gate")
+        line = payload.get("line")
+        if gate is None:
+            continue
+        center = _GATE_TO_CENTER.get(int(gate), "?")
+        line_suffix = f".{line}" if line is not None else ""
+        lines.append(f"- {planet}: ворота {gate}{line_suffix} → центр «{center}»")
+    return "Активные ворота (расчёт Swiss Ephemeris, не пересчитывай):\n" + (
+        "\n".join(lines) if lines else "- нет данных"
+    )
+
+
+def _hd_tone_profile(hd_type: str) -> str:
+    """Динамический Tone of Voice под тип карты."""
+    normalized = (hd_type or "").strip().lower()
+    if any(token in normalized for token in ("манифест", "генератор", "мг", "м.г.")):
+        return (
+            "СТИЛЬ РЕЧИ: жёсткий бизнес-ментор. Короткие императивы, операционка, делегирование, "
+            "скорость решений, KPI, дисциплина исполнения. Без сюсюканья — уважительная прямота."
+        )
+    if any(token in normalized for token in ("проектор", "рефлектор")):
+        return (
+            "СТИЛЬ РЕЧИ: глубокий психоаналитик. Границы, распознавание паттернов, мудрость через "
+            "наблюдение, телесные сигналы, циклы ожидания. Мягкая точность без мистики."
+        )
+    return (
+        "СТИЛЬ РЕЧИ: премиальный ICF-коуч — конкретика, ответственность клиента, измеримые шаги."
+    )
+
+
+_ELITE_HD_FEW_SHOT = (
+    "ПРИМЕР ПЛОТНОСТИ И СТИЛЯ (few-shot, не копируй факты — только плотность и тон):\n"
+    '{"fast_facts": "⚡ Главный баг прошивки: доказываешь ценность через переработку. '
+    '💼 Триггер больших денег: продавать только после телесного «да». '
+    '🔋 Идеальная перезагрузка: сон без будильника + прогулка без цели.", '
+    '"money": "### Где ты сливаешь\\nТы берёшь проекты из страха «останусь без денег».\\n\\n'
+    '### Что делать\\n**Неделя 1:** веди список откликов тела перед каждым «да».", '
+    '"love": "### Боль\\nТы читаешь ожидания партнёра и теряешь себя в роли «удобного».", '
+    '"energy": "### Боль\\nЖмёшь газ, когда Сакрал уже пуст.", '
+    '"plan": "### Дни 1–5\\nОтслеживай сигнал тела перед решениями."}'
+)
+
+
+def _build_elite_premium_hd_prompt(user_name: str, math_data: dict) -> tuple[str, str]:
+    """
+    Элитный промпт полного HD-разбора: ICF-коучинг без эзотерики, строго по math_data.
+
+    ``math_data`` ожидает ключи (все опциональны, кроме фактов для анти-галлюцинаций):
+        - ``hd_type`` — Манифестор / Генератор / Проектор / Рефлектор (не менять!)
+        - ``birth_data`` — дата, время, город одной строкой
+        - ``defined_centers`` / ``open_centers`` — списки имён центров
+        - ``gates`` — словарь из ``get_calculated_gates()["gates"]``
+        - ``strategy``, ``authority``, ``profile`` — если уже известны из расчёта/БД
+
+    Returns:
+        (system_prompt, user_prompt) для двухturn-запроса к LLM.
+    """
+    name = (user_name or "").strip() or "друг"
+    data = math_data if isinstance(math_data, dict) else {}
+
+    hd_type = str(data.get("hd_type") or data.get("type") or "").strip() or "НЕ УКАЗАН — НЕ УГАДЫВАЙ"
+    birth_data = str(data.get("birth_data") or "").strip() or "не указаны"
+    strategy = str(data.get("strategy") or "").strip()
+    authority = str(data.get("authority") or "").strip()
+    profile = str(data.get("profile") or "").strip()
+
+    defined_centers, open_centers = _centers_from_math_data(data)
+    defined_line = ", ".join(defined_centers) if defined_centers else "не переданы — не выдумывай"
+    open_line = ", ".join(open_centers) if open_centers else "не переданы — не выдумывай"
+    gates_block = _format_gates_block(data.get("gates"))
+    tone_block = _hd_tone_profile(hd_type)
+
+    banned = ", ".join(f"«{word}»" for word in _ELITE_HD_BANNED_MARKERS[:8])
+
+    system_prompt = (
+        "Ты — сертифицированный коуч уровня ICF и практик Human Design для NeuroMule. "
+        "Пишешь премиальный персональный разбор: глубинная психология, прикладная механика тела и решений. "
+        "Без эзотерической воды — только поведение, паттерны, границы, деньги, отношения, энергия.\n\n"
+        f"{tone_block}\n\n"
+        "ЖЁСТКИЕ ЗАПРЕТЫ:\n"
+        f"- Не используй: {banned}, «вибрации», «карма», «космос», «вселенная посылает», "
+        "«астрал», «судьба», «предназначение-сверху», «нейтрино».\n"
+        "- Не выдумывай тип, стратегию, авторитет, профиль, ворота или центры — только факты из user-блока.\n"
+        "- Если тип = «НЕ УКАЗАН — НЕ УГАДЫВАЙ» — не называй тип; опирайся на переданные центры и ворота.\n"
+        "- ЗАПРЕЩЕНО путать типы и менять списки определённых/открытых центров.\n"
+        "- Определённые центры — устойчивые ресурсы; открытые — зоны обучаемости и риска «Ложного Я».\n"
+        "- Обращайся к клиенту на «ты».\n"
+        "- Ответ — ТОЛЬКО чистый JSON без markdown-обёрток ```.\n\n"
+        f"{_ELITE_HD_FEW_SHOT}\n\n"
+        "ФОРМАТ ОТВЕТА (строго один JSON-объект, ключи только на английском):\n"
+        '{"fast_facts": "...", "money": "...", "love": "...", "energy": "...", "plan": "..."}\n'
+        "- fast_facts: до 300 символов, три строки в одном поле: "
+        "'⚡ Главный баг прошивки: …', '💼 Триггер больших денег: …', '🔋 Идеальная перезагрузка: …'.\n"
+        "- money, love, energy: Markdown-строки с ### подзаголовками и **жирным**; "
+        "КАЖДЫЙ раздел начинается с честной психологической боли из-за Ложного Я этой механики.\n"
+        "- plan: Markdown-план на 30 дней (блоки 1–5 / 6–15 / 16–30) с действиями и метриками.\n"
+        "Каждый раздел — плотный, без воды; в каждом есть ответ «что делать дальше»."
+    )
+
+    user_prompt = (
+        f"Клиент: {name}. Обращайся к {name} на «ты».\n\n"
+        "МАТЕМАТИЧЕСКИ ЗАФИКСИРОВАННЫЕ ФАКТЫ (истина, не оспаривай и не дополняй):\n"
+        f"- Тип HD: {hd_type}\n"
+        f"- Дата/время/место рождения: {birth_data}\n"
+        f"- Стратегия: {strategy or 'не передана'}\n"
+        f"- Авторитет: {authority or 'не передан'}\n"
+        f"- Профиль: {profile or 'не передан'}\n"
+        f"- Определённые (закрашенные) центры: {defined_line}\n"
+        f"- Открытые (незакрашенные) центры: {open_line}\n"
+        f"- {gates_block}\n\n"
+        "Сгенерируй JSON-разбор, ювелирно согласованный с определёнными и открытыми центрами выше. "
+        "Если центр открыт — не описывай его как постоянный ресурс. "
+        "Если центр определён — не называй его зоной уязвимости из-за «отсутствия энергии». "
+        "Тип, если передан явно, используй дословно во всех рекомендациях."
+    )
+    return system_prompt, user_prompt
+
+
 def _draw_pdf_footer(pdf, font_name: str, page_width: float) -> None:
     pdf.setFont(font_name, 8)
     if colors is not None:
@@ -1103,47 +1420,63 @@ def _draw_pdf_footer(pdf, font_name: str, page_width: float) -> None:
         pdf.setFillColor(colors.black)
 
 
-def _draw_bodygraph(pdf, birth_data: str | None, font_name: str, x: float, y: float) -> float:
-    if colors is None:
-        return y
+def _draw_bodygraph(
+    pdf,
+    birth_data: str | None,
+    font_name: str,
+    x: float,
+    y: float,
+    *,
+    user_id: int,
+) -> float:
     defined, warning = _defined_centers_from_birth_data(birth_data)
     pdf.setFont(font_name, 13)
     pdf.drawString(x, y, "Бодиграф")
     y -= 16
 
-    center_color = colors.HexColor("#8A5CFF")
-    open_color = colors.white
-    stroke_color = colors.HexColor("#444444")
-    shapes = [
-        ("Голова", x + 120, y - 8, 64, 28),
-        ("Аджна", x + 120, y - 48, 64, 28),
-        ("Горло", x + 115, y - 90, 74, 28),
-        ("G-центр", x + 115, y - 132, 74, 32),
-        ("Эго", x + 202, y - 130, 54, 28),
-        ("Селезенка", x + 38, y - 170, 70, 30),
-        ("Сакрал", x + 118, y - 178, 70, 34),
-        ("Солнечное сплетение", x + 198, y - 170, 96, 30),
-        ("Корень", x + 118, y - 230, 70, 32),
-    ]
-    pdf.setLineWidth(1.0)
-    for name, sx, sy, width, height in shapes:
-        pdf.setFillColor(center_color if name in defined else open_color)
-        pdf.setStrokeColor(stroke_color)
-        pdf.roundRect(sx, sy, width, height, 6, fill=1, stroke=1)
-        pdf.setFillColor(colors.white if name in defined else colors.black)
-        pdf.setFont(font_name, 7 if len(name) > 12 else 8)
-        pdf.drawCentredString(sx + width / 2, sy + height / 2 - 3, name)
+    img_width = 220.0
+    img_height = 220.0
+    try:
+        rel_path = generate_premium_bodygraph(sorted(defined), user_id)
+        img_path = _PROJECT_ROOT / rel_path
+        from reportlab.lib.utils import ImageReader
+
+        pdf.drawImage(
+            ImageReader(str(img_path)),
+            x,
+            y - img_height,
+            width=img_width,
+            height=img_height,
+            preserveAspectRatio=True,
+            mask="auto",
+        )
+        y -= img_height + 12
+    except Exception as exc:
+        logger.warning("premium bodygraph render failed uid=%s: %s", user_id, exc, exc_info=True)
+        pdf.setFont(font_name, 9)
+        pdf.drawString(x, y, "Схема бодиграфа временно недоступна.")
+        y -= 16
 
     pdf.setFont(font_name, 9)
-    pdf.setFillColor(colors.black)
     summary = "Закрашенные центры: " + (", ".join(sorted(defined)) if defined else "не определены")
-    pdf.drawString(x, y - 270, summary[:90])
+    pdf.drawString(x, y, summary[:90])
     if warning:
-        pdf.drawString(x, y - 284, warning[:90])
-    return y - 304
+        pdf.drawString(x, y - 14, warning[:90])
+        y -= 28
+    else:
+        y -= 14
+    return y - 8
 
 
-def _draw_wrapped_text(pdf, text: str, font_name: str, font_size: int, birth_data: str | None = None) -> None:
+def _draw_wrapped_text(
+    pdf,
+    text: str,
+    font_name: str,
+    font_size: int,
+    birth_data: str | None = None,
+    *,
+    user_id: int = 0,
+) -> None:
     if simpleSplit is None or A4 is None:
         raise RuntimeError("Установите пакет reportlab для PDF-отчетов.")
     width, height = A4
@@ -1157,7 +1490,7 @@ def _draw_wrapped_text(pdf, text: str, font_name: str, font_size: int, birth_dat
     pdf.setFont(font_name, 16)
     pdf.drawString(left, y, "Ваш Дизайн Человека")
     y -= 32
-    y = _draw_bodygraph(pdf, birth_data, font_name, left, y)
+    y = _draw_bodygraph(pdf, birth_data, font_name, left, y, user_id=user_id)
     pdf.setFont(font_name, font_size)
 
     paragraphs = text.splitlines() or [text]
@@ -1183,7 +1516,7 @@ def create_pdf(user_id: int, text: str, birth_data: str | None = None) -> str:
     path = Path(tempfile.gettempdir()) / f"report_{user_id}.pdf"
     font_name = _register_pdf_font()
     pdf = canvas.Canvas(str(path), pagesize=A4)
-    _draw_wrapped_text(pdf, text, font_name, 11, birth_data)
+    _draw_wrapped_text(pdf, text, font_name, 11, birth_data, user_id=user_id)
     pdf.save()
     return str(path)
 

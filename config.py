@@ -515,6 +515,8 @@ class Settings(BaseSettings):
     # Публичный URL FastAPI Mini App backend (без trailing slash).
     # Пример: https://bot.example.com:8000 или http://127.0.0.1:8000
     mini_app_api_base_url: str = ""
+    api_base_url: str = Field(default="", alias="API_BASE_URL")
+    hd_webapp_url: str = Field(default="", alias="HD_WEBAPP_URL")
     # CORS для Mini App API (``api/mini_app.py``). Список origin через запятую;
     # ``*`` не используется при ``allow_credentials=True`` — см. ``api/mini_app.py``.
     mini_app_cors_origins: str = ""

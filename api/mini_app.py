@@ -17,11 +17,16 @@ from services import repository as repo
 from services.api.report_endpoints import router as reports_router
 from services.api.wb_endpoints import router as wb_router
 from ports.webapp_endpoints import router as webapp_router
+from api.hd_endpoints import router as hd_router
 
 logger = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
-_WEBAPP_DIR = _PROJECT_ROOT / "webapp"
+_WEB_DIR = _PROJECT_ROOT / "web"
+_WEBAPP_DIR = _WEB_DIR / "webapp"
+_TABLE_DIR = _WEB_DIR / "neuromule-table"
+_HD_REPORT_DIR = _WEB_DIR / "hd-report"
+_TMP_DIR = _PROJECT_ROOT / "tmp"
 
 # Дефолтные origin для GitHub Pages / собственного фронта таблиц.
 _DEFAULT_TABLE_REPORTS_ORIGIN = "https://your-user.github.io"
@@ -57,7 +62,9 @@ def _fallback_webapp_origins() -> list[str]:
         settings.webapp_shop_url,
         settings.webapp_gallery_url,
         settings.webapp_studio_url,
+        settings.hd_webapp_url,
         settings.mini_app_api_base_url,
+        settings.api_base_url,
     )
     origins: list[str] = []
     seen: set[str] = set()
@@ -130,9 +137,22 @@ app.add_middleware(
 app.include_router(reports_router)
 app.include_router(wb_router)
 app.include_router(webapp_router)
+app.include_router(hd_router)
+
+_TMP_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/media/hd", StaticFiles(directory=str(_TMP_DIR)), name="hd_media")
+
+if _WEB_DIR.is_dir():
+    app.mount("/web", StaticFiles(directory=str(_WEB_DIR), html=True), name="web_hub")
 
 if _WEBAPP_DIR.is_dir():
-    app.mount("/webapp", StaticFiles(directory=str(_WEBAPP_DIR), html=True), name="webapp")
+    app.mount("/webapp", StaticFiles(directory=str(_WEBAPP_DIR), html=True), name="webapp_studio")
+
+if _TABLE_DIR.is_dir():
+    app.mount("/neuromule-table", StaticFiles(directory=str(_TABLE_DIR), html=True), name="webapp_table")
+
+if _HD_REPORT_DIR.is_dir():
+    app.mount("/hd-report", StaticFiles(directory=str(_HD_REPORT_DIR), html=True), name="webapp_hd")
 
 
 @app.get("/health")
@@ -144,5 +164,9 @@ def health() -> dict[str, bool]:
 def root() -> dict[str, str]:
     return {
         "service": "NeuroMule",
-        "hint": "GET /webapp/ — Studio UI; POST /api/webapp/generate — генерация изображений.",
+        "hint": (
+            "GET /web/ — Super App hub; GET /webapp/ — Studio; "
+            "GET /neuromule-table/ — analytics; GET /hd-report/ — HD; "
+            "GET /api/v1/hd/report — premium HD JSON."
+        ),
     }

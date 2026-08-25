@@ -44,7 +44,9 @@ def resolve_studio_webapp_url() -> str | None:
 
     template = (settings.webapp_table_reports_url or "").strip()
     if not template:
-        return None
+        from platforms.webapp_urls import resolve_super_app_url
+
+        return resolve_super_app_url(append_api_base=True)
 
     if "{report_id}" in template:
         base = template.split("{report_id}", 1)[0]

@@ -6,7 +6,7 @@ import re
 from datetime import date
 
 from aiogram import types
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
@@ -696,16 +696,40 @@ def start_welcome_markup() -> InlineKeyboardMarkup:
     )
 
 
-def hd_report_sections_markup() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
+def _resolve_hd_webapp_url() -> str | None:
+    from platforms.webapp_urls import resolve_super_app_url
+
+    return resolve_super_app_url(append_api_base=True)
+
+
+def hd_report_sections_markup(user_id: int) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    webapp_url = _resolve_hd_webapp_url()
+    if webapp_url:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=msg.TXT_HD_BTN_WEBAPP,
+                    web_app=WebAppInfo(url=webapp_url),
+                )
+            ]
+        )
+    rows.extend(
+        [
             [InlineKeyboardButton(text=msg.TXT_HD_BTN_REPORT_MONEY, callback_data=msg.CB_HD_REPORT_MONEY)],
             [InlineKeyboardButton(text=msg.TXT_HD_BTN_REPORT_LOVE, callback_data=msg.CB_HD_REPORT_LOVE)],
             [InlineKeyboardButton(text=msg.TXT_HD_BTN_REPORT_ENERGY, callback_data=msg.CB_HD_REPORT_ENERGY)],
             [InlineKeyboardButton(text=msg.TXT_HD_BTN_REPORT_PLAN, callback_data=msg.CB_HD_REPORT_PLAN)],
             [InlineKeyboardButton(text=msg.TXT_HD_BTN_REPORT_PDF, callback_data=msg.CB_HD_REPORT_PDF)],
+            [
+                InlineKeyboardButton(
+                    text=msg.TXT_HD_INLINE_COMPATIBILITY,
+                    callback_data=msg.CB_HD_COMPATIBILITY_START,
+                )
+            ],
         ]
     )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def hd_menu(has_pro: bool = False) -> InlineKeyboardMarkup:

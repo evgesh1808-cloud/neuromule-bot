@@ -77,6 +77,7 @@ from services.hd_logic import (
     create_pdf,
     daily_advice_user_profile_from_repo_user,
     format_premium_report,
+    format_hd_congrats_html,
     generate_daily_forecast,
     generate_premium_report,
     get_calculated_gates,
@@ -190,8 +191,12 @@ async def open_existing_hd_report(callback: CallbackQuery) -> None:
         await callback.answer(msg.TXT_HD_REPORT_NOT_FOUND_ALERT, show_alert=True)
         return
     await callback.message.answer(
-        msg.TXT_HD_REPORT_READY,
-        reply_markup=hd_report_sections_markup(),
+        format_hd_congrats_html(
+            report,
+            (user["hd_type"] or "") if "hd_type" in user.keys() else "",
+            intro=msg.TXT_HD_REPORT_READY,
+        ),
+        reply_markup=hd_report_sections_markup(uid),
         parse_mode=ParseMode.HTML,
     )
     await callback.answer()

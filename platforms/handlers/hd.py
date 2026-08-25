@@ -44,7 +44,6 @@ from platforms.telegram_keyboards import (
     create_menu,
     get_admin_inline_keyboard,
     hd_menu,
-    hd_pro_unlocked_keyboard,
     hd_report_sections_markup,
     image_model_menu,
     invite_limit_keyboard,
@@ -76,14 +75,18 @@ from services.billing.pricing import HD_ADVICE_COST
 from services.billing.store import refund_charge
 from services.hd_logic import (
     birth_data_minimum_for_advice,
+    build_hd_math_data,
     change_user_crystals,
     create_pdf,
     daily_advice_user_profile_from_repo_user,
     format_premium_report,
+    format_hd_congrats_html,
+    generate_premium_bodygraph,
     generate_premium_report,
     get_calculated_gates,
     get_dynamic_cta_for_today,
     get_user,
+    md_to_telegram_html,
     parse_birth_for_daily_advice,
     parse_hd_request,
     parse_match_request,
@@ -463,6 +466,10 @@ async def hd_free_advice(callback: CallbackQuery, state: FSMContext) -> None:
     # Повторный клик в тот же день обрабатывает _send_daily_advice (edit/resend).
     await _send_daily_advice(callback.message, uid, state, callback=callback)
 
+def _hd_section_html(title: str, body: str) -> str:
+    return f"<b>{html.escape(title)}</b>\n\n{md_to_telegram_html(body)}"
+
+
 @router.message(UserFlow.waiting_hd_birth_data, F.text)
 async def hd_premium_process(message: Message, state: FSMContext) -> None:
     if await try_dispatch_reply_nav_button(message, state):
@@ -495,13 +502,19 @@ async def hd_premium_process(message: Message, state: FSMContext) -> None:
         return
     charge_id = spend.charge.charge_id if spend.charge else ""
 
-    await message.answer(msg.TXT_HD_PROCESSING, parse_mode=ParseMode.HTML)
     try:
         async with chat_action_loop(deps.bot(), message.chat.id, "typing"):
             hd_type, birth_data = parse_hd_request(raw)
-            report = await generate_premium_report(hd_type, birth_data)
+            user_name = (message.from_user.first_name or "").strip() if message.from_user else "друг"
+            report = await generate_premium_report(hd_type, birth_data, user_name=user_name)
         if not report:
             raise RuntimeError("Gemini returned empty HD report")
+        math_data = build_hd_math_data(hd_type, birth_data)
+        defined = math_data.get("defined_centers") or []
+        try:
+            generate_premium_bodygraph(list(defined), uid)
+        except Exception:
+            logger.warning("bodygraph generation failed uid=%s", uid, exc_info=True)
         await update_user(
             uid,
             hd_report_json=premium_report_to_json(report),
@@ -509,19 +522,9 @@ async def hd_premium_process(message: Message, state: FSMContext) -> None:
             hd_birth_data=birth_data,
             has_pro_analysis=1,
         )
-        row = await get_user_row(uid)
         await message.answer(
-            msg.TXT_HD_PAYMENT_OK.format(cost=settings.cost_hd, balance=row.crystals),
-            parse_mode=ParseMode.HTML,
-        )
-        await message.answer(
-            msg.TXT_HD_REPORT_READY,
-            reply_markup=hd_report_sections_markup(),
-            parse_mode=ParseMode.HTML,
-        )
-        await message.answer(
-            msg.TXT_HD_PRO_UNLOCKED,
-            reply_markup=hd_pro_unlocked_keyboard(),
+            format_hd_congrats_html(report, hd_type, intro=msg.TXT_HD_REPORT_READY),
+            reply_markup=hd_report_sections_markup(uid),
             parse_mode=ParseMode.HTML,
         )
     except Exception:
@@ -642,12 +645,28 @@ async def hd_report_section(callback: CallbackQuery) -> None:
         await callback.answer(msg.TXT_STUB_BUTTON, show_alert=True)
         return
     title = titles[section]
-    body_safe = html.escape(report[section])
-    await callback.message.answer(
-        f"<b>{html.escape(title)}</b>\n\n{body_safe}",
-        parse_mode=ParseMode.HTML,
-    )
+    body_text = _hd_section_html(title, report[section])
+    try:
+        await callback.message.edit_text(
+            body_text,
+            reply_markup=hd_report_sections_markup(uid),
+            parse_mode=ParseMode.HTML,
+        )
+    except TelegramBadRequest:
+        await callback.message.answer(
+            body_text,
+            reply_markup=hd_report_sections_markup(uid),
+            parse_mode=ParseMode.HTML,
+        )
     await callback.answer()
+
+@router.callback_query(F.data == msg.CB_HD_COMPATIBILITY_START)
+async def hd_compatibility_start(callback: CallbackQuery, state: FSMContext) -> None:
+    from platforms.handlers.start_admin import start_match_flow
+
+    await start_match_flow(callback.message, callback.from_user.id, state)
+    await callback.answer()
+
 
 @router.callback_query(F.data == msg.CB_CABINET_PROMO)
 async def cabinet_promo_start(callback: CallbackQuery, state: FSMContext) -> None:
