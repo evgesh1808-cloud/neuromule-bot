@@ -509,7 +509,7 @@ async def start_match_flow(target: Message, user_id: int, state: FSMContext) -> 
         )
         return
 
-    await state.set_state(UserFlow.WAITING_PARTNER_DATA)
+    await state.set_state(UserFlow.waiting_compatibility_data)
     if own_birth_data:
         await target.answer(msg.format_match_ask_second(settings))
     else:

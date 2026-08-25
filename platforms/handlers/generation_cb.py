@@ -814,7 +814,7 @@ async def match_manual_input(callback: CallbackQuery, state: FSMContext) -> None
     await callback.answer()
     data = await state.get_data()
     own = data.get("match_own_birth_data")
-    await state.set_state(UserFlow.WAITING_PARTNER_DATA)
+    await state.set_state(UserFlow.waiting_compatibility_data)
     if own:
         await callback.message.answer(msg.format_match_ask_second(settings))
     else:
@@ -841,7 +841,7 @@ async def match_pick_family(callback: CallbackQuery, state: FSMContext) -> None:
     if not member_birth:
         await callback.answer(msg.TXT_HD_MATCH_FAMILY_MEMBER_NO_DATA, show_alert=True)
         return
-    await state.set_state(UserFlow.WAITING_PARTNER_DATA)
+    await state.set_state(UserFlow.waiting_compatibility_data)
     # Симулируем «пользователь ввёл текст» — single-shot подача в существующий процесс.
     fake_message = callback.message
     fake_message_text = member_birth

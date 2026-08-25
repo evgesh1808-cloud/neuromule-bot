@@ -84,6 +84,7 @@ async def _migrate_users(db: aiosqlite.Connection) -> None:
             "last_advice_message_id",
             "ALTER TABLE users ADD COLUMN last_advice_message_id INTEGER",
         ),
+        ("hd_compatibility_json", "ALTER TABLE users ADD COLUMN hd_compatibility_json TEXT"),
         (
             "last_generated_image_file_id",
             "ALTER TABLE users ADD COLUMN last_generated_image_file_id TEXT",
@@ -610,6 +611,8 @@ class UserRow:
     has_pro_analysis: bool
     hd_type: str | None
     hd_birth_data: str | None
+    hd_report_json: str | None
+    hd_compatibility_json: str | None
     # NOTE: Историческое название поля. Хранит дату последнего успешного получения "Совета дня".
     # К ежедневной энергии (⚡) отношения не имеет. Сброс лимита контролируется автономно через сравнение дат.
     last_free_date: str | None
@@ -873,6 +876,8 @@ async def get_user_row(user_id: int) -> UserRow:
                 COALESCE(has_pro_analysis, 0),
                 hd_type,
                 hd_birth_data,
+                hd_report_json,
+                hd_compatibility_json,
                 last_free_date,
                 last_reset_date
             FROM users WHERE id = ?
@@ -902,8 +907,10 @@ async def get_user_row(user_id: int) -> UserRow:
         has_pro_analysis=bool(row[16] or 0),
         hd_type=row[17],
         hd_birth_data=row[18],
-        last_free_date=row[19],
-        last_reset_date=row[20],
+        hd_report_json=row[19],
+        hd_compatibility_json=row[20],
+        last_free_date=row[21],
+        last_reset_date=row[22],
     )
 
 

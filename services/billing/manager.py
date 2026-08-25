@@ -43,6 +43,7 @@ class BillingManager:
     spend_hd_advice = staticmethod(hd_pipeline.spend_hd_advice)
     spend_hd_full_report = staticmethod(hd_pipeline.spend_hd_full_report)
     spend_hd_match = staticmethod(hd_pipeline.spend_hd_match)
+    spend_hd_compatibility = staticmethod(hd_pipeline.spend_hd_compatibility)
     spend_upscale = staticmethod(hd_pipeline.spend_upscale)
     spend_animate = staticmethod(hd_pipeline.spend_animate)
     spend_music = staticmethod(hd_pipeline.spend_music)

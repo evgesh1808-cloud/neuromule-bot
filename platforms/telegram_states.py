@@ -17,7 +17,8 @@ class UserFlow(StatesGroup):
     waiting_for_upscale_photo = State()
     waiting_hd_birth_data = State()
     waiting_advice_birth = State()
-    WAITING_PARTNER_DATA = State()
+    waiting_compatibility_data = State()
+    WAITING_PARTNER_DATA = waiting_compatibility_data  # legacy alias
     waiting_promo_code = State()
     waiting_for_memory = State()
     waiting_family_member_id = State()

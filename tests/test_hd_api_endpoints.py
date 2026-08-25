@@ -57,6 +57,7 @@ async def test_hd_report_success_contract(monkeypatch: pytest.MonkeyPatch) -> No
             "love": "Love",
             "energy": "Energy",
             "plan": "Plan",
+            "energy_scales": {"capacity": 70, "immunity": 60, "scale": 75},
         },
         ensure_ascii=False,
     )
@@ -100,3 +101,4 @@ async def test_hd_report_success_contract(monkeypatch: pytest.MonkeyPatch) -> No
     assert body["bodygraph_url"] == "https://api.example.com/media/hd/ready_hd_700002.png"
     assert body["defined_centers"] == ["Сакрал"]
     assert body["profile"] == "3/5"
+    assert body["energy_scales"]["capacity"] == 70

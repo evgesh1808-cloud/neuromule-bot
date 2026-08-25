@@ -12,7 +12,7 @@ from pathlib import Path
 
 from aiogram import F, Router, types
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import (
@@ -21,6 +21,7 @@ from aiogram.types import (
     FSInputFile,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    InputMediaPhoto,
     LabeledPrice,
     Message,
     PreCheckoutQuery,
@@ -45,6 +46,7 @@ from platforms.telegram_keyboards import (
     get_admin_inline_keyboard,
     hd_menu,
     hd_report_sections_markup,
+    hd_compatibility_result_markup,
     image_model_menu,
     invite_limit_keyboard,
     main_menu,
@@ -66,7 +68,6 @@ from platforms.telegram_utils import (
     send_same_as_instruction_button,
     try_dispatch_reply_nav_button,
 )
-from services import hd_service
 from services import payments_catalog as paycat
 from services.billing import billing
 from services.billing.hd_pipeline import spend_hd_advice
@@ -77,19 +78,21 @@ from services.hd_logic import (
     birth_data_minimum_for_advice,
     build_hd_math_data,
     change_user_crystals,
+    compatibility_report_to_json,
     create_pdf,
     daily_advice_user_profile_from_repo_user,
+    format_compatibility_telegram_html,
     format_premium_report,
     format_hd_congrats_html,
+    generate_compatibility_report,
+    generate_instagram_stories,
     generate_premium_bodygraph,
     generate_premium_report,
-    get_calculated_gates,
     get_dynamic_cta_for_today,
     get_user,
     md_to_telegram_html,
     parse_birth_for_daily_advice,
     parse_hd_request,
-    parse_match_request,
     premium_report_from_json,
     premium_report_to_json,
     today_iso,
@@ -470,6 +473,70 @@ def _hd_section_html(title: str, body: str) -> str:
     return f"<b>{html.escape(title)}</b>\n\n{md_to_telegram_html(body)}"
 
 
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+async def _send_hd_premium_pdf(message: Message, uid: int, report: dict, birth_data: str, hd_type: str) -> None:
+    pdf_path: str | None = None
+    try:
+        async with chat_action_loop(deps.bot(), message.chat.id, "upload_document"):
+            pdf_path = create_pdf(
+                uid,
+                format_premium_report(report),
+                birth_data,
+                hd_type=hd_type,
+            )
+            await message.answer_document(
+                FSInputFile(pdf_path),
+                caption=msg.TXT_HD_PDF_CAPTION,
+                parse_mode=ParseMode.HTML,
+            )
+    except TelegramForbiddenError:
+        logger.info("hd_premium_pdf forbidden uid=%s", uid)
+    except TelegramBadRequest as exc:
+        logger.warning("hd_premium_pdf bad_request uid=%s: %s", uid, exc)
+    except Exception:
+        logger.exception("hd_premium_pdf_failed uid=%s", uid)
+    finally:
+        if pdf_path:
+            try:
+                Path(pdf_path).unlink(missing_ok=True)
+            except OSError:
+                logger.warning("failed_remove_hd_pdf path=%s", pdf_path)
+
+
+async def _send_hd_instagram_stories_album(
+    message: Message,
+    uid: int,
+    user_name: str,
+    story_relpaths: list[str],
+) -> None:
+    files = [_PROJECT_ROOT / rel for rel in story_relpaths if (_PROJECT_ROOT / rel).is_file()]
+    if len(files) < 2:
+        logger.warning("instagram stories album skipped uid=%s files=%s", uid, len(files))
+        return
+
+    display_name = html.escape((user_name or "друг").strip() or "друг")
+    caption = msg.TXT_HD_INSTAGRAM_ALBUM_CAPTION.format(name=display_name)
+    media = [
+        InputMediaPhoto(
+            media=FSInputFile(str(files[0])),
+            caption=caption,
+            parse_mode=ParseMode.HTML,
+        ),
+        InputMediaPhoto(media=FSInputFile(str(files[1]))),
+    ]
+    try:
+        async with chat_action_loop(deps.bot(), message.chat.id, "upload_photo"):
+            await deps.bot().send_media_group(chat_id=message.chat.id, media=media)
+    except TelegramForbiddenError:
+        logger.info("instagram album forbidden uid=%s", uid)
+    except TelegramBadRequest as exc:
+        logger.warning("instagram album bad_request uid=%s: %s", uid, exc)
+    except Exception:
+        logger.exception("instagram album failed uid=%s", uid)
+
+
 @router.message(UserFlow.waiting_hd_birth_data, F.text)
 async def hd_premium_process(message: Message, state: FSMContext) -> None:
     if await try_dispatch_reply_nav_button(message, state):
@@ -515,6 +582,11 @@ async def hd_premium_process(message: Message, state: FSMContext) -> None:
             generate_premium_bodygraph(list(defined), uid)
         except Exception:
             logger.warning("bodygraph generation failed uid=%s", uid, exc_info=True)
+        story_relpaths: list[str] = []
+        try:
+            story_relpaths = generate_instagram_stories(uid, report)
+        except Exception:
+            logger.warning("instagram stories generation failed uid=%s", uid, exc_info=True)
         await update_user(
             uid,
             hd_report_json=premium_report_to_json(report),
@@ -527,6 +599,8 @@ async def hd_premium_process(message: Message, state: FSMContext) -> None:
             reply_markup=hd_report_sections_markup(uid),
             parse_mode=ParseMode.HTML,
         )
+        await _send_hd_premium_pdf(message, uid, report, birth_data, hd_type)
+        await _send_hd_instagram_stories_album(message, uid, user_name, story_relpaths)
     except Exception:
         logger.exception("hd_premium_failed user_id=%s", uid)
         if charge_id:
@@ -543,67 +617,74 @@ async def hd_premium_process(message: Message, state: FSMContext) -> None:
 async def hd_premium_need_text(message: Message) -> None:
     await message.answer(msg.TXT_HD_EMPTY_DATA, parse_mode=ParseMode.HTML)
 
-@router.message(UserFlow.WAITING_PARTNER_DATA, F.text)
-async def match_process(message: Message, state: FSMContext) -> None:
+@router.message(UserFlow.waiting_compatibility_data, F.text)
+async def compatibility_process(message: Message, state: FSMContext) -> None:
     if await try_dispatch_reply_nav_button(message, state):
         return
     uid = message.from_user.id
     raw = (message.text or "").strip()
     data = await state.get_data()
-    own_birth_data = data.get("match_own_birth_data")
     prefilled_partner = (data.get("match_partner_prefill") or "").strip()
+    await state.clear()
+    partner_raw = prefilled_partner or raw
+    if not partner_raw:
+        await message.answer(msg.TXT_MATCH_EMPTY_DATA)
+        return
 
-    if prefilled_partner:
-        # Family Sharing шорткат: partner_birth_data уже подтянули из карты члена семьи.
-        first_birth_data = str(own_birth_data or "").strip()
-        second_birth_data = prefilled_partner
-    else:
-        if not raw:
-            await message.answer(msg.TXT_MATCH_EMPTY_DATA)
-            return
-        first_from_message, second_birth_data = parse_match_request(raw)
-        first_birth_data = str(own_birth_data or first_from_message or "").strip()
-        second_birth_data = (second_birth_data or "").strip()
-    if not first_birth_data or not second_birth_data:
-        await message.answer(msg.TXT_MATCH_ASK_BOTH)
-        return
-    user = await get_user(uid)
-    await update_user(uid, match_partner_data=second_birth_data)
-    spend = await billing.spend_hd_match(uid)
-    if not spend.ok:
-        await message.answer(
-            msg.format_match_insufficient_crystals(settings),
-            reply_markup=paycat.shop_packages_keyboard(),
-        )
-        await state.clear()
-        return
-    match_charge_id = spend.charge.charge_id if spend.charge else ""
     await message.answer(msg.TXT_MATCH_PROCESSING)
+    spend = await billing.spend_hd_compatibility(uid)
+    if not spend.ok:
+        if spend.error == "free_premium_create_blocked":
+            from platforms.telegram_utils import send_free_create_blocked
+
+            await send_free_create_blocked(message)
+        else:
+            await message.answer(
+                msg.format_match_insufficient_crystals(settings),
+                reply_markup=paycat.shop_packages_keyboard(),
+            )
+        return
+    charge_id = spend.charge.charge_id if spend.charge else ""
+
+    user_name = (message.from_user.first_name or "ты").strip() if message.from_user else "ты"
     try:
         async with chat_action_loop(deps.bot(), message.chat.id, "typing"):
-            user1_data = {
-                "type": (user["hd_type"] or "не указан") if "hd_type" in user.keys() else "не указан",
-                "gates": get_calculated_gates(first_birth_data)["gates"],
-            }
-            user2_data = {
-                "type": "не указан",
-                "gates": get_calculated_gates(second_birth_data)["gates"],
-            }
-            report = await hd_service.generate_match_report(user1_data, user2_data)
-        if not report:
-            raise RuntimeError("Gemini returned empty match report")
-        await answer_chat_text(message, report, settings)
+            report = await generate_compatibility_report(
+                uid,
+                partner_raw,
+                user_name=user_name,
+                partner_name="партнёр",
+            )
+        await update_user(
+            uid,
+            match_partner_data=parse_hd_request(partner_raw)[1],
+            hd_compatibility_json=compatibility_report_to_json(report),
+        )
+        await message.answer(
+            format_compatibility_telegram_html(report, user_name=user_name, partner_name="партнёр"),
+            reply_markup=hd_compatibility_result_markup(uid),
+            parse_mode=ParseMode.HTML,
+        )
     except Exception:
-        logger.exception("match_failed user_id=%s", uid)
-        if match_charge_id:
-            await refund_charge(match_charge_id)
+        logger.exception("compatibility_failed user_id=%s", uid)
+        if charge_id:
+            await refund_charge(charge_id)
         await message.answer(msg.TXT_MATCH_FAILED, reply_markup=paycat.shop_packages_keyboard())
-    finally:
-        await state.clear()
+
+
+@router.message(UserFlow.waiting_compatibility_data)
+async def compatibility_need_text(message: Message) -> None:
+    await message.answer(msg.TXT_MATCH_EMPTY_DATA)
+
+
+@router.message(UserFlow.WAITING_PARTNER_DATA, F.text)
+async def match_process(message: Message, state: FSMContext) -> None:
+    """Legacy alias → новый одноразовый flow совместимости."""
+    await compatibility_process(message, state)
 
 @router.message(UserFlow.WAITING_PARTNER_DATA)
 async def match_need_text(message: Message) -> None:
-    await message.answer(msg.TXT_MATCH_EMPTY_DATA)
+    await compatibility_need_text(message)
 
 @router.callback_query(F.data.startswith(msg.CB_HD_REPORT_PREFIX))
 async def hd_report_section(callback: CallbackQuery) -> None:
@@ -625,8 +706,14 @@ async def hd_report_section(callback: CallbackQuery) -> None:
         pdf_path: str | None = None
         try:
             birth_data = (user["hd_birth_data"] or "").strip() if "hd_birth_data" in user.keys() else None
+            hd_type_val = (user["hd_type"] or "") if "hd_type" in user.keys() else ""
             async with chat_action_loop(deps.bot(), callback.message.chat.id, "upload_document"):
-                pdf_path = create_pdf(uid, format_premium_report(report), birth_data)
+                pdf_path = create_pdf(
+                    uid,
+                    format_premium_report(report),
+                    birth_data,
+                    hd_type=hd_type_val,
+                )
                 await callback.message.answer_document(
                     FSInputFile(pdf_path),
                     caption=msg.TXT_HD_PDF_CAPTION,
@@ -662,9 +749,43 @@ async def hd_report_section(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data == msg.CB_HD_COMPATIBILITY_START)
 async def hd_compatibility_start(callback: CallbackQuery, state: FSMContext) -> None:
-    from platforms.handlers.start_admin import start_match_flow
+    uid = callback.from_user.id
+    user = await get_user(uid)
+    has_pro = bool(user["has_pro_analysis"]) if "has_pro_analysis" in user.keys() else False
+    if not has_pro:
+        await callback.answer(msg.TXT_HD_COMPAT_LOCKED, show_alert=True)
+        return
+    if not billing_bypass(uid):
+        if not await is_subscribed(uid):
+            await callback.message.answer(
+                msg.TXT_HD_NEED_CHANNEL,
+                reply_markup=channel_subscribe_markup(),
+                parse_mode=ParseMode.HTML,
+            )
+            await callback.answer(msg.TXT_HD_NEED_CHANNEL_ALERT, show_alert=True)
+            return
+        tariff = str(user["tariff"] or "Free") if "tariff" in user.keys() else "Free"
+        if tariff.strip().lower() == "free":
+            from platforms.telegram_utils import send_free_create_blocked
 
-    await start_match_flow(callback.message, callback.from_user.id, state)
+            await send_free_create_blocked(callback.message)
+            await callback.answer()
+            return
+        crystals = int(user["crystals"] or 0)
+        if crystals < settings.cost_match:
+            await callback.message.answer(
+                msg.format_match_insufficient_crystals(settings),
+                reply_markup=paycat.shop_packages_keyboard(),
+            )
+            await callback.answer(
+                msg.format_match_insufficient_crystals(settings),
+                show_alert=True,
+            )
+            return
+    own_birth = (user["hd_birth_data"] or "").strip() if "hd_birth_data" in user.keys() else ""
+    await state.update_data(match_own_birth_data=own_birth or None)
+    await state.set_state(UserFlow.waiting_compatibility_data)
+    await callback.message.answer(msg.format_match_ask_second(settings))
     await callback.answer()
 
 

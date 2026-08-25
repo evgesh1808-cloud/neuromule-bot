@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from api.auth import require_telegram_user
 from services.hd_logic import (
     build_hd_math_data,
+    compute_energy_scales_from_math,
     generate_premium_bodygraph,
     hd_profile_metadata,
     premium_report_from_json,
@@ -66,11 +67,16 @@ async def get_hd_report(
     defined_centers = list(meta["defined_centers"])
     _ensure_bodygraph(telegram_user_id, birth_data or None, defined_centers)
 
+    energy_scales = report.get("energy_scales")
+    if not isinstance(energy_scales, dict):
+        energy_scales = compute_energy_scales_from_math(math_data)
+
     return {
         "has_pro_analysis": True,
         "hd_type": meta["hd_type"],
         "birth_data": meta["birth_data"],
-        "report": report,
+        "report": {k: report[k] for k in ("fast_facts", "money", "love", "energy", "plan") if k in report},
+        "energy_scales": energy_scales,
         "bodygraph_url": _bodygraph_public_url(telegram_user_id),
         "defined_centers": defined_centers,
         "open_centers": list(meta["open_centers"]),

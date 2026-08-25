@@ -43,6 +43,11 @@ async def spend_hd_match(user_id: int) -> SpendResult:
     return await _spend_crystals_only(user_id, HD_MATCH_COST, SpendFeature.HD_MATCH)
 
 
+async def spend_hd_compatibility(user_id: int) -> SpendResult:
+    """Совместимость HD — 50 💎 (алиас ``spend_hd_match``)."""
+    return await spend_hd_match(user_id)
+
+
 UPSCALE_ENERGY_FALLBACK = 10  # 1 💎 == 10 ⚡ для резервной оплаты UPSCALE
 
 

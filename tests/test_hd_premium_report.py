@@ -15,6 +15,7 @@ _SAMPLE_REPORT = {
     "love": "Блок отношений",
     "energy": "Энергетический блок",
     "plan": "План на 30 дней",
+    "energy_scales": {"capacity": 72, "immunity": 55, "scale": 81},
 }
 
 
@@ -51,3 +52,40 @@ async def test_premium_report_falls_back_when_gemini_raises() -> None:
         report = await hd_logic.generate_premium_report("Проектор", "01.01.2000 10:00 Казань")
     assert report["money"] == "Финансовый блок"
     or_mock.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    ("raw", "hd_type", "birth_data"),
+    [
+        ("12.09.1999, 5:20, город Москва", "не указан", "12.09.1999 5:20 Москва"),
+        ("Генератор, 12.09.1999, 5:20, город Москва", "Генератор", "12.09.1999 5:20 Москва"),
+        ("тип: Проектор\n12.09.1999, 5:20, г. Москва", "Проектор", "12.09.1999 5:20 Москва"),
+        ("Манифестор 01.01.1990 10:00 в Санкт-Петербург", "Манифестор", "01.01.1990 10:00 Санкт-Петербург"),
+        ("тип: Генератор, 15.03.1990, 14:30, Москва", "Генератор", "15.03.1990 14:30 Москва"),
+    ],
+)
+def test_parse_hd_request_normalizes_user_input(raw: str, hd_type: str, birth_data: str) -> None:
+    parsed_type, parsed_birth = hd_logic.parse_hd_request(raw)
+    assert parsed_type == hd_type
+    assert parsed_birth == birth_data
+    assert hd_logic._extract_birth_numbers(parsed_birth) is not None
+
+
+def test_elite_premium_prompt_forbids_type_guessing() -> None:
+    system_prompt, user_prompt = hd_logic._build_elite_premium_hd_prompt(
+        "Тест",
+        {
+            "hd_type": "Генератор",
+            "birth_data": "15.03.1990 14:30 Москва",
+            "defined_centers": ["Сакрал"],
+            "open_centers": ["Корень"],
+        },
+    )
+    assert hd_logic._ELITE_HD_SERVER_MATH_MANDATE in system_prompt
+    assert "ЗАПРЕЩЕНО самостоятельно рассчитывать, угадывать или изменять тип" in system_prompt
+    assert "НЕ УГАДЫВАЙ" not in system_prompt
+    assert "эфемерид" not in system_prompt.lower()
+    assert "если передан явно" not in user_prompt.lower()
+    assert "energy_scales" in system_prompt
+    assert "capacity" in system_prompt
+    assert "Генератор" in user_prompt

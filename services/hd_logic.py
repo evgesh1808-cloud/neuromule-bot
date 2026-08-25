@@ -8,8 +8,10 @@ import os
 import random
 import tempfile
 import re
+import textwrap
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 import aiosqlite
 
@@ -26,11 +28,12 @@ except ImportError:  # pragma: no cover - surfaced at runtime in the handler.
     swe = None
 
 try:
-    from PIL import Image, ImageDraw, ImageFilter
+    from PIL import Image, ImageDraw, ImageFilter, ImageFont
 except ImportError:  # pragma: no cover - surfaced at runtime in the handler.
     Image = None  # type: ignore[misc, assignment]
     ImageDraw = None  # type: ignore[misc, assignment]
     ImageFilter = None  # type: ignore[misc, assignment]
+    ImageFont = None  # type: ignore[misc, assignment]
 
 try:
     from reportlab.lib import colors
@@ -73,14 +76,16 @@ HD_REPORT_COST = get_hd_report_cost()
 MATCH_REPORT_COST = get_match_report_cost()
 PRICE_UPSCALE = _app_settings.cost_upscale
 
-# Канал B (Gemini): 2.5 → 2.0 lite → алиасы (1.5-* сняты с v1beta, дают 404).
+# Канал B (Gemini): флагманские Pro-модели для премиум-разбора и совместимости.
 _GEMINI_MODEL_CHAIN: tuple[str, ...] = (
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
-    "gemini-2.0-flash-lite",
-    "gemini-2.0-flash",
-    "gemini-flash-latest",
+    "gemini-2.5-pro",
+    "gemini-2.0-pro-exp-02-15",
+    "gemini-1.5-pro-latest",
 )
+_HD_WATERMARK = "🧬 Создано в @neuromule_bot"
+_HD_NEON_HEX = "#8B5CF6"
+_ENERGY_SCALE_KEYS = ("capacity", "immunity", "scale")
+_COMPAT_REPORT_KEYS = ("attraction", "conflicts", "growth")
 # Таймаут одной Gemini-модели в «Совете дня» (сек); дальше — следующая / OpenRouter.
 _GEMINI_DAILY_TIMEOUT_SEC = 20.0
 _OPENROUTER_DAILY_TIMEOUT_SEC = 45.0
@@ -435,6 +440,7 @@ _USER_COLUMNS = {
     "text_daily_count",
     "has_paid",
     "has_pro_analysis",
+    "hd_compatibility_json",
     "advice_birth_data",
     "advice_user_role",
     "last_advice_message_id",
@@ -474,6 +480,23 @@ def _extract_gemini_text(response: object) -> str:
     except Exception:  # noqa: BLE001
         logger.debug("Gemini candidates parse failed", exc_info=True)
         return ""
+
+
+def _openrouter_models_for_premium() -> list[str]:
+    """OpenRouter fallback для премиум HD и совместимости."""
+    models: list[str] = []
+    seen: set[str] = set()
+
+    def _add(mid: str) -> None:
+        m = (mid or "").strip()
+        if m and m not in seen:
+            seen.add(m)
+            models.append(m)
+
+    _add("anthropic/claude-3.5-sonnet")
+    _add("google/gemini-2.5-pro")
+    _add("google/gemini-2.0-pro-exp-02-05:free")
+    return models
 
 
 def _openrouter_models_for_daily_advice() -> list[str]:
@@ -610,8 +633,38 @@ def _parse_json_object(raw: str) -> dict[str, object]:
     return parsed
 
 
-def _normalize_premium_report(parsed: dict[str, object]) -> dict[str, str]:
-    report: dict[str, str] = {}
+def _clamp_scale(value: object, default: int = 50) -> int:
+    try:
+        num = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(100, num))
+
+
+def _normalize_energy_scales(raw: object) -> dict[str, int]:
+    data = raw if isinstance(raw, dict) else {}
+    return {
+        "capacity": _clamp_scale(data.get("capacity"), 50),
+        "immunity": _clamp_scale(data.get("immunity"), 50),
+        "scale": _clamp_scale(data.get("scale"), 50),
+    }
+
+
+def compute_energy_scales_from_math(math_data: dict[str, object]) -> dict[str, int]:
+    """Серверный fallback шкал, если в legacy JSON их нет."""
+    defined = set(_normalize_defined_center_names(list(math_data.get("defined_centers") or [])))
+    open_centers = set(_normalize_defined_center_names(list(math_data.get("open_centers") or [])))
+    motors = {"Сакрал", "Эго", "Корень", "Солнечное сплетение"}
+    motor_count = len(defined & motors)
+    capacity = min(100, max(15, 25 + motor_count * 18 + len(defined) * 4))
+    immunity = min(100, max(10, 20 + len(open_centers) * 8))
+    charisma = {"Горло", "G-центр", "Селезенка"}
+    scale = min(100, max(10, 30 + len(defined & charisma) * 22))
+    return {"capacity": capacity, "immunity": immunity, "scale": scale}
+
+
+def _normalize_premium_report(parsed: dict[str, object]) -> dict[str, Any]:
+    report: dict[str, Any] = {}
     for key in _PREMIUM_REPORT_KEYS:
         value = parsed.get(key)
         if not isinstance(value, str) or not value.strip():
@@ -619,19 +672,30 @@ def _normalize_premium_report(parsed: dict[str, object]) -> dict[str, str]:
         report[key] = value.strip()
     if len(report["fast_facts"]) > _FAST_FACTS_MAX_LEN:
         report["fast_facts"] = report["fast_facts"][: _FAST_FACTS_MAX_LEN - 1].rstrip() + "…"
+    report["energy_scales"] = _normalize_energy_scales(parsed.get("energy_scales"))
     return report
 
 
-def format_premium_report(report: dict[str, str]) -> str:
+def _normalize_compat_report(parsed: dict[str, object]) -> dict[str, str]:
+    report: dict[str, str] = {}
+    for key in _COMPAT_REPORT_KEYS:
+        value = parsed.get(key)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"Compatibility JSON is missing non-empty {key!r}")
+        report[key] = value.strip()
+    return report
+
+
+def format_premium_report(report: dict[str, Any]) -> str:
     parts = []
     if report.get("fast_facts"):
-        parts.append("⚡ Экспресс-анализ\n" + report["fast_facts"])
+        parts.append("⚡ Экспресс-анализ\n" + str(report["fast_facts"]))
     parts.extend(
         [
-            "💎 Деньги\n" + report["money"],
-            "❤️ Отношения\n" + report["love"],
-            "⚡️ Энергия\n" + report["energy"],
-            "📅 План на 30 дней\n" + report["plan"],
+            "💎 Деньги\n" + str(report["money"]),
+            "❤️ Отношения\n" + str(report["love"]),
+            "⚡️ Энергия\n" + str(report["energy"]),
+            "📅 План на 30 дней\n" + str(report["plan"]),
         ]
     )
     return "\n\n".join(parts)
@@ -674,11 +738,18 @@ def hd_profile_metadata(math_data: dict[str, object]) -> dict[str, str | list[st
     }
 
 
-def premium_report_to_json(report: dict[str, str]) -> str:
-    return json.dumps(_normalize_premium_report(report), ensure_ascii=False)
+def premium_report_to_json(report: dict[str, Any]) -> str:
+    if all(k in report for k in _PREMIUM_REPORT_KEYS) and "energy_scales" in report:
+        payload: dict[str, Any] = {
+            **{k: str(report[k]).strip() for k in _PREMIUM_REPORT_KEYS},
+            "energy_scales": _normalize_energy_scales(report.get("energy_scales")),
+        }
+    else:
+        payload = _normalize_premium_report(report)
+    return json.dumps(payload, ensure_ascii=False)
 
 
-def premium_report_from_json(raw: str | None) -> dict[str, str] | None:
+def premium_report_from_json(raw: str | None) -> dict[str, Any] | None:
     if not raw:
         return None
     try:
@@ -689,11 +760,12 @@ def premium_report_from_json(raw: str | None) -> dict[str, str] | None:
             parsed = _parse_json_object(raw)
             legacy_keys = ("money", "love", "energy", "plan")
             if isinstance(parsed, dict) and all(parsed.get(k) for k in legacy_keys):
-                report = {k: str(parsed[k]).strip() for k in legacy_keys}
-                report["fast_facts"] = str(parsed.get("fast_facts") or "").strip() or (
+                legacy_report: dict[str, Any] = {k: str(parsed[k]).strip() for k in legacy_keys}
+                legacy_report["fast_facts"] = str(parsed.get("fast_facts") or "").strip() or (
                     "⚡ Экспресс-анализ доступен в интерактивном разборе."
                 )
-                return report
+                legacy_report["energy_scales"] = _normalize_energy_scales(parsed.get("energy_scales"))
+                return legacy_report
         except Exception:
             return None
         return None
@@ -812,9 +884,14 @@ async def generate_premium_report(
     raise RuntimeError("hd_premium_unavailable: " + "; ".join(errors))
 
 
-def _parse_premium_report_from_llm(raw: str) -> dict[str, str]:
+def _parse_premium_report_from_llm(raw: str) -> dict[str, Any]:
     parsed = _parse_json_object(raw)
     return _normalize_premium_report(parsed)
+
+
+def _parse_compat_report_from_llm(raw: str) -> dict[str, str]:
+    parsed = _parse_json_object(raw)
+    return _normalize_compat_report(parsed)
 
 
 async def _generate_premium_via_gemini(system_prompt: str, user_prompt: str) -> dict[str, str]:
@@ -860,13 +937,9 @@ async def _generate_premium_via_gemini(system_prompt: str, user_prompt: str) -> 
     raise RuntimeError("gemini_unavailable: " + "; ".join(errors))
 
 
-async def _generate_premium_via_openrouter(system_prompt: str, user_prompt: str) -> dict[str, str]:
+async def _generate_premium_via_openrouter(system_prompt: str, user_prompt: str) -> dict[str, Any]:
     from services.ai_text import ask_ai_messages
 
-    max_tokens = max(
-        int(getattr(_app_settings, "openrouter_premium_max_output_tokens", 1500) or 1500),
-        _HD_PREMIUM_MAX_OUTPUT_TOKENS // 2,
-    )
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
@@ -875,8 +948,8 @@ async def _generate_premium_via_openrouter(system_prompt: str, user_prompt: str)
         _app_settings,
         messages,
         timeout=_OPENROUTER_PREMIUM_TIMEOUT_SEC,
-        models=_openrouter_models_for_daily_advice(),
-        max_tokens=max_tokens,
+        models=_openrouter_models_for_premium(),
+        max_tokens=_HD_PREMIUM_MAX_OUTPUT_TOKENS,
         temperature=0.7,
         response_format={"type": "json_object"},
     )
@@ -1335,6 +1408,13 @@ _ELITE_HD_FEW_SHOT = (
     '"plan": "### Дни 1–5\\nОтслеживай сигнал тела перед решениями."}'
 )
 
+_ELITE_HD_SERVER_MATH_MANDATE = (
+    "Ты получаешь точные, математически рассчитанные на сервере данные бодиграфа пользователя "
+    "(тип, профиль, закрашенные и открытые центры). Тебе категорически ЗАПРЕЩЕНО самостоятельно "
+    "рассчитывать, угадывать или изменять тип личности пользователя. Ты должен строго взять "
+    "переданный тип личности и провести его глубокую коучинговую расшифровку по нашему JSON-контракту."
+)
+
 
 def _build_elite_premium_hd_prompt(user_name: str, math_data: dict) -> tuple[str, str]:
     """
@@ -1353,7 +1433,7 @@ def _build_elite_premium_hd_prompt(user_name: str, math_data: dict) -> tuple[str
     name = (user_name or "").strip() or "друг"
     data = math_data if isinstance(math_data, dict) else {}
 
-    hd_type = str(data.get("hd_type") or data.get("type") or "").strip() or "НЕ УКАЗАН — НЕ УГАДЫВАЙ"
+    hd_type = str(data.get("hd_type") or data.get("type") or "").strip() or "не указан"
     birth_data = str(data.get("birth_data") or "").strip() or "не указаны"
     strategy = str(data.get("strategy") or "").strip()
     authority = str(data.get("authority") or "").strip()
@@ -1372,22 +1452,28 @@ def _build_elite_premium_hd_prompt(user_name: str, math_data: dict) -> tuple[str
         "Пишешь премиальный персональный разбор: глубинная психология, прикладная механика тела и решений. "
         "Без эзотерической воды — только поведение, паттерны, границы, деньги, отношения, энергия.\n\n"
         f"{tone_block}\n\n"
+        f"{_ELITE_HD_SERVER_MATH_MANDATE}\n\n"
         "ЖЁСТКИЕ ЗАПРЕТЫ:\n"
         f"- Не используй: {banned}, «вибрации», «карма», «космос», «вселенная посылает», "
         "«астрал», «судьба», «предназначение-сверху», «нейтрино».\n"
         "- Не выдумывай тип, стратегию, авторитет, профиль, ворота или центры — только факты из user-блока.\n"
-        "- Если тип = «НЕ УКАЗАН — НЕ УГАДЫВАЙ» — не называй тип; опирайся на переданные центры и ворота.\n"
         "- ЗАПРЕЩЕНО путать типы и менять списки определённых/открытых центров.\n"
         "- Определённые центры — устойчивые ресурсы; открытые — зоны обучаемости и риска «Ложного Я».\n"
         "- Обращайся к клиенту на «ты».\n"
         "- Ответ — ТОЛЬКО чистый JSON без markdown-обёрток ```.\n\n"
         f"{_ELITE_HD_FEW_SHOT}\n\n"
         "ФОРМАТ ОТВЕТА (строго один JSON-объект, ключи только на английском):\n"
-        '{"fast_facts": "...", "money": "...", "love": "...", "energy": "...", "plan": "..."}\n'
+        '{"fast_facts": "...", "money": "...", "love": "...", "energy": "...", "plan": "...", '
+        '"energy_scales": {"capacity": 72, "immunity": 55, "scale": 81}}\n'
         "- fast_facts: до 300 символов, три строки в одном поле: "
-        "'⚡ Главный баг прошивки: …', '💼 Триггер больших денег: …', '🔋 Идеальная перезагрузка: …'.\n"
+        "'⚡ Главный баг прошивки: …', '💼 Триггер больших денег: …', '🔋 Идеальная перезагрузка: …'. "
+        "Переводи номера каналов/ворот в понятные психологические суперсилы — БЕЗ сухих кодов "
+        "вида '34-20', '19-49', 'Gate 57'.\n"
+        "- energy_scales: три целых числа 1–100 — capacity (ёмкость ауры по моторам), "
+        "immunity (стойкость к чужому мнению по открытым центрам), scale (индекс харизмы/влияния).\n"
         "- money, love, energy: Markdown-строки с ### подзаголовками и **жирным**; "
-        "КАЖДЫЙ раздел начинается с честной психологической боли из-за Ложного Я этой механики.\n"
+        "КАЖДЫЙ раздел начинается с честной психологической боли из-за Ложного Я этой механики. "
+        "Объём каждого раздела — от 1200 до 3000 символов, стиль ICF-коучинг без эзотерики.\n"
         "- plan: Markdown-план на 30 дней (блоки 1–5 / 6–15 / 16–30) с действиями и метриками.\n"
         "Каждый раздел — плотный, без воды; в каждом есть ответ «что делать дальше»."
     )
@@ -1406,7 +1492,7 @@ def _build_elite_premium_hd_prompt(user_name: str, math_data: dict) -> tuple[str
         "Сгенерируй JSON-разбор, ювелирно согласованный с определёнными и открытыми центрами выше. "
         "Если центр открыт — не описывай его как постоянный ресурс. "
         "Если центр определён — не называй его зоной уязвимости из-за «отсутствия энергии». "
-        "Тип, если передан явно, используй дословно во всех рекомендациях."
+        "Используй переданный тип личности дословно во всех рекомендациях — без пересчёта и без замены."
     )
     return system_prompt, user_prompt
 
@@ -1415,9 +1501,48 @@ def _draw_pdf_footer(pdf, font_name: str, page_width: float) -> None:
     pdf.setFont(font_name, 8)
     if colors is not None:
         pdf.setFillColor(colors.HexColor("#777777"))
-    pdf.drawCentredString(page_width / 2, 24, "Создано в @mulendeeva_ai")
+    pdf.drawCentredString(page_width / 2, 24, _HD_WATERMARK)
     if colors is not None:
         pdf.setFillColor(colors.black)
+
+
+def _draw_hd_legend_table(
+    pdf,
+    font_name: str,
+    x: float,
+    y: float,
+    *,
+    hd_type: str,
+    profile: str,
+    authority: str,
+    strategy: str,
+) -> float:
+    """Контрастная таблица-легенда параметров карты на первой странице PDF."""
+    if colors is None:
+        return y
+    rows = (
+        ("Тип", hd_type or "—"),
+        ("Профиль", profile or "—"),
+        ("Авторитет", authority or "—"),
+        ("Стратегия", strategy or "—"),
+    )
+    row_h = 18
+    col_w = (220, 280)
+    table_h = row_h * len(rows) + 8
+    top = y
+    pdf.setFillColor(colors.HexColor("#1A1A24"))
+    pdf.roundRect(x, top - table_h, sum(col_w), table_h, 6, fill=1, stroke=0)
+    pdf.setFillColor(colors.HexColor(_HD_NEON_HEX))
+    pdf.setFont(font_name, 10)
+    pdf.drawString(x + 8, top - 14, "Параметры карты")
+    pdf.setFillColor(colors.white)
+    pdf.setFont(font_name, 9)
+    cy = top - 28
+    for label, value in rows:
+        pdf.drawString(x + 10, cy, label)
+        pdf.drawString(x + col_w[0] + 6, cy, (value or "—")[:42])
+        cy -= row_h
+    return top - table_h - 12
 
 
 def _draw_bodygraph(
@@ -1476,6 +1601,10 @@ def _draw_wrapped_text(
     birth_data: str | None = None,
     *,
     user_id: int = 0,
+    hd_type: str = "",
+    profile: str = "",
+    authority: str = "",
+    strategy: str = "",
 ) -> None:
     if simpleSplit is None or A4 is None:
         raise RuntimeError("Установите пакет reportlab для PDF-отчетов.")
@@ -1489,7 +1618,17 @@ def _draw_wrapped_text(
 
     pdf.setFont(font_name, 16)
     pdf.drawString(left, y, "Ваш Дизайн Человека")
-    y -= 32
+    y -= 28
+    y = _draw_hd_legend_table(
+        pdf,
+        font_name,
+        left,
+        y,
+        hd_type=hd_type,
+        profile=profile,
+        authority=authority,
+        strategy=strategy,
+    )
     y = _draw_bodygraph(pdf, birth_data, font_name, left, y, user_id=user_id)
     pdf.setFont(font_name, font_size)
 
@@ -1510,26 +1649,341 @@ def _draw_wrapped_text(
     _draw_pdf_footer(pdf, font_name, width)
 
 
-def create_pdf(user_id: int, text: str, birth_data: str | None = None) -> str:
+def create_pdf(
+    user_id: int,
+    text: str,
+    birth_data: str | None = None,
+    *,
+    hd_type: str = "",
+    profile: str = "",
+    authority: str = "",
+    strategy: str = "",
+) -> str:
     if canvas is None or A4 is None:
         raise RuntimeError("Установите пакет reportlab для PDF-отчетов.")
     path = Path(tempfile.gettempdir()) / f"report_{user_id}.pdf"
     font_name = _register_pdf_font()
     pdf = canvas.Canvas(str(path), pagesize=A4)
-    _draw_wrapped_text(pdf, text, font_name, 11, birth_data, user_id=user_id)
+    _draw_wrapped_text(
+        pdf,
+        text,
+        font_name,
+        11,
+        birth_data,
+        user_id=user_id,
+        hd_type=hd_type,
+        profile=profile,
+        authority=authority,
+        strategy=strategy,
+    )
     pdf.save()
     return str(path)
 
 
+_HD_BIRTH_NOISE_RE: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\bгород\b", re.IGNORECASE),
+    re.compile(r"\bг\.\s*", re.IGNORECASE),
+    re.compile(r"\bг\s+(?=[^\d])", re.IGNORECASE),
+    re.compile(r"\s+в\s+", re.IGNORECASE),
+)
+
+_HD_TYPE_PREFIX_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"^(?:манифест(?:ирующий)?\s+генератор|м\.?\s*г\.?|мг)\b", re.I), "Манифестирующий Генератор"),
+    (re.compile(r"^manifesting\s+generator\b", re.I), "Манифестирующий Генератор"),
+    (re.compile(r"^манифестор\b", re.I), "Манифестор"),
+    (re.compile(r"^manifestor\b", re.I), "Манифестор"),
+    (re.compile(r"^генератор\b", re.I), "Генератор"),
+    (re.compile(r"^generator\b", re.I), "Генератор"),
+    (re.compile(r"^проектор\b", re.I), "Проектор"),
+    (re.compile(r"^projector\b", re.I), "Проектор"),
+    (re.compile(r"^рефлектор\b", re.I), "Рефлектор"),
+    (re.compile(r"^reflector\b", re.I), "Рефлектор"),
+)
+
+
+def _normalize_hd_birth_string(text: str) -> str:
+    """Запятые → пробелы, шумовые слова, схлопывание пробелов."""
+    normalized = (text or "").replace(",", " ")
+    for pattern in _HD_BIRTH_NOISE_RE:
+        normalized = pattern.sub(" ", normalized)
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _extract_leading_hd_type(text: str) -> tuple[str, str]:
+    """Вырезает тип HD из начала строки; остаток — дата/время/город."""
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return "не указан", ""
+    for pattern, label in _HD_TYPE_PREFIX_RULES:
+        match = pattern.match(cleaned)
+        if match:
+            rest = cleaned[match.end() :].lstrip(" ,.:;-")
+            return label, rest
+    return "не указан", cleaned
+
+
 def parse_hd_request(raw: str) -> tuple[str, str]:
     text = (raw or "").strip()
+    if not text:
+        return "не указан", ""
+
     hd_type = "не указан"
-    birth_lines: list[str] = []
+    birth_chunks: list[str] = []
+
     for line in text.splitlines():
-        low = line.lower().strip()
-        if low.startswith("тип:"):
-            hd_type = line.split(":", 1)[1].strip() or hd_type
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.lower().startswith("тип:"):
+            type_val = stripped.split(":", 1)[1].strip()
+            norm_type_val = _normalize_hd_birth_string(type_val)
+            extracted, rest = _extract_leading_hd_type(norm_type_val)
+            if extracted != "не указан":
+                hd_type = extracted
+                if rest:
+                    birth_chunks.append(rest)
+            elif type_val:
+                hd_type = type_val
         else:
-            birth_lines.append(line)
-    birth_data = "\n".join(birth_lines).strip() or text
+            birth_chunks.append(stripped)
+
+    body = " ".join(birth_chunks).strip() or text
+    normalized = _normalize_hd_birth_string(body)
+
+    if hd_type == "не указан" and normalized:
+        hd_type, normalized = _extract_leading_hd_type(normalized)
+
+    birth_data = normalized or body
     return hd_type, birth_data
+
+
+_STORY_CANVAS_SIZE = (1080, 1920)
+
+
+def _load_story_font(size: int) -> Any:
+    if ImageFont is None:
+        return None
+    for name in ("Montserrat-Bold.ttf", "Montserrat.ttf", "Inter-Bold.ttf", "Inter.ttf", "arial.ttf"):
+        for folder in (_PROJECT_ROOT / "assets", Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts"):
+            candidate = folder / name
+            if candidate.is_file():
+                try:
+                    return ImageFont.truetype(str(candidate), size=size)
+                except OSError:
+                    continue
+    return ImageFont.load_default()
+
+
+def _draw_story_watermark(draw: Any, width: int, height: int, font: Any) -> None:
+    if ImageDraw is None:
+        return
+    bbox = draw.textbbox((0, 0), _HD_WATERMARK, font=font)
+    tw = bbox[2] - bbox[0]
+    draw.text(((width - tw) // 2, height - 80), _HD_WATERMARK, fill=(200, 200, 210, 220), font=font)
+
+
+def generate_instagram_stories(uid: int, report: dict[str, Any]) -> list[str]:
+    """
+    Instagram Stories: glassmorphism-карточка с бодиграфом + текстовая карточка fast_facts.
+
+    Returns:
+        Список относительных путей ``tmp/story_{uid}_1.png``, ``tmp/story_{uid}_2.png``.
+    """
+    if Image is None or ImageDraw is None or ImageFilter is None:
+        raise RuntimeError("Установите пакет Pillow для Instagram Stories.")
+
+    os.makedirs(str(_HD_BODYGRAPH_OUTPUT_DIR), exist_ok=True)
+    bodygraph_path = _HD_BODYGRAPH_OUTPUT_DIR / f"ready_hd_{uid}.png"
+    paths: list[str] = []
+
+    # --- Карточка 1: Glassmorphism + бодиграф ---
+    card1 = Image.new("RGBA", _STORY_CANVAS_SIZE, (10, 10, 18, 255))
+    if bodygraph_path.is_file():
+        bg_src = Image.open(bodygraph_path).convert("RGBA")
+        scale = 2.5
+        bg_w = int(bg_src.width * scale)
+        bg_h = int(bg_src.height * scale)
+        bg_scaled = bg_src.resize((bg_w, bg_h), Image.Resampling.LANCZOS)
+        bg_blurred = bg_scaled.filter(ImageFilter.GaussianBlur(radius=70))
+        bx = (_STORY_CANVAS_SIZE[0] - bg_w) // 2
+        by = (_STORY_CANVAS_SIZE[1] - bg_h) // 2
+        card1.paste(bg_blurred, (bx, by), bg_blurred)
+        sharp_w = min(_STORY_CANVAS_SIZE[0] - 120, bg_src.width)
+        sharp_h = int(sharp_w * bg_src.height / max(bg_src.width, 1))
+        sharp = bg_src.resize((sharp_w, sharp_h), Image.Resampling.LANCZOS)
+        sx = (_STORY_CANVAS_SIZE[0] - sharp_w) // 2
+        sy = (_STORY_CANVAS_SIZE[1] - sharp_h) // 2
+        card1.paste(sharp, (sx, sy), sharp)
+
+    overlay = Image.new("RGBA", _STORY_CANVAS_SIZE, (10, 10, 18, 80))
+    card1 = Image.alpha_composite(card1, overlay)
+    draw1 = ImageDraw.Draw(card1)
+    title_font = _load_story_font(42)
+    _draw_story_watermark(draw1, _STORY_CANVAS_SIZE[0], _STORY_CANVAS_SIZE[1], _load_story_font(22))
+    draw1.text((60, 90), "Human Design Premium", fill=_HD_NEON_HEX, font=title_font)
+    out1 = _HD_BODYGRAPH_OUTPUT_DIR / f"story_{uid}_1.png"
+    card1.convert("RGB").save(out1, format="PNG")
+    paths.append(f"tmp/story_{uid}_1.png")
+
+    # --- Карточка 2: fast_facts на матовых плашках ---
+    card2 = Image.new("RGBA", _STORY_CANVAS_SIZE, (8, 8, 14, 255))
+    draw2 = ImageDraw.Draw(card2)
+    header_font = _load_story_font(36)
+    body_font = _load_story_font(26)
+    fast_facts = str(report.get("fast_facts") or "").strip() or "⚡ Персональный экспресс-анализ"
+    blocks = [b.strip() for b in re.split(r"(?=⚡|💼|🔋)", fast_facts) if b.strip()] or [fast_facts]
+    y_pos = 120
+    for block in blocks[:4]:
+        lines = textwrap.wrap(block, width=38) or [block]
+        box_h = 28 + len(lines) * 34
+        draw2.rounded_rectangle((48, y_pos, 1032, y_pos + box_h), radius=24, fill=(0, 0, 0, 140))
+        first = lines[0]
+        accent = first.split(":", 1)[0] + ":" if ":" in first else "⚡ Insight:"
+        body = first.split(":", 1)[1].strip() if ":" in first else first
+        draw2.text((72, y_pos + 14), accent, fill=_HD_NEON_HEX, font=header_font)
+        ty = y_pos + 52
+        for line in ([body] + lines[1:]):
+            draw2.text((72, ty), line, fill=(235, 235, 245, 255), font=body_font)
+            ty += 34
+        y_pos += box_h + 24
+    _draw_story_watermark(draw2, _STORY_CANVAS_SIZE[0], _STORY_CANVAS_SIZE[1], _load_story_font(22))
+    out2 = _HD_BODYGRAPH_OUTPUT_DIR / f"story_{uid}_2.png"
+    card2.convert("RGB").save(out2, format="PNG")
+    paths.append(f"tmp/story_{uid}_2.png")
+    return paths
+
+
+def _build_compatibility_prompt(
+    user_name: str,
+    partner_name: str,
+    user_math: dict[str, object],
+    partner_math: dict[str, object],
+    composite: dict[str, object],
+) -> tuple[str, str]:
+    system_prompt = (
+        "Ты — ICF-коуч и эксперт Human Design для NeuroMule. Анализируешь композит пары "
+        "строго по серверным данным Swiss Ephemeris. Без эзотерики, кармы и «вибраций». "
+        f"{_ELITE_HD_SERVER_MATH_MANDATE}\n"
+        "Ответ — ТОЛЬКО JSON с ключами: attraction, conflicts, growth."
+    )
+    user_prompt = (
+        f"Пара: {user_name} + {partner_name}.\n\n"
+        f"Карта {user_name}: тип {user_math.get('hd_type')}, центры "
+        f"{user_math.get('defined_centers')}, рождение {user_math.get('birth_data')}.\n"
+        f"Карта {partner_name}: тип {partner_math.get('hd_type')}, центры "
+        f"{partner_math.get('defined_centers')}, рождение {partner_math.get('birth_data')}.\n"
+        f"Композит (расчёт сервера): {json.dumps(composite, ensure_ascii=False)[:4000]}\n\n"
+        "JSON:\n"
+        "- attraction: магнетизм пары по именам, 800–1500 символов Markdown;\n"
+        "- conflicts: зоны бытового трения, 800–1500 символов Markdown;\n"
+        "- growth: формула синергии + 3 правила коучинга пары, 800–1500 символов Markdown."
+    )
+    return system_prompt, user_prompt
+
+
+async def _generate_compat_via_gemini(system_prompt: str, user_prompt: str) -> dict[str, str]:
+    client = _configure_genai()
+    gen_cfg = {
+        "response_mime_type": "application/json",
+        "max_output_tokens": _HD_PREMIUM_MAX_OUTPUT_TOKENS,
+        "system_instruction": system_prompt,
+    }
+    errors: list[str] = []
+    for model_name in _GEMINI_MODEL_CHAIN:
+        try:
+            response = await asyncio.wait_for(
+                client.aio.models.generate_content(
+                    model=model_name,
+                    contents=user_prompt,
+                    config=gen_cfg,
+                ),
+                timeout=_GEMINI_PREMIUM_TIMEOUT_SEC,
+            )
+            return _parse_compat_report_from_llm(_extract_gemini_text(response))
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{model_name}: {exc!r}")
+            continue
+    raise RuntimeError("gemini_compat_unavailable: " + "; ".join(errors))
+
+
+async def _generate_compat_via_openrouter(system_prompt: str, user_prompt: str) -> dict[str, str]:
+    from services.ai_text import ask_ai_messages
+
+    completion = await ask_ai_messages(
+        _app_settings,
+        [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+        timeout=_OPENROUTER_PREMIUM_TIMEOUT_SEC,
+        models=_openrouter_models_for_premium(),
+        max_tokens=_HD_PREMIUM_MAX_OUTPUT_TOKENS,
+        temperature=0.7,
+        response_format={"type": "json_object"},
+    )
+    text = (completion.get("content") or "").strip()
+    if not text:
+        raise RuntimeError("openrouter_compat_empty")
+    return _parse_compat_report_from_llm(text)
+
+
+async def generate_compatibility_report(
+    user_id: int,
+    partner_raw: str,
+    *,
+    user_name: str = "ты",
+    partner_name: str = "партнёр",
+) -> dict[str, str]:
+    """Композит отношений: pyswisseph + тяжёлая LLM (Gemini Pro → Claude 3.5 Sonnet)."""
+    user = await get_user(user_id)
+    own_type = (user["hd_type"] or "не указан") if "hd_type" in user.keys() else "не указан"
+    own_birth = (user["hd_birth_data"] or "").strip() if "hd_birth_data" in user.keys() else ""
+    if not own_birth:
+        raise ValueError("own_birth_missing")
+    partner_type, partner_birth = parse_hd_request(partner_raw)
+    if not partner_birth:
+        raise ValueError("partner_birth_missing")
+    user_math = build_hd_math_data(own_type, own_birth)
+    partner_math = build_hd_math_data(partner_type, partner_birth)
+    composite = calculate_composite(own_birth, partner_birth)
+    system_prompt, user_prompt = _build_compatibility_prompt(
+        user_name,
+        partner_name,
+        user_math,
+        partner_math,
+        composite,
+    )
+    if genai is not None:
+        try:
+            return await _generate_compat_via_gemini(system_prompt, user_prompt)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Gemini compatibility failed, OpenRouter fallback: %s", exc)
+    return await _generate_compat_via_openrouter(system_prompt, user_prompt)
+
+
+def compatibility_report_to_json(report: dict[str, str]) -> str:
+    return json.dumps(_normalize_compat_report(report), ensure_ascii=False)
+
+
+def compatibility_report_from_json(raw: str | None) -> dict[str, str] | None:
+    if not raw:
+        return None
+    try:
+        return _normalize_compat_report(_parse_json_object(raw))
+    except Exception:
+        return None
+
+
+def format_compatibility_telegram_html(
+    report: dict[str, str],
+    *,
+    user_name: str = "ты",
+    partner_name: str = "партнёр",
+) -> str:
+    import html as html_mod
+
+    parts = [
+        f"<b>💞 Композит: {html_mod.escape(user_name)} + {html_mod.escape(partner_name)}</b>",
+        f"<b>✨ Магнетизм</b>\n{md_to_telegram_html(report['attraction'])}",
+        f"<b>⚡ Зоны трения</b>\n{md_to_telegram_html(report['conflicts'])}",
+        f"<b>🌱 Синергия</b>\n{md_to_telegram_html(report['growth'])}",
+        f"\n<i>{html_mod.escape(_HD_WATERMARK)}</i>",
+    ]
+    return "\n\n".join(parts)

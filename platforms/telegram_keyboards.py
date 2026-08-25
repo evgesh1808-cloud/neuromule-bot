@@ -697,9 +697,30 @@ def start_welcome_markup() -> InlineKeyboardMarkup:
 
 
 def _resolve_hd_webapp_url() -> str | None:
-    from platforms.webapp_urls import resolve_super_app_url
+    import os
+    from urllib.parse import urlencode
 
-    return resolve_super_app_url(append_api_base=True)
+    from platforms.webapp_urls import is_valid_telegram_webapp_url
+
+    base = (os.getenv("HD_WEBAPP_URL") or settings.hd_webapp_url or "").strip()
+    if not base:
+        api_base = (
+            os.getenv("API_BASE_URL") or settings.api_base_url or settings.mini_app_api_base_url or ""
+        ).strip().rstrip("/")
+        if api_base:
+            base = f"{api_base}/web/"
+    if not base:
+        return None
+    normalized = base if "?" in base else base.rstrip("/") + "/"
+    if not is_valid_telegram_webapp_url(normalized.split("?", 1)[0]):
+        return None
+    api_base = (
+        os.getenv("API_BASE_URL") or settings.api_base_url or settings.mini_app_api_base_url or ""
+    ).strip().rstrip("/")
+    if not api_base:
+        return normalized
+    sep = "&" if "?" in normalized else "?"
+    return f"{normalized}{sep}{urlencode({'api_base': api_base})}"
 
 
 def hd_report_sections_markup(user_id: int) -> InlineKeyboardMarkup:
@@ -730,6 +751,11 @@ def hd_report_sections_markup(user_id: int) -> InlineKeyboardMarkup:
         ]
     )
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def hd_compatibility_result_markup(user_id: int) -> InlineKeyboardMarkup:
+    """Кнопка возврата в Super App после отчёта совместимости."""
+    return hd_report_sections_markup(user_id)
 
 
 def hd_menu(has_pro: bool = False) -> InlineKeyboardMarkup:
