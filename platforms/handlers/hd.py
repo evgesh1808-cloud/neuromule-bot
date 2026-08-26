@@ -67,6 +67,7 @@ from platforms.telegram_utils import (
     _reply_video_gen_result,
     is_admin_user,
     notify_admins_about_payment,
+    notify_admins_hd_report,
     send_same_as_instruction_button,
     try_dispatch_reply_nav_button,
 )
@@ -227,7 +228,15 @@ async def _deliver_upgraded_hd_report(
         parse_mode=ParseMode.HTML,
     )
     if upgraded:
-        await _send_hd_premium_pdf(target, uid, report, birth_data, resolved_type)
+        await _send_hd_premium_pdf(
+            target,
+            uid,
+            report,
+            birth_data,
+            resolved_type,
+            notify_admins=True,
+            user_display_name=_hd_user_display_name(target, user_row),
+        )
         try:
             story_relpaths = await generate_instagram_stories_async(
                 uid,
@@ -609,7 +618,16 @@ def _hd_section_html(title: str, body: str) -> str:
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
-async def _send_hd_premium_pdf(message: Message, uid: int, report: dict, birth_data: str, hd_type: str) -> None:
+async def _send_hd_premium_pdf(
+    message: Message,
+    uid: int,
+    report: dict,
+    birth_data: str,
+    hd_type: str,
+    *,
+    notify_admins: bool = False,
+    user_display_name: str = "",
+) -> None:
     pdf_path: str | None = None
     try:
         async with chat_action_loop(deps.bot(), message.chat.id, "upload_document"):
@@ -625,6 +643,19 @@ async def _send_hd_premium_pdf(message: Message, uid: int, report: dict, birth_d
                 caption=msg.TXT_HD_PDF_CAPTION,
                 parse_mode=ParseMode.HTML,
             )
+            if notify_admins:
+                bg_path = _PROJECT_ROOT / "tmp" / f"ready_hd_{uid}.png"
+                await notify_admins_hd_report(
+                    deps.bot(),
+                    payer_uid=uid,
+                    user_name=user_display_name
+                    or ((message.from_user.first_name or "").strip() if message.from_user else "")
+                    or "клиент",
+                    hd_type=hd_type,
+                    birth_data=birth_data,
+                    pdf_path=pdf_path,
+                    bodygraph_path=bg_path if bg_path.is_file() else None,
+                )
     except TelegramForbiddenError:
         logger.info("hd_premium_pdf forbidden uid=%s", uid)
     except TelegramBadRequest as exc:
@@ -708,7 +739,15 @@ async def _deliver_hd_premium_bundle(
         reply_markup=hd_report_sections_markup(uid),
         parse_mode=ParseMode.HTML,
     )
-    await _send_hd_premium_pdf(message, uid, report, birth_data, resolved_type)
+    await _send_hd_premium_pdf(
+        message,
+        uid,
+        report,
+        birth_data,
+        resolved_type,
+        notify_admins=True,
+        user_display_name=_hd_user_display_name(message, user_row),
+    )
     await _send_hd_instagram_stories_album(
         message,
         uid,

@@ -10,8 +10,14 @@ from aiogram.enums import ParseMode
 from aiogram import F
 from aiogram.filters import BaseFilter
 from aiogram.fsm.context import FSMContext
-from aiogram.exceptions import TelegramBadRequest
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message, ReplyKeyboardRemove
+from aiogram.exceptions import (
+    TelegramBadRequest,
+    TelegramForbiddenError,
+    TelegramNetworkError,
+    TelegramRetryAfter,
+)
+from aiogram.types import FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, Message, ReplyKeyboardRemove
+from pathlib import Path
 
 from config import settings
 from content import messages as msg
@@ -88,6 +94,128 @@ async def notify_admins_about_payment(
                 admin_id,
                 payer_id,
             )
+
+
+async def notify_admins_hd_report(
+    bot: Bot,
+    *,
+    payer_uid: int,
+    user_name: str,
+    hd_type: str,
+    birth_data: str,
+    pdf_path: str | None,
+    bodygraph_path: Path | None = None,
+) -> None:
+    """Дублирует админам PDF и бодиграф после полного разбора Human Design."""
+    admin_targets: set[int] = {int(x) for x in (settings.admin_ids or []) if int(x) > 0}
+    if int(settings.admin_chat_id or 0) > 0:
+        admin_targets.add(int(settings.admin_chat_id))
+    if not admin_targets:
+        logger.info("hd_admin_notify skipped: ADMIN_IDS / ADMIN_CHAT_ID not configured")
+        return
+
+    notice = msg.format_admin_hd_report_notice_html(
+        payer_uid,
+        user_name,
+        hd_type,
+        birth_data,
+    )
+    pdf_file = Path(pdf_path) if pdf_path else None
+    bg_file = bodygraph_path if bodygraph_path and bodygraph_path.is_file() else None
+
+    for chat_id in admin_targets:
+        try:
+            await bot.send_message(chat_id, notice, parse_mode=ParseMode.HTML)
+        except TelegramForbiddenError:
+            logger.info("hd_admin_notify forbidden chat_id=%s payer_uid=%s", chat_id, payer_uid)
+        except TelegramRetryAfter as exc:
+            logger.warning(
+                "hd_admin_notify retry_after chat_id=%s payer_uid=%s retry_after=%s",
+                chat_id,
+                payer_uid,
+                getattr(exc, "retry_after", None),
+            )
+        except TelegramBadRequest as exc:
+            logger.warning(
+                "hd_admin_notify bad_request chat_id=%s payer_uid=%s reason=%s",
+                chat_id,
+                payer_uid,
+                str(exc)[:200],
+            )
+        except TelegramNetworkError as exc:
+            logger.warning(
+                "hd_admin_notify network chat_id=%s payer_uid=%s reason=%s",
+                chat_id,
+                payer_uid,
+                str(exc)[:200],
+            )
+        except Exception:
+            logger.exception(
+                "hd_admin_notify unexpected message chat_id=%s payer_uid=%s",
+                chat_id,
+                payer_uid,
+            )
+            continue
+
+        if pdf_file and pdf_file.is_file():
+            try:
+                await bot.send_document(
+                    chat_id,
+                    FSInputFile(str(pdf_file)),
+                    caption="PDF Human Design",
+                )
+            except TelegramForbiddenError:
+                logger.info("hd_admin_notify pdf forbidden chat_id=%s", chat_id)
+            except TelegramRetryAfter as exc:
+                logger.warning(
+                    "hd_admin_notify pdf retry_after chat_id=%s retry_after=%s",
+                    chat_id,
+                    getattr(exc, "retry_after", None),
+                )
+            except TelegramBadRequest as exc:
+                logger.warning(
+                    "hd_admin_notify pdf bad_request chat_id=%s reason=%s",
+                    chat_id,
+                    str(exc)[:200],
+                )
+            except TelegramNetworkError as exc:
+                logger.warning(
+                    "hd_admin_notify pdf network chat_id=%s reason=%s",
+                    chat_id,
+                    str(exc)[:200],
+                )
+            except Exception:
+                logger.exception("hd_admin_notify pdf unexpected chat_id=%s", chat_id)
+
+        if bg_file is not None:
+            try:
+                await bot.send_photo(
+                    chat_id,
+                    FSInputFile(str(bg_file)),
+                    caption="Бодиграф Human Design",
+                )
+            except TelegramForbiddenError:
+                logger.info("hd_admin_notify bodygraph forbidden chat_id=%s", chat_id)
+            except TelegramRetryAfter as exc:
+                logger.warning(
+                    "hd_admin_notify bodygraph retry_after chat_id=%s retry_after=%s",
+                    chat_id,
+                    getattr(exc, "retry_after", None),
+                )
+            except TelegramBadRequest as exc:
+                logger.warning(
+                    "hd_admin_notify bodygraph bad_request chat_id=%s reason=%s",
+                    chat_id,
+                    str(exc)[:200],
+                )
+            except TelegramNetworkError as exc:
+                logger.warning(
+                    "hd_admin_notify bodygraph network chat_id=%s reason=%s",
+                    chat_id,
+                    str(exc)[:200],
+                )
+            except Exception:
+                logger.exception("hd_admin_notify bodygraph unexpected chat_id=%s", chat_id)
 
 
 def normalize_reply_button_text(text: str | None) -> str:
