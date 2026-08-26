@@ -618,10 +618,12 @@ def test_load_static_block_reads_channels_index() -> None:
 
 
 def test_story_channel_card_line_max_150_chars() -> None:
-    line = hd_logic._story_channel_card_line("💼 Деньги", "20-34")
+    line = hd_logic._story_channel_card_line("10-34")
     assert len(line) <= 150
     assert "Суперсила" in line
     assert "Триггер:" in line
+    assert "💼" not in line
+    assert "Деньги" not in line
 
 
 def test_ensure_story_fonts_available_ok() -> None:

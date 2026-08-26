@@ -89,11 +89,91 @@ def _load_type_block(hd_type: str) -> dict[str, str] | None:
     return data if isinstance(data, dict) else None
 
 
+_HD_TERM_REPLACEMENTS: tuple[tuple[str, str], ...] = (
+    (r"\bmental pressure\b", "ментальное давление"),
+    (r"\bMental pressure\b", "Ментальное давление"),
+    (r"\bLife force\b", "жизненная сила"),
+    (r"\blife force\b", "жизненная сила"),
+    (r"\bEmotional wave\b", "эмоциональная волна"),
+    (r"\bemotional wave\b", "эмоциональная волна"),
+    (r"\bWillpower\b", "сила воли"),
+    (r"\bwillpower\b", "сила воли"),
+    (r"\bManifestation\b", "проявление"),
+    (r"\bmanifestation\b", "проявление"),
+    (r"\bStress и drive\b", "стресс и импульс"),
+    (r"\bstress и drive\b", "стресс и импульс"),
+    (r"\bstorytelling\b", "истории"),
+    (r"\bstorytelling\b", "истории"),
+    (r"\bvitality\b", "жизненность"),
+    (r"\binsights\b", "озарения"),
+    (r"\bnow\b", "настоящем"),
+    (r"\bcompetitive spirit\b", "соревновательный дух"),
+    (r"\bprovocation\b", "провокация"),
+    (r"\bFantasy\b", "фантазия"),
+    (r"\bSynthesis\b", "синтез"),
+    (r"\bCharisma\b", "харизма"),
+    (r"\bBrainwave\b", "мозговая волна"),
+    (r"\bStructuring\b", "структурирование"),
+    (r"\bAwareness\b", "осознанность"),
+    (r"\bInitiation\b", "инициация"),
+    (r"\bSurrender\b", "сдача"),
+    (r"\bOpportunist\b", "оппортунист"),
+    (r"\bobserver\b", "наблюдатель"),
+    (r"\bskill\b", "мастерство"),
+    (r"\bДoubt\b", "Сомнение"),
+    (r"\bМystery\b", "Тайна"),
+    (r"\bЗabota\b", "Забота"),
+    (r"\bБорьba\b", "Борьба"),
+    (r"\bкrisis\b", "кризис"),
+    (r"\bАmbition\b", "Амбиции"),
+    (r"\bКoncentration\b", "Концентрация"),
+    (r"\bКoncentration\b", "Концентрация"),
+    (r"\bшarm\b", "обаяние"),
+    (r"\bart\b", "искусство"),
+    (r"\bwitness\b", "свидетель"),
+    (r"\blove\b", "любовь"),
+    (r"\bhealth\b", "здоровье"),
+    (r"\bMental clarity\b", "ясность ума"),
+    (r"\bconfusion\b", "путаницы"),
+    (r"\bserendipity\b", "счастливой случайности"),
+    (r"\bCommitment\b", "приверженность"),
+    (r"\bКомfort\b", "Комфорт"),
+    (r"\bопportunist\b", "оппортунист"),
+    (r"\bАнтикrizisный\b", "Антикризисный"),
+)
+
+
+def localize_hd_russian(text: str) -> str:
+    """Нормализует утечки английского из legacy static-блоков."""
+    import re
+
+    out = str(text or "")
+    for pattern, repl in _HD_TERM_REPLACEMENTS:
+        out = re.sub(pattern, repl, out, flags=re.IGNORECASE)
+    return out
+
+
+_BLOCK_FIELD_LABELS: dict[str, str] = {
+    "theme": "Суть",
+    "gift": "Ресурс",
+    "shadow": "Тень",
+    "not_self": "Ложное Я",
+    "wisdom": "Мудрость",
+    "strategy_hint": "Подсказка",
+    "body": "",
+}
+
+
 def _format_block_section(title: str, block: dict[str, str]) -> str:
-    parts: list[str] = [title]
-    for key in ("theme", "gift", "shadow", "not_self", "wisdom", "strategy_hint", "body"):
+    parts: list[str] = [localize_hd_russian(title)]
+    for key, label in _BLOCK_FIELD_LABELS.items():
         value = str(block.get(key) or "").strip()
-        if value:
+        if not value:
+            continue
+        value = localize_hd_russian(value)
+        if label:
+            parts.append(f"**{label}:** {value}")
+        else:
             parts.append(value)
     return "\n".join(parts).strip()
 

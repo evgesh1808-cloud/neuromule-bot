@@ -154,8 +154,10 @@ _HD_UPGRADE_LLM_TIMEOUT_SEC = 120.0
 _HD_LLM_PARALLEL_LIMIT = 5
 _HD_PREMIUM_MAX_OUTPUT_TOKENS = 8192
 _PDF_FONT_NAME = "HDReportFont"
+_PDF_FONT_BOLD_NAME = "HDReportFontBold"
 _PDF_COVER_BG = "#0D0E12"
 _PDF_CONTENT_BG = "#FAFAFA"
+_PDF_ACCENT_HEX = _HD_NEON_HEX
 _PDF_BODYGRAPH_WIDTH_PX = 430
 _PDF_BODYGRAPH_MAX_BYTES = 300 * 1024
 _PDF_CHAPTER_SPECS: tuple[tuple[str, str, str], ...] = (
@@ -1739,6 +1741,21 @@ def _find_pdf_font() -> str | None:
     return None
 
 
+def _find_pdf_font_bold(regular_path: str | None) -> str | None:
+    if regular_path:
+        sibling = Path(regular_path).parent / "Roboto-Bold.ttf"
+        if sibling.is_file():
+            return str(sibling)
+    candidates = [
+        str(_PROJECT_ROOT / "assets" / "fonts" / "Roboto-Bold.ttf"),
+        str(_PROJECT_ROOT / "fonts" / "Roboto-Bold.ttf"),
+    ]
+    for item in candidates:
+        if item and Path(item).exists():
+            return item
+    return None
+
+
 def _register_pdf_font() -> str:
     if pdfmetrics is None or TTFont is None:
         raise RuntimeError("Установите пакет reportlab для PDF-отчетов.")
@@ -1748,6 +1765,9 @@ def _register_pdf_font() -> str:
     registered = pdfmetrics.getRegisteredFontNames()
     if _PDF_FONT_NAME not in registered:
         pdfmetrics.registerFont(TTFont(_PDF_FONT_NAME, font_path))
+    bold_path = _find_pdf_font_bold(font_path)
+    if bold_path and _PDF_FONT_BOLD_NAME not in registered:
+        pdfmetrics.registerFont(TTFont(_PDF_FONT_BOLD_NAME, bold_path))
     return _PDF_FONT_NAME
 
 
@@ -2720,30 +2740,41 @@ def _parse_synthesis_response_from_llm(raw: str) -> dict[str, Any]:
 
 def render_synthesis_block(synthesis: dict[str, Any]) -> str:
     """Plain-text фрагмент главы из JSON Genetic Synthesis."""
+    tf_labels = {
+        "days_1-5": "Дни 1–5",
+        "days_6-15": "Дни 6–15",
+        "days_16-30": "Дни 16–30",
+    }
     parts: list[str] = [
+        "**Якорь синтеза**",
         str(synthesis.get("synthesis_anchor") or "").strip(),
         "",
+        "**Сцена боли**",
         str(synthesis.get("client_pain") or "").strip(),
         "",
+        "**Паттерн Ложного Я**",
         str(synthesis.get("false_self_pattern") or "").strip(),
         "",
-        f"Соматический маркер: {str(synthesis.get('body_signal') or '').strip()}",
+        "**Соматический маркер**",
+        str(synthesis.get("body_signal") or "").strip(),
         "",
-        "Вопросы для исследования:",
+        "**Вопросы для исследования**",
     ]
     for question in synthesis.get("reflective_questions") or []:
         parts.append(f"- {question}")
     parts.append("")
-    parts.append("Практические наблюдения:")
+    parts.append("**Практические наблюдения**")
     for experiment in synthesis.get("experiments") or []:
         if not isinstance(experiment, dict):
             continue
+        tf = str(experiment.get("timeframe") or "")
+        label = tf_labels.get(tf, tf)
         parts.append(
-            f"{experiment.get('timeframe', '')}: {experiment.get('action', '')} | "
-            f"Метрика: {experiment.get('metric', '')} | "
-            f"Успех: {experiment.get('success_criteria', '')}"
+            f"**{label}**\n{experiment.get('action', '')}\n"
+            f"Метрика: {experiment.get('metric', '')}\n"
+            f"Критерий успеха: {experiment.get('success_criteria', '')}"
         )
-    return strip_hd_markdown_for_plain("\n".join(parts).strip())
+    return "\n".join(parts).strip()
 
 
 async def _generate_synthesis_via_openrouter(
@@ -3344,9 +3375,36 @@ def _pdf_clean_meta_value(value: object) -> str:
         "—",
         "-",
         "unknown",
+        "none",
     }:
         return ""
     return text
+
+
+def _pdf_bold_font_name(font_name: str) -> str:
+    if pdfmetrics is not None and _PDF_FONT_BOLD_NAME in pdfmetrics.getRegisteredFontNames():
+        return _PDF_FONT_BOLD_NAME
+    return font_name
+
+
+def _strip_chapter_static_preamble(body: str) -> str:
+    """Убирает дублирующую статику из LLM-глав — она уже есть в static-секциях PDF."""
+    text = str(body or "").strip()
+    if "Статическая база карты:" not in text:
+        return text
+    for marker in ("**Якорь синтеза**", "Синтез 1:", "Синтез 1"):
+        idx = text.find(marker)
+        if idx > 0:
+            return text[idx:].strip()
+    return text
+
+
+def _split_static_blocks(body: str, *, marker_prefix: str) -> list[str]:
+    text = str(body or "").strip()
+    if not text:
+        return []
+    parts = re.split(rf"(?=^{re.escape(marker_prefix)})", text, flags=re.MULTILINE)
+    return [part.strip() for part in parts if part.strip()]
 
 
 def _md_to_reportlab_html(text: object) -> str:
@@ -3359,6 +3417,13 @@ def _md_to_reportlab_html(text: object) -> str:
         stripped = line.strip()
         if not stripped:
             chunks.append("<br/>")
+            continue
+        if stripped.startswith("- "):
+            chunks.append(f"• {html_module.escape(stripped[2:])}")
+            continue
+        if re.fullmatch(r"\*\*.+\*\*", stripped):
+            inner = html_module.escape(stripped[2:-2].strip())
+            chunks.append(f"<b><font color='#6D28D9' size='12'>{inner}</font></b>")
             continue
         escaped = html_module.escape(stripped)
         escaped = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", escaped)
@@ -3402,6 +3467,35 @@ class _HdAccentBarFlowable(_PdfFlowableBase):
             return
         self.canv.setFillColor(colors.HexColor(_HD_NEON_HEX))
         self.canv.roundRect(0, 4, self.width, self.bar_height, 2, fill=1, stroke=0)
+
+
+class _HdCalloutBoxFlowable(_PdfFlowableBase):
+    """Карточка с фиолетовой рамкой для инсайтов, центров и экспресс-анализа."""
+
+    def __init__(
+        self,
+        html_text: str,
+        *,
+        width: float = 480,
+        body_style: Any,
+        fill_hex: str = "#F5F3FF",
+    ) -> None:
+        super().__init__()
+        self.width = width
+        self.pad = 14
+        self.paragraph = Paragraph(html_text, body_style)
+        _w, h = self.paragraph.wrap(max(10.0, width - 2 * self.pad), 10000)
+        self.height = h + 2 * self.pad + 6
+        self.fill_hex = fill_hex
+
+    def draw(self) -> None:
+        if colors is None:
+            return
+        self.canv.setFillColor(colors.HexColor(self.fill_hex))
+        self.canv.setStrokeColor(colors.HexColor(_PDF_ACCENT_HEX))
+        self.canv.setLineWidth(0.8)
+        self.canv.roundRect(0, 0, self.width, self.height, 10, fill=1, stroke=1)
+        self.paragraph.drawOn(self.canv, self.pad, self.pad + 2)
 
 
 class _HdEnergyScalesFlowable(_PdfFlowableBase):
@@ -3459,12 +3553,14 @@ class _HdPremiumPdfDoc(BaseDocTemplate):
         user_name: str,
         birth_data: str,
         font_name: str,
+        hd_type: str = "",
     ) -> None:
         if BaseDocTemplate is None or Frame is None or PageTemplate is None or A4 is None:
             raise RuntimeError("Установите пакет reportlab для PDF-отчетов.")
         self.hd_user_name = (user_name or "").strip() or "друг"
         self.hd_birth_data = (birth_data or "").strip()
         self.hd_font_name = font_name
+        self.hd_type = (hd_type or "").strip()
         super().__init__(
             filename,
             pagesize=A4,
@@ -3494,19 +3590,32 @@ class _HdPremiumPdfDoc(BaseDocTemplate):
         canv.saveState()
         canv.setFillColor(colors.HexColor(_PDF_COVER_BG))
         canv.rect(0, 0, w, h, fill=1, stroke=0)
+        try:
+            canv.setFillColor(colors.HexColor("#8B5CF6"))
+            canv.setFillAlpha(0.07)
+            canv.circle(w * 0.18, h * 0.78, 130, fill=1, stroke=0)
+            canv.circle(w * 0.82, h * 0.22, 160, fill=1, stroke=0)
+            canv.circle(w * 0.55, h * 0.55, 90, fill=1, stroke=0)
+            canv.setFillAlpha(1)
+        except Exception:
+            pass
         name = _sanitize_pdf_display_name(self.hd_user_name)
         canv.setFillColor(colors.HexColor(_HD_NEON_HEX))
-        canv.setFont(self.hd_font_name, 22)
-        canv.drawCentredString(w / 2, h * 0.62, "NEUROMULE HD PREMIUM")
-        canv.setFont(self.hd_font_name, 16)
-        canv.drawCentredString(w / 2, h * 0.56, "ПЕРСОНАЛЬНЫЙ НАВИГАТОР ЛИЧНОСТИ")
+        canv.setFont(self.hd_font_name, 24)
+        canv.drawCentredString(w / 2, h * 0.64, "NEUROMULE HD PREMIUM")
+        canv.setFont(self.hd_font_name, 15)
+        canv.drawCentredString(w / 2, h * 0.58, "ПЕРСОНАЛЬНЫЙ НАВИГАТОР ЛИЧНОСТИ")
         canv.setFillColor(colors.HexColor("#E8E8F0"))
-        canv.setFont(self.hd_font_name, 13)
-        canv.drawCentredString(w / 2, h * 0.48, name[:72])
+        canv.setFont(self.hd_font_name, 14)
+        canv.drawCentredString(w / 2, h * 0.50, name[:72])
+        if self.hd_type:
+            canv.setFillColor(colors.HexColor("#C4B5FD"))
+            canv.setFont(self.hd_font_name, 12)
+            canv.drawCentredString(w / 2, h * 0.44, self.hd_type[:64])
         if self.hd_birth_data:
             canv.setFillColor(colors.HexColor("#C8C8D8"))
             canv.setFont(self.hd_font_name, 11)
-            canv.drawCentredString(w / 2, h * 0.42, self.hd_birth_data[:90])
+            canv.drawCentredString(w / 2, h * 0.38, self.hd_birth_data[:90])
         canv.setFillColor(colors.HexColor("#888899"))
         canv.setFont(self.hd_font_name, 9)
         canv.drawCentredString(w / 2, 72, _HD_WATERMARK)
@@ -3703,19 +3812,20 @@ def _build_hd_premium_pdf_story(
     ):
         raise RuntimeError("Установите пакет reportlab для PDF-отчетов.")
 
+    bold_font = _pdf_bold_font_name(font_name)
     title_style = ParagraphStyle(
         "HdChapterTitle",
-        fontName=font_name,
-        fontSize=16,
-        leading=20,
+        fontName=bold_font,
+        fontSize=17,
+        leading=21,
         textColor=colors.HexColor("#1A1A24") if colors else None,
         spaceAfter=4,
     )
     overview_style = ParagraphStyle(
         "HdOverviewTitle",
-        fontName=font_name,
-        fontSize=18,
-        leading=22,
+        fontName=bold_font,
+        fontSize=20,
+        leading=24,
         textColor=colors.HexColor(_HD_NEON_HEX) if colors else None,
         spaceAfter=10,
     )
@@ -3723,9 +3833,17 @@ def _build_hd_premium_pdf_story(
         "HdBody",
         fontName=font_name,
         fontSize=11,
-        leading=15,
+        leading=16,
         textColor=colors.HexColor("#1A1A24") if colors else None,
         spaceAfter=8,
+    )
+    callout_style = ParagraphStyle(
+        "HdCallout",
+        fontName=font_name,
+        fontSize=10.5,
+        leading=15,
+        textColor=colors.HexColor("#1A1A24") if colors else None,
+        spaceAfter=4,
     )
 
     story: list[Any] = [Spacer(1, 1)]
@@ -3738,14 +3856,20 @@ def _build_hd_premium_pdf_story(
         story.append(Paragraph("⚡ Экспресс-анализ", overview_style))
         story.append(_HdAccentBarFlowable(width=480))
         story.append(Spacer(1, 10))
-        fast_html = _md_to_reportlab_html(fast_facts)
-        if fast_html:
-            story.append(Paragraph(fast_html, body_style))
+        for line in fast_facts.splitlines():
+            chunk = line.strip()
+            if not chunk:
+                continue
+            html = _md_to_reportlab_html(chunk)
+            if html:
+                story.append(_HdCalloutBoxFlowable(html, body_style=callout_style))
+                story.append(Spacer(1, 6))
         story.append(PageBreak())
 
     story.append(_HdPdfBookmark("Обзор карты", "hd_overview"))
     story.append(Paragraph("Обзор карты", overview_style))
-    story.append(Spacer(1, 8))
+    story.append(_HdAccentBarFlowable(width=480))
+    story.append(Spacer(1, 10))
     story.append(_build_chart_overview_table(meta, font_name))
     story.append(Spacer(1, 16))
 
@@ -3772,9 +3896,26 @@ def _build_hd_premium_pdf_story(
         story.append(Paragraph(html_module.escape(section_title), title_style))
         story.append(_HdAccentBarFlowable(width=480))
         story.append(Spacer(1, 10))
-        html_body = _md_to_reportlab_html(body)
-        if html_body:
-            story.append(Paragraph(html_body, body_style))
+        if section_key in {"centers_defined", "centers_open"}:
+            blocks = _split_static_blocks(body, marker_prefix="Центр «")
+            for block in blocks:
+                html_block = _md_to_reportlab_html(block)
+                if html_block:
+                    story.append(_HdCalloutBoxFlowable(html_block, body_style=callout_style))
+                    story.append(Spacer(1, 8))
+        elif section_key == "channels":
+            blocks = _split_static_blocks(body, marker_prefix="Канал ")
+            if not blocks:
+                blocks = [part.strip() for part in body.split("\n\n") if part.strip()]
+            for block in blocks:
+                html_block = _md_to_reportlab_html(block)
+                if html_block:
+                    story.append(_HdCalloutBoxFlowable(html_block, body_style=callout_style))
+                    story.append(Spacer(1, 8))
+        else:
+            html_body = _md_to_reportlab_html(body)
+            if html_body:
+                story.append(_HdCalloutBoxFlowable(html_body, body_style=callout_style))
         story.append(PageBreak())
 
     chapter_blocks: list[tuple[str, str, str, str]] = []
@@ -3788,9 +3929,28 @@ def _build_hd_premium_pdf_story(
         story.append(Paragraph(html_module.escape(chapter_title), title_style))
         story.append(_HdAccentBarFlowable(width=480))
         story.append(Spacer(1, 10))
-        html_body = _md_to_reportlab_html(body)
-        if html_body:
-            story.append(Paragraph(html_body, body_style))
+        chapter_text = _strip_chapter_static_preamble(body)
+        current_block: list[str] = []
+        for line in chapter_text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("Синтез ") and current_block:
+                html_chunk = _md_to_reportlab_html("\n".join(current_block))
+                if html_chunk:
+                    story.append(_HdCalloutBoxFlowable(html_chunk, body_style=callout_style))
+                    story.append(Spacer(1, 8))
+                current_block = [line]
+            elif re.fullmatch(r"\*\*.+\*\*", stripped) and current_block:
+                html_chunk = _md_to_reportlab_html("\n".join(current_block))
+                if html_chunk:
+                    story.append(_HdCalloutBoxFlowable(html_chunk, body_style=callout_style))
+                    story.append(Spacer(1, 8))
+                current_block = [line]
+            else:
+                current_block.append(line)
+        if current_block:
+            html_chunk = _md_to_reportlab_html("\n".join(current_block))
+            if html_chunk:
+                story.append(_HdCalloutBoxFlowable(html_chunk, body_style=callout_style))
         if idx < len(chapter_blocks) - 1:
             story.append(PageBreak())
 
@@ -3832,6 +3992,7 @@ def create_hd_premium_pdf(
         user_name=_sanitize_pdf_display_name(user_name),
         birth_data=str(meta.get("birth_data") or birth_data or ""),
         font_name=font_name,
+        hd_type=str(meta.get("hd_type") or hd_type or ""),
     )
     story = _build_hd_premium_pdf_story(
         user_id,
@@ -4021,18 +4182,20 @@ def _create_story_gradient(size: tuple[int, int]) -> Any:
     return Image.alpha_composite(base, glow)
 
 
-def _story_channel_card_line(domain_label: str, channel_code: str) -> str:
+def _story_channel_card_line(channel_code: str) -> str:
     """Короткая строка для Stories card 2: суперсила + триггер (0 LLM, до 150 символов)."""
     from services.hd_channel_archetypes import normalize_channel_code
 
     code = normalize_channel_code(channel_code)
     block = load_static_block("channels", code) if code else {}
     superpower = format_channel_superpower_for_user(code or channel_code)
-    trigger = str(block.get("theme") or block.get("gift") or "точка роста в решениях").strip()
+    trigger = str(
+        block.get("shadow") or block.get("gift") or block.get("theme") or "точка роста в решениях"
+    ).strip()
     trigger = trigger.rstrip(".")
-    if len(trigger) > 72:
-        trigger = trigger[:72].rsplit(" ", 1)[0] + "…"
-    line = f"{domain_label} → {superpower} → Триггер: {trigger}"
+    if len(trigger) > 56:
+        trigger = trigger[:56].rsplit(" ", 1)[0] + "…"
+    line = f"{superpower}. Триггер: {trigger}"
     if len(line) > 150:
         line = line[:147].rsplit(" ", 1)[0] + "…"
     return line
@@ -4051,7 +4214,7 @@ def _build_story_card2_sections(math_data: dict[str, object]) -> list[tuple[str,
     for idx, domain_label in enumerate(labels):
         if idx >= len(channels):
             break
-        body = _story_channel_card_line(domain_label, channels[idx])
+        body = _story_channel_card_line(channels[idx])
         if body:
             sections.append((domain_label, body))
     return sections
@@ -4066,24 +4229,35 @@ def _draw_story_meta_panel(
     value_font: Any,
 ) -> None:
     meta = hd_profile_metadata(math_data)
+    profile_label = profile_archetype_label(str(meta.get("profile") or "")) or "—"
     rows = (
         ("Тип", str(meta.get("hd_type") or "—")),
-        ("Профиль", format_profile_archetype_for_user(str(meta.get("profile") or ""))),
+        ("Профиль", profile_label),
         ("Авторитет", str(meta.get("authority") or "—")),
         ("Стратегия", str(meta.get("strategy") or "—")),
     )
     panel_x, panel_w = 48, 984
-    row_h = 52
-    panel_h = 36 + row_h * len(rows)
+    value_x = panel_x + 200
     y0 = y_top
+    layout: list[tuple[str, list[str], int]] = []
+    content_h = 48
+    for label, value in rows:
+        wrapped = textwrap.wrap(value, width=28) or [value]
+        row_lines = wrapped[:2]
+        row_h = 28 + len(row_lines) * 30
+        layout.append((label, row_lines, row_h))
+        content_h += row_h + 8
+    panel_h = content_h + 12
     draw.rounded_rectangle((panel_x, y0, panel_x + panel_w, y0 + panel_h), radius=28, fill=(8, 8, 18, 210))
     draw.text((panel_x + 24, y0 + 16), "Параметры карты", fill=_HD_NEON_HEX, font=label_font)
     cy = y0 + 48
-    for label, value in rows:
-        draw.text((panel_x + 24, cy), label, fill=(180, 180, 200, 255), font=value_font)
-        wrapped = textwrap.wrap(value, width=34) or [value]
-        draw.text((panel_x + 200, cy), wrapped[0], fill=(245, 245, 252, 255), font=value_font)
-        cy += row_h
+    for label, row_lines, row_h in layout:
+        draw.text((panel_x + 24, cy), label, fill=(180, 180, 200, 255), font=label_font)
+        ty = cy
+        for line in row_lines:
+            draw.text((value_x, ty), line, fill=(245, 245, 252, 255), font=value_font)
+            ty += 30
+        cy += row_h + 8
 
 
 def generate_instagram_stories(
