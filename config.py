@@ -518,6 +518,8 @@ class Settings(BaseSettings):
     mini_app_api_base_url: str = ""
     api_base_url: str = Field(default="", alias="API_BASE_URL")
     hd_webapp_url: str = Field(default="", alias="HD_WEBAPP_URL")
+    # HD Premium LLM tier: economy (free/cheap models for tests) | production (Claude Sonnet).
+    hd_premium_llm_tier: str = Field(default="economy", alias="HD_PREMIUM_LLM_TIER")
     # CORS для Mini App API (``api/mini_app.py``). Список origin через запятую;
     # ``*`` не используется при ``allow_credentials=True`` — см. ``api/mini_app.py``.
     mini_app_cors_origins: str = ""

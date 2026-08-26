@@ -5,7 +5,7 @@ from __future__ import annotations
 from services import hd_static_blocks
 
 
-def test_assemble_static_reference_includes_type_and_gates() -> None:
+def test_assemble_static_reference_includes_type_and_incarnation_cross() -> None:
     math_data = {
         "hd_type": "Генератор",
         "profile": "3/5",
@@ -15,16 +15,23 @@ def test_assemble_static_reference_includes_type_and_gates() -> None:
         "defined_centers": ["Сакрал"],
         "open_centers": ["Эго", "Корень"],
         "active_channels": ["20-34"],
+        "key_activations": {
+            "personality_sun": {"gate": 34, "line": 1},
+            "personality_earth": {"gate": 20, "line": 4},
+            "design_sun": {"gate": 5, "line": 2},
+            "design_earth": {"gate": 15, "line": 3},
+        },
         "gates": {"sun": {"gate": 34, "line": 1}, "earth": {"gate": 20, "line": 4}},
     }
     sections = hd_static_blocks.assemble_static_reference(
         math_data,
-        gate_to_center={34: "Сакрал", 20: "Горло"},
+        gate_to_center={34: "Сакрал", 20: "Горло", 5: "Сакрал", 15: "G-центр"},
     )
     assert "type" in sections
     assert "Генератор" in sections["type"]
-    assert "gates" in sections
-    assert "34" in sections["gates"]
+    assert "incarnation_cross" in sections
+    assert "34" in sections["incarnation_cross"]
+    assert "gates" not in sections
     assert "channels" in sections
     assert "20-34" in sections["channels"]
 
@@ -33,10 +40,10 @@ def test_format_static_reference_full_orders_sections() -> None:
     sections = {
         "type": "Тип A",
         "profile": "Профиль B",
-        "gates": "Ворота C",
+        "incarnation_cross": "Крест C",
     }
     full = hd_static_blocks.format_static_reference_full(sections)
-    assert full.index("Тип A") < full.index("Профиль B") < full.index("Ворота C")
+    assert full.index("Тип A") < full.index("Профиль B") < full.index("Крест C")
 
 
 def test_profile_block_text_uses_archetype_not_raw_code() -> None:

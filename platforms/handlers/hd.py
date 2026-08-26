@@ -162,6 +162,12 @@ def _is_admin(user_id: int) -> bool:
     return is_admin_user(user_id)
 
 
+def _hd_user_gender(user_row) -> str:
+    from services.hd_logic import resolve_user_gender_from_row
+
+    return resolve_user_gender_from_row(user_row)
+
+
 def _hd_user_display_name(target: Message | CallbackQuery, user_row) -> str:
     if isinstance(target, CallbackQuery) and target.from_user is not None:
         name = (target.from_user.first_name or "").strip()
@@ -711,8 +717,15 @@ async def hd_premium_process(message: Message, state: FSMContext) -> None:
     try:
         async with chat_action_loop(deps.bot(), message.chat.id, "typing"):
             hd_type, birth_data = parse_hd_request(raw)
-            user_name = (message.from_user.first_name or "").strip() if message.from_user else "друг"
-            report = await generate_premium_report(hd_type, birth_data, user_name=user_name)
+            user_row = await get_user(uid)
+            user_name = _hd_user_display_name(message, user_row)
+            user_gender = _hd_user_gender(user_row)
+            report = await generate_premium_report(
+                hd_type,
+                birth_data,
+                user_name=user_name,
+                user_gender=user_gender,
+            )
         if not report:
             raise RuntimeError("Gemini returned empty HD report")
         math_data = build_hd_math_data(hd_type, birth_data)
@@ -900,6 +913,30 @@ async def hd_report_section(callback: CallbackQuery) -> None:
                     Path(pdf_path).unlink(missing_ok=True)
                 except OSError:
                     logger.warning("failed_remove_hd_pdf path=%s", pdf_path)
+        await callback.answer()
+        return
+
+    if section == "instagram":
+        birth_data = (user["hd_birth_data"] or "").strip() if "hd_birth_data" in user.keys() else ""
+        hd_type_val = (user["hd_type"] or "") if "hd_type" in user.keys() else ""
+        math_data = build_hd_math_data(hd_type_val, birth_data)
+        story_relpaths: list[str] = []
+        try:
+            story_relpaths = await generate_instagram_stories_async(
+                uid,
+                report,
+                math_data=math_data,
+                hd_type=hd_type_val,
+                birth_data=birth_data,
+            )
+        except Exception:
+            logger.warning("instagram stories on demand failed uid=%s", uid, exc_info=True)
+        await _send_hd_instagram_stories_album(
+            callback.message,
+            uid,
+            _hd_user_display_name(callback, user),
+            story_relpaths,
+        )
         await callback.answer()
         return
 

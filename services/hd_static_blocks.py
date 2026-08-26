@@ -167,6 +167,32 @@ def center_block_text(center: str, *, defined: bool) -> str:
     return f"Центр «{center}»: {state}."
 
 
+_INCARNATION_CROSS_KEYS: tuple[str, ...] = (
+    "personality_sun",
+    "personality_earth",
+    "design_sun",
+    "design_earth",
+)
+
+
+def incarnation_cross_gate_numbers(math_data: dict[str, object]) -> list[int]:
+    """Четыре ворота Инкарнационного креста (PS, PE, DS, DE) — приоритет для PDF."""
+    activations = math_data.get("key_activations")
+    if not isinstance(activations, dict):
+        return []
+    nums: list[int] = []
+    seen: set[int] = set()
+    for key in _INCARNATION_CROSS_KEYS:
+        payload = activations.get(key)
+        if not isinstance(payload, dict):
+            continue
+        gate = payload.get("gate")
+        if isinstance(gate, int) and gate not in seen:
+            seen.add(gate)
+            nums.append(gate)
+    return nums
+
+
 def collect_gate_numbers(gates: object) -> list[int]:
     nums: list[int] = []
     if not isinstance(gates, dict):
@@ -216,12 +242,12 @@ def assemble_static_reference(
     if meta_lines:
         sections["mechanics"] = "\n".join(meta_lines)
 
-    gate_lines: list[str] = []
-    for gate in collect_gate_numbers(math_data.get("gates")):
+    cross_lines: list[str] = []
+    for gate in incarnation_cross_gate_numbers(math_data):
         center = gate_map.get(gate, "")
-        gate_lines.append(gate_block_text(gate, center=center))
-    if gate_lines:
-        sections["gates"] = "\n\n".join(gate_lines)
+        cross_lines.append(gate_block_text(gate, center=center))
+    if cross_lines:
+        sections["incarnation_cross"] = "\n\n".join(cross_lines)
 
     channel_lines: list[str] = []
     for ch in math_data.get("active_channels") or []:
@@ -245,7 +271,15 @@ def assemble_static_reference(
 
 def format_static_reference_full(sections: dict[str, str]) -> str:
     """Полный статический блок для PDF-справочника."""
-    order = ("type", "profile", "mechanics", "centers_defined", "centers_open", "channels", "gates")
+    order = (
+        "type",
+        "profile",
+        "mechanics",
+        "centers_defined",
+        "centers_open",
+        "channels",
+        "incarnation_cross",
+    )
     parts: list[str] = []
     for key in order:
         text = str(sections.get(key) or "").strip()

@@ -11,6 +11,7 @@ import tempfile
 import re
 import textwrap
 from datetime import date, datetime, timedelta, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -163,7 +164,17 @@ _PDF_CHAPTER_SPECS: tuple[tuple[str, str, str], ...] = (
     ("energy", "⚡ Раздел: Энергетическая Архитектура", "hd_ch_energy"),
     ("plan", "📅 Раздел: План на 30 дней", "hd_ch_plan"),
 )
+_STATIC_PDF_SECTION_SPECS: tuple[tuple[str, str, str], ...] = (
+    ("type", "Тип и стратегия", "hd_static_type"),
+    ("profile", "Профиль личности", "hd_static_profile"),
+    ("mechanics", "Механика решений", "hd_static_mechanics"),
+    ("centers_defined", "Определённые центры", "hd_static_centers_def"),
+    ("centers_open", "Открытые центры", "hd_static_centers_open"),
+    ("channels", "Активные каналы", "hd_static_channels"),
+    ("incarnation_cross", "Инкарнационный крест", "hd_static_cross"),
+)
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_HD_BLOCKS_ROOT = _PROJECT_ROOT / "data" / "hd_blocks"
 _HD_LLM_SEMAPHORE: asyncio.Semaphore | None = None
 
 
@@ -179,14 +190,16 @@ _PREMIUM_REPORT_KEYS = ("fast_facts", "money", "love", "energy", "plan")
 _HD_REPORT_SCHEMA_VERSION = 3
 _HD_REPORT_SCHEMA_VERSION_SYNTHESIS = 3
 _LEGACY_HD_REPORT_PLACEHOLDER = "⚡ Экспресс-анализ доступен в интерактивном разборе."
-_FAST_FACTS_MAX_LEN = 300
-_PREMIUM_SUMMARY_TEMPERATURE = 0.25
-_PREMIUM_SUMMARY_MAX_TOKENS = 2048
+_FAST_FACTS_MAX_LEN = 2000
+_PREMIUM_SUMMARY_TEMPERATURE = 0.1
+_PREMIUM_SUMMARY_MAX_TOKENS = 4096
 _MAX_SYNTHESIS_PAIRS_FULL = 9
 _MAX_SYNTHESIS_PAIRS_UPGRADE = 1
 _GENETIC_SYNTHESIS_DOMAINS: frozenset[str] = frozenset({"money", "love", "energy"})
 _GENETIC_SYNTHESIS_TEMPERATURE = 0.1
-_GENETIC_SYNTHESIS_MAX_TOKENS = 4096
+_GENETIC_SYNTHESIS_MAX_TOKENS = 8192
+_DOMAIN_CHAPTER_MIN_CHARS = 5000
+_DOMAIN_SYNTHESIS_MAX_RETRIES = 2
 _SYNTHESIS_EXPERIMENT_TIMEFRAMES: tuple[str, ...] = ("days_1-5", "days_6-15", "days_16-30")
 _SYNTHESIS_STRING_KEYS: tuple[str, ...] = (
     "synthesis_anchor",
@@ -595,22 +608,27 @@ def _extract_gemini_text(response: object) -> str:
         return ""
 
 
+def _hd_premium_llm_tier() -> str:
+    """economy — дешёвые модели для тестов; production — Claude Sonnet."""
+    return str(getattr(_app_settings, "hd_premium_llm_tier", "economy") or "economy").strip().lower()
+
+
 def _openrouter_models_for_premium() -> list[str]:
-    """OpenRouter-конвейер premium HD: Claude → DeepSeek R1 → Gemini Pro."""
+    """OpenRouter premium HD: production = Claude → DeepSeek R1; economy = free/cheap."""
+    if _hd_premium_llm_tier() == "production":
+        return [
+            "anthropic/claude-3.5-sonnet",
+            "deepseek/deepseek-r1",
+        ]
     return [
-        "anthropic/claude-3.5-sonnet",
-        "deepseek/deepseek-r1",
-        "google/gemini-2.5-pro",
+        "google/gemini-2.0-pro-exp-02-05:free",
+        "google/gemini-1.5-flash",
     ]
 
 
 def _openrouter_models_for_premium_upgrade() -> list[str]:
-    """Быстрый апгрейд legacy → v3: Claude Sonnet первым (temperature=0.1)."""
-    return [
-        "anthropic/claude-3.5-sonnet",
-        "deepseek/deepseek-chat",
-        "google/gemini-2.5-pro",
-    ]
+    """Deprecated alias — тот же каскад, что и premium (upgrade-fast снят с prod)."""
+    return _openrouter_models_for_premium()
 
 
 def _openrouter_models_for_welcome_hook() -> list[str]:
@@ -1138,6 +1156,17 @@ def format_hd_congrats_html(report: dict[str, str], hd_type: str, *, intro: str)
     return f"{lead}\n\n<b>{type_hint}</b> — выбери раздел ниже или открой интерактивный разбор."
 
 
+def resolve_user_gender_from_row(user_row) -> str:
+    """Пол клиента из SQLite (если колонка есть)."""
+    keys = user_row.keys() if hasattr(user_row, "keys") else ()
+    for col in ("gender", "user_gender", "sex"):
+        if col in keys:
+            val = str(user_row[col] or "").strip()
+            if val:
+                return val
+    return ""
+
+
 async def get_user(user_id: int):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
@@ -1201,7 +1230,7 @@ async def ensure_modern_hd_report(
                 hd_type,
                 birth_data,
                 user_name=user_name,
-                upgrade_mode=True,
+                user_gender=resolve_user_gender_from_row(user),
             ),
             timeout=_HD_UPGRADE_LLM_TIMEOUT_SEC,
         )
@@ -1418,36 +1447,16 @@ async def generate_premium_report(
     user_gender: str = "",
     upgrade_mode: bool = False,
 ) -> dict[str, Any]:
-    """Полный HD-разбор: multi-pass Genetic Synthesis → legacy single-prompt fallback."""
+    """Полный HD-разбор: parallel multi-pass Genetic Synthesis → legacy fallback."""
+    _ = upgrade_mode  # upgrade-fast снят; legacy апгрейды идут через multipass
     math_data = build_hd_math_data(hd_type, birth_data)
-    upgrade_errors: list[str] = []
-    if upgrade_mode:
-        try:
-            report = await _generate_premium_report_upgrade_fast(
-                user_name,
-                math_data,
-                user_gender=user_gender,
-            )
-            logger.info("HD premium report served via upgrade-fast path")
-            return report
-        except Exception as exc:  # noqa: BLE001
-            upgrade_errors.append(f"upgrade_fast: {exc!r}")
-            logger.warning("HD upgrade-fast failed, legacy single-prompt fallback: %s", exc)
-        return await _generate_premium_report_legacy_single_prompt(
-            user_name,
-            math_data,
-            upgrade_mode=True,
-            prior_errors=upgrade_errors,
-            user_gender=user_gender,
-        )
     try:
         report = await _generate_premium_report_multipass(
             user_name,
             math_data,
-            upgrade_mode=upgrade_mode,
             user_gender=user_gender,
         )
-        logger.info("HD premium report served via multi-pass Genetic Synthesis")
+        logger.info("HD premium report served via parallel multi-pass Genetic Synthesis")
         return report
     except Exception as exc:  # noqa: BLE001
         logger.warning("Multi-pass premium report failed, legacy single-prompt: %s", exc)
@@ -1918,6 +1927,75 @@ def build_synthesis_pairs(math_data: dict[str, object]) -> list[dict[str, object
     return pairs
 
 
+def _read_hd_blocks_json(path: Path) -> dict[str, Any] | list[Any] | None:
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        logger.warning("load_static_block: failed to read %s", path, exc_info=True)
+        return None
+
+
+@lru_cache(maxsize=256)
+def load_static_block(folder: str, block_id: str) -> dict[str, Any]:
+    """
+    Лениво читает JSON-блок из ``data/hd_blocks/`` (0 LLM).
+
+    Examples:
+        load_static_block("types", "generator")
+        load_static_block("centers/defined", "sacral")
+        load_static_block("gates", "41")
+        load_static_block("channels", "20-34")
+        load_static_block("profiles", "5/1")
+    """
+    folder_key = (folder or "").strip().strip("/\\")
+    block_key = (block_id or "").strip()
+    if not folder_key or not block_key:
+        return {}
+
+    if folder_key in {"gates", "channels", "profiles"}:
+        index_path = _HD_BLOCKS_ROOT / f"{folder_key}.json"
+        index = _read_hd_blocks_json(index_path)
+        if isinstance(index, dict):
+            entry = index.get(block_key)
+            if isinstance(entry, dict):
+                return entry
+        return {}
+
+    file_path = _HD_BLOCKS_ROOT / folder_key / f"{block_key}.json"
+    data = _read_hd_blocks_json(file_path)
+    return data if isinstance(data, dict) else {}
+
+
+_STATIC_DOMAIN_TITLES: dict[str, str] = {
+    "money": "💼 Финансовая механика карты",
+    "love": "❤️ Отношения и близость",
+    "energy": "⚡ Энергетическая архитектура",
+}
+
+
+def _compose_static_domain_chapter(domain: str, static_context: str) -> str:
+    """Глава отчёта только из disk static blocks (0 LLM)."""
+    title = _STATIC_DOMAIN_TITLES.get(domain, domain)
+    static = static_context.strip()
+    if not static:
+        return f"{title}\n\nСтатическая база карты недоступна."
+    return f"{title}\n\n{static}"
+
+
+def _resolve_static_sections_for_pdf(
+    report: dict[str, Any],
+    math_data: dict[str, object],
+) -> dict[str, str]:
+    from services.hd_static_blocks import assemble_static_reference
+
+    static_raw = report.get("static_reference")
+    if isinstance(static_raw, dict) and static_raw:
+        return {str(k): str(v) for k, v in static_raw.items() if str(v or "").strip()}
+    return assemble_static_reference(math_data, gate_to_center=_GATE_TO_CENTER)
+
+
 _HD_BODYGRAPH_TEMPLATE_PATH = _PROJECT_ROOT / "assets" / "hd_blank_template.png"
 _HD_BODYGRAPH_OUTPUT_DIR = _PROJECT_ROOT / "tmp"
 _HD_GLOW_COLOR = (139, 92, 246, 70)
@@ -2064,6 +2142,18 @@ _ELITE_HD_BANNED_COACHING_CLICHES: tuple[str, ...] = (
     "ты достоин",
     "ты достойна",
     "работай над собой",
+    "пространство",
+    "вибраци",
+    "осознай",
+    "осознайте",
+    "практикуй",
+    "практикуйте",
+    "доверься сигналам",
+    "доверься своим сигналам",
+    "неделя 1",
+    "неделя 2",
+    "неделя 3",
+    "неделя 4",
 )
 
 _HD_MIRROR_EFFECT_RULE = (
@@ -2411,6 +2501,7 @@ def _build_genetic_synthesis_prompt(
     synthesis_pair: dict[str, object],
     energy_scales: dict[str, int],
     user_gender: str = "",
+    extra_user_instruction: str = "",
 ) -> tuple[str, str]:
     """
     Промпт модульного Genetic Synthesis: одна open×defined пара × domain.
@@ -2472,6 +2563,10 @@ def _build_genetic_synthesis_prompt(
         "- Телесный (соматический) интеллект: опиши физический маркер (ком в горле, зажим "
         "в диафрагме), по которому человек поймает себя на Ложном Я.\n"
         f"- {_HD_SYNTHESIS_EXPERIMENTS_RULE}\n\n"
+        f"ОБЪЁМ: суммарно все текстовые поля JSON (synthesis_anchor + client_pain + "
+        f"false_self_pattern + body_signal + questions + experiments) — "
+        f"не менее {_DOMAIN_CHAPTER_MIN_CHARS} символов. client_pain ОБЯЗАН начинаться "
+        "с кинематографичной сцены и времени суток (Эффект Зеркала).\n\n"
         f"{_GENETIC_SYNTHESIS_FEW_SHOT}\n\n"
         "ВЫДАЧА: строго один JSON-объект без markdown-обёртки ```:\n"
         '{"synthesis_anchor": "Понятная формулировка связки с архетипом и суперсилой канала", '
@@ -2500,6 +2595,8 @@ def _build_genetic_synthesis_prompt(
         "Любое отклонение от структуры JSON, англицизмы, запрещённые слова, сырые коды профилей/каналов "
         "или символы # приведёт к ошибке валидации."
     )
+    if extra_user_instruction.strip():
+        user_prompt = f"{user_prompt}\n\n{extra_user_instruction.strip()}"
     return system_prompt, user_prompt
 
 
@@ -2714,12 +2811,14 @@ async def generate_genetic_synthesis(
     energy_scales: dict[str, int] | None = None,
     upgrade_mode: bool = False,
     user_gender: str = "",
+    extra_user_instruction: str = "",
 ) -> dict[str, Any]:
     """
     Один модуль Genetic Synthesis: open_center × anchors × domain → JSON v3.
 
     LLM вызывается с temperature=0.1; energy_scales — только серверные (read-only).
     """
+    _ = upgrade_mode
     scales = _normalize_energy_scales(
         energy_scales if energy_scales is not None else compute_energy_scales_from_math(math_data)
     )
@@ -2729,18 +2828,11 @@ async def generate_genetic_synthesis(
         synthesis_pair=synthesis_pair,
         energy_scales=scales,
         user_gender=user_gender,
+        extra_user_instruction=extra_user_instruction,
     )
     errors: list[str] = []
-    or_models = (
-        _openrouter_models_for_premium_upgrade()
-        if upgrade_mode
-        else _openrouter_models_for_premium()
-    )
-    or_timeout = (
-        _OPENROUTER_PREMIUM_UPGRADE_TIMEOUT_SEC
-        if upgrade_mode
-        else _OPENROUTER_PREMIUM_TIMEOUT_SEC
-    )
+    or_models = _openrouter_models_for_premium()
+    or_timeout = _OPENROUTER_PREMIUM_TIMEOUT_SEC
 
     if _openrouter_configured():
         try:
@@ -2762,7 +2854,7 @@ async def generate_genetic_synthesis(
     elif not _gemini_configured():
         raise RuntimeError("hd_synthesis_unavailable: задайте OPENROUTER_API_KEY или GEMINI_API_KEY")
 
-    if _gemini_configured() and not upgrade_mode:
+    if _gemini_configured():
         try:
             async with _hd_llm_semaphore():
                 return await _generate_synthesis_via_gemini(system_prompt, user_prompt)
@@ -2775,6 +2867,49 @@ async def generate_genetic_synthesis(
             errors.append(f"gemini: {exc!r}")
 
     raise RuntimeError("hd_synthesis_unavailable: " + "; ".join(errors))
+
+
+def _synthesis_rendered_length(block: dict[str, Any]) -> int:
+    return len(render_synthesis_block(block))
+
+
+async def generate_genetic_synthesis_with_retry(
+    *,
+    domain: str,
+    math_data: dict[str, object],
+    synthesis_pair: dict[str, object],
+    energy_scales: dict[str, int] | None = None,
+    user_gender: str = "",
+) -> dict[str, Any]:
+    """Genetic Synthesis с валидатором минимальной длины и до 2 retry."""
+    last_block: dict[str, Any] | None = None
+    for attempt in range(_DOMAIN_SYNTHESIS_MAX_RETRIES + 1):
+        extra = ""
+        if attempt > 0:
+            extra = (
+                f"ПРЕДЫДУЩИЙ ОТВЕТ СЛИШКОМ КОРОТКИЙ (< {_DOMAIN_CHAPTER_MIN_CHARS} символов). "
+                "Расширь client_pain, false_self_pattern и experiments — сохрани JSON-схему."
+            )
+        block = await generate_genetic_synthesis(
+            domain=domain,
+            math_data=math_data,
+            synthesis_pair=synthesis_pair,
+            energy_scales=energy_scales,
+            user_gender=user_gender,
+            extra_user_instruction=extra,
+        )
+        last_block = block
+        if _synthesis_rendered_length(block) >= _DOMAIN_CHAPTER_MIN_CHARS:
+            return block
+        logger.warning(
+            "HD synthesis domain=%s attempt=%s too short chars=%s",
+            domain,
+            attempt + 1,
+            _synthesis_rendered_length(block),
+        )
+    if last_block is None:
+        raise RuntimeError(f"hd_synthesis_empty domain={domain}")
+    return last_block
 
 
 def _compose_domain_chapter(
@@ -2814,9 +2949,12 @@ def _build_premium_summary_prompt(
     *,
     domain_excerpts: dict[str, str],
     energy_scales: dict[str, int],
+    user_gender: str = "",
+    synthesis_excerpt: str = "",
 ) -> tuple[str, str]:
-    """Промпт fast_facts + plan на основе готовых глав (последний pass)."""
+    """Промпт fast_facts (до 2000 символов) + plan — финальный LLM-pass (вызов 2)."""
     name = (user_name or "").strip() or "друг"
+    gender = (user_gender or "").strip()
     hd_type = str(math_data.get("hd_type") or "")
     profile = str(math_data.get("profile") or "")
     authority = str(math_data.get("authority") or "")
@@ -2824,32 +2962,44 @@ def _build_premium_summary_prompt(
     scales_line = _format_energy_scales_line(energy_scales)
 
     excerpt_parts: list[str] = []
+    if synthesis_excerpt.strip():
+        excerpt_parts.append(f"[genetic_synthesis]\n{synthesis_excerpt.strip()[:3000]}")
     for domain in ("money", "love", "energy"):
         text = str(domain_excerpts.get(domain) or "").strip()
         if text:
-            excerpt_parts.append(f"[{domain}]\n{text[:2500]}")
-    excerpts = "\n\n".join(excerpt_parts) or "Главы синтеза не переданы."
+            excerpt_parts.append(f"[{domain}]\n{text[:1800]}")
+    excerpts = "\n\n".join(excerpt_parts) or "Контекст глав не передан — опирайся на math_data."
+
+    gender_line = (
+        f"Пол клиента (read-only): {gender}."
+        if gender
+        else "Пол клиента не передан — пиши нейтрально."
+    )
 
     system_prompt = (
-        "Ты — ведущий аналитик NeuroMule HD. На основе готовых глав Genetic Synthesis сформируй JSON:\n"
-        '{"fast_facts": "...", "plan": "..."}\n'
+        "Ты — ведущий аналитик NeuroMule HD. На основе статики карты и одного блока Genetic Synthesis "
+        'сформируй JSON: {"fast_facts": "...", "plan": "..."}\n'
         f"{_HD_PREMIUM_TOV_BLOCK}\n"
-        f"- fast_facts: до {_FAST_FACTS_MAX_LEN} символов, три строки в одном поле: "
+        f"- fast_facts: до {_FAST_FACTS_MAX_LEN} символов — сочный «продающий удар» на 2-ю страницу PDF. "
+        "Обязателен Эффект Зеркала: кинематографичная бытовая сцена с временем суток "
+        "(«Время 22:15, ты сидишь у компа…»). Три якоря в одном поле: "
         "'⚡ Главный баг прошивки: …', '💼 Триггер больших денег: …', '🔋 Идеальная перезагрузка: …'.\n"
         f"- {_HD_BOLD_CHALLENGES_PLAN_RULE}\n"
+        "КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО: «Неделя 1–4», «осознай», «практикуй», «доверься сигналам».\n"
         f"- {PROFILE_ARCHETYPE_PROMPT_RULE}\n"
         f"- {CHANNEL_ARCHETYPE_PROMPT_RULE}\n"
-        "Без символов # в тексте. Без эзотерического жаргона. Только факты карты из user-блока."
+        "Без символов # в тексте. Только факты карты из user-блока."
     )
     profile_code_line, profile_archetype_line = profile_llm_context_lines(profile)
     user_prompt = (
         f"Клиент: {name}. Тип: {hd_type}.\n"
+        f"{gender_line}\n"
         f"{profile_code_line}\n"
         f"{profile_archetype_line}\n"
         f"Авторитет: {authority}. Стратегия: {strategy}.\n"
         f"Шкалы (read-only): {scales_line}\n\n"
-        f"Выдержки из глав синтеза:\n{excerpts}\n\n"
-        "Сгенерируй fast_facts и plan, согласованные с выдержками."
+        f"Контекст для синтеза:\n{excerpts}\n\n"
+        "Сгенерируй fast_facts и plan, согласованные с контекстом."
     )
     return system_prompt, user_prompt
 
@@ -2932,35 +3082,28 @@ async def _generate_premium_summary(
     *,
     domain_excerpts: dict[str, str],
     energy_scales: dict[str, int],
-    upgrade_mode: bool = False,
+    user_gender: str = "",
+    synthesis_excerpt: str = "",
 ) -> dict[str, str]:
     system_prompt, user_prompt = _build_premium_summary_prompt(
         user_name,
         math_data,
         domain_excerpts=domain_excerpts,
         energy_scales=energy_scales,
+        user_gender=user_gender,
+        synthesis_excerpt=synthesis_excerpt,
     )
     if _openrouter_configured():
-        models = (
-            _openrouter_models_for_premium_upgrade()
-            if upgrade_mode
-            else _openrouter_models_for_premium()
-        )
-        timeout = (
-            _OPENROUTER_PREMIUM_UPGRADE_TIMEOUT_SEC
-            if upgrade_mode
-            else _OPENROUTER_PREMIUM_TIMEOUT_SEC
-        )
         try:
             return await _generate_premium_summary_via_openrouter(
                 system_prompt,
                 user_prompt,
-                models=models,
-                timeout=timeout,
+                models=_openrouter_models_for_premium(),
+                timeout=_OPENROUTER_PREMIUM_TIMEOUT_SEC,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("OpenRouter premium summary failed: %s", exc)
-    if _gemini_configured() and not upgrade_mode:
+    if _gemini_configured():
         try:
             return await _generate_premium_summary_via_gemini(system_prompt, user_prompt)
         except Exception as exc:  # noqa: BLE001
@@ -3081,9 +3224,13 @@ async def _generate_premium_report_multipass(
     user_name: str,
     math_data: dict[str, object],
     *,
-    upgrade_mode: bool = False,
     user_gender: str = "",
 ) -> dict[str, Any]:
+    """
+    Гибридный premium HD: static blocks с диска + parallel Genetic Synthesis × 3 + summary.
+
+    LLM: money, love, energy — параллельно (Claude → DeepSeek R1); затем fast_facts + plan.
+    """
     from services.hd_static_blocks import (
         assemble_static_reference,
         format_static_reference_for_domain,
@@ -3098,40 +3245,48 @@ async def _generate_premium_report_multipass(
     if not isinstance(domain_pairs_raw, dict):
         domain_pairs_raw = hd_chart.build_domain_synthesis_pairs(math_data)
 
-    synthesis_by_domain: dict[str, list[dict[str, Any]]] = {
-        "money": [],
-        "love": [],
-        "energy": [],
-    }
-    failed_pairs = 0
-
-    for domain in ("money", "love", "energy"):
+    async def _synthesize_one(domain: str) -> tuple[str, dict[str, Any] | None]:
         pair = domain_pairs_raw.get(domain)
         if not isinstance(pair, dict):
-            failed_pairs += 1
-            continue
+            return domain, None
         try:
-            block = await generate_genetic_synthesis(
+            block = await generate_genetic_synthesis_with_retry(
                 domain=domain,
                 math_data=math_data,
                 synthesis_pair=pair,
                 energy_scales=energy_scales,
-                upgrade_mode=upgrade_mode,
                 user_gender=user_gender,
             )
             block["_pair"] = {
                 "open_center": pair.get("open_center"),
                 "anchors": pair.get("anchors"),
             }
-            synthesis_by_domain[domain].append(block)
+            return domain, block
         except Exception as exc:  # noqa: BLE001
-            failed_pairs += 1
             logger.warning(
                 "genetic synthesis failed domain=%s open=%s: %s",
                 domain,
                 pair.get("open_center"),
                 exc,
             )
+            return domain, None
+
+    parallel_results = await asyncio.gather(
+        _synthesize_one("money"),
+        _synthesize_one("love"),
+        _synthesize_one("energy"),
+    )
+    synthesis_by_domain: dict[str, list[dict[str, Any]]] = {
+        "money": [],
+        "love": [],
+        "energy": [],
+    }
+    failed_pairs = 0
+    for domain, block in parallel_results:
+        if block is None:
+            failed_pairs += 1
+        else:
+            synthesis_by_domain[domain].append(block)
 
     successful = sum(len(v) for v in synthesis_by_domain.values())
     if successful == 0:
@@ -3154,7 +3309,7 @@ async def _generate_premium_report_multipass(
         math_data,
         domain_excerpts=domain_excerpts,
         energy_scales=energy_scales,
-        upgrade_mode=upgrade_mode,
+        user_gender=user_gender,
     )
 
     return {
@@ -3169,8 +3324,11 @@ async def _generate_premium_report_multipass(
             "pairs_requested": 3,
             "blocks_ok": successful,
             "blocks_failed": failed_pairs,
+            "llm_calls": successful + 1,
             "static_pages_est": max(1, len(static_full) // 2200),
             "domain_pairs": True,
+            "hybrid_static": True,
+            "parallel_domains": True,
         },
     }
 
@@ -3605,6 +3763,20 @@ def _build_hd_premium_pdf_story(
         story.append(_HdEnergyScalesFlowable(scales, font_name=font_name))
     story.append(PageBreak())
 
+    static_sections = _resolve_static_sections_for_pdf(report, math_data)
+    for section_key, section_title, bookmark_key in _STATIC_PDF_SECTION_SPECS:
+        body = str(static_sections.get(section_key) or "").strip()
+        if not body:
+            continue
+        story.append(_HdPdfBookmark(section_title, bookmark_key))
+        story.append(Paragraph(html_module.escape(section_title), title_style))
+        story.append(_HdAccentBarFlowable(width=480))
+        story.append(Spacer(1, 10))
+        html_body = _md_to_reportlab_html(body)
+        if html_body:
+            story.append(Paragraph(html_body, body_style))
+        story.append(PageBreak())
+
     chapter_blocks: list[tuple[str, str, str, str]] = []
     for key, chapter_title, bookmark_key in _PDF_CHAPTER_SPECS:
         body = report.get(key)
@@ -3624,11 +3796,7 @@ def _build_hd_premium_pdf_story(
 
     story.append(PageBreak())
     story.append(_HdPdfBookmark("Приложение", "hd_appendix"))
-    story.append(Paragraph("Ключевые активации карты", title_style))
-    story.append(Spacer(1, 8))
-    story.append(_build_key_activations_table(math_data, font_name))
-    story.append(Spacer(1, 16))
-    story.append(Paragraph("Полная таблица ворот", title_style))
+    story.append(Paragraph("Полная таблица ворот (компактно)", title_style))
     story.append(Spacer(1, 8))
     story.append(_build_gates_appendix_table(math_data, font_name))
 
@@ -3650,15 +3818,13 @@ def create_hd_premium_pdf(
     meta = hd_profile_metadata(math_data)
     report_for_pdf: dict[str, Any] = dict(report)
     static_raw = report_for_pdf.get("static_reference")
-    if isinstance(static_raw, dict) and static_raw:
-        from services.hd_static_blocks import format_static_reference_full
+    if not isinstance(static_raw, dict) or not static_raw:
+        from services.hd_static_blocks import assemble_static_reference
 
-        report_for_pdf["static_reference"] = format_static_reference_full(static_raw)
-    elif not str(report_for_pdf.get("static_reference") or "").strip():
-        from services.hd_static_blocks import assemble_static_reference, format_static_reference_full
-
-        sections = assemble_static_reference(math_data, gate_to_center=_GATE_TO_CENTER)
-        report_for_pdf["static_reference"] = format_static_reference_full(sections)
+        report_for_pdf["static_reference"] = assemble_static_reference(
+            math_data,
+            gate_to_center=_GATE_TO_CENTER,
+        )
     path = Path(tempfile.gettempdir()) / f"report_{user_id}.pdf"
     font_name = _register_pdf_font()
     doc = _HdPremiumPdfDoc(
@@ -3855,14 +4021,40 @@ def _create_story_gradient(size: tuple[int, int]) -> Any:
     return Image.alpha_composite(base, glow)
 
 
-def _story_excerpt(text: object, *, max_chars: int = 380) -> str:
-    clean = strip_hd_markdown_for_plain(str(text or "").strip())
-    if not clean:
-        return ""
-    if len(clean) <= max_chars:
-        return clean
-    cut = clean[:max_chars].rsplit(" ", 1)[0]
-    return f"{cut}…"
+def _story_channel_card_line(domain_label: str, channel_code: str) -> str:
+    """Короткая строка для Stories card 2: суперсила + триггер (0 LLM, до 150 символов)."""
+    from services.hd_channel_archetypes import normalize_channel_code
+
+    code = normalize_channel_code(channel_code)
+    block = load_static_block("channels", code) if code else {}
+    superpower = format_channel_superpower_for_user(code or channel_code)
+    trigger = str(block.get("theme") or block.get("gift") or "точка роста в решениях").strip()
+    trigger = trigger.rstrip(".")
+    if len(trigger) > 72:
+        trigger = trigger[:72].rsplit(" ", 1)[0] + "…"
+    line = f"{domain_label} → {superpower} → Триггер: {trigger}"
+    if len(line) > 150:
+        line = line[:147].rsplit(" ", 1)[0] + "…"
+    return line
+
+
+def _build_story_card2_sections(math_data: dict[str, object]) -> list[tuple[str, str]]:
+    """Три блока Stories card 2 из active_channels (без выдержек «Боли» из PDF)."""
+    channels_raw = math_data.get("active_channels") or []
+    channels = [str(ch).strip() for ch in channels_raw if str(ch).strip()]
+    labels = (
+        "💼 Деньги",
+        "❤️ Отношения",
+        "⚡ Энергия",
+    )
+    sections: list[tuple[str, str]] = []
+    for idx, domain_label in enumerate(labels):
+        if idx >= len(channels):
+            break
+        body = _story_channel_card_line(domain_label, channels[idx])
+        if body:
+            sections.append((domain_label, body))
+    return sections
 
 
 def _draw_story_meta_panel(
@@ -3903,7 +4095,7 @@ def generate_instagram_stories(
     birth_data: str = "",
 ) -> list[str]:
     """
-    Instagram Stories: бодиграф + параметры карты; подробные выдержки из разделов отчёта.
+    Instagram Stories: бодиграф + параметры; card 2 — суперсилы каналов (0 LLM).
 
     Returns:
         ``tmp/story_{uid}_1.png``, ``tmp/story_{uid}_2.png``.
@@ -3961,17 +4153,13 @@ def generate_instagram_stories(
     card1.convert("RGB").save(out1, format="PNG")
     paths.append(f"tmp/story_{uid}_1.png")
 
-    # --- Карточка 2: подробные выдержки money / love / energy ---
+    # --- Карточка 2: суперсилы каналов (0 LLM) ---
     card2 = _create_story_gradient(_STORY_CANVAS_SIZE)
     draw2 = ImageDraw.Draw(card2)
     draw2.text((60, 100), display_type, fill=_HD_NEON_HEX, font=title_font)
-    draw2.text((60, 158), "Ключевые инсайты разбора", fill=(210, 210, 225, 230), font=subtitle_font)
+    draw2.text((60, 158), "Суперсилы твоих каналов", fill=(210, 210, 225, 230), font=subtitle_font)
 
-    sections = (
-        ("💼 Деньги и ресурс", _story_excerpt(report.get("money"), max_chars=420)),
-        ("❤️ Отношения", _story_excerpt(report.get("love"), max_chars=420)),
-        ("⚡ Энергия и режим", _story_excerpt(report.get("energy"), max_chars=360)),
-    )
+    sections = _build_story_card2_sections(math_data)
     y_pos = 240
     for title, body in sections:
         if not body:
@@ -3987,18 +4175,6 @@ def generate_instagram_stories(
             draw2.text((72, ty), line, fill=(235, 235, 245, 255), font=body_font)
             ty += 32
         y_pos += box_h + 20
-
-    if y_pos < 900:
-        fast = _story_excerpt(report.get("fast_facts"), max_chars=280)
-        if fast:
-            lines = textwrap.wrap(fast, width=38)
-            box_h = 56 + len(lines) * 32
-            draw2.rounded_rectangle((48, y_pos, 1032, y_pos + box_h), radius=24, fill=(8, 8, 18, 215))
-            draw2.text((72, y_pos + 16), "⚡ Экспресс-вывод", fill=_HD_NEON_HEX, font=section_font)
-            ty = y_pos + 56
-            for line in lines:
-                draw2.text((72, ty), line, fill=(235, 235, 245, 255), font=body_font)
-                ty += 32
 
     _draw_story_watermark(draw2, _STORY_CANVAS_SIZE[0], _STORY_CANVAS_SIZE[1], watermark_font)
     out2 = _HD_BODYGRAPH_OUTPUT_DIR / f"story_{uid}_2.png"

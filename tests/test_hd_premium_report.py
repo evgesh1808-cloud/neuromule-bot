@@ -99,36 +99,36 @@ async def test_premium_report_falls_back_when_gemini_raises() -> None:
 
 
 @pytest.mark.asyncio
-async def test_premium_report_upgrade_mode_uses_fast_path() -> None:
-    fast_report = dict(_SAMPLE_REPORT)
-    fast_report["synthesis_meta"] = {"upgrade_fast": True}
+async def test_premium_report_upgrade_mode_uses_multipass() -> None:
+    mp_report = dict(_SAMPLE_REPORT)
+    mp_report["synthesis_meta"] = {"parallel_domains": True, "blocks_ok": 3}
     with (
         patch.object(
             hd_logic,
-            "_generate_premium_report_upgrade_fast",
-            new=AsyncMock(return_value=fast_report),
-        ) as fast_mock,
+            "_generate_premium_report_multipass",
+            new=AsyncMock(return_value=mp_report),
+        ) as mp_mock,
         patch.object(
             hd_logic,
-            "_generate_premium_report_multipass",
+            "_generate_premium_report_upgrade_fast",
             new=AsyncMock(),
-        ) as mp_mock,
+        ) as fast_mock,
     ):
         report = await hd_logic.generate_premium_report(
             "Генератор",
             "15.03.1990 14:30 Москва",
             upgrade_mode=True,
         )
-    assert report["synthesis_meta"]["upgrade_fast"] is True
-    fast_mock.assert_awaited_once()
-    mp_mock.assert_not_awaited()
+    assert report["synthesis_meta"]["blocks_ok"] == 3
+    mp_mock.assert_awaited_once()
+    fast_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_premium_report_multipass_primary_path() -> None:
     multipass_report = dict(_SAMPLE_REPORT)
     multipass_report["static_reference"] = {"type": "Тип: Генератор"}
-    multipass_report["synthesis_meta"] = {"blocks_ok": 3}
+    multipass_report["synthesis_meta"] = {"blocks_ok": 3, "llm_calls": 4, "parallel_domains": True}
     with patch.object(
         hd_logic,
         "_generate_premium_report_multipass",
@@ -336,33 +336,33 @@ def test_normalize_synthesis_response_rejects_raw_channel_code() -> None:
         hd_logic._normalize_synthesis_response(payload)
 
 
-def test_openrouter_model_cascades() -> None:
+def test_openrouter_model_cascades(monkeypatch) -> None:
+    monkeypatch.setattr(hd_logic, "_hd_premium_llm_tier", lambda: "production")
     assert hd_logic._openrouter_models_for_premium() == [
         "anthropic/claude-3.5-sonnet",
         "deepseek/deepseek-r1",
-        "google/gemini-2.5-pro",
     ]
     assert hd_logic._openrouter_models_for_premium_upgrade() == [
         "anthropic/claude-3.5-sonnet",
-        "deepseek/deepseek-chat",
-        "google/gemini-2.5-pro",
+        "deepseek/deepseek-r1",
     ]
+    monkeypatch.setattr(hd_logic, "_hd_premium_llm_tier", lambda: "economy")
+    assert hd_logic._openrouter_models_for_premium() == [
+        "google/gemini-2.0-pro-exp-02-05:free",
+        "google/gemini-1.5-flash",
+    ]
+    assert hd_logic._openrouter_models_for_premium_upgrade()[0] == "google/gemini-2.0-pro-exp-02-05:free"
 
 
 @pytest.mark.asyncio
-async def test_premium_report_upgrade_mode_skips_multipass_on_fast_failure() -> None:
+async def test_premium_report_multipass_failure_falls_back_to_legacy() -> None:
     legacy_report = dict(_SAMPLE_REPORT)
     with (
         patch.object(
             hd_logic,
-            "_generate_premium_report_upgrade_fast",
-            new=AsyncMock(side_effect=RuntimeError("upgrade_fast_llm_unavailable")),
-        ),
-        patch.object(
-            hd_logic,
             "_generate_premium_report_multipass",
-            new=AsyncMock(),
-        ) as mp_mock,
+            new=AsyncMock(side_effect=RuntimeError("multipass_synthesis_empty")),
+        ),
         patch.object(
             hd_logic,
             "_generate_premium_report_legacy_single_prompt",
@@ -375,7 +375,6 @@ async def test_premium_report_upgrade_mode_skips_multipass_on_fast_failure() -> 
             upgrade_mode=True,
         )
     assert report == legacy_report
-    mp_mock.assert_not_awaited()
     legacy_mock.assert_awaited_once()
 
 
@@ -598,13 +597,31 @@ def test_generate_instagram_stories_writes_two_cards(tmp_path, monkeypatch) -> N
         "profile": "3/5",
         "authority": "Сакральный",
         "strategy": "Ждать отклик",
+        "active_channels": ["20-34", "10-34", "34-57"],
     }
     report = dict(_SAMPLE_REPORT)
-    report["money"] = "Подробный блок про деньги " * 20
     paths = hd_logic.generate_instagram_stories(999, report, math_data=math_data)
     assert len(paths) == 2
     assert (out_dir / "story_999_1.png").is_file()
     assert (out_dir / "story_999_2.png").is_file()
+    sections = hd_logic._build_story_card2_sections(math_data)
+    assert len(sections) >= 1
+    assert "Суперсила" in sections[0][1]
+    assert "Боль" not in sections[0][1]
+
+
+def test_load_static_block_reads_channels_index() -> None:
+    hd_logic.load_static_block.cache_clear()
+    block = hd_logic.load_static_block("channels", "20-34")
+    assert isinstance(block, dict)
+    assert block.get("title") or block.get("gift") or block.get("theme")
+
+
+def test_story_channel_card_line_max_150_chars() -> None:
+    line = hd_logic._story_channel_card_line("💼 Деньги", "20-34")
+    assert len(line) <= 150
+    assert "Суперсила" in line
+    assert "Триггер:" in line
 
 
 def test_ensure_story_fonts_available_ok() -> None:

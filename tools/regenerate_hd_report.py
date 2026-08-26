@@ -24,12 +24,42 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
+async def _generate_assets(uid: int, report: dict, *, hd_type: str, birth_data: str) -> None:
+    from services.hd_logic import (
+        build_hd_math_data,
+        generate_instagram_stories,
+        generate_premium_bodygraph,
+    )
+
+    math_data = build_hd_math_data(hd_type, birth_data)
+    resolved_type = str(math_data.get("hd_type") or hd_type)
+    defined = math_data.get("defined_centers") or []
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(
+        None,
+        lambda: generate_premium_bodygraph(list(defined), uid),
+    )
+    try:
+        story_paths = await loop.run_in_executor(
+            None,
+            lambda: generate_instagram_stories(
+                uid,
+                report,
+                math_data=math_data,
+                hd_type=resolved_type,
+                birth_data=birth_data,
+            ),
+        )
+        print("instagram stories:", story_paths)
+    except Exception as exc:
+        print("WARN: instagram stories generation failed:", exc)
+
+
 async def _run(uid: int, *, full: bool, upgrade_fast: bool) -> None:
     from services.hd_logic import (
         build_hd_math_data,
         ensure_modern_hd_report,
         generate_premium_report,
-        generate_premium_bodygraph,
         get_user,
         premium_report_to_json,
         update_user,
@@ -52,6 +82,7 @@ async def _run(uid: int, *, full: bool, upgrade_fast: bool) -> None:
         report, upgraded = await ensure_modern_hd_report(uid, user_name="друг")
         if report is None:
             raise SystemExit("ensure_modern_hd_report: отчёт не получен (пустой hd_report_json?)")
+        await _generate_assets(uid, report, hd_type=hd_type, birth_data=birth_data)
         print(f"upgrade via ensure_modern_hd_report upgraded={upgraded}")
         print("schema_version:", json.loads(await _raw_json(uid)).get("schema_version"))
         return
@@ -73,12 +104,7 @@ async def _run(uid: int, *, full: bool, upgrade_fast: bool) -> None:
         hd_birth_data=birth_data,
         has_pro_analysis=1,
     )
-    defined = math_data.get("defined_centers") or []
-    loop = asyncio.get_running_loop()
-    await loop.run_in_executor(
-        None,
-        lambda: generate_premium_bodygraph(list(defined), uid),
-    )
+    await _generate_assets(uid, report, hd_type=resolved_type, birth_data=birth_data)
     meta = report.get("synthesis_meta") or {}
     print("OK regenerated schema v3")
     print("synthesis_meta:", meta)

@@ -742,6 +742,7 @@ def hd_report_sections_markup(user_id: int) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text=msg.TXT_HD_BTN_REPORT_ENERGY, callback_data=msg.CB_HD_REPORT_ENERGY)],
             [InlineKeyboardButton(text=msg.TXT_HD_BTN_REPORT_PLAN, callback_data=msg.CB_HD_REPORT_PLAN)],
             [InlineKeyboardButton(text=msg.TXT_HD_BTN_REPORT_PDF, callback_data=msg.CB_HD_REPORT_PDF)],
+            [InlineKeyboardButton(text=msg.TXT_HD_BTN_REPORT_INSTAGRAM, callback_data=msg.CB_HD_REPORT_INSTAGRAM)],
             [
                 InlineKeyboardButton(
                     text=msg.TXT_HD_INLINE_COMPATIBILITY,
