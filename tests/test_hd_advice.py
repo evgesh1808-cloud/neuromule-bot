@@ -106,6 +106,40 @@ async def test_rollback_on_gemini_error(repo_module, mocker) -> None:
     assert state_after["last_free_date"] == state_before["last_free_date"]
 
 
+async def test_reset_user_hd_state(repo_module) -> None:
+    uid = 88005
+    await repo_module.ensure_user(uid)
+    async with aiosqlite.connect(repo_module.DB_PATH) as db:
+        await db.execute(
+            """
+            UPDATE users SET
+                hd_report_json = '{"schema":"v3"}',
+                hd_type = 'Генератор',
+                hd_birth_data = '18.08.1986 03:40 Чебоксары',
+                has_pro_analysis = 1
+            WHERE id = ?
+            """,
+            (uid,),
+        )
+        await db.commit()
+
+    await repo_module.reset_user_hd_state(uid)
+
+    async with aiosqlite.connect(repo_module.DB_PATH) as db:
+        async with db.execute(
+            """
+            SELECT hd_report_json, hd_type, hd_birth_data, has_pro_analysis
+            FROM users WHERE id = ?
+            """,
+            (uid,),
+        ) as cur:
+            row = await cur.fetchone()
+    assert row[0] is None
+    assert row[1] is None
+    assert row[2] is None
+    assert row[3] == 0
+
+
 async def test_reset_admin_daily_advice_test_state(repo_module) -> None:
     uid = 88004
     await repo_module.ensure_user(uid)

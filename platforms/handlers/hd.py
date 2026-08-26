@@ -122,6 +122,7 @@ from services.repository import (
     get_user_row,
     list_all_user_ids,
     rollback_daily_advice,
+    reset_user_hd_state,
     sales_stats_as_dict,
     set_user_accepted_terms,
     try_begin_daily_advice,
@@ -306,12 +307,8 @@ async def hd_premium_buy(callback: CallbackQuery, state: FSMContext) -> None:
             )
             await callback.answer()
             return
-        await callback.message.answer(
-            msg.TXT_HD_ALREADY_PURCHASED,
-            reply_markup=hd_menu(True),
-            parse_mode=ParseMode.HTML,
-        )
-        await callback.answer()
+        await callback.answer(msg.TXT_HD_UPGRADING_REPORT_ALERT, show_alert=True)
+        await _start_hd_regenerate_for_user(callback.message, uid, state=state)
         return
     if not billing_bypass(uid) and not await is_subscribed(uid):
         await callback.message.answer(
@@ -627,30 +624,35 @@ async def _send_hd_premium_pdf(
     *,
     notify_admins: bool = False,
     user_display_name: str = "",
+    deliver_to_chat_id: int | None = None,
 ) -> None:
     pdf_path: str | None = None
+    chat_id = deliver_to_chat_id if deliver_to_chat_id is not None else message.chat.id
+    bot = deps.bot()
+    pdf_user_name = user_display_name or (
+        (message.from_user.first_name or "").strip() if message.from_user else ""
+    )
     try:
-        async with chat_action_loop(deps.bot(), message.chat.id, "upload_document"):
+        async with chat_action_loop(bot, chat_id, "upload_document"):
             pdf_path = create_hd_premium_pdf(
                 uid,
                 report,
                 birth_data,
                 hd_type=hd_type,
-                user_name=(message.from_user.first_name or "").strip() if message.from_user else "",
+                user_name=pdf_user_name,
             )
-            await message.answer_document(
-                FSInputFile(pdf_path),
+            await bot.send_document(
+                chat_id=chat_id,
+                document=FSInputFile(pdf_path),
                 caption=msg.TXT_HD_PDF_CAPTION,
                 parse_mode=ParseMode.HTML,
             )
             if notify_admins:
                 bg_path = _PROJECT_ROOT / "tmp" / f"ready_hd_{uid}.png"
                 await notify_admins_hd_report(
-                    deps.bot(),
+                    bot,
                     payer_uid=uid,
-                    user_name=user_display_name
-                    or ((message.from_user.first_name or "").strip() if message.from_user else "")
-                    or "клиент",
+                    user_name=user_display_name or pdf_user_name or "клиент",
                     hd_type=hd_type,
                     birth_data=birth_data,
                     pdf_path=pdf_path,
@@ -675,12 +677,16 @@ async def _send_hd_instagram_stories_album(
     uid: int,
     user_name: str,
     story_relpaths: list[str],
+    *,
+    deliver_to_chat_id: int | None = None,
 ) -> None:
     files = [_PROJECT_ROOT / rel for rel in story_relpaths if (_PROJECT_ROOT / rel).is_file()]
     if len(files) < 2:
         logger.warning("instagram stories album skipped uid=%s files=%s", uid, len(files))
         return
 
+    chat_id = deliver_to_chat_id if deliver_to_chat_id is not None else message.chat.id
+    bot = deps.bot()
     display_name = html.escape((user_name or "друг").strip() or "друг")
     caption = msg.TXT_HD_INSTAGRAM_ALBUM_CAPTION.format(name=display_name)
     media = [
@@ -692,8 +698,8 @@ async def _send_hd_instagram_stories_album(
         InputMediaPhoto(media=FSInputFile(str(files[1]))),
     ]
     try:
-        async with chat_action_loop(deps.bot(), message.chat.id, "upload_photo"):
-            await deps.bot().send_media_group(chat_id=message.chat.id, media=media)
+        async with chat_action_loop(bot, chat_id, "upload_photo"):
+            await bot.send_media_group(chat_id=chat_id, media=media)
     except TelegramForbiddenError:
         logger.info("instagram album forbidden uid=%s", uid)
     except TelegramBadRequest as exc:
@@ -711,7 +717,12 @@ async def _deliver_hd_premium_bundle(
     birth_data: str,
     hd_type: str,
     intro: str,
+    deliver_to_chat_id: int | None = None,
+    user_display_name: str | None = None,
 ) -> None:
+    chat_id = deliver_to_chat_id if deliver_to_chat_id is not None else message.chat.id
+    bot = deps.bot()
+    resolved_display_name = user_display_name or _hd_user_display_name(message, user_row)
     math_data = build_hd_math_data(hd_type, birth_data)
     resolved_type = str(math_data.get("hd_type") or hd_type)
     defined = math_data.get("defined_centers") or []
@@ -734,8 +745,9 @@ async def _deliver_hd_premium_bundle(
         )
     except Exception:
         logger.warning("instagram stories generation failed uid=%s", uid, exc_info=True)
-    await message.answer(
-        format_hd_congrats_html(report, resolved_type, intro=intro),
+    await bot.send_message(
+        chat_id=chat_id,
+        text=format_hd_congrats_html(report, resolved_type, intro=intro),
         reply_markup=hd_report_sections_markup(uid),
         parse_mode=ParseMode.HTML,
     )
@@ -746,13 +758,15 @@ async def _deliver_hd_premium_bundle(
         birth_data,
         resolved_type,
         notify_admins=True,
-        user_display_name=_hd_user_display_name(message, user_row),
+        user_display_name=resolved_display_name,
+        deliver_to_chat_id=chat_id,
     )
     await _send_hd_instagram_stories_album(
         message,
         uid,
-        _hd_user_display_name(message, user_row),
+        resolved_display_name,
         story_relpaths,
+        deliver_to_chat_id=chat_id,
     )
 
 
@@ -763,10 +777,13 @@ async def _run_free_hd_regenerate(
     *,
     hd_type: str,
     birth_data: str,
+    deliver_to_chat_id: int | None = None,
+    user_display_name: str | None = None,
 ) -> None:
-    user_name = _hd_user_display_name(message, user_row)
+    chat_id = deliver_to_chat_id if deliver_to_chat_id is not None else message.chat.id
+    user_name = user_display_name or _hd_user_display_name(message, user_row)
     user_gender = _hd_user_gender(user_row)
-    async with chat_action_loop(deps.bot(), message.chat.id, "typing"):
+    async with chat_action_loop(deps.bot(), chat_id, "typing"):
         report = await generate_premium_report(
             hd_type,
             birth_data,
@@ -792,7 +809,150 @@ async def _run_free_hd_regenerate(
         birth_data=birth_data,
         hd_type=resolved_type,
         intro=msg.TXT_HD_UPGRADED_REPORT,
+        deliver_to_chat_id=deliver_to_chat_id,
+        user_display_name=user_name,
     )
+
+
+def _parse_admin_hd_command(text: str, *, default_uid: int) -> tuple[int, str]:
+    parts = (text or "").strip().split()
+    if len(parts) <= 1:
+        return default_uid, ""
+    if parts[1].isdigit():
+        target_uid = int(parts[1])
+        birth = " ".join(parts[2:]).strip() if len(parts) > 2 else ""
+        return target_uid, birth
+    return default_uid, " ".join(parts[1:]).strip()
+
+
+async def _start_hd_regenerate_for_user(
+    message: Message,
+    uid: int,
+    *,
+    birth_data_override: str | None = None,
+    deliver_to_chat_id: int | None = None,
+    state: FSMContext | None = None,
+    show_upgrading_notice: bool = True,
+) -> bool:
+    """Запуск бесплатной перегенерации HD. False — нужна дата рождения от пользователя."""
+    user = await get_user(uid)
+    has_pro = bool(user["has_pro_analysis"]) if "has_pro_analysis" in user.keys() else False
+    if not has_pro and not (birth_data_override or "").strip():
+        await message.answer(msg.TXT_HD_REPORT_NOT_FOUND, parse_mode=ParseMode.HTML)
+        return False
+
+    birth_data = (birth_data_override or "").strip()
+    if not birth_data:
+        birth_data = (user["hd_birth_data"] or "").strip() if "hd_birth_data" in user.keys() else ""
+    hd_type = (user["hd_type"] or "не указан") if "hd_type" in user.keys() else "не указан"
+
+    if not birth_data:
+        if state is not None:
+            await state.set_state(UserFlow.waiting_hd_birth_data)
+            await state.update_data(hd_regenerate=True)
+        await message.answer(msg.TXT_HD_REGENERATE_NEED_BIRTH, parse_mode=ParseMode.HTML)
+        return False
+
+    if (birth_data_override or "").strip():
+        await update_user(uid, hd_birth_data=birth_data, has_pro_analysis=1)
+        user = await get_user(uid)
+
+    if show_upgrading_notice:
+        await message.answer(msg.TXT_HD_UPGRADING_REPORT, parse_mode=ParseMode.HTML)
+
+    delivery_chat = deliver_to_chat_id if deliver_to_chat_id is not None else uid
+    try:
+        await _run_free_hd_regenerate(
+            message,
+            uid,
+            user,
+            hd_type=hd_type,
+            birth_data=birth_data,
+            deliver_to_chat_id=delivery_chat,
+        )
+    except Exception:
+        logger.exception("hd_regenerate_failed uid=%s", uid)
+        await message.answer(msg.TXT_HD_UPGRADE_FAILED, parse_mode=ParseMode.HTML)
+        return False
+    return True
+
+
+@router.message(Command("reset_hd"))
+async def cmd_reset_hd(message: Message, state: FSMContext) -> None:
+    if not _is_admin(message.from_user.id):
+        return
+    target_uid, _ = _parse_admin_hd_command(message.text or "", default_uid=message.from_user.id)
+    await reset_user_hd_state(target_uid)
+    await state.clear()
+    await message.answer(
+        msg.TXT_HD_ADMIN_RESET_OK.format(uid=target_uid),
+        parse_mode=ParseMode.HTML,
+    )
+
+
+@router.message(Command("hd_refresh"))
+async def cmd_hd_refresh(message: Message, state: FSMContext) -> None:
+    if not _is_admin(message.from_user.id):
+        return
+    admin_uid = message.from_user.id
+    target_uid, birth_override = _parse_admin_hd_command(message.text or "", default_uid=admin_uid)
+    user = await get_user(target_uid)
+    has_pro = bool(user["has_pro_analysis"]) if "has_pro_analysis" in user.keys() else False
+    birth_stored = (user["hd_birth_data"] or "").strip() if "hd_birth_data" in user.keys() else ""
+    if not birth_override and not birth_stored:
+        await message.answer(
+            msg.TXT_HD_ADMIN_REFRESH_NO_BIRTH.format(uid=target_uid),
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    if not has_pro and not birth_override:
+        await message.answer(
+            msg.TXT_HD_ADMIN_REFRESH_NO_BIRTH.format(uid=target_uid),
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    await message.answer(
+        msg.TXT_HD_ADMIN_REFRESH_STARTED.format(uid=target_uid),
+        parse_mode=ParseMode.HTML,
+    )
+    deliver_to = target_uid if target_uid != admin_uid else None
+    started = await _start_hd_regenerate_for_user(
+        message,
+        target_uid,
+        birth_data_override=birth_override or None,
+        deliver_to_chat_id=deliver_to,
+        show_upgrading_notice=False,
+    )
+    if started and target_uid != admin_uid:
+        await message.answer(
+            f"✅ Перегенерация для <code>{target_uid}</code> завершена — "
+            "клиенту отправлены PDF и Stories, админам ушла копия.",
+            parse_mode=ParseMode.HTML,
+        )
+
+
+@router.message(Command("hd_menu"))
+async def cmd_hd_menu(message: Message) -> None:
+    """Свежее inline-меню HD (кнопка «Обновить отчёт») — для себя или клиента."""
+    if not _is_admin(message.from_user.id):
+        return
+    admin_uid = message.from_user.id
+    target_uid, _ = _parse_admin_hd_command(message.text or "", default_uid=admin_uid)
+    user = await get_user(target_uid)
+    has_pro = bool(user["has_pro_analysis"]) if "has_pro_analysis" in user.keys() else False
+    bot = deps.bot()
+    await bot.send_message(
+        chat_id=target_uid,
+        text=msg.TXT_HD_SECTION_INTRO,
+        reply_markup=hd_menu(has_pro),
+        parse_mode=ParseMode.HTML,
+    )
+    if target_uid == admin_uid:
+        note = "✅ Меню Human Design отправлено вам."
+    else:
+        note = f"✅ Меню Human Design отправлено пользователю <code>{target_uid}</code>."
+    await message.answer(note, parse_mode=ParseMode.HTML)
 
 
 @router.callback_query(F.data == msg.CB_HD_REGENERATE)
@@ -804,7 +964,6 @@ async def hd_regenerate_callback(callback: CallbackQuery, state: FSMContext) -> 
         await callback.answer(msg.TXT_HD_REPORT_NOT_FOUND_ALERT, show_alert=True)
         return
     birth_data = (user["hd_birth_data"] or "").strip() if "hd_birth_data" in user.keys() else ""
-    hd_type = (user["hd_type"] or "не указан") if "hd_type" in user.keys() else "не указан"
     if not birth_data:
         await state.set_state(UserFlow.waiting_hd_birth_data)
         await state.update_data(hd_regenerate=True)
@@ -812,18 +971,7 @@ async def hd_regenerate_callback(callback: CallbackQuery, state: FSMContext) -> 
         await callback.answer()
         return
     await callback.answer(msg.TXT_HD_UPGRADING_REPORT_ALERT, show_alert=True)
-    await callback.message.answer(msg.TXT_HD_UPGRADING_REPORT, parse_mode=ParseMode.HTML)
-    try:
-        await _run_free_hd_regenerate(
-            callback.message,
-            uid,
-            user,
-            hd_type=hd_type,
-            birth_data=birth_data,
-        )
-    except Exception:
-        logger.exception("hd_regenerate_failed uid=%s", uid)
-        await callback.message.answer(msg.TXT_HD_UPGRADE_FAILED, parse_mode=ParseMode.HTML)
+    await _start_hd_regenerate_for_user(callback.message, uid, state=state)
 
 
 @router.message(UserFlow.waiting_hd_birth_data, F.text)
@@ -913,6 +1061,7 @@ async def hd_premium_process(message: Message, state: FSMContext) -> None:
         )
     finally:
         await state.clear()
+
 
 @router.message(UserFlow.waiting_hd_birth_data)
 async def hd_premium_need_text(message: Message) -> None:

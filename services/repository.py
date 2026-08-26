@@ -1282,6 +1282,25 @@ async def reset_admin_daily_advice_test_state(user_id: int) -> None:
         await db.commit()
 
 
+async def reset_user_hd_state(user_id: int) -> None:
+    """Полный сброс Human Design для админ-тестов (/reset_hd)."""
+    await ensure_user(user_id)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            UPDATE users SET
+                hd_report_json = NULL,
+                hd_type = NULL,
+                hd_birth_data = NULL,
+                hd_compatibility_json = NULL,
+                has_pro_analysis = 0
+            WHERE id = ?
+            """,
+            (user_id,),
+        )
+        await db.commit()
+
+
 async def update_user_last_advice_id(user_id: int, message_id: int | None) -> None:
     """Сохраняет Telegram message_id последнего «Совета дня» (или сбрасывает в NULL)."""
     await ensure_user(user_id)

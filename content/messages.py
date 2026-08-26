@@ -528,10 +528,10 @@ CREATE_MENU_BACK_ROW = ("⬅️ Назад в главное меню", CB_BACK_
 CREATE_MENU_BUTTONS = CREATE_MENU_GRID + (CREATE_MENU_BACK_ROW,)
 
 TXT_HD_SECTION_INTRO = (
-    "<b>🧬 Дизайн Человека</b>\n\n"
-    "Здесь — <b>полный разбор</b> по дате рождения и совместимость с партнёром "
-    "(после покупки разбора).\n"
-    "Выбери действие кнопкой ниже."
+    "<b>🧬 Human Design — полный разбор</b>\n\n"
+    "Бодиграф IHDS по дате рождения (это не натальная карта).\n"
+    "После покупки: разделы отчёта, PDF, Stories и кнопка "
+    "<b>🔄 Обновить отчёт</b> — бесплатная перегенерация."
 )
 TXT_HD_PRO_UNLOCKED = (
     "<b>Ваш разбор готов!</b>\n"
@@ -546,8 +546,23 @@ TXT_MATCH_LOCKED = (
 def format_match_cost_line(settings: object) -> str:
     return f"👩‍❤️‍👨 Совместимость стоит {int(getattr(settings, 'cost_match', 50))} 💎."
 TXT_HD_ALREADY_PURCHASED = (
-    "<b>Разбор уже у тебя есть.</b>\n\n"
-    "Открой разделы отчёта или проверь совместимость с партнёром — кнопки ниже."
+    "<b>Разбор Human Design уже есть.</b>\n\n"
+    "Нажми <b>🔄 Обновить отчёт</b> — перегенерация бесплатная (3–5 мин).\n"
+    "Или открой разделы ниже / совместимость."
+)
+TXT_HD_ADMIN_RESET_OK = (
+    "✅ <b>HD сброшен</b> для <code>{uid}</code>.\n\n"
+    "Очищено: отчёт, дата рождения, тип, has_pro_analysis.\n"
+    "Дальше: 🧬 Дизайн человека → полный разбор (God Mode — без 💎)."
+)
+TXT_HD_ADMIN_REFRESH_STARTED = (
+    "🔄 Запускаю перегенерацию Human Design для <code>{uid}</code>…\n"
+    "Подожди 3–5 минут — придут PDF, Stories и копия админу."
+)
+TXT_HD_ADMIN_REFRESH_NO_BIRTH = (
+    "❌ У <code>{uid}</code> нет <code>hd_birth_data</code>.\n"
+    "Сначала <code>/reset_hd</code>, затем отправь дату в раздел HD "
+    "или <code>/hd_refresh {uid} 18.08.1986 03:40 Чебоксары</code>."
 )
 TXT_HD_UPGRADING_REPORT = (
     "<b>Обновляю разбор до новой версии…</b>\n"
