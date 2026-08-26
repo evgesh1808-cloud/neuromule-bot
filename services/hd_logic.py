@@ -1121,20 +1121,34 @@ def premium_report_from_json(raw: str | None) -> dict[str, Any] | None:
         parsed = _parse_hd_report_storage(raw)
         return _normalize_premium_report(parsed, relax_cliches=True)
     except Exception:
-        try:
-            parsed = _parse_hd_report_storage(raw)
-            legacy_keys = ("money", "love", "energy", "plan")
-            if isinstance(parsed, dict) and all(parsed.get(k) for k in legacy_keys):
-                legacy_report: dict[str, Any] = {
-                    k: _sanitize_hd_user_facing_text(str(parsed[k]).strip()) for k in legacy_keys
-                }
-                legacy_report["fast_facts"] = str(parsed.get("fast_facts") or "").strip() or (
-                    _LEGACY_HD_REPORT_PLACEHOLDER
-                )
-                legacy_report["energy_scales"] = _normalize_energy_scales(parsed.get("energy_scales"))
-                return legacy_report
-        except Exception:
+        logger.debug("premium_report_from_json strict normalize failed, soft load", exc_info=True)
+    try:
+        parsed = _parse_hd_report_storage(raw)
+        if not isinstance(parsed, dict):
             return None
+        legacy_keys = ("money", "love", "energy", "plan")
+        if all(isinstance(parsed.get(k), str) and str(parsed.get(k)).strip() for k in legacy_keys):
+            legacy_report: dict[str, Any] = {
+                k: _sanitize_hd_user_facing_text(str(parsed[k]).strip()) for k in legacy_keys
+            }
+            legacy_report["fast_facts"] = str(parsed.get("fast_facts") or "").strip() or (
+                _LEGACY_HD_REPORT_PLACEHOLDER
+            )
+            legacy_report["energy_scales"] = _normalize_energy_scales(parsed.get("energy_scales"))
+            return legacy_report
+        report: dict[str, Any] = {}
+        for key in _PREMIUM_REPORT_KEYS:
+            val = parsed.get(key)
+            if isinstance(val, str) and val.strip():
+                report[key] = _sanitize_hd_user_facing_text(val.strip())
+            elif key == "fast_facts":
+                report[key] = _LEGACY_HD_REPORT_PLACEHOLDER
+            else:
+                report[key] = "Раздел временно недоступен — нажми 🔄 Обновить отчёт."
+        report["energy_scales"] = _normalize_energy_scales(parsed.get("energy_scales"))
+        return report
+    except Exception:
+        logger.exception("premium_report_from_json soft load failed")
         return None
 
 

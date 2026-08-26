@@ -228,15 +228,16 @@ async def open_existing_hd_report(callback: CallbackQuery) -> None:
             upgraded=True,
         )
         return
-    await answer_chat_text(
+    from platforms.handlers.hd import _answer_hd_html
+
+    await _answer_hd_html(
         callback.message,
         format_hd_congrats_html(
             report,
             (user["hd_type"] or "") if "hd_type" in user.keys() else "",
             intro=msg.TXT_HD_REPORT_READY,
         ),
-        settings,
-        reply_markup=hd_report_sections_markup(uid),
+        uid,
     )
 
 @router.callback_query(F.data == msg.CB_CREATE_TEXT)

@@ -227,7 +227,7 @@ async def _deliver_upgraded_hd_report(
             resolved_type,
             intro=msg.TXT_HD_UPGRADED_REPORT if upgraded else msg.TXT_HD_REPORT_READY,
         ),
-        reply_markup=hd_report_sections_markup(uid),
+        uid,
     )
     if upgraded:
         await _send_hd_premium_pdf(
@@ -616,34 +616,35 @@ def _hd_section_html(title: str, body: str) -> str:
 async def _answer_hd_html(
     message: Message,
     text: str,
-    *,
-    reply_markup: InlineKeyboardMarkup | None = None,
+    uid: int,
 ) -> None:
-    await answer_chat_text(message, text, settings, reply_markup=reply_markup)
+    """Текст HD + клавиатура разделов; без WebApp при ошибке Telegram."""
+    markups: list[InlineKeyboardMarkup | None] = [
+        hd_report_sections_markup(uid, include_webapp=True),
+        hd_report_sections_markup(uid, include_webapp=False),
+        None,
+    ]
+    for markup in markups:
+        try:
+            await answer_chat_text(message, text, settings, reply_markup=markup)
+            return
+        except TelegramBadRequest:
+            logger.warning(
+                "hd answer markup rejected uid=%s include_webapp=%s",
+                uid,
+                markup is markups[0],
+                exc_info=True,
+            )
+    await answer_chat_text(message, text, settings, reply_markup=None)
 
 
 async def _send_hd_section_message(
     message: Message,
     uid: int,
     body_text: str,
-    *,
-    try_edit: bool = False,
 ) -> None:
-    """Раздел отчёта: edit только для короткого текста, иначе — chunked answer."""
-    from services.telegram_safe_text import prepare_telegram_html_text
-
-    markup = hd_report_sections_markup(uid)
-    if try_edit and len(prepare_telegram_html_text(body_text, max_len=None)) <= settings.chat_chunk_reply_threshold:
-        try:
-            await message.edit_text(
-                body_text,
-                reply_markup=markup,
-                parse_mode=ParseMode.HTML,
-            )
-            return
-        except TelegramBadRequest:
-            logger.debug("hd section edit_text failed uid=%s, use chunks", uid, exc_info=True)
-    await answer_chat_text(message, body_text, settings, reply_markup=markup)
+    """Раздел отчёта — только новые сообщения (chunked), без edit_text."""
+    await _answer_hd_html(message, body_text, uid)
 
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -742,6 +743,27 @@ async def _send_hd_instagram_stories_album(
         logger.exception("instagram album failed uid=%s", uid)
 
 
+async def _send_hd_congrats_to_chat(bot, chat_id: int, text: str, uid: int) -> None:
+    for include_webapp in (True, False):
+        try:
+            await send_chat_html(
+                bot,
+                chat_id,
+                text,
+                settings,
+                reply_markup=hd_report_sections_markup(uid, include_webapp=include_webapp),
+            )
+            return
+        except TelegramBadRequest:
+            logger.warning(
+                "hd congrats markup rejected uid=%s include_webapp=%s",
+                uid,
+                include_webapp,
+                exc_info=True,
+            )
+    await send_chat_html(bot, chat_id, text, settings, reply_markup=None)
+
+
 async def _deliver_hd_premium_bundle(
     message: Message,
     uid: int,
@@ -779,12 +801,11 @@ async def _deliver_hd_premium_bundle(
         )
     except Exception:
         logger.warning("instagram stories generation failed uid=%s", uid, exc_info=True)
-    await send_chat_html(
+    await _send_hd_congrats_to_chat(
         bot,
         chat_id,
         format_hd_congrats_html(report, resolved_type, intro=intro),
-        settings,
-        reply_markup=hd_report_sections_markup(uid),
+        uid,
     )
     await _send_hd_premium_pdf(
         message,
@@ -1184,6 +1205,19 @@ async def match_need_text(message: Message) -> None:
 @router.callback_query(F.data.startswith(msg.CB_HD_REPORT_PREFIX))
 async def hd_report_section(callback: CallbackQuery) -> None:
     uid = callback.from_user.id
+    if callback.message is None:
+        await callback.answer()
+        return
+    try:
+        await _hd_report_section_impl(callback, uid)
+    except Exception:
+        logger.exception("hd_report_section failed uid=%s data=%s", uid, callback.data)
+        await callback.answer(msg.TXT_HD_UPGRADE_FAILED, show_alert=True)
+        if callback.message is not None:
+            await callback.message.answer(msg.TXT_HD_UPGRADE_FAILED, parse_mode=ParseMode.HTML)
+
+
+async def _hd_report_section_impl(callback: CallbackQuery, uid: int) -> None:
     user = await get_user(uid)
     raw = user["hd_report_json"] if "hd_report_json" in user.keys() else None
     legacy = is_legacy_hd_report_raw(raw)
@@ -1235,6 +1269,9 @@ async def hd_report_section(callback: CallbackQuery) -> None:
                     caption=msg.TXT_HD_PDF_CAPTION,
                     parse_mode=ParseMode.HTML,
                 )
+        except Exception:
+            logger.exception("hd pdf on demand failed uid=%s", uid)
+            await callback.message.answer(msg.TXT_HD_UPGRADE_FAILED, parse_mode=ParseMode.HTML)
         finally:
             if pdf_path:
                 try:
@@ -1276,7 +1313,7 @@ async def hd_report_section(callback: CallbackQuery) -> None:
         report.get(section) or "Раздел пока пуст — нажми 🔄 Обновить отчёт ещё раз."
     ).strip()
     body_text = _hd_section_html(title, section_body)
-    await _send_hd_section_message(callback.message, uid, body_text, try_edit=True)
+    await _send_hd_section_message(callback.message, uid, body_text)
     await callback.answer()
 
 @router.callback_query(F.data == msg.CB_HD_COMPATIBILITY_START)

@@ -723,18 +723,19 @@ def _resolve_hd_webapp_url() -> str | None:
     return f"{normalized}{sep}{urlencode({'api_base': api_base})}"
 
 
-def hd_report_sections_markup(user_id: int) -> InlineKeyboardMarkup:
+def hd_report_sections_markup(user_id: int, *, include_webapp: bool = True) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
-    webapp_url = _resolve_hd_webapp_url()
-    if webapp_url:
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text=msg.TXT_HD_BTN_WEBAPP,
-                    web_app=WebAppInfo(url=webapp_url),
-                )
-            ]
-        )
+    if include_webapp:
+        webapp_url = _resolve_hd_webapp_url()
+        if webapp_url:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        text=msg.TXT_HD_BTN_WEBAPP,
+                        web_app=WebAppInfo(url=webapp_url),
+                    )
+                ]
+            )
     rows.extend(
         [
             [InlineKeyboardButton(text=msg.TXT_HD_BTN_REPORT_MONEY, callback_data=msg.CB_HD_REPORT_MONEY)],
