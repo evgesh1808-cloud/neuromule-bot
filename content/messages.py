@@ -249,6 +249,7 @@ CB_HD_REPORT_ENERGY = "hd_report:energy"
 CB_HD_REPORT_PLAN = "hd_report:plan"
 CB_HD_REPORT_PDF = "hd_report:pdf"
 CB_HD_REPORT_INSTAGRAM = "hd_report:instagram"
+CB_HD_REGENERATE = "hd_regenerate"
 CB_CABINET_PROMO = "cabinet_promo"
 CB_CHAT_HINT_PREFIX = "chat_hint:"  # legacy FREE: chat_hint:<текст вопроса>
 CB_STD_REPLY_PREFIX = "std_reply:"  # legacy paid: std_reply:<index>:<context_id>
@@ -581,6 +582,7 @@ TXT_HD_BTN_REPORT_ENERGY = "⚡️ Энергия"
 TXT_HD_BTN_REPORT_PLAN = "📅 План на 30 дней"
 TXT_HD_BTN_REPORT_PDF = "📄 Скачать PDF-журнал"
 TXT_HD_BTN_REPORT_INSTAGRAM = "📸 Получить Instagram-пакет"
+TXT_HD_BTN_REGENERATE = "🔄 Обновить отчёт (бесплатно)"
 
 SUPPORT_TOPICS = (
     "Технические сбои и ошибки",

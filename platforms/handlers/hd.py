@@ -10,6 +10,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
+from typing import Any
 
 from aiogram import F, Router, types
 from aiogram.enums import ParseMode
@@ -670,6 +671,122 @@ async def _send_hd_instagram_stories_album(
         logger.exception("instagram album failed uid=%s", uid)
 
 
+async def _deliver_hd_premium_bundle(
+    message: Message,
+    uid: int,
+    user_row: Any,
+    report: dict,
+    *,
+    birth_data: str,
+    hd_type: str,
+    intro: str,
+) -> None:
+    math_data = build_hd_math_data(hd_type, birth_data)
+    resolved_type = str(math_data.get("hd_type") or hd_type)
+    defined = math_data.get("defined_centers") or []
+    loop = asyncio.get_running_loop()
+    try:
+        await loop.run_in_executor(
+            None,
+            lambda d=defined, u=uid: generate_premium_bodygraph(list(d), u),
+        )
+    except Exception:
+        logger.warning("bodygraph generation failed uid=%s", uid, exc_info=True)
+    story_relpaths: list[str] = []
+    try:
+        story_relpaths = await generate_instagram_stories_async(
+            uid,
+            report,
+            math_data=math_data,
+            hd_type=resolved_type,
+            birth_data=birth_data,
+        )
+    except Exception:
+        logger.warning("instagram stories generation failed uid=%s", uid, exc_info=True)
+    await message.answer(
+        format_hd_congrats_html(report, resolved_type, intro=intro),
+        reply_markup=hd_report_sections_markup(uid),
+        parse_mode=ParseMode.HTML,
+    )
+    await _send_hd_premium_pdf(message, uid, report, birth_data, resolved_type)
+    await _send_hd_instagram_stories_album(
+        message,
+        uid,
+        _hd_user_display_name(message, user_row),
+        story_relpaths,
+    )
+
+
+async def _run_free_hd_regenerate(
+    message: Message,
+    uid: int,
+    user_row: Any,
+    *,
+    hd_type: str,
+    birth_data: str,
+) -> None:
+    user_name = _hd_user_display_name(message, user_row)
+    user_gender = _hd_user_gender(user_row)
+    async with chat_action_loop(deps.bot(), message.chat.id, "typing"):
+        report = await generate_premium_report(
+            hd_type,
+            birth_data,
+            user_name=user_name,
+            user_gender=user_gender,
+        )
+    if not report:
+        raise RuntimeError("Gemini returned empty HD report")
+    math_data = build_hd_math_data(hd_type, birth_data)
+    resolved_type = str(math_data.get("hd_type") or hd_type)
+    await update_user(
+        uid,
+        hd_report_json=premium_report_to_json(report),
+        hd_type=resolved_type,
+        hd_birth_data=birth_data,
+        has_pro_analysis=1,
+    )
+    await _deliver_hd_premium_bundle(
+        message,
+        uid,
+        user_row,
+        report,
+        birth_data=birth_data,
+        hd_type=resolved_type,
+        intro=msg.TXT_HD_UPGRADED_REPORT,
+    )
+
+
+@router.callback_query(F.data == msg.CB_HD_REGENERATE)
+async def hd_regenerate_callback(callback: CallbackQuery, state: FSMContext) -> None:
+    uid = callback.from_user.id
+    user = await get_user(uid)
+    has_pro = bool(user["has_pro_analysis"]) if "has_pro_analysis" in user.keys() else False
+    if not has_pro:
+        await callback.answer(msg.TXT_HD_REPORT_NOT_FOUND_ALERT, show_alert=True)
+        return
+    birth_data = (user["hd_birth_data"] or "").strip() if "hd_birth_data" in user.keys() else ""
+    hd_type = (user["hd_type"] or "не указан") if "hd_type" in user.keys() else "не указан"
+    if not birth_data:
+        await state.set_state(UserFlow.waiting_hd_birth_data)
+        await state.update_data(hd_regenerate=True)
+        await callback.message.answer(msg.TXT_HD_REGENERATE_NEED_BIRTH, parse_mode=ParseMode.HTML)
+        await callback.answer()
+        return
+    await callback.answer(msg.TXT_HD_UPGRADING_REPORT_ALERT, show_alert=True)
+    await callback.message.answer(msg.TXT_HD_UPGRADING_REPORT, parse_mode=ParseMode.HTML)
+    try:
+        await _run_free_hd_regenerate(
+            callback.message,
+            uid,
+            user,
+            hd_type=hd_type,
+            birth_data=birth_data,
+        )
+    except Exception:
+        logger.exception("hd_regenerate_failed uid=%s", uid)
+        await callback.message.answer(msg.TXT_HD_UPGRADE_FAILED, parse_mode=ParseMode.HTML)
+
+
 @router.message(UserFlow.waiting_hd_birth_data, F.text)
 async def hd_premium_process(message: Message, state: FSMContext) -> None:
     if await try_dispatch_reply_nav_button(message, state):
@@ -737,37 +854,15 @@ async def hd_premium_process(message: Message, state: FSMContext) -> None:
             hd_birth_data=birth_data,
             has_pro_analysis=1,
         )
-        defined = math_data.get("defined_centers") or []
-        loop = asyncio.get_running_loop()
-        try:
-            await loop.run_in_executor(
-                None,
-                lambda d=defined, u=uid: generate_premium_bodygraph(list(d), u),
-            )
-        except Exception:
-            logger.warning("bodygraph generation failed uid=%s", uid, exc_info=True)
-        story_relpaths: list[str] = []
-        try:
-            story_relpaths = await generate_instagram_stories_async(
-                uid,
-                report,
-                math_data=math_data,
-                hd_type=resolved_type,
-                birth_data=birth_data,
-            )
-        except Exception:
-            logger.warning("instagram stories generation failed uid=%s", uid, exc_info=True)
-        await message.answer(
-            format_hd_congrats_html(
-                report,
-                resolved_type,
-                intro=msg.TXT_HD_UPGRADED_REPORT if regenerate else msg.TXT_HD_REPORT_READY,
-            ),
-            reply_markup=hd_report_sections_markup(uid),
-            parse_mode=ParseMode.HTML,
+        await _deliver_hd_premium_bundle(
+            message,
+            uid,
+            user_row,
+            report,
+            birth_data=birth_data,
+            hd_type=resolved_type,
+            intro=msg.TXT_HD_UPGRADED_REPORT if regenerate else msg.TXT_HD_REPORT_READY,
         )
-        await _send_hd_premium_pdf(message, uid, report, birth_data, resolved_type)
-        await _send_hd_instagram_stories_album(message, uid, user_name, story_relpaths)
     except Exception:
         logger.exception("hd_premium_failed user_id=%s", uid)
         if charge_id:

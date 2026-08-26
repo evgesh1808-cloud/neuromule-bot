@@ -745,6 +745,12 @@ def hd_report_sections_markup(user_id: int) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text=msg.TXT_HD_BTN_REPORT_INSTAGRAM, callback_data=msg.CB_HD_REPORT_INSTAGRAM)],
             [
                 InlineKeyboardButton(
+                    text=msg.TXT_HD_BTN_REGENERATE,
+                    callback_data=msg.CB_HD_REGENERATE,
+                )
+            ],
+            [
+                InlineKeyboardButton(
                     text=msg.TXT_HD_INLINE_COMPATIBILITY,
                     callback_data=msg.CB_HD_COMPATIBILITY_START,
                 )
@@ -767,6 +773,14 @@ def hd_menu(has_pro: bool = False) -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(text=msg.TXT_HD_INLINE_VIEW_REPORT, callback_data=msg.CB_HD_REPORT_OPEN),
                 InlineKeyboardButton(text=msg.TXT_HD_INLINE_COMPATIBILITY, callback_data=msg.CB_MATCH_START),
+            ]
+        )
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=msg.TXT_HD_BTN_REGENERATE,
+                    callback_data=msg.CB_HD_REGENERATE,
+                )
             ]
         )
     else:

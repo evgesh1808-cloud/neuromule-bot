@@ -2010,9 +2010,7 @@ def _resolve_static_sections_for_pdf(
 ) -> dict[str, str]:
     from services.hd_static_blocks import assemble_static_reference
 
-    static_raw = report.get("static_reference")
-    if isinstance(static_raw, dict) and static_raw:
-        return {str(k): str(v) for k, v in static_raw.items() if str(v or "").strip()}
+    _ = report
     return assemble_static_reference(math_data, gate_to_center=_GATE_TO_CENTER)
 
 

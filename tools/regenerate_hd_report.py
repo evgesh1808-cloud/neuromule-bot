@@ -55,7 +55,7 @@ async def _generate_assets(uid: int, report: dict, *, hd_type: str, birth_data: 
         print("WARN: instagram stories generation failed:", exc)
 
 
-async def _run(uid: int, *, full: bool, upgrade_fast: bool) -> None:
+async def _run(uid: int, *, full: bool, upgrade_fast: bool, birth_override: str = "") -> None:
     from services.hd_logic import (
         build_hd_math_data,
         ensure_modern_hd_report,
@@ -67,7 +67,9 @@ async def _run(uid: int, *, full: bool, upgrade_fast: bool) -> None:
 
     user = await get_user(uid)
     keys = user.keys() if hasattr(user, "keys") else ()
-    birth_data = (user["hd_birth_data"] or "").strip() if "hd_birth_data" in keys else ""
+    birth_data = birth_override.strip() or (
+        (user["hd_birth_data"] or "").strip() if "hd_birth_data" in keys else ""
+    )
     hd_type = (user["hd_type"] or "не указан") if "hd_type" in keys else "не указан"
     has_pro = bool(user["has_pro_analysis"]) if "has_pro_analysis" in keys else False
 
@@ -132,9 +134,22 @@ def main() -> None:
         action="store_true",
         help="Только ensure_modern_hd_report (legacy → v3 fast)",
     )
+    parser.add_argument(
+        "--birth",
+        type=str,
+        default="",
+        help='Дата рождения, если в БД пусто (пример: "18.08.1986 03:40 Чебоксары")',
+    )
     args = parser.parse_args()
     try:
-        asyncio.run(_run(args.user_id, full=args.full, upgrade_fast=args.upgrade_fast))
+        asyncio.run(
+            _run(
+                args.user_id,
+                full=args.full,
+                upgrade_fast=args.upgrade_fast,
+                birth_override=args.birth,
+            )
+        )
     except SystemExit:
         raise
     except Exception as exc:
