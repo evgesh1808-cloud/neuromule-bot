@@ -24,21 +24,31 @@ _SAMPLE_REPORT = {
 @pytest.mark.asyncio
 async def test_premium_report_falls_back_to_openrouter_when_gemini_missing() -> None:
     with (
+        patch.object(
+            hd_logic,
+            "_generate_premium_report_multipass",
+            new=AsyncMock(side_effect=RuntimeError("multipass_synthesis_empty")),
+        ),
         patch.object(hd_logic, "genai", None),
         patch.object(
             hd_logic,
             "_generate_premium_via_openrouter",
-            new=AsyncMock(return_value=_SAMPLE_REPORT),
+            new=AsyncMock(return_value=dict(_SAMPLE_REPORT)),
         ) as or_mock,
     ):
         report = await hd_logic.generate_premium_report("Генератор", "15.03.1990 14:30 Москва")
-    assert report == _SAMPLE_REPORT
+    assert report["money"] == "Финансовый блок"
     or_mock.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_premium_report_skips_gemini_when_key_missing() -> None:
     with (
+        patch.object(
+            hd_logic,
+            "_generate_premium_report_multipass",
+            new=AsyncMock(side_effect=RuntimeError("multipass_synthesis_empty")),
+        ),
         patch.object(hd_logic, "genai", object()),
         patch.object(hd_logic, "_gemini_configured", return_value=False),
         patch.object(hd_logic, "_openrouter_configured", return_value=True),
@@ -50,11 +60,11 @@ async def test_premium_report_skips_gemini_when_key_missing() -> None:
         patch.object(
             hd_logic,
             "_generate_premium_via_openrouter",
-            new=AsyncMock(return_value=_SAMPLE_REPORT),
+            new=AsyncMock(return_value=dict(_SAMPLE_REPORT)),
         ) as or_mock,
     ):
         report = await hd_logic.generate_premium_report("Генератор", "15.03.1990 14:30 Москва")
-    assert report == _SAMPLE_REPORT
+    assert report["money"] == "Финансовый блок"
     gemini_mock.assert_not_awaited()
     or_mock.assert_awaited_once()
 
@@ -62,6 +72,11 @@ async def test_premium_report_skips_gemini_when_key_missing() -> None:
 @pytest.mark.asyncio
 async def test_premium_report_falls_back_when_gemini_raises() -> None:
     with (
+        patch.object(
+            hd_logic,
+            "_generate_premium_report_multipass",
+            new=AsyncMock(side_effect=RuntimeError("multipass_synthesis_empty")),
+        ),
         patch.object(hd_logic, "_gemini_configured", return_value=True),
         patch.object(
             hd_logic,
@@ -71,13 +86,28 @@ async def test_premium_report_falls_back_when_gemini_raises() -> None:
         patch.object(
             hd_logic,
             "_generate_premium_via_openrouter",
-            new=AsyncMock(return_value=_SAMPLE_REPORT),
+            new=AsyncMock(return_value=dict(_SAMPLE_REPORT)),
         ) as or_mock,
         patch.object(hd_logic, "genai", object()),
     ):
         report = await hd_logic.generate_premium_report("Проектор", "01.01.2000 10:00 Казань")
     assert report["money"] == "Финансовый блок"
     or_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_premium_report_multipass_primary_path() -> None:
+    multipass_report = dict(_SAMPLE_REPORT)
+    multipass_report["static_reference"] = {"type": "Тип: Генератор"}
+    multipass_report["synthesis_meta"] = {"blocks_ok": 3}
+    with patch.object(
+        hd_logic,
+        "_generate_premium_report_multipass",
+        new=AsyncMock(return_value=multipass_report),
+    ) as mp_mock:
+        report = await hd_logic.generate_premium_report("Генератор", "15.03.1990 14:30 Москва")
+    assert report["synthesis_meta"]["blocks_ok"] == 3
+    mp_mock.assert_awaited_once()
 
 
 @pytest.mark.parametrize(
@@ -150,6 +180,143 @@ def test_elite_premium_prompt_forbids_type_guessing() -> None:
     assert "capacity" in system_prompt
     assert "ГЕНЕТИЧЕСКИЙ СИНТЕЗ" in system_prompt
     assert "Генератор" in user_prompt
+    assert "###" not in hd_logic._ELITE_HD_FEW_SHOT
+
+
+def test_genetic_synthesis_prompt_schema_and_bans() -> None:
+    math_data = {
+        "profile": "3/5",
+        "authority": "Сакральный",
+        "strategy": "Ждать отклик",
+        "definition": "Single",
+        "active_channels": ["34-20"],
+    }
+    pair = {"open_center": "Эго", "anchors": ["Сакрал", "канал 34-20"]}
+    scales = {"capacity": 72, "immunity": 55, "scale": 81}
+    system_prompt, user_prompt = hd_logic._build_genetic_synthesis_prompt(
+        domain="money",
+        math_data=math_data,
+        synthesis_pair=pair,
+        energy_scales=scales,
+    )
+    assert "ТОТАЛЬНЫЙ ЗАПРЕТ НА ГАЛЛЮЦИНАЦИИ" in system_prompt
+    assert hd_logic._GENETIC_SYNTHESIS_TEMPERATURE == 0.1
+    assert "###" not in hd_logic._GENETIC_SYNTHESIS_FEW_SHOT
+    assert "34-20" in user_prompt
+    assert "capacity=72" in user_prompt
+    assert "Domain): money" in user_prompt
+    assert "Открытый центр [Эго]" in user_prompt
+    assert "проживан" in system_prompt
+
+
+def test_normalize_synthesis_response_valid_payload() -> None:
+    payload = {
+        "synthesis_anchor": "Открытое Эго × Сакрал, money.",
+        "client_pain": "Боль в сфере денег.",
+        "false_self_pattern": "Компенсация через перегруз.",
+        "body_signal": "Напряжение в плечах.",
+        "reflective_questions": ["Вопрос один?", "Вопрос два?", "Вопрос три?"],
+        "experiments": [
+            {
+                "timeframe": "days_1-5",
+                "action": "Записывать телесный отклик",
+                "metric": "5 записей",
+                "success_criteria": "Есть паттерн",
+            },
+            {
+                "timeframe": "days_6-15",
+                "action": "Отложить одно «да»",
+                "metric": "1 кейс",
+                "success_criteria": "Решение без спешки",
+            },
+            {
+                "timeframe": "days_16-30",
+                "action": "Интегрировать правило",
+                "metric": "3 решения",
+                "success_criteria": "Меньше напряжения",
+            },
+        ],
+    }
+    normalized = hd_logic._normalize_synthesis_response(payload)
+    assert normalized["experiments"][0]["timeframe"] == "days_1-5"
+    assert len(normalized["reflective_questions"]) == 3
+
+
+def test_normalize_synthesis_response_rejects_markdown_headers() -> None:
+    payload = {
+        "synthesis_anchor": "### Ошибка",
+        "client_pain": "x",
+        "false_self_pattern": "x",
+        "body_signal": "x",
+        "reflective_questions": ["a", "b", "c"],
+        "experiments": [
+            {"action": "a", "metric": "m", "success_criteria": "s"},
+            {"action": "a", "metric": "m", "success_criteria": "s"},
+            {"action": "a", "metric": "m", "success_criteria": "s"},
+        ],
+    }
+    with pytest.raises(ValueError, match="markdown headers"):
+        hd_logic._normalize_synthesis_response(payload)
+
+
+def test_build_synthesis_pairs_links_open_center_to_motors() -> None:
+    math_data = {
+        "defined_centers": ["Сакрал", "Горло"],
+        "open_centers": ["Эго", "Корень"],
+        "active_channels": ["34-20"],
+    }
+    pairs = hd_logic.build_synthesis_pairs(math_data)
+    assert len(pairs) == 2
+    ego_pair = next(item for item in pairs if item["open_center"] == "Эго")
+    assert "Сакрал" in ego_pair["anchors"]
+
+
+def test_derive_active_channels_requires_both_gates() -> None:
+    assert hd_logic.derive_active_channels({34, 20}) == ["20-34"]
+    assert hd_logic.derive_active_channels({34}) == []
+
+
+@pytest.mark.skipif(hd_logic.swe is None, reason="pyswisseph not installed")
+def test_build_hd_math_data_includes_synthesis_metadata() -> None:
+    math_data = hd_logic.build_hd_math_data("Генератор", "15.03.1990 14:30 Москва")
+    assert "active_channels" in math_data
+    assert "definition" in math_data
+    assert isinstance(math_data.get("synthesis_pairs"), list)
+
+
+def test_compose_domain_chapter_merges_static_and_synthesis() -> None:
+    synthesis = {
+        "synthesis_anchor": "Эго × Сакрал",
+        "client_pain": "Боль",
+        "false_self_pattern": "Паттерн",
+        "body_signal": "Плечи",
+        "reflective_questions": ["Q1?", "Q2?", "Q3?"],
+        "experiments": [
+            {"timeframe": "days_1-5", "action": "A", "metric": "M", "success_criteria": "S"},
+            {"timeframe": "days_6-15", "action": "A", "metric": "M", "success_criteria": "S"},
+            {"timeframe": "days_16-30", "action": "A", "metric": "M", "success_criteria": "S"},
+        ],
+        "_pair": {"open_center": "Эго"},
+    }
+    chapter = hd_logic._compose_domain_chapter(
+        "money",
+        static_context="Статический контекст",
+        synthesis_blocks=[synthesis],
+    )
+    assert "Статический контекст" in chapter
+    assert "Эго" in chapter
+    assert "Боль" in chapter
+
+
+def test_premium_report_json_includes_static_reference() -> None:
+    report = dict(_SAMPLE_REPORT)
+    report["static_reference"] = {"type": "Тип: Генератор"}
+    raw = hd_logic.premium_report_to_json(report)
+    import json
+
+    payload = json.loads(raw)
+    assert payload["schema_version"] == 3
+    assert payload["static_reference"]["type"] == "Тип: Генератор"
 
 
 def test_md_to_reportlab_html_bold() -> None:

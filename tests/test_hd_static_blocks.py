@@ -1,0 +1,45 @@
+"""Тесты статической библиотеки HD-блоков."""
+
+from __future__ import annotations
+
+from services import hd_static_blocks
+
+
+def test_assemble_static_reference_includes_type_and_gates() -> None:
+    math_data = {
+        "hd_type": "Генератор",
+        "profile": "3/5",
+        "authority": "Сакральный",
+        "strategy": "Ждать отклик",
+        "definition": "Single",
+        "defined_centers": ["Сакрал"],
+        "open_centers": ["Эго", "Корень"],
+        "active_channels": ["20-34"],
+        "gates": {"sun": {"gate": 34, "line": 1}, "earth": {"gate": 20, "line": 4}},
+    }
+    sections = hd_static_blocks.assemble_static_reference(
+        math_data,
+        gate_to_center={34: "Сакрал", 20: "Горло"},
+    )
+    assert "type" in sections
+    assert "Генератор" in sections["type"]
+    assert "gates" in sections
+    assert "34" in sections["gates"]
+    assert "channels" in sections
+    assert "20-34" in sections["channels"]
+
+
+def test_format_static_reference_full_orders_sections() -> None:
+    sections = {
+        "type": "Тип A",
+        "profile": "Профиль B",
+        "gates": "Ворота C",
+    }
+    full = hd_static_blocks.format_static_reference_full(sections)
+    assert full.index("Тип A") < full.index("Профиль B") < full.index("Ворота C")
+
+
+def test_gate_block_text_uses_library_or_fallback() -> None:
+    text = hd_static_blocks.gate_block_text(34, center="Сакрал")
+    assert "34" in text
+    assert "Сакрал" in text or "Power" in text or "ворот" in text.lower()

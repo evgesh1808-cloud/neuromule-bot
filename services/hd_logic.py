@@ -140,6 +140,7 @@ _PDF_CONTENT_BG = "#FAFAFA"
 _PDF_BODYGRAPH_WIDTH_PX = 430
 _PDF_BODYGRAPH_MAX_BYTES = 300 * 1024
 _PDF_CHAPTER_SPECS: tuple[tuple[str, str, str], ...] = (
+    ("static_reference", "📚 Справочник карты (IHDS)", "hd_ch_static"),
     ("money", "💼 Раздел: Финансовый Аудит", "hd_ch_money"),
     ("love", "❤️ Раздел: Отношения и Партнёрство", "hd_ch_love"),
     ("energy", "⚡ Раздел: Энергетическая Архитектура", "hd_ch_energy"),
@@ -147,9 +148,25 @@ _PDF_CHAPTER_SPECS: tuple[tuple[str, str, str], ...] = (
 )
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _PREMIUM_REPORT_KEYS = ("fast_facts", "money", "love", "energy", "plan")
-_HD_REPORT_SCHEMA_VERSION = 2
+_HD_REPORT_SCHEMA_VERSION = 3
+_HD_REPORT_SCHEMA_VERSION_SYNTHESIS = 3
 _LEGACY_HD_REPORT_PLACEHOLDER = "⚡ Экспресс-анализ доступен в интерактивном разборе."
 _FAST_FACTS_MAX_LEN = 300
+_PREMIUM_SUMMARY_TEMPERATURE = 0.25
+_PREMIUM_SUMMARY_MAX_TOKENS = 2048
+_MAX_SYNTHESIS_PAIRS_FULL = 9
+_MAX_SYNTHESIS_PAIRS_UPGRADE = 2
+_GENETIC_SYNTHESIS_DOMAINS: frozenset[str] = frozenset({"money", "love", "energy"})
+_GENETIC_SYNTHESIS_TEMPERATURE = 0.1
+_GENETIC_SYNTHESIS_MAX_TOKENS = 4096
+_SYNTHESIS_EXPERIMENT_TIMEFRAMES: tuple[str, ...] = ("days_1-5", "days_6-15", "days_16-30")
+_SYNTHESIS_STRING_KEYS: tuple[str, ...] = (
+    "synthesis_anchor",
+    "client_pain",
+    "false_self_pattern",
+    "body_signal",
+)
+_HD_MOTOR_CENTERS: frozenset[str] = frozenset({"Сакрал", "Эго", "Корень", "Солнечное сплетение"})
 _HD_GATE_SEQUENCE = (
     25,
     17,
@@ -811,12 +828,18 @@ def build_hd_math_data(hd_type: str, birth_data: str) -> dict[str, object]:
     gates: dict[str, object] = {}
     defined_set: set[str] = set()
     derived: dict[str, str] = {}
+    active_channels: list[str] = []
     try:
         gates_payload = get_calculated_gates(birth_data)
         raw_gates = gates_payload.get("gates")
         if isinstance(raw_gates, dict):
             gates = raw_gates
-        defined_set, _ = _defined_centers_from_birth_data(birth_data)
+        gate_numbers = _collect_gate_numbers(gates)
+        if gate_numbers:
+            active_channels = derive_active_channels(gate_numbers)
+            defined_set = derive_defined_centers_from_gates(gate_numbers)
+        else:
+            defined_set, _ = _defined_centers_from_birth_data(birth_data)
         if birth_data.strip():
             derived = derive_hd_chart_from_birth(birth_data)
     except Exception:
@@ -826,6 +849,14 @@ def build_hd_math_data(hd_type: str, birth_data: str) -> dict[str, object]:
     resolved_type = hd_type
     if not resolved_type or resolved_type.strip().lower() in {"не указан", "неизвестно", ""}:
         resolved_type = derived.get("hd_type") or hd_type
+    definition = derive_definition_type(defined_set, active_channels)
+    synthesis_pairs = build_synthesis_pairs(
+        {
+            "defined_centers": defined_centers,
+            "open_centers": open_centers,
+            "active_channels": active_channels,
+        }
+    )
     return {
         "hd_type": resolved_type,
         "birth_data": birth_data,
@@ -835,6 +866,9 @@ def build_hd_math_data(hd_type: str, birth_data: str) -> dict[str, object]:
         "profile": derived.get("profile", ""),
         "authority": derived.get("authority", ""),
         "strategy": derived.get("strategy", ""),
+        "definition": definition,
+        "active_channels": active_channels,
+        "synthesis_pairs": synthesis_pairs,
     }
 
 
@@ -849,6 +883,7 @@ def hd_profile_metadata(math_data: dict[str, object]) -> dict[str, str | list[st
         "strategy": str(math_data.get("strategy") or ""),
         "authority": str(math_data.get("authority") or ""),
         "profile": str(math_data.get("profile") or ""),
+        "definition": str(math_data.get("definition") or ""),
     }
 
 
@@ -889,6 +924,12 @@ def premium_report_to_json(report: dict[str, Any]) -> str:
         }
     else:
         payload = _normalize_premium_report(report)
+    static_ref = report.get("static_reference")
+    if isinstance(static_ref, dict) and static_ref:
+        payload["static_reference"] = static_ref
+    synthesis_meta = report.get("synthesis_meta")
+    if isinstance(synthesis_meta, dict) and synthesis_meta:
+        payload["synthesis_meta"] = synthesis_meta
     payload["schema_version"] = _HD_REPORT_SCHEMA_VERSION
     return json.dumps(payload, ensure_ascii=False)
 
@@ -1067,11 +1108,26 @@ async def generate_premium_report(
     *,
     user_name: str = "друг",
     upgrade_mode: bool = False,
-) -> dict[str, str]:
-    """Полный HD-разбор: элитный промпт → Gemini SDK → OpenRouter fallback."""
+) -> dict[str, Any]:
+    """Полный HD-разбор: multi-pass Genetic Synthesis → legacy single-prompt fallback."""
     math_data = build_hd_math_data(hd_type, birth_data)
+    multipass_error: Exception | None = None
+    try:
+        report = await _generate_premium_report_multipass(
+            user_name,
+            math_data,
+            upgrade_mode=upgrade_mode,
+        )
+        logger.info("HD premium report served via multi-pass Genetic Synthesis")
+        return report
+    except Exception as exc:  # noqa: BLE001
+        multipass_error = exc
+        logger.warning("Multi-pass premium report failed, legacy single-prompt: %s", exc)
+
     system_prompt, user_prompt = _build_elite_premium_hd_prompt(user_name, math_data)
     errors: list[str] = []
+    if multipass_error is not None:
+        errors.append(f"multipass: {multipass_error!r}")
     or_models = (
         _openrouter_models_for_premium_upgrade()
         if upgrade_mode
@@ -1086,11 +1142,12 @@ async def generate_premium_report(
     if _gemini_configured() and not upgrade_mode:
         try:
             report = await _generate_premium_via_gemini(system_prompt, user_prompt)
-            logger.info("HD premium report served via Gemini Pro chain")
+            report["energy_scales"] = compute_energy_scales_from_math(math_data)
+            logger.info("HD premium report served via Gemini Pro chain (legacy)")
             return report
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Gemini premium report failed, trying OpenRouter: %s", exc)
-            errors.append(f"gemini: {exc!r}")
+        except Exception as gemini_exc:  # noqa: BLE001
+            logger.warning("Gemini premium report failed, trying OpenRouter: %s", gemini_exc)
+            errors.append(f"gemini: {gemini_exc!r}")
     elif genai is None:
         logger.info(
             "Пакет google-genai не установлен — полный разбор через OpenRouter. "
@@ -1109,11 +1166,12 @@ async def generate_premium_report(
             models=or_models,
             timeout=or_timeout,
         )
-        logger.info("HD premium report served via OpenRouter")
+        report["energy_scales"] = compute_energy_scales_from_math(math_data)
+        logger.info("HD premium report served via OpenRouter (legacy)")
         return report
-    except Exception as exc:  # noqa: BLE001
+    except Exception as or_exc:  # noqa: BLE001
         logger.exception("OpenRouter premium report fallback failed")
-        errors.append(f"openrouter: {exc!r}")
+        errors.append(f"openrouter: {or_exc!r}")
 
     raise RuntimeError("hd_premium_unavailable: " + "; ".join(errors))
 
@@ -1532,6 +1590,166 @@ _GATE_TO_CENTER = {
     54: "Корень",
 }
 
+# 36 каналов IHDS: обе ворота должны быть активны, чтобы канал считался complete.
+_HD_CHANNELS_RAW: tuple[tuple[int, int], ...] = (
+    (1, 8),
+    (2, 14),
+    (3, 60),
+    (4, 63),
+    (5, 15),
+    (6, 59),
+    (7, 31),
+    (9, 52),
+    (10, 20),
+    (10, 34),
+    (10, 57),
+    (11, 56),
+    (12, 22),
+    (13, 33),
+    (16, 48),
+    (17, 62),
+    (18, 58),
+    (19, 49),
+    (20, 34),
+    (20, 57),
+    (21, 45),
+    (23, 43),
+    (24, 61),
+    (25, 51),
+    (26, 44),
+    (27, 50),
+    (28, 38),
+    (29, 46),
+    (30, 41),
+    (32, 54),
+    (34, 57),
+    (35, 36),
+    (37, 40),
+    (39, 55),
+    (42, 53),
+    (47, 64),
+)
+
+
+def _format_hd_channel(g1: int, g2: int) -> str:
+    low, high = sorted((g1, g2))
+    return f"{low}-{high}"
+
+
+def _collect_gate_numbers(gates: object) -> set[int]:
+    nums: set[int] = set()
+    if not isinstance(gates, dict):
+        return nums
+    for payload in gates.values():
+        if isinstance(payload, dict):
+            gate = payload.get("gate")
+            if isinstance(gate, int):
+                nums.add(gate)
+    return nums
+
+
+def derive_active_channels(gate_numbers: set[int]) -> list[str]:
+    """Верифицированные complete-каналы по набору активных ворот."""
+    if not gate_numbers:
+        return []
+    active: list[str] = []
+    seen: set[str] = set()
+    for g1, g2 in _HD_CHANNELS_RAW:
+        if g1 in gate_numbers and g2 in gate_numbers:
+            label = _format_hd_channel(g1, g2)
+            if label not in seen:
+                seen.add(label)
+                active.append(label)
+    return sorted(active)
+
+
+def derive_defined_centers_from_gates(gate_numbers: set[int]) -> set[str]:
+    """IHDS: центр defined только если в нём замкнут хотя бы один complete-канал."""
+    defined: set[str] = set()
+    for ch in derive_active_channels(gate_numbers):
+        g1, g2 = (int(part) for part in ch.split("-", 1))
+        for gate in (g1, g2):
+            center = _GATE_TO_CENTER.get(gate)
+            if center:
+                defined.add(center)
+    return defined
+
+
+def derive_definition_type(defined_centers: set[str], active_channels: list[str]) -> str:
+    """Single / Split / Triple / Quad по числу связных компонент defined-графа."""
+    if not defined_centers:
+        return "None"
+    adjacency: dict[str, set[str]] = {center: set() for center in defined_centers}
+    for ch in active_channels:
+        parts = ch.split("-", 1)
+        if len(parts) != 2:
+            continue
+        g1, g2 = int(parts[0]), int(parts[1])
+        c1 = _GATE_TO_CENTER.get(g1)
+        c2 = _GATE_TO_CENTER.get(g2)
+        if c1 in defined_centers and c2 in defined_centers:
+            adjacency[c1].add(c2)
+            adjacency[c2].add(c1)
+    visited: set[str] = set()
+    components = 0
+    for center in defined_centers:
+        if center in visited:
+            continue
+        components += 1
+        stack = [center]
+        while stack:
+            node = stack.pop()
+            if node in visited:
+                continue
+            visited.add(node)
+            stack.extend(adjacency[node] - visited)
+    if components <= 1:
+        return "Single"
+    if components == 2:
+        return "Split"
+    if components == 3:
+        return "Triple"
+    return "Quad"
+
+
+def build_synthesis_pairs(math_data: dict[str, object]) -> list[dict[str, object]]:
+    """Пары open_center × defined_motors для модульного Genetic Synthesis."""
+    defined, open_centers = _centers_from_math_data(math_data)
+    defined_set = set(defined)
+    motors = sorted(defined_set & _HD_MOTOR_CENTERS)
+    active_channels = [
+        str(ch).strip()
+        for ch in (math_data.get("active_channels") or [])
+        if str(ch).strip()
+    ]
+    pairs: list[dict[str, object]] = []
+    for open_center in open_centers:
+        channel_hints: list[str] = []
+        for ch in active_channels:
+            parts = ch.split("-", 1)
+            if len(parts) != 2:
+                continue
+            g1, g2 = int(parts[0]), int(parts[1])
+            centers_in_channel = {
+                _GATE_TO_CENTER.get(g1),
+                _GATE_TO_CENTER.get(g2),
+            } - {None}
+            if open_center in centers_in_channel or centers_in_channel & defined_set:
+                channel_hints.append(ch)
+        anchors: list[str] = list(motors)
+        if channel_hints:
+            anchors.extend(f"канал {hint}" for hint in channel_hints)
+        if not anchors:
+            anchors = ["определённые моторы отсутствуют — опирайся только на факты карты"]
+        pairs.append(
+            {
+                "open_center": open_center,
+                "anchors": anchors,
+                "channel_hints": channel_hints,
+            }
+        )
+    return pairs
+
 
 _HD_BODYGRAPH_TEMPLATE_PATH = _PROJECT_ROOT / "assets" / "hd_blank_template.png"
 _HD_BODYGRAPH_OUTPUT_DIR = _PROJECT_ROOT / "tmp"
@@ -1641,6 +1859,9 @@ def _defined_centers_from_birth_data(birth_data: str | None) -> tuple[set[str], 
         gates = get_calculated_gates(birth_data)["gates"]
     except Exception as exc:
         return set(), f"Схема не рассчитана: {exc}"
+    gate_numbers = _collect_gate_numbers(gates)
+    if gate_numbers:
+        return derive_defined_centers_from_gates(gate_numbers), None
     defined: set[str] = set()
     if isinstance(gates, dict):
         for value in gates.values():
@@ -1654,7 +1875,10 @@ def _defined_centers_from_birth_data(birth_data: str | None) -> tuple[set[str], 
 _ALL_HD_CENTER_NAMES: tuple[str, ...] = tuple(center_coordinates.keys())
 
 _ELITE_HD_BANNED_MARKERS: tuple[str, ...] = (
+    "проживан",
+    "корректност",
     "вибраци",
+    "аур",
     "карма",
     "космос",
     "нейтрино",
@@ -1667,6 +1891,8 @@ _ELITE_HD_BANNED_MARKERS: tuple[str, ...] = (
     "судьб",
     "karm",
 )
+
+_GENETIC_SYNTHESIS_BANNED_MARKERS: tuple[str, ...] = _ELITE_HD_BANNED_MARKERS
 
 
 def _centers_from_math_data(math_data: dict) -> tuple[list[str], list[str]]:
@@ -1733,11 +1959,11 @@ _ELITE_HD_FEW_SHOT = (
     '{"fast_facts": "⚡ Главный баг прошивки: доказываешь ценность через переработку. '
     '💼 Триггер больших денег: продавать только после телесного «да». '
     '🔋 Идеальная перезагрузка: сон без будильника + прогулка без цели.", '
-    '"money": "### Где ты сливаешь\\nТы берёшь проекты из страха «останусь без денег».\\n\\n'
-    '### Что делать\\n**Неделя 1:** веди список откликов тела перед каждым «да».", '
-    '"love": "### Боль\\nТы читаешь ожидания партнёра и теряешь себя в роли «удобного».", '
-    '"energy": "### Боль\\nЖмёшь газ, когда Сакрал уже пуст.", '
-    '"plan": "### Дни 1–5\\nОтслеживай сигнал тела перед решениями."}'
+    '"money": "Боль\\nТы берёшь проекты из страха «останусь без денег».\\n\\n'
+    'Что делать\\n**Неделя 1:** веди список откликов тела перед каждым «да».", '
+    '"love": "Боль\\nТы читаешь ожидания партнёра и теряешь себя в роли «удобного».", '
+    '"energy": "Боль\\nЖмёшь газ, когда Сакрал уже пуст.", '
+    '"plan": "Дни 1–5\\nОтслеживай сигнал тела перед решениями."}'
 )
 
 _ELITE_HD_SERVER_MATH_MANDATE = (
@@ -1834,6 +2060,587 @@ def _build_elite_premium_hd_prompt(user_name: str, math_data: dict) -> tuple[str
         "Используй переданный тип личности дословно во всех рекомендациях — без пересчёта и без замены."
     )
     return system_prompt, user_prompt
+
+
+_GENETIC_SYNTHESIS_FEW_SHOT = (
+    "ПРИМЕР ПЛОТНОСТИ JSON (few-shot — не копируй факты, только структуру и тон):\n"
+    '{"synthesis_anchor": "Открытое Эго × определённый Сакрал, профиль 3/5, сфера money.", '
+    '"client_pain": "Ты соглашаешься на сделки, чтобы доказать ценность, и выгораешь.", '
+    '"false_self_pattern": "Ум подменяет уязвимость Эго перегрузкой Сакрала.", '
+    '"body_signal": "Сжатие в груди и ускоренное дыхание перед подписанием договора.", '
+    '"reflective_questions": ["Что меняется в теле, если отложить «да» на 24 часа?", '
+    '"Где я доказываю ценность вместо того, чтобы назвать цену?", '
+    '"Какой минимальный шаг даст мне данные без обязательства?"], '
+    '"experiments": [{"timeframe": "days_1-5", "action": "Перед каждым финансовым «да» '
+    'записывай телесный сигнал", "metric": "Количество решений и телесный отклик", '
+    '"success_criteria": "5 записей с различимым телесным паттерном"}]}'
+)
+
+
+def _format_active_channels_line(active_channels: object) -> str:
+    if isinstance(active_channels, list) and active_channels:
+        return ", ".join(str(ch).strip() for ch in active_channels if str(ch).strip())
+    return "нет complete-каналов в переданных данных — не выдумывай"
+
+
+def _format_synthesis_anchors(anchors: object) -> str:
+    if isinstance(anchors, list) and anchors:
+        return ", ".join(str(item).strip() for item in anchors if str(item).strip())
+    return "не переданы — не выдумывай"
+
+
+def _format_energy_scales_line(energy_scales: dict[str, int]) -> str:
+    return (
+        f"capacity={energy_scales.get('capacity', 50)}, "
+        f"immunity={energy_scales.get('immunity', 50)}, "
+        f"scale={energy_scales.get('scale', 50)}"
+    )
+
+
+def _build_genetic_synthesis_prompt(
+    *,
+    domain: str,
+    math_data: dict[str, object],
+    synthesis_pair: dict[str, object],
+    energy_scales: dict[str, int],
+) -> tuple[str, str]:
+    """
+    Промпт модульного Genetic Synthesis: одна open×defined пара × domain.
+
+    Returns:
+        (system_prompt, user_prompt) для LLM с temperature=0.1.
+    """
+    normalized_domain = (domain or "").strip().lower()
+    if normalized_domain not in _GENETIC_SYNTHESIS_DOMAINS:
+        raise ValueError(f"unsupported synthesis domain: {domain!r}")
+
+    data = math_data if isinstance(math_data, dict) else {}
+    pair = synthesis_pair if isinstance(synthesis_pair, dict) else {}
+    open_center = str(pair.get("open_center") or "").strip() or "не передан"
+    anchors = _format_synthesis_anchors(pair.get("anchors"))
+
+    profile = str(data.get("profile") or "").strip() or "не передан"
+    authority = str(data.get("authority") or "").strip() or "не передан"
+    strategy = str(data.get("strategy") or "").strip() or "не передана"
+    definition = str(data.get("definition") or "").strip() or "не передана"
+    active_channels_line = _format_active_channels_line(data.get("active_channels"))
+    scales_line = _format_energy_scales_line(energy_scales)
+
+    banned = ", ".join(f"«{word}»" for word in _GENETIC_SYNTHESIS_BANNED_MARKERS[:10])
+    domain_ru = {"money": "деньги", "love": "отношения", "energy": "энергия"}[normalized_domain]
+
+    system_prompt = (
+        "Контекст: Ты — ИИ-генератор премиального движка «Генетического Синтеза» NeuroMule HD. "
+        "Твоя роль — аналитик Дизайна Человека высшей категории (IHDS-канон) и международный "
+        "сертифицированный коуч (ICF). Ты создаёшь глубокую, терапевтическую книгу-инструкцию, "
+        "которая сшивает параметры карты пользователя в единый жизненный нарратив.\n\n"
+        "ПРАВИЛА И ОГРАНИЧЕНИЯ:\n"
+        "1. ТОТАЛЬНЫЙ ЗАПРЕТ НА ГАЛЛЮЦИНАЦИИ КАНАЛОВ И ВОРОТ: Тебе запрещено упоминать, "
+        "придумывать или предполагать наличие любых ворот или каналов, которых нет в списках "
+        "active_channels и входных данных. Ты оперируешь только предоставленным контекстом.\n"
+        f"2. ЗАПРЕТ ЭЗОТЕРИЧЕСКОГО ЖАРГОНА: Полностью исключи слова-маркеры: {banned}. "
+        "Переводи терминологию IHDS на язык современной психологии и коучинга "
+        "(«Ложное Я» = «Компенсаторные паттерны психики», «Эксперимент» = "
+        "«Практическое наблюдение в жизни»).\n"
+        "3. ДИНАМИЧЕСКИЙ СИНТЕЗ ВМЕСТО ШАБЛОНОВ: Не описывай элементы изолированно. "
+        "Сшивай формулу: «Если у человека [Открытый центр] + [Определённый мотор] + [Профиль], "
+        "то в реальной жизни это приводит к боли [Х]».\n"
+        "4. ЗАПРЕТ MARKDOWN-ЗАГОЛОВКОВ В JSON: Внутри текстовых полей JSON строго запрещено "
+        "использовать символы #, ##, ###. Для разделения абзацев используй только \\n.\n"
+        "5. ТЕМПЕРАТУРА ГЕНЕРАЦИИ: Будь максимально точен, ёмок, избегай «воды» и общих "
+        "коучинговых клише («просто верь в себя», «слушай тело»).\n\n"
+        "МЕТОДОЛОГИЯ ICF-КОУЧИНГА:\n"
+        "- Перейди от директивного тона («Ты должен») к исследовательской позиции.\n"
+        "- Подсвечивай соматические маркеры, по которым клиент отлавливает ментальную ловушку.\n"
+        "- Эксперименты формулируй по SMART: таймфреймы, микро-действия, критерии успеха.\n\n"
+        f"{_GENETIC_SYNTHESIS_FEW_SHOT}\n\n"
+        "ВЫДАЧА: строго один JSON-объект без markdown-обёртки ```:\n"
+        '{"synthesis_anchor": "...", "client_pain": "...", "false_self_pattern": "...", '
+        '"body_signal": "...", "reflective_questions": ["...", "...", "..."], '
+        '"experiments": [{"timeframe": "days_1-5", "action": "...", "metric": "...", '
+        '"success_criteria": "..."}, {"timeframe": "days_6-15", ...}, '
+        '{"timeframe": "days_16-30", ...}]}'
+    )
+
+    user_prompt = (
+        "Входные данные (Факты из Python-бэкенда — абсолютно точные, не подлежат сомнению):\n"
+        f"- Текущая сфера анализа (Domain): {normalized_domain} ({domain_ru})\n"
+        f"- Профиль: {profile}\n"
+        f"- Внутренний Авторитет: {authority}\n"
+        f"- Стратегия Типа: {strategy}\n"
+        f"- Тип определенности (Definition): {definition}\n"
+        f"- Верифицированные активные каналы: {active_channels_line}\n"
+        f"- Текущая синтез-пара: Открытый центр [{open_center}] × "
+        f"Определённые моторы/якоря {anchors}\n"
+        f"- Серверные шкалы энергии (Read-Only): {scales_line}\n\n"
+        "Сгенерируй JSON по схеме из system-инструкции. "
+        "Любое отклонение от структуры JSON, использование запрещённых слов "
+        "или символов # приведёт к ошибке валидации."
+    )
+    return system_prompt, user_prompt
+
+
+def _synthesis_text_has_markdown_headers(text: str) -> bool:
+    return bool(re.search(r"^#{1,6}\s", text or "", flags=re.MULTILINE))
+
+
+def _synthesis_text_banned_hits(text: str) -> list[str]:
+    lowered = (text or "").lower()
+    return [marker for marker in _GENETIC_SYNTHESIS_BANNED_MARKERS if marker in lowered]
+
+
+def _normalize_synthesis_experiment(raw: object, timeframe: str) -> dict[str, str]:
+    data = raw if isinstance(raw, dict) else {}
+    fields = ("action", "metric", "success_criteria")
+    normalized: dict[str, str] = {"timeframe": timeframe}
+    for field in fields:
+        value = data.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"synthesis experiment missing non-empty {field!r}")
+        normalized[field] = value.strip()
+    return normalized
+
+
+def _normalize_synthesis_response(parsed: dict[str, object]) -> dict[str, Any]:
+    report: dict[str, Any] = {}
+    for key in _SYNTHESIS_STRING_KEYS:
+        value = parsed.get(key)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"synthesis JSON missing non-empty {key!r}")
+        cleaned = value.strip()
+        if _synthesis_text_has_markdown_headers(cleaned):
+            raise ValueError(f"synthesis field {key!r} contains markdown headers")
+        hits = _synthesis_text_banned_hits(cleaned)
+        if hits:
+            raise ValueError(f"synthesis field {key!r} contains banned markers: {hits[:3]}")
+        report[key] = cleaned
+
+    questions_raw = parsed.get("reflective_questions")
+    if not isinstance(questions_raw, list) or len(questions_raw) != 3:
+        raise ValueError("synthesis JSON requires exactly 3 reflective_questions")
+    questions: list[str] = []
+    for idx, item in enumerate(questions_raw):
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError(f"synthesis reflective_questions[{idx}] must be non-empty string")
+        q = item.strip()
+        if _synthesis_text_has_markdown_headers(q):
+            raise ValueError(f"synthesis reflective_questions[{idx}] contains markdown headers")
+        questions.append(q)
+    report["reflective_questions"] = questions
+
+    experiments_raw = parsed.get("experiments")
+    if not isinstance(experiments_raw, list) or len(experiments_raw) != 3:
+        raise ValueError("synthesis JSON requires exactly 3 experiments")
+    experiments: list[dict[str, str]] = []
+    for idx, timeframe in enumerate(_SYNTHESIS_EXPERIMENT_TIMEFRAMES):
+        exp = _normalize_synthesis_experiment(experiments_raw[idx], timeframe)
+        for field in ("action", "metric", "success_criteria"):
+            if _synthesis_text_banned_hits(exp[field]):
+                raise ValueError(f"synthesis experiment[{idx}] contains banned markers")
+        experiments.append(exp)
+    report["experiments"] = experiments
+    return report
+
+
+def _parse_synthesis_response_from_llm(raw: str) -> dict[str, Any]:
+    parsed = _parse_json_object(raw)
+    return _normalize_synthesis_response(parsed)
+
+
+def render_synthesis_block(synthesis: dict[str, Any]) -> str:
+    """Plain-text фрагмент главы из JSON Genetic Synthesis."""
+    parts: list[str] = [
+        str(synthesis.get("synthesis_anchor") or "").strip(),
+        "",
+        str(synthesis.get("client_pain") or "").strip(),
+        "",
+        str(synthesis.get("false_self_pattern") or "").strip(),
+        "",
+        f"Соматический маркер: {str(synthesis.get('body_signal') or '').strip()}",
+        "",
+        "Вопросы для исследования:",
+    ]
+    for question in synthesis.get("reflective_questions") or []:
+        parts.append(f"- {question}")
+    parts.append("")
+    parts.append("Практические наблюдения:")
+    for experiment in synthesis.get("experiments") or []:
+        if not isinstance(experiment, dict):
+            continue
+        parts.append(
+            f"{experiment.get('timeframe', '')}: {experiment.get('action', '')} | "
+            f"Метрика: {experiment.get('metric', '')} | "
+            f"Успех: {experiment.get('success_criteria', '')}"
+        )
+    return strip_hd_markdown_for_plain("\n".join(parts).strip())
+
+
+async def _generate_synthesis_via_openrouter(
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    models: list[str] | None = None,
+    timeout: float | None = None,
+) -> dict[str, Any]:
+    from services.ai_text import ask_ai_messages
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+    completion = await ask_ai_messages(
+        _app_settings,
+        messages,
+        timeout=timeout if timeout is not None else _OPENROUTER_PREMIUM_TIMEOUT_SEC,
+        models=models or _openrouter_models_for_premium(),
+        max_tokens=_GENETIC_SYNTHESIS_MAX_TOKENS,
+        temperature=_GENETIC_SYNTHESIS_TEMPERATURE,
+        response_format={"type": "json_object"},
+    )
+    text = (completion.get("content") or "").strip()
+    if not text:
+        raise RuntimeError("openrouter_synthesis_empty")
+    return _parse_synthesis_response_from_llm(text)
+
+
+async def _generate_synthesis_via_gemini(system_prompt: str, user_prompt: str) -> dict[str, Any]:
+    client = _configure_genai()
+    errors: list[str] = []
+    gen_cfg = {
+        "response_mime_type": "application/json",
+        "max_output_tokens": _GENETIC_SYNTHESIS_MAX_TOKENS,
+        "system_instruction": system_prompt,
+        "temperature": _GENETIC_SYNTHESIS_TEMPERATURE,
+    }
+    for model_name in _GEMINI_PREMIUM_MODEL_CHAIN:
+        try:
+            response = await asyncio.wait_for(
+                client.aio.models.generate_content(
+                    model=model_name,
+                    contents=user_prompt,
+                    config=gen_cfg,
+                ),
+                timeout=_GEMINI_PREMIUM_TIMEOUT_SEC,
+            )
+            report = _parse_synthesis_response_from_llm(_extract_gemini_text(response))
+            logger.info("HD genetic synthesis Gemini model=%s", model_name)
+            return report
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{model_name}: {exc!r}")
+            continue
+    raise RuntimeError("gemini_synthesis_unavailable: " + "; ".join(errors))
+
+
+async def generate_genetic_synthesis(
+    *,
+    domain: str,
+    math_data: dict[str, object],
+    synthesis_pair: dict[str, object],
+    energy_scales: dict[str, int] | None = None,
+) -> dict[str, Any]:
+    """
+    Один модуль Genetic Synthesis: open_center × anchors × domain → JSON v3.
+
+    LLM вызывается с temperature=0.1; energy_scales — только серверные (read-only).
+    """
+    scales = _normalize_energy_scales(
+        energy_scales if energy_scales is not None else compute_energy_scales_from_math(math_data)
+    )
+    system_prompt, user_prompt = _build_genetic_synthesis_prompt(
+        domain=domain,
+        math_data=math_data,
+        synthesis_pair=synthesis_pair,
+        energy_scales=scales,
+    )
+    errors: list[str] = []
+
+    if _gemini_configured():
+        try:
+            return await _generate_synthesis_via_gemini(system_prompt, user_prompt)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Gemini genetic synthesis failed, trying OpenRouter: %s", exc)
+            errors.append(f"gemini: {exc!r}")
+    elif not _openrouter_configured():
+        raise RuntimeError("hd_synthesis_unavailable: задайте GEMINI_API_KEY или OPENROUTER_API_KEY")
+
+    try:
+        return await _generate_synthesis_via_openrouter(system_prompt, user_prompt)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("OpenRouter genetic synthesis failed")
+        errors.append(f"openrouter: {exc!r}")
+
+    raise RuntimeError("hd_synthesis_unavailable: " + "; ".join(errors))
+
+
+def _compose_domain_chapter(
+    domain: str,
+    *,
+    static_context: str,
+    synthesis_blocks: list[dict[str, Any]],
+) -> str:
+    """Склеивает static-контекст и AI synthesis-блоки в одну главу."""
+    domain_titles = {
+        "money": "Финансовый генетический синтез",
+        "love": "Синтез в отношениях",
+        "energy": "Энергетический синтез",
+    }
+    parts: list[str] = []
+    static = static_context.strip()
+    if static:
+        parts.append(f"{domain_titles.get(domain, domain)}\n\nСтатическая база карты:\n{static}")
+    for idx, block in enumerate(synthesis_blocks, start=1):
+        rendered = render_synthesis_block(block)
+        if rendered:
+            open_center = ""
+            if isinstance(block.get("_pair"), dict):
+                open_center = str(block["_pair"].get("open_center") or "").strip()
+            header = f"Синтез {idx}"
+            if open_center:
+                header = f"Синтез {idx}: открытый центр «{open_center}»"
+            parts.append(f"{header}\n{rendered}")
+    if not parts:
+        return f"Раздел {domain}: данных синтеза недостаточно — опирайся на Chart Overview."
+    return "\n\n".join(parts).strip()
+
+
+def _build_premium_summary_prompt(
+    user_name: str,
+    math_data: dict[str, object],
+    *,
+    domain_excerpts: dict[str, str],
+    energy_scales: dict[str, int],
+) -> tuple[str, str]:
+    """Промпт fast_facts + plan на основе готовых глав (последний pass)."""
+    name = (user_name or "").strip() or "друг"
+    hd_type = str(math_data.get("hd_type") or "")
+    profile = str(math_data.get("profile") or "")
+    authority = str(math_data.get("authority") or "")
+    strategy = str(math_data.get("strategy") or "")
+    scales_line = _format_energy_scales_line(energy_scales)
+
+    excerpt_parts: list[str] = []
+    for domain in ("money", "love", "energy"):
+        text = str(domain_excerpts.get(domain) or "").strip()
+        if text:
+            excerpt_parts.append(f"[{domain}]\n{text[:2500]}")
+    excerpts = "\n\n".join(excerpt_parts) or "Главы синтеза не переданы."
+
+    system_prompt = (
+        "Ты — ICF-коуч NeuroMule HD. На основе готовых глав Genetic Synthesis сформируй JSON:\n"
+        '{"fast_facts": "...", "plan": "..."}\n'
+        f"- fast_facts: до {_FAST_FACTS_MAX_LEN} символов, три строки в одном поле: "
+        "'⚡ Главный баг прошивки: …', '💼 Триггер больших денег: …', '🔋 Идеальная перезагрузка: …'.\n"
+        "- plan: plain text план на 30 дней (блоки 1–5 / 6–15 / 16–30) с SMART-действиями.\n"
+        "Без символов # в тексте. Без эзотерического жаргона. Только факты карты из user-блока."
+    )
+    user_prompt = (
+        f"Клиент: {name}. Тип: {hd_type}. Профиль: {profile}. "
+        f"Авторитет: {authority}. Стратегия: {strategy}.\n"
+        f"Шкалы (read-only): {scales_line}\n\n"
+        f"Выдержки из глав синтеза:\n{excerpts}\n\n"
+        "Сгенерируй fast_facts и plan, согласованные с выдержками."
+    )
+    return system_prompt, user_prompt
+
+
+def _normalize_premium_summary(parsed: dict[str, object]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for key in ("fast_facts", "plan"):
+        value = parsed.get(key)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"premium summary missing non-empty {key!r}")
+        out[key] = value.strip()
+    if len(out["fast_facts"]) > _FAST_FACTS_MAX_LEN:
+        out["fast_facts"] = out["fast_facts"][: _FAST_FACTS_MAX_LEN - 1].rstrip() + "…"
+    return out
+
+
+async def _generate_premium_summary_via_openrouter(
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    models: list[str] | None = None,
+    timeout: float | None = None,
+) -> dict[str, str]:
+    from services.ai_text import ask_ai_messages
+
+    completion = await ask_ai_messages(
+        _app_settings,
+        [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        timeout=timeout if timeout is not None else _OPENROUTER_PREMIUM_TIMEOUT_SEC,
+        models=models or _openrouter_models_for_premium(),
+        max_tokens=_PREMIUM_SUMMARY_MAX_TOKENS,
+        temperature=_PREMIUM_SUMMARY_TEMPERATURE,
+        response_format={"type": "json_object"},
+    )
+    text = (completion.get("content") or "").strip()
+    if not text:
+        raise RuntimeError("openrouter_premium_summary_empty")
+    return _normalize_premium_summary(_parse_json_object(text))
+
+
+async def _generate_premium_summary_via_gemini(
+    system_prompt: str,
+    user_prompt: str,
+) -> dict[str, str]:
+    client = _configure_genai()
+    gen_cfg = {
+        "response_mime_type": "application/json",
+        "max_output_tokens": _PREMIUM_SUMMARY_MAX_TOKENS,
+        "system_instruction": system_prompt,
+        "temperature": _PREMIUM_SUMMARY_TEMPERATURE,
+    }
+    for model_name in _GEMINI_PREMIUM_MODEL_CHAIN:
+        try:
+            response = await asyncio.wait_for(
+                client.aio.models.generate_content(
+                    model=model_name,
+                    contents=user_prompt,
+                    config=gen_cfg,
+                ),
+                timeout=_GEMINI_PREMIUM_TIMEOUT_SEC,
+            )
+            return _normalize_premium_summary(_parse_json_object(_extract_gemini_text(response)))
+        except Exception:  # noqa: BLE001
+            continue
+    raise RuntimeError("gemini_premium_summary_unavailable")
+
+
+async def _generate_premium_summary(
+    user_name: str,
+    math_data: dict[str, object],
+    *,
+    domain_excerpts: dict[str, str],
+    energy_scales: dict[str, int],
+    upgrade_mode: bool = False,
+) -> dict[str, str]:
+    system_prompt, user_prompt = _build_premium_summary_prompt(
+        user_name,
+        math_data,
+        domain_excerpts=domain_excerpts,
+        energy_scales=energy_scales,
+    )
+    if _gemini_configured() and not upgrade_mode:
+        try:
+            return await _generate_premium_summary_via_gemini(system_prompt, user_prompt)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Gemini premium summary failed: %s", exc)
+    if not _openrouter_configured():
+        raise RuntimeError("hd_summary_unavailable")
+    models = (
+        _openrouter_models_for_premium_upgrade()
+        if upgrade_mode
+        else _openrouter_models_for_premium()
+    )
+    timeout = (
+        _OPENROUTER_PREMIUM_UPGRADE_TIMEOUT_SEC
+        if upgrade_mode
+        else _OPENROUTER_PREMIUM_TIMEOUT_SEC
+    )
+    return await _generate_premium_summary_via_openrouter(
+        system_prompt,
+        user_prompt,
+        models=models,
+        timeout=timeout,
+    )
+
+
+async def _generate_premium_report_multipass(
+    user_name: str,
+    math_data: dict[str, object],
+    *,
+    upgrade_mode: bool = False,
+) -> dict[str, Any]:
+    from services.hd_static_blocks import (
+        assemble_static_reference,
+        format_static_reference_for_domain,
+        format_static_reference_full,
+    )
+
+    energy_scales = compute_energy_scales_from_math(math_data)
+    static_sections = assemble_static_reference(math_data, gate_to_center=_GATE_TO_CENTER)
+    static_full = format_static_reference_full(static_sections)
+
+    pairs_raw = list(math_data.get("synthesis_pairs") or [])
+    if not pairs_raw:
+        pairs_raw = build_synthesis_pairs(math_data)
+    max_pairs = _MAX_SYNTHESIS_PAIRS_UPGRADE if upgrade_mode else _MAX_SYNTHESIS_PAIRS_FULL
+    pairs = pairs_raw[:max_pairs]
+
+    synthesis_by_domain: dict[str, list[dict[str, Any]]] = {
+        "money": [],
+        "love": [],
+        "energy": [],
+    }
+    failed_pairs = 0
+
+    for pair in pairs:
+        if not isinstance(pair, dict):
+            continue
+        for domain in sorted(_GENETIC_SYNTHESIS_DOMAINS):
+            try:
+                block = await generate_genetic_synthesis(
+                    domain=domain,
+                    math_data=math_data,
+                    synthesis_pair=pair,
+                    energy_scales=energy_scales,
+                )
+                block["_pair"] = {
+                    "open_center": pair.get("open_center"),
+                    "anchors": pair.get("anchors"),
+                }
+                synthesis_by_domain[domain].append(block)
+            except Exception:
+                failed_pairs += 1
+                logger.warning(
+                    "genetic synthesis failed domain=%s open=%s",
+                    domain,
+                    pair.get("open_center"),
+                    exc_info=True,
+                )
+
+    successful = sum(len(v) for v in synthesis_by_domain.values())
+    if successful == 0:
+        raise RuntimeError("multipass_synthesis_empty")
+
+    domain_chapters: dict[str, str] = {}
+    domain_excerpts: dict[str, str] = {}
+    for domain in ("money", "love", "energy"):
+        static_ctx = format_static_reference_for_domain(static_sections, domain)
+        chapter = _compose_domain_chapter(
+            domain,
+            static_context=static_ctx,
+            synthesis_blocks=synthesis_by_domain[domain],
+        )
+        domain_chapters[domain] = chapter
+        domain_excerpts[domain] = chapter[:4000]
+
+    summary = await _generate_premium_summary(
+        user_name,
+        math_data,
+        domain_excerpts=domain_excerpts,
+        energy_scales=energy_scales,
+        upgrade_mode=upgrade_mode,
+    )
+
+    return {
+        "fast_facts": summary["fast_facts"],
+        "money": domain_chapters["money"],
+        "love": domain_chapters["love"],
+        "energy": domain_chapters["energy"],
+        "plan": summary["plan"],
+        "energy_scales": energy_scales,
+        "static_reference": static_sections,
+        "synthesis_meta": {
+            "pairs_requested": len(pairs),
+            "blocks_ok": successful,
+            "blocks_failed": failed_pairs,
+            "static_pages_est": max(1, len(static_full) // 2200),
+        },
+    }
 
 
 def _pdf_clean_meta_value(value: object) -> str:
@@ -2062,6 +2869,7 @@ def _build_chart_overview_table(
         ("Профиль", meta.get("profile")),
         ("Внутренний Авторитет", meta.get("authority")),
         ("Стратегия", meta.get("strategy")),
+        ("Определённость", meta.get("definition")),
     ):
         value = _pdf_clean_meta_value(raw)
         if value:
@@ -2197,6 +3005,17 @@ def create_hd_premium_pdf(
         raise RuntimeError("Установите пакет reportlab для PDF-отчетов.")
     math_data = build_hd_math_data(hd_type or "не указан", birth_data or "")
     meta = hd_profile_metadata(math_data)
+    report_for_pdf: dict[str, Any] = dict(report)
+    static_raw = report_for_pdf.get("static_reference")
+    if isinstance(static_raw, dict) and static_raw:
+        from services.hd_static_blocks import format_static_reference_full
+
+        report_for_pdf["static_reference"] = format_static_reference_full(static_raw)
+    elif not str(report_for_pdf.get("static_reference") or "").strip():
+        from services.hd_static_blocks import assemble_static_reference, format_static_reference_full
+
+        sections = assemble_static_reference(math_data, gate_to_center=_GATE_TO_CENTER)
+        report_for_pdf["static_reference"] = format_static_reference_full(sections)
     path = Path(tempfile.gettempdir()) / f"report_{user_id}.pdf"
     font_name = _register_pdf_font()
     doc = _HdPremiumPdfDoc(
@@ -2207,7 +3026,7 @@ def create_hd_premium_pdf(
     )
     story = _build_hd_premium_pdf_story(
         user_id,
-        report,
+        report_for_pdf,
         user_name=user_name,
         birth_data=birth_data,
         meta=meta,
