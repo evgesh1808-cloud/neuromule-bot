@@ -1152,7 +1152,7 @@ def format_hd_congrats_html(report: dict[str, str], hd_type: str, *, intro: str)
     """Текст поздравления после покупки HD-разбора."""
     import html as html_mod
 
-    fast = report.get("fast_facts", "").strip()
+    fast = str(report.get("fast_facts") or "").strip()
     lead = intro.strip()
     if fast:
         return f"{lead}\n\n{md_to_telegram_html(fast)}"

@@ -134,7 +134,7 @@ from services.telegram_safe_text import sanitize_telegram_plain_text
 from services.use_cases.animate_generation_turn import AnimateGenOutcome, run_animate_generation_turn
 from platforms.telegram_chat_action import chat_action_loop
 from platforms.telegram_chat_stream import create_throttled_stream_reply
-from platforms.telegram_chunks import answer_chat_text
+from platforms.telegram_chunks import answer_chat_text, send_chat_html
 from services.use_cases.chat_turn import ChatTurnOutcome, run_chat_turn
 from services.use_cases.music_generation_turn import MusicGenOutcome, run_music_generation_turn
 from services.use_cases.cabinet_turn import build_cabinet_view
@@ -220,14 +220,14 @@ async def _deliver_upgraded_hd_report(
     hd_type = (user_row["hd_type"] or "") if "hd_type" in user_row.keys() else ""
     math_data = build_hd_math_data(hd_type, birth_data)
     resolved_type = str(math_data.get("hd_type") or hd_type)
-    await target.answer(
+    await _answer_hd_html(
+        target,
         format_hd_congrats_html(
             report,
             resolved_type,
             intro=msg.TXT_HD_UPGRADED_REPORT if upgraded else msg.TXT_HD_REPORT_READY,
         ),
         reply_markup=hd_report_sections_markup(uid),
-        parse_mode=ParseMode.HTML,
     )
     if upgraded:
         await _send_hd_premium_pdf(
@@ -613,6 +613,39 @@ def _hd_section_html(title: str, body: str) -> str:
     return f"<b>{html.escape(title)}</b>\n\n{md_to_telegram_html(body)}"
 
 
+async def _answer_hd_html(
+    message: Message,
+    text: str,
+    *,
+    reply_markup: InlineKeyboardMarkup | None = None,
+) -> None:
+    await answer_chat_text(message, text, settings, reply_markup=reply_markup)
+
+
+async def _send_hd_section_message(
+    message: Message,
+    uid: int,
+    body_text: str,
+    *,
+    try_edit: bool = False,
+) -> None:
+    """Раздел отчёта: edit только для короткого текста, иначе — chunked answer."""
+    from services.telegram_safe_text import prepare_telegram_html_text
+
+    markup = hd_report_sections_markup(uid)
+    if try_edit and len(prepare_telegram_html_text(body_text, max_len=None)) <= settings.chat_chunk_reply_threshold:
+        try:
+            await message.edit_text(
+                body_text,
+                reply_markup=markup,
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        except TelegramBadRequest:
+            logger.debug("hd section edit_text failed uid=%s, use chunks", uid, exc_info=True)
+    await answer_chat_text(message, body_text, settings, reply_markup=markup)
+
+
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -746,11 +779,12 @@ async def _deliver_hd_premium_bundle(
         )
     except Exception:
         logger.warning("instagram stories generation failed uid=%s", uid, exc_info=True)
-    await bot.send_message(
-        chat_id=chat_id,
-        text=format_hd_congrats_html(report, resolved_type, intro=intro),
+    await send_chat_html(
+        bot,
+        chat_id,
+        format_hd_congrats_html(report, resolved_type, intro=intro),
+        settings,
         reply_markup=hd_report_sections_markup(uid),
-        parse_mode=ParseMode.HTML,
     )
     await _send_hd_premium_pdf(
         message,
@@ -1238,19 +1272,11 @@ async def hd_report_section(callback: CallbackQuery) -> None:
         await callback.answer(msg.TXT_STUB_BUTTON, show_alert=True)
         return
     title = titles[section]
-    body_text = _hd_section_html(title, report[section])
-    try:
-        await callback.message.edit_text(
-            body_text,
-            reply_markup=hd_report_sections_markup(uid),
-            parse_mode=ParseMode.HTML,
-        )
-    except TelegramBadRequest:
-        await callback.message.answer(
-            body_text,
-            reply_markup=hd_report_sections_markup(uid),
-            parse_mode=ParseMode.HTML,
-        )
+    section_body = str(
+        report.get(section) or "Раздел пока пуст — нажми 🔄 Обновить отчёт ещё раз."
+    ).strip()
+    body_text = _hd_section_html(title, section_body)
+    await _send_hd_section_message(callback.message, uid, body_text, try_edit=True)
     await callback.answer()
 
 @router.callback_query(F.data == msg.CB_HD_COMPATIBILITY_START)

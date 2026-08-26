@@ -218,3 +218,51 @@ async def answer_chat_text(
         markup = reply_markup if idx == len(parts) - 1 else None
         last_sent = await _answer(part, markup=markup)
     return last_sent
+
+
+async def send_chat_html(
+    bot,
+    chat_id: int,
+    text: str,
+    settings: Settings,
+    *,
+    reply_markup: InlineKeyboardMarkup | None = None,
+) -> None:
+    """Длинный HTML в чат ``chat_id`` — с нарезкой и plain-fallback (HD-разделы, поздравления)."""
+    safe = prepare_telegram_html_text(text, max_len=None)
+    threshold = settings.chat_chunk_reply_threshold
+    chunk_size = max(500, min(settings.chat_reply_chunk_size, _TELEGRAM_MSG_MAX))
+
+    async def _send(part: str, *, markup: InlineKeyboardMarkup | None) -> None:
+        capped = _cap_html(part)
+        plain = sanitize_telegram_plain_text(capped)
+        try:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=capped,
+                parse_mode=ParseMode.HTML,
+                reply_markup=markup,
+            )
+            return
+        except TelegramBadRequest:
+            logger.debug("send_chat_html: HTML send failed, retry plain", exc_info=True)
+        try:
+            await bot.send_message(chat_id=chat_id, text=plain, reply_markup=markup)
+        except TelegramBadRequest:
+            if markup is None:
+                await bot.send_message(chat_id=chat_id, text=plain)
+                return
+            logger.error(
+                "send_chat_html: send with required markup failed chat_id=%s",
+                chat_id,
+                exc_info=True,
+            )
+            raise
+
+    if len(safe) <= threshold:
+        await _send(safe, markup=reply_markup)
+        return
+    parts = split_telegram_text_chunks(safe, chunk_size)
+    for idx, part in enumerate(parts):
+        markup = reply_markup if idx == len(parts) - 1 else None
+        await _send(part, markup=markup)
