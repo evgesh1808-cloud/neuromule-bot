@@ -147,7 +147,7 @@ _OPENROUTER_PREMIUM_TIMEOUT_SEC = 120.0
 _OPENROUTER_PREMIUM_UPGRADE_TIMEOUT_SEC = 75.0
 _OPENROUTER_WELCOME_HOOK_TIMEOUT_SEC = 12.0
 _WELCOME_HOOK_MAX_TOKENS = 420
-_HD_UPGRADE_LLM_TIMEOUT_SEC = 540.0
+_HD_UPGRADE_LLM_TIMEOUT_SEC = 120.0
 _HD_LLM_PARALLEL_LIMIT = 5
 _HD_PREMIUM_MAX_OUTPUT_TOKENS = 8192
 _PDF_FONT_NAME = "HDReportFont"
@@ -999,21 +999,56 @@ def hd_report_schema_version(raw: str | None) -> int:
     return 1
 
 
+def _parse_plain_text_hd_report(text: str) -> dict[str, str]:
+    """Разбор старых отчётов, сохранённых plain-text (format_premium_report), не JSON."""
+    patterns: tuple[tuple[str, str], ...] = (
+        ("fast_facts", r"⚡\s*Экспресс-анализ\s*\n(.*?)(?=\n\n💎|\Z)"),
+        ("money", r"💎\s*Деньги\s*\n(.*?)(?=\n\n❤️|\Z)"),
+        ("love", r"❤️\s*Отношения\s*\n(.*?)(?=\n\n⚡️|\Z)"),
+        ("energy", r"⚡️\s*Энергия\s*\n(.*?)(?=\n\n📅|\Z)"),
+        ("plan", r"📅\s*План на 30 дней\s*\n(.*?)\Z"),
+    )
+    sections: dict[str, str] = {}
+    for key, pattern in patterns:
+        match = re.search(pattern, text, flags=re.DOTALL)
+        if match:
+            body = match.group(1).strip()
+            if body:
+                sections[key] = body
+    if sum(1 for key in ("money", "love", "energy", "plan") if sections.get(key)) >= 2:
+        return sections
+    raise ValueError("plain_text_hd_report_unrecognized")
+
+
+def _parse_hd_report_storage(raw: str) -> dict[str, Any]:
+    """JSON или legacy plain-text → dict полей отчёта."""
+    text = (raw or "").strip()
+    if not text:
+        raise ValueError("empty_hd_report")
+    try:
+        parsed = _parse_json_object(text)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+    return _parse_plain_text_hd_report(text)
+
+
 def is_legacy_hd_report_raw(raw: str | None) -> bool:
-    """True для отчётов до elite v2 (без schema_version или placeholder fast_facts)."""
+    """True только для отчётов до schema v3 (v3 никогда не legacy, даже с placeholder fast_facts)."""
     if not raw:
         return True
     version = hd_report_schema_version(raw)
-    if version < _HD_REPORT_SCHEMA_VERSION:
-        return True
+    if version >= _HD_REPORT_SCHEMA_VERSION:
+        return False
     try:
-        parsed = _parse_json_object(raw)
+        parsed = _parse_hd_report_storage(raw)
         fast = str(parsed.get("fast_facts") or "").strip()
         if fast == _LEGACY_HD_REPORT_PLACEHOLDER:
             return True
     except Exception:
         return True
-    return False
+    return version < _HD_REPORT_SCHEMA_VERSION
 
 
 def premium_report_to_json(report: dict[str, Any]) -> str:
@@ -1038,14 +1073,16 @@ def premium_report_from_json(raw: str | None) -> dict[str, Any] | None:
     if not raw:
         return None
     try:
-        parsed = _parse_json_object(raw)
-        return _normalize_premium_report(parsed)
+        parsed = _parse_hd_report_storage(raw)
+        return _normalize_premium_report(parsed, relax_cliches=True)
     except Exception:
         try:
-            parsed = _parse_json_object(raw)
+            parsed = _parse_hd_report_storage(raw)
             legacy_keys = ("money", "love", "energy", "plan")
             if isinstance(parsed, dict) and all(parsed.get(k) for k in legacy_keys):
-                legacy_report: dict[str, Any] = {k: str(parsed[k]).strip() for k in legacy_keys}
+                legacy_report: dict[str, Any] = {
+                    k: _sanitize_hd_user_facing_text(str(parsed[k]).strip()) for k in legacy_keys
+                }
                 legacy_report["fast_facts"] = str(parsed.get("fast_facts") or "").strip() or (
                     _LEGACY_HD_REPORT_PLACEHOLDER
                 )
@@ -1133,6 +1170,8 @@ async def ensure_modern_hd_report(
         hd_report_schema_version(raw),
         _HD_REPORT_SCHEMA_VERSION,
     )
+    math_data = build_hd_math_data(hd_type, birth_data)
+    report: dict[str, Any] | None = None
     try:
         report = await asyncio.wait_for(
             generate_premium_report(
@@ -1145,27 +1184,28 @@ async def ensure_modern_hd_report(
         )
     except asyncio.TimeoutError:
         logger.error("HD report upgrade LLM timeout uid=%s — offline legacy wrap", user_id)
-        math_data = build_hd_math_data(hd_type, birth_data)
-        report = _wrap_legacy_report_as_v3(raw, math_data)
     except Exception as exc:
-        logger.exception("HD report upgrade LLM failed uid=%s", user_id)
-        math_data = build_hd_math_data(hd_type, birth_data)
-        try:
-            report = _wrap_legacy_report_as_v3(raw, math_data)
-        except Exception as wrap_exc:  # noqa: BLE001
-            logger.exception(
-                "HD offline legacy wrap failed uid=%s after %s",
-                user_id,
-                exc,
-            )
-            raise exc from wrap_exc
-        logger.warning(
-            "HD report upgrade uid=%s served via offline legacy wrap after LLM failure: %s",
-            user_id,
-            exc,
-        )
+        logger.exception("HD report upgrade LLM failed uid=%s: %s", user_id, exc)
 
-    math_data = build_hd_math_data(hd_type, birth_data)
+    if report is None:
+        for factory, label in (
+            (_wrap_legacy_report_as_v3, "offline_wrap"),
+            (_minimal_hd_report_fallback, "minimal_fallback"),
+        ):
+            try:
+                report = factory(raw, math_data)
+                logger.warning(
+                    "HD report upgrade uid=%s served via %s",
+                    user_id,
+                    label,
+                )
+                break
+            except Exception:
+                logger.exception("HD report upgrade %s failed uid=%s", label, user_id)
+
+    if report is None:
+        raise RuntimeError("hd_upgrade_wrap_exhausted")
+
     resolved_type = str(math_data.get("hd_type") or hd_type)
     await update_user(
         user_id,
@@ -1290,9 +1330,7 @@ def _wrap_legacy_report_as_v3(
     """
     from services.hd_static_blocks import assemble_static_reference
 
-    parsed = _parse_json_object(raw)
-    if not isinstance(parsed, dict):
-        raise ValueError("legacy_hd_report_not_object")
+    parsed = _parse_hd_report_storage(raw)
 
     report: dict[str, Any] = {}
     for key in _PREMIUM_REPORT_KEYS:
@@ -1314,6 +1352,29 @@ def _wrap_legacy_report_as_v3(
         "blocks_failed": 0,
         "upgrade_offline": True,
     }
+    return report
+
+
+def _minimal_hd_report_fallback(
+    raw: str,
+    math_data: dict[str, object],
+) -> dict[str, Any]:
+    """Абсолютный резерв: хотя бы schema v3 + static, чтобы апгрейд никогда не падал в UI."""
+    from services.hd_static_blocks import assemble_static_reference
+
+    preview = re.sub(r"\s+", " ", (raw or "").strip())[:1200]
+    report: dict[str, Any] = {
+        "fast_facts": _LEGACY_HD_REPORT_PLACEHOLDER,
+        "money": preview or "Раздел временно недоступен — откройте поддержку.",
+        "love": "Раздел будет обновлён при следующей успешной AI-генерации.",
+        "energy": "Раздел будет обновлён при следующей успешной AI-генерации.",
+        "plan": "Раздел будет обновлён при следующей успешной AI-генерации.",
+        "energy_scales": compute_energy_scales_from_math(math_data),
+        "synthesis_meta": {"upgrade_offline": True, "upgrade_minimal": True},
+    }
+    static_sections = assemble_static_reference(math_data, gate_to_center=_GATE_TO_CENTER)
+    if static_sections:
+        report["static_reference"] = static_sections
     return report
 
 

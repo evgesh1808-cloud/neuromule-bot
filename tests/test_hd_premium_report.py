@@ -172,6 +172,64 @@ def test_legacy_hd_report_detected_without_schema_version() -> None:
     assert hd_logic.is_legacy_hd_report_raw(raw) is True
 
 
+def test_schema_v3_with_placeholder_is_not_legacy() -> None:
+    raw = hd_logic.premium_report_to_json(_SAMPLE_REPORT)
+    import json
+
+    payload = json.loads(raw)
+    payload["fast_facts"] = hd_logic._LEGACY_HD_REPORT_PLACEHOLDER
+    payload["schema_version"] = hd_logic._HD_REPORT_SCHEMA_VERSION
+    raw_v3 = json.dumps(payload, ensure_ascii=False)
+    assert hd_logic.hd_report_schema_version(raw_v3) == hd_logic._HD_REPORT_SCHEMA_VERSION
+    assert hd_logic.is_legacy_hd_report_raw(raw_v3) is False
+
+
+def test_parse_plain_text_hd_report_storage() -> None:
+    plain = hd_logic.format_premium_report(_SAMPLE_REPORT)
+    parsed = hd_logic._parse_hd_report_storage(plain)
+    assert parsed.get("money")
+    assert parsed.get("love")
+
+
+@pytest.mark.asyncio
+async def test_ensure_modern_hd_report_offline_when_llm_fails(monkeypatch) -> None:
+    legacy = hd_logic.premium_report_to_json(_SAMPLE_REPORT)
+    import json
+
+    payload = json.loads(legacy)
+    payload.pop("schema_version", None)
+    raw = json.dumps(payload, ensure_ascii=False)
+
+    async def _fake_get_user(_uid: int):
+        class _Row:
+            def keys(self):
+                return ("hd_report_json", "hd_birth_data", "hd_type")
+
+            def __getitem__(self, key: str):
+                data = {
+                    "hd_report_json": raw,
+                    "hd_birth_data": "15.03.1990 14:30 Москва",
+                    "hd_type": "Генератор",
+                }
+                return data[key]
+
+        return _Row()
+
+    monkeypatch.setattr(hd_logic, "get_user", _fake_get_user)
+    monkeypatch.setattr(hd_logic, "update_user", AsyncMock())
+    monkeypatch.setattr(
+        hd_logic,
+        "generate_premium_report",
+        AsyncMock(side_effect=RuntimeError("openrouter_unavailable")),
+    )
+    monkeypatch.setattr(hd_logic, "generate_premium_bodygraph", lambda *a, **k: "")
+
+    report, upgraded = await hd_logic.ensure_modern_hd_report(435041303, user_name="Тест")
+    assert upgraded is True
+    assert report is not None
+    assert report.get("money")
+
+
 def test_strip_hd_markdown_for_plain() -> None:
     raw = "### Боль\n**1. Правило:** текст с **звёздочками** и `#` символом"
     clean = hd_logic.strip_hd_markdown_for_plain(raw)
