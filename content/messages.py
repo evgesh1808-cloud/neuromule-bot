@@ -574,10 +574,17 @@ TXT_HD_UPGRADED_REPORT = (
     "<b>Разбор обновлён!</b> 🧬\n"
     "Новый элитный отчёт с Pro-моделями, шкалами энергии и Instagram-сторис готов."
 )
+TXT_HD_UPGRADED_OFFLINE = (
+    "<b>PDF и Stories обновлены</b> (офлайн-режим).\n\n"
+    "ИИ сейчас недоступен — в отчёт попали свежая статика IHDS и сохранённый текст. "
+    "Повтори <b>🔄 Обновить отчёт</b> через 10–15 минут для полной AI-перегенерации."
+)
 TXT_HD_UPGRADE_FAILED = (
     "<b>Не удалось обновить разбор.</b>\n"
-    "Сервис ИИ не ответил вовремя или вернул ошибку. Попробуй через 2–3 минуты ещё раз "
-    "или напиши /version — там должен быть <code>HD schema v3</code>."
+    "Сервис ИИ не ответил вовремя или вернул ошибку. Попробуй через 10–15 минут ещё раз.\n\n"
+    "Админ: проверь <code>OPENROUTER_API_KEY</code> / <code>GEMINI_API_KEY</code> и "
+    "<code>HD_PREMIUM_LLM_TIER=production</code> в .env, затем "
+    "<code>pm2 logs neuromule-tg | grep hd_regenerate</code>."
 )
 TXT_HD_REGENERATE_NEED_BIRTH = (
     "<b>Нужно обновить разбор до новой версии.</b>\n\n"

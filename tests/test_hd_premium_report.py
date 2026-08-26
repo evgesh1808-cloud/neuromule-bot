@@ -348,10 +348,17 @@ def test_openrouter_model_cascades(monkeypatch) -> None:
     ]
     monkeypatch.setattr(hd_logic, "_hd_premium_llm_tier", lambda: "economy")
     assert hd_logic._openrouter_models_for_premium() == [
-        "google/gemini-2.0-pro-exp-02-05:free",
-        "google/gemini-1.5-flash",
+        "google/gemini-2.5-flash",
+        "google/gemini-3.1-pro-preview",
+        "deepseek/deepseek-chat",
     ]
-    assert hd_logic._openrouter_models_for_premium_upgrade()[0] == "google/gemini-2.0-pro-exp-02-05:free"
+    assert hd_logic._openrouter_models_for_premium_upgrade()[0] == "google/gemini-2.5-flash"
+
+
+def test_gemini_premium_model_chain_uses_current_models() -> None:
+    assert hd_logic._GEMINI_PREMIUM_MODEL_CHAIN[0] == "gemini-3.1-pro-preview"
+    assert "gemini-1.5-pro-latest" not in hd_logic._GEMINI_PREMIUM_MODEL_CHAIN
+    assert "gemini-2.0-pro-exp-02-15" not in hd_logic._GEMINI_PREMIUM_MODEL_CHAIN
 
 
 @pytest.mark.asyncio
@@ -663,3 +670,22 @@ async def test_hd_llm_semaphore_limits_parallel_calls(monkeypatch) -> None:
 
     await asyncio.gather(*[worker() for _ in range(6)])
     assert peak <= 2
+
+
+@pytest.mark.asyncio
+async def test_premium_report_resilient_offline_when_llm_fails() -> None:
+    existing = json.dumps({"schema_version": 3, "money": "Старый текст", "fast_facts": "x" * 50})
+    with patch.object(
+        hd_logic,
+        "generate_premium_report",
+        new=AsyncMock(side_effect=RuntimeError("hd_premium_unavailable")),
+    ):
+        report, llm_ok = await hd_logic.generate_premium_report_resilient(
+            "Генератор",
+            "18.08.1986 03:40 Чебоксары",
+            existing_raw=existing,
+            timeout_sec=5.0,
+        )
+    assert llm_ok is False
+    assert report.get("money")
+    assert report.get("static_reference") is not None or report.get("synthesis_meta", {}).get("upgrade_offline")

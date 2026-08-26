@@ -93,6 +93,7 @@ from services.hd_logic import (
     generate_instagram_stories_async,
     generate_premium_bodygraph,
     generate_premium_report,
+    generate_premium_report_resilient,
     get_dynamic_cta_for_today,
     get_user,
     md_to_telegram_html,
@@ -783,12 +784,15 @@ async def _run_free_hd_regenerate(
     chat_id = deliver_to_chat_id if deliver_to_chat_id is not None else message.chat.id
     user_name = user_display_name or _hd_user_display_name(message, user_row)
     user_gender = _hd_user_gender(user_row)
+    keys = user_row.keys() if hasattr(user_row, "keys") else ()
+    existing_raw = user_row["hd_report_json"] if "hd_report_json" in keys else None
     async with chat_action_loop(deps.bot(), chat_id, "typing"):
-        report = await generate_premium_report(
+        report, llm_ok = await generate_premium_report_resilient(
             hd_type,
             birth_data,
             user_name=user_name,
             user_gender=user_gender,
+            existing_raw=existing_raw,
         )
     if not report:
         raise RuntimeError("Gemini returned empty HD report")
@@ -801,6 +805,7 @@ async def _run_free_hd_regenerate(
         hd_birth_data=birth_data,
         has_pro_analysis=1,
     )
+    intro = msg.TXT_HD_UPGRADED_REPORT if llm_ok else msg.TXT_HD_UPGRADED_OFFLINE
     await _deliver_hd_premium_bundle(
         message,
         uid,
@@ -808,7 +813,7 @@ async def _run_free_hd_regenerate(
         report,
         birth_data=birth_data,
         hd_type=resolved_type,
-        intro=msg.TXT_HD_UPGRADED_REPORT,
+        intro=intro,
         deliver_to_chat_id=deliver_to_chat_id,
         user_display_name=user_name,
     )
@@ -861,19 +866,25 @@ async def _start_hd_regenerate_for_user(
         await message.answer(msg.TXT_HD_UPGRADING_REPORT, parse_mode=ParseMode.HTML)
 
     delivery_chat = deliver_to_chat_id if deliver_to_chat_id is not None else uid
-    try:
-        await _run_free_hd_regenerate(
-            message,
-            uid,
-            user,
-            hd_type=hd_type,
-            birth_data=birth_data,
-            deliver_to_chat_id=delivery_chat,
-        )
-    except Exception:
-        logger.exception("hd_regenerate_failed uid=%s", uid)
-        await message.answer(msg.TXT_HD_UPGRADE_FAILED, parse_mode=ParseMode.HTML)
-        return False
+
+    async def _regenerate_job() -> None:
+        try:
+            await _run_free_hd_regenerate(
+                message,
+                uid,
+                user,
+                hd_type=hd_type,
+                birth_data=birth_data,
+                deliver_to_chat_id=delivery_chat,
+            )
+        except Exception:
+            logger.exception("hd_regenerate_failed uid=%s", uid)
+            try:
+                await message.answer(msg.TXT_HD_UPGRADE_FAILED, parse_mode=ParseMode.HTML)
+            except Exception:
+                logger.exception("hd_regenerate_failed_notify uid=%s", uid)
+
+    asyncio.create_task(_regenerate_job(), name=f"hd_regenerate_{uid}")
     return True
 
 
@@ -926,8 +937,8 @@ async def cmd_hd_refresh(message: Message, state: FSMContext) -> None:
     )
     if started and target_uid != admin_uid:
         await message.answer(
-            f"✅ Перегенерация для <code>{target_uid}</code> завершена — "
-            "клиенту отправлены PDF и Stories, админам ушла копия.",
+            f"⏳ Перегенерация для <code>{target_uid}</code> запущена в фоне — "
+            "3–8 мин, клиенту придут PDF и Stories.",
             parse_mode=ParseMode.HTML,
         )
 

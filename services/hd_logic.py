@@ -126,13 +126,13 @@ PRICE_UPSCALE = _app_settings.cost_upscale
 # Канал B (Gemini SDK): отдельные каскады для «Совета дня» (Flash) и премиум-разбора (Pro).
 _GEMINI_DAILY_MODEL_CHAIN: tuple[str, ...] = (
     "gemini-2.5-flash",
+    "gemini-3.1-flash-preview",
     "gemini-2.0-flash",
-    "gemini-1.5-flash-latest",
 )
 _GEMINI_PREMIUM_MODEL_CHAIN: tuple[str, ...] = (
+    "gemini-3.1-pro-preview",
     "gemini-2.5-pro",
-    "gemini-2.0-pro-exp-02-15",
-    "gemini-1.5-pro-latest",
+    "gemini-2.5-flash",
 )
 # Обратная совместимость для daily_advice_pool (ночной cron).
 _GEMINI_MODEL_CHAIN = _GEMINI_DAILY_MODEL_CHAIN
@@ -151,6 +151,7 @@ _OPENROUTER_PREMIUM_UPGRADE_TIMEOUT_SEC = 75.0
 _OPENROUTER_WELCOME_HOOK_TIMEOUT_SEC = 12.0
 _WELCOME_HOOK_MAX_TOKENS = 420
 _HD_UPGRADE_LLM_TIMEOUT_SEC = 120.0
+_HD_REGENERATE_LLM_TIMEOUT_SEC = 480.0
 _HD_LLM_PARALLEL_LIMIT = 5
 _HD_PREMIUM_MAX_OUTPUT_TOKENS = 8192
 _PDF_FONT_NAME = "HDReportFont"
@@ -623,8 +624,9 @@ def _openrouter_models_for_premium() -> list[str]:
             "deepseek/deepseek-r1",
         ]
     return [
-        "google/gemini-2.0-pro-exp-02-05:free",
-        "google/gemini-1.5-flash",
+        "google/gemini-2.5-flash",
+        "google/gemini-3.1-pro-preview",
+        "deepseek/deepseek-chat",
     ]
 
 
@@ -1469,6 +1471,58 @@ async def generate_premium_report(
             prior_errors=[f"multipass: {exc!r}"],
             user_gender=user_gender,
         )
+
+
+async def generate_premium_report_resilient(
+    hd_type: str,
+    birth_data: str,
+    *,
+    user_name: str = "друг",
+    user_gender: str = "",
+    existing_raw: str | None = None,
+    timeout_sec: float = _HD_REGENERATE_LLM_TIMEOUT_SEC,
+) -> tuple[dict[str, Any], bool]:
+    """
+    Полный HD-разбор с офлайн-fallback (как ensure_modern_hd_report).
+
+    Returns:
+        (report, llm_ok) — llm_ok=False, если отдан wrap/minimal без живого LLM.
+    """
+    math_data = build_hd_math_data(hd_type, birth_data)
+    report: dict[str, Any] | None = None
+    try:
+        report = await asyncio.wait_for(
+            generate_premium_report(
+                hd_type,
+                birth_data,
+                user_name=user_name,
+                user_gender=user_gender,
+            ),
+            timeout=timeout_sec,
+        )
+        if report:
+            return report, True
+    except asyncio.TimeoutError:
+        logger.error(
+            "HD premium report timeout uid_birth=%r timeout_sec=%s",
+            birth_data[:60],
+            timeout_sec,
+        )
+    except Exception:
+        logger.exception("HD premium report resilient primary path failed")
+
+    raw = (existing_raw or "").strip()
+    for factory, label in (
+        (_wrap_legacy_report_as_v3, "offline_wrap"),
+        (_minimal_hd_report_fallback, "minimal_fallback"),
+    ):
+        try:
+            wrapped = factory(raw, math_data)
+            logger.warning("HD premium report served via resilient %s", label)
+            return wrapped, False
+        except Exception:
+            logger.exception("HD premium resilient %s failed", label)
+    raise RuntimeError("hd_premium_unavailable: offline fallback exhausted")
 
 
 def _parse_premium_report_from_llm(
