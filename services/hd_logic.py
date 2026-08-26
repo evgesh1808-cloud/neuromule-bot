@@ -144,7 +144,7 @@ _OPENROUTER_DAILY_TIMEOUT_SEC = 45.0
 _OPENROUTER_DAILY_MAX_TOKENS = 900
 _GEMINI_PREMIUM_TIMEOUT_SEC = 90.0
 _OPENROUTER_PREMIUM_TIMEOUT_SEC = 120.0
-_OPENROUTER_PREMIUM_UPGRADE_TIMEOUT_SEC = 120.0
+_OPENROUTER_PREMIUM_UPGRADE_TIMEOUT_SEC = 180.0
 _OPENROUTER_WELCOME_HOOK_TIMEOUT_SEC = 12.0
 _WELCOME_HOOK_MAX_TOKENS = 420
 _HD_UPGRADE_LLM_TIMEOUT_SEC = 480.0
@@ -604,8 +604,13 @@ def _openrouter_models_for_premium() -> list[str]:
 
 
 def _openrouter_models_for_premium_upgrade() -> list[str]:
-    """Быстрый апгрейд legacy → v3: DeepSeek-V3 (скорость + цена)."""
-    return ["deepseek/deepseek-chat"]
+    """Быстрый апгрейд legacy → v3: DeepSeek-V3, затем полный premium-каскад."""
+    return [
+        "deepseek/deepseek-chat",
+        "anthropic/claude-3.5-sonnet",
+        "deepseek/deepseek-r1",
+        "google/gemini-2.5-pro",
+    ]
 
 
 def _openrouter_models_for_welcome_hook() -> list[str]:
@@ -868,16 +873,22 @@ def strip_hd_markdown_for_plain(text: str) -> str:
     return out.strip()
 
 
-def _normalize_premium_report(parsed: dict[str, object]) -> dict[str, Any]:
+def _normalize_premium_report(
+    parsed: dict[str, object],
+    *,
+    relax_cliches: bool = False,
+) -> dict[str, Any]:
     report: dict[str, Any] = {}
     for key in _PREMIUM_REPORT_KEYS:
         value = parsed.get(key)
         if not isinstance(value, str) or not value.strip():
             raise ValueError(f"Gemini JSON response is missing non-empty {key!r}")
-        cleaned = value.strip()
-        if text_contains_raw_profile_code(cleaned):
-            raise ValueError(f"premium report field {key!r} contains raw profile code (use archetype)")
-        _validate_hd_user_facing_text(cleaned, field=f"premium report field {key!r}")
+        cleaned = _sanitize_hd_user_facing_text(value.strip())
+        _validate_hd_user_facing_text(
+            cleaned,
+            field=f"premium report field {key!r}",
+            strict_cliches=not relax_cliches,
+        )
         report[key] = cleaned
     if len(report["fast_facts"]) > _FAST_FACTS_MAX_LEN:
         report["fast_facts"] = report["fast_facts"][: _FAST_FACTS_MAX_LEN - 1].rstrip() + "…"
@@ -1248,6 +1259,7 @@ async def generate_premium_report(
                 user_prompt,
                 models=or_models,
                 timeout=or_timeout,
+                relax_cliches=upgrade_mode,
             )
             report["energy_scales"] = compute_energy_scales_from_math(math_data)
             logger.info("HD premium report served via OpenRouter (legacy primary)")
@@ -1258,11 +1270,18 @@ async def generate_premium_report(
     elif not _gemini_configured():
         raise RuntimeError("hd_premium_unavailable: задайте OPENROUTER_API_KEY или GEMINI_API_KEY")
 
-    if _gemini_configured() and not upgrade_mode:
+    if _gemini_configured():
         try:
-            report = await _generate_premium_via_gemini(system_prompt, user_prompt)
+            report = await _generate_premium_via_gemini(
+                system_prompt,
+                user_prompt,
+                relax_cliches=upgrade_mode,
+            )
             report["energy_scales"] = compute_energy_scales_from_math(math_data)
-            logger.info("HD premium report served via Gemini Pro chain (legacy fallback)")
+            logger.info(
+                "HD premium report served via Gemini Pro chain (legacy fallback upgrade_mode=%s)",
+                upgrade_mode,
+            )
             return report
         except Exception as gemini_exc:  # noqa: BLE001
             logger.exception("Gemini premium report fallback failed")
@@ -1273,9 +1292,9 @@ async def generate_premium_report(
     raise RuntimeError("hd_premium_unavailable: " + "; ".join(errors))
 
 
-def _parse_premium_report_from_llm(raw: str) -> dict[str, Any]:
+def _parse_premium_report_from_llm(raw: str, *, relax_cliches: bool = False) -> dict[str, Any]:
     parsed = _parse_json_object(raw)
-    return _normalize_premium_report(parsed)
+    return _normalize_premium_report(parsed, relax_cliches=relax_cliches)
 
 
 def _parse_compat_report_from_llm(raw: str) -> dict[str, str]:
@@ -1283,7 +1302,12 @@ def _parse_compat_report_from_llm(raw: str) -> dict[str, str]:
     return _normalize_compat_report(parsed)
 
 
-async def _generate_premium_via_gemini(system_prompt: str, user_prompt: str) -> dict[str, str]:
+async def _generate_premium_via_gemini(
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    relax_cliches: bool = False,
+) -> dict[str, str]:
     client = _configure_genai()
     errors: list[str] = []
     gen_cfg = {
@@ -1301,7 +1325,10 @@ async def _generate_premium_via_gemini(system_prompt: str, user_prompt: str) -> 
                 ),
                 timeout=_GEMINI_PREMIUM_TIMEOUT_SEC,
             )
-            report = _parse_premium_report_from_llm(_extract_gemini_text(response))
+            report = _parse_premium_report_from_llm(
+                _extract_gemini_text(response),
+                relax_cliches=relax_cliches,
+            )
             logger.info("HD premium Gemini model=%s", model_name)
             return report
         except Exception as exc_json:  # noqa: BLE001
@@ -1321,7 +1348,10 @@ async def _generate_premium_via_gemini(system_prompt: str, user_prompt: str) -> 
                     ),
                     timeout=_GEMINI_PREMIUM_TIMEOUT_SEC,
                 )
-                return _parse_premium_report_from_llm(_extract_gemini_text(response))
+                return _parse_premium_report_from_llm(
+                    _extract_gemini_text(response),
+                    relax_cliches=relax_cliches,
+                )
             except Exception as exc_plain:  # noqa: BLE001
                 errors.append(f"{model_name}(plain): {exc_plain!r}")
                 continue
@@ -1334,6 +1364,7 @@ async def _generate_premium_via_openrouter(
     *,
     models: list[str] | None = None,
     timeout: float | None = None,
+    relax_cliches: bool = False,
 ) -> dict[str, Any]:
     from services.ai_text import ask_ai_messages
 
@@ -1355,7 +1386,7 @@ async def _generate_premium_via_openrouter(
     text = (completion.get("content") or "").strip()
     if not text:
         raise RuntimeError("openrouter_premium_report_empty")
-    return _parse_premium_report_from_llm(text)
+    return _parse_premium_report_from_llm(text, relax_cliches=relax_cliches)
 
 
 async def generate_hd_report(hd_type: str, birth_data: str) -> str:
@@ -2447,14 +2478,37 @@ def _hd_text_coaching_cliche_hits(text: str) -> list[str]:
     return [phrase for phrase in _ELITE_HD_BANNED_COACHING_CLICHES if phrase in lowered]
 
 
-def _validate_hd_user_facing_text(text: str, *, field: str) -> None:
+def _sanitize_hd_user_facing_text(text: str) -> str:
+    """Подменяет сухие коды профилей/каналов на архетипы — не роняем апгрейд из-за 3/5 в ответе LLM."""
+    from services.hd_channel_archetypes import (
+        format_channel_superpower_for_user,
+        normalize_channel_code,
+    )
+
+    channel_re = re.compile(r"\b(\d{1,2})\s*[-–]\s*(\d{1,2})\b")
+
+    def _profile_repl(match: re.Match[str]) -> str:
+        return profile_archetype_label(match.group(0))
+
+    out = re.sub(r"\b[1-6]/[1-6]\b", _profile_repl, text)
+
+    def _channel_repl(match: re.Match[str]) -> str:
+        return format_channel_superpower_for_user(normalize_channel_code(match.group(0)))
+
+    return channel_re.sub(_channel_repl, out)
+
+
+def _validate_hd_user_facing_text(text: str, *, field: str, strict_cliches: bool = True) -> None:
     if text_contains_raw_profile_code(text):
         raise ValueError(f"{field} contains raw profile code (use archetype)")
     if text_contains_raw_channel_code(text):
         raise ValueError(f"{field} contains raw channel code (use superpower label)")
     cliches = _hd_text_coaching_cliche_hits(text)
-    if cliches:
+    if not cliches:
+        return
+    if strict_cliches:
         raise ValueError(f"{field} contains banned coaching cliches: {cliches[:2]}")
+    logger.warning("HD text soft cliche hit field=%s: %s", field, cliches[:2])
 
 
 def _normalize_synthesis_experiment(raw: object, timeframe: str) -> dict[str, str]:
@@ -2890,12 +2944,20 @@ async def _generate_premium_report_upgrade_fast(
                 user_prompt,
                 models=or_models,
                 timeout=or_timeout,
+                relax_cliches=True,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("upgrade-fast OpenRouter failed: %s", exc)
 
     if report is None and _gemini_configured():
-        report = await _generate_premium_via_gemini(system_prompt, user_prompt)
+        try:
+            report = await _generate_premium_via_gemini(
+                system_prompt,
+                user_prompt,
+                relax_cliches=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("upgrade-fast Gemini failed: %s", exc)
 
     if report is None:
         raise RuntimeError("upgrade_fast_llm_unavailable")

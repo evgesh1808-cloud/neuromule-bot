@@ -283,7 +283,19 @@ def test_openrouter_model_cascades() -> None:
         "deepseek/deepseek-r1",
         "google/gemini-2.5-pro",
     ]
-    assert hd_logic._openrouter_models_for_premium_upgrade() == ["deepseek/deepseek-chat"]
+    assert hd_logic._openrouter_models_for_premium_upgrade() == [
+        "deepseek/deepseek-chat",
+        "anthropic/claude-3.5-sonnet",
+        "deepseek/deepseek-r1",
+        "google/gemini-2.5-pro",
+    ]
+
+
+def test_sanitize_hd_user_facing_text_replaces_profile_code() -> None:
+    raw = "Твой профиль 3/5 — это про кризисы."
+    cleaned = hd_logic._sanitize_hd_user_facing_text(raw)
+    assert "3/5" not in cleaned
+    assert "Экспериментатор-Спасатель" in cleaned
     assert hd_logic._openrouter_models_for_welcome_hook() == [
         "openai/gpt-4o",
         "deepseek/deepseek-chat",

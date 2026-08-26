@@ -107,7 +107,15 @@ def main() -> None:
         help="Только ensure_modern_hd_report (legacy → v3 fast)",
     )
     args = parser.parse_args()
-    asyncio.run(_run(args.user_id, full=args.full, upgrade_fast=args.upgrade_fast))
+    try:
+        asyncio.run(_run(args.user_id, full=args.full, upgrade_fast=args.upgrade_fast))
+    except SystemExit:
+        raise
+    except Exception as exc:
+        import traceback
+
+        traceback.print_exc()
+        raise SystemExit(f"FAILED: {exc}") from exc
 
 
 if __name__ == "__main__":
