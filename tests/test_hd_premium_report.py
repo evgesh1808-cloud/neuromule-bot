@@ -96,6 +96,32 @@ async def test_premium_report_falls_back_when_gemini_raises() -> None:
 
 
 @pytest.mark.asyncio
+async def test_premium_report_upgrade_mode_uses_fast_path() -> None:
+    fast_report = dict(_SAMPLE_REPORT)
+    fast_report["synthesis_meta"] = {"upgrade_fast": True}
+    with (
+        patch.object(
+            hd_logic,
+            "_generate_premium_report_upgrade_fast",
+            new=AsyncMock(return_value=fast_report),
+        ) as fast_mock,
+        patch.object(
+            hd_logic,
+            "_generate_premium_report_multipass",
+            new=AsyncMock(),
+        ) as mp_mock,
+    ):
+        report = await hd_logic.generate_premium_report(
+            "Генератор",
+            "15.03.1990 14:30 Москва",
+            upgrade_mode=True,
+        )
+    assert report["synthesis_meta"]["upgrade_fast"] is True
+    fast_mock.assert_awaited_once()
+    mp_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_premium_report_multipass_primary_path() -> None:
     multipass_report = dict(_SAMPLE_REPORT)
     multipass_report["static_reference"] = {"type": "Тип: Генератор"}

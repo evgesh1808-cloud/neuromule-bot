@@ -131,8 +131,8 @@ _OPENROUTER_DAILY_TIMEOUT_SEC = 45.0
 _OPENROUTER_DAILY_MAX_TOKENS = 900
 _GEMINI_PREMIUM_TIMEOUT_SEC = 90.0
 _OPENROUTER_PREMIUM_TIMEOUT_SEC = 120.0
-_OPENROUTER_PREMIUM_UPGRADE_TIMEOUT_SEC = 50.0
-_HD_UPGRADE_LLM_TIMEOUT_SEC = 150.0
+_OPENROUTER_PREMIUM_UPGRADE_TIMEOUT_SEC = 120.0
+_HD_UPGRADE_LLM_TIMEOUT_SEC = 480.0
 _HD_PREMIUM_MAX_OUTPUT_TOKENS = 8192
 _PDF_FONT_NAME = "HDReportFont"
 _PDF_COVER_BG = "#0D0E12"
@@ -155,7 +155,7 @@ _FAST_FACTS_MAX_LEN = 300
 _PREMIUM_SUMMARY_TEMPERATURE = 0.25
 _PREMIUM_SUMMARY_MAX_TOKENS = 2048
 _MAX_SYNTHESIS_PAIRS_FULL = 9
-_MAX_SYNTHESIS_PAIRS_UPGRADE = 2
+_MAX_SYNTHESIS_PAIRS_UPGRADE = 1
 _GENETIC_SYNTHESIS_DOMAINS: frozenset[str] = frozenset({"money", "love", "energy"})
 _GENETIC_SYNTHESIS_TEMPERATURE = 0.1
 _GENETIC_SYNTHESIS_MAX_TOKENS = 4096
@@ -1112,6 +1112,17 @@ async def generate_premium_report(
     """Полный HD-разбор: multi-pass Genetic Synthesis → legacy single-prompt fallback."""
     math_data = build_hd_math_data(hd_type, birth_data)
     multipass_error: Exception | None = None
+    if upgrade_mode:
+        try:
+            report = await _generate_premium_report_upgrade_fast(
+                user_name,
+                math_data,
+            )
+            logger.info("HD premium report served via upgrade-fast path")
+            return report
+        except Exception as exc:  # noqa: BLE001
+            multipass_error = exc
+            logger.warning("HD upgrade-fast failed, trying multipass/legacy: %s", exc)
     try:
         report = await _generate_premium_report_multipass(
             user_name,
@@ -1121,7 +1132,8 @@ async def generate_premium_report(
         logger.info("HD premium report served via multi-pass Genetic Synthesis")
         return report
     except Exception as exc:  # noqa: BLE001
-        multipass_error = exc
+        if multipass_error is None:
+            multipass_error = exc
         logger.warning("Multi-pass premium report failed, legacy single-prompt: %s", exc)
 
     system_prompt, user_prompt = _build_elite_premium_hd_prompt(user_name, math_data)
@@ -2337,6 +2349,7 @@ async def generate_genetic_synthesis(
     math_data: dict[str, object],
     synthesis_pair: dict[str, object],
     energy_scales: dict[str, int] | None = None,
+    upgrade_mode: bool = False,
 ) -> dict[str, Any]:
     """
     Один модуль Genetic Synthesis: open_center × anchors × domain → JSON v3.
@@ -2353,18 +2366,33 @@ async def generate_genetic_synthesis(
         energy_scales=scales,
     )
     errors: list[str] = []
+    or_models = (
+        _openrouter_models_for_premium_upgrade()
+        if upgrade_mode
+        else _openrouter_models_for_premium()
+    )
+    or_timeout = (
+        _OPENROUTER_PREMIUM_UPGRADE_TIMEOUT_SEC
+        if upgrade_mode
+        else _OPENROUTER_PREMIUM_TIMEOUT_SEC
+    )
 
-    if _gemini_configured():
+    if _gemini_configured() and not upgrade_mode:
         try:
             return await _generate_synthesis_via_gemini(system_prompt, user_prompt)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Gemini genetic synthesis failed, trying OpenRouter: %s", exc)
             errors.append(f"gemini: {exc!r}")
-    elif not _openrouter_configured():
+    elif not _openrouter_configured() and not _gemini_configured():
         raise RuntimeError("hd_synthesis_unavailable: задайте GEMINI_API_KEY или OPENROUTER_API_KEY")
 
     try:
-        return await _generate_synthesis_via_openrouter(system_prompt, user_prompt)
+        return await _generate_synthesis_via_openrouter(
+            system_prompt,
+            user_prompt,
+            models=or_models,
+            timeout=or_timeout,
+        )
     except Exception as exc:  # noqa: BLE001
         logger.exception("OpenRouter genetic synthesis failed")
         errors.append(f"openrouter: {exc!r}")
@@ -2548,6 +2576,100 @@ async def _generate_premium_summary(
     )
 
 
+async def _generate_premium_report_upgrade_fast(
+    user_name: str,
+    math_data: dict[str, object],
+) -> dict[str, Any]:
+    """
+    Быстрый апгрейд legacy → v3: static IHDS-блоки + один LLM-вызов (без N× synthesis).
+
+    Надёжнее для auto-upgrade на VDS, где multipass не укладывается в короткий таймаут.
+    """
+    from services.hd_static_blocks import assemble_static_reference, format_static_reference_full
+
+    energy_scales = compute_energy_scales_from_math(math_data)
+    static_sections = assemble_static_reference(math_data, gate_to_center=_GATE_TO_CENTER)
+    static_full = format_static_reference_full(static_sections)
+
+    system_prompt, user_prompt = _build_elite_premium_hd_prompt(user_name, math_data)
+    or_models = _openrouter_models_for_premium_upgrade()
+    or_timeout = _OPENROUTER_PREMIUM_UPGRADE_TIMEOUT_SEC
+
+    report: dict[str, Any] | None = None
+    if _openrouter_configured():
+        try:
+            report = await _generate_premium_via_openrouter(
+                system_prompt,
+                user_prompt,
+                models=or_models,
+                timeout=or_timeout,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("upgrade-fast OpenRouter failed: %s", exc)
+
+    if report is None and _gemini_configured():
+        report = await _generate_premium_via_gemini(system_prompt, user_prompt)
+
+    if report is None:
+        raise RuntimeError("upgrade_fast_llm_unavailable")
+
+    report["energy_scales"] = energy_scales
+    report["static_reference"] = static_sections
+    report["synthesis_meta"] = {
+        "pairs_requested": 0,
+        "blocks_ok": 0,
+        "blocks_failed": 0,
+        "static_pages_est": max(1, len(static_full) // 2200),
+        "upgrade_fast": True,
+    }
+    return report
+
+
+async def _synthesize_pair_domains_parallel(
+    pair: dict[str, object],
+    *,
+    math_data: dict[str, object],
+    energy_scales: dict[str, int],
+    upgrade_mode: bool,
+) -> tuple[list[tuple[str, dict[str, Any]]], int]:
+    """Параллельный synthesis money/love/energy для одной open×motor пары."""
+
+    async def _one(domain: str) -> tuple[str, dict[str, Any] | BaseException]:
+        try:
+            block = await generate_genetic_synthesis(
+                domain=domain,
+                math_data=math_data,
+                synthesis_pair=pair,
+                energy_scales=energy_scales,
+                upgrade_mode=upgrade_mode,
+            )
+            block["_pair"] = {
+                "open_center": pair.get("open_center"),
+                "anchors": pair.get("anchors"),
+            }
+            return domain, block
+        except Exception as exc:  # noqa: BLE001
+            return domain, exc
+
+    outcomes = await asyncio.gather(
+        *[_one(domain) for domain in sorted(_GENETIC_SYNTHESIS_DOMAINS)]
+    )
+    ok: list[tuple[str, dict[str, Any]]] = []
+    failed = 0
+    for domain, result in outcomes:
+        if isinstance(result, BaseException):
+            failed += 1
+            logger.warning(
+                "genetic synthesis failed domain=%s open=%s: %s",
+                domain,
+                pair.get("open_center"),
+                result,
+            )
+            continue
+        ok.append((domain, result))
+    return ok, failed
+
+
 async def _generate_premium_report_multipass(
     user_name: str,
     math_data: dict[str, object],
@@ -2580,27 +2702,15 @@ async def _generate_premium_report_multipass(
     for pair in pairs:
         if not isinstance(pair, dict):
             continue
-        for domain in sorted(_GENETIC_SYNTHESIS_DOMAINS):
-            try:
-                block = await generate_genetic_synthesis(
-                    domain=domain,
-                    math_data=math_data,
-                    synthesis_pair=pair,
-                    energy_scales=energy_scales,
-                )
-                block["_pair"] = {
-                    "open_center": pair.get("open_center"),
-                    "anchors": pair.get("anchors"),
-                }
-                synthesis_by_domain[domain].append(block)
-            except Exception:
-                failed_pairs += 1
-                logger.warning(
-                    "genetic synthesis failed domain=%s open=%s",
-                    domain,
-                    pair.get("open_center"),
-                    exc_info=True,
-                )
+        outcomes, failed = await _synthesize_pair_domains_parallel(
+            pair,
+            math_data=math_data,
+            energy_scales=energy_scales,
+            upgrade_mode=upgrade_mode,
+        )
+        failed_pairs += failed
+        for domain, block in outcomes:
+            synthesis_by_domain[domain].append(block)
 
     successful = sum(len(v) for v in synthesis_by_domain.values())
     if successful == 0:
