@@ -30,6 +30,7 @@ async def test_premium_report_falls_back_to_openrouter_when_gemini_missing() -> 
             new=AsyncMock(side_effect=RuntimeError("multipass_synthesis_empty")),
         ),
         patch.object(hd_logic, "genai", None),
+        patch.object(hd_logic, "_openrouter_configured", return_value=True),
         patch.object(
             hd_logic,
             "_generate_premium_via_openrouter",
@@ -77,22 +78,23 @@ async def test_premium_report_falls_back_when_gemini_raises() -> None:
             "_generate_premium_report_multipass",
             new=AsyncMock(side_effect=RuntimeError("multipass_synthesis_empty")),
         ),
+        patch.object(hd_logic, "_openrouter_configured", return_value=True),
+        patch.object(
+            hd_logic,
+            "_generate_premium_via_openrouter",
+            new=AsyncMock(side_effect=RuntimeError("or_down")),
+        ),
         patch.object(hd_logic, "_gemini_configured", return_value=True),
         patch.object(
             hd_logic,
             "_generate_premium_via_gemini",
-            new=AsyncMock(side_effect=RuntimeError("gemini_unavailable: boom")),
-        ),
-        patch.object(
-            hd_logic,
-            "_generate_premium_via_openrouter",
             new=AsyncMock(return_value=dict(_SAMPLE_REPORT)),
-        ) as or_mock,
+        ) as gemini_mock,
         patch.object(hd_logic, "genai", object()),
     ):
         report = await hd_logic.generate_premium_report("Проектор", "01.01.2000 10:00 Казань")
     assert report["money"] == "Финансовый блок"
-    or_mock.assert_awaited_once()
+    gemini_mock.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -226,18 +228,88 @@ def test_genetic_synthesis_prompt_schema_and_bans() -> None:
         energy_scales=scales,
     )
     assert "ТОТАЛЬНЫЙ ЗАПРЕТ НА ГАЛЛЮЦИНАЦИИ" in system_prompt
+    assert "Фрактальн" in system_prompt
+    assert "ЗАПРЕТ АНГЛИЦИЗМОВ" in system_prompt
     assert hd_logic._GENETIC_SYNTHESIS_TEMPERATURE == 0.1
     assert "###" not in hd_logic._GENETIC_SYNTHESIS_FEW_SHOT
     assert "34-20" in user_prompt
     assert "capacity=72" in user_prompt
-    assert "Domain): money" in user_prompt
+    assert "Сфера жизни: money" in user_prompt
+    assert "Архетип для пользователя" in user_prompt
+    assert "Экспериментатор-Спасатель" in user_prompt
+    assert "Суперсила влияния в моменте" in user_prompt
+    assert "Эффект Зеркала" in system_prompt or "ЭФФЕКТ ЗЕРКАЛА" in system_prompt
     assert "Открытый центр [Эго]" in user_prompt
     assert "проживан" in system_prompt
 
 
+def test_normalize_synthesis_response_rejects_anglicisms() -> None:
+    payload = {
+        "synthesis_anchor": "Struggle channel pattern",
+        "client_pain": "x",
+        "false_self_pattern": "x",
+        "body_signal": "x",
+        "reflective_questions": ["a", "b", "c"],
+        "experiments": [
+            {"action": "a", "metric": "m", "success_criteria": "s"},
+            {"action": "a", "metric": "m", "success_criteria": "s"},
+            {"action": "a", "metric": "m", "success_criteria": "s"},
+        ],
+    }
+    with pytest.raises(ValueError, match="banned markers"):
+        hd_logic._normalize_synthesis_response(payload)
+
+
+def test_normalize_synthesis_response_rejects_raw_channel_code() -> None:
+    payload = {
+        "synthesis_anchor": "Ловушка канала 20-34",
+        "client_pain": "x",
+        "false_self_pattern": "x",
+        "body_signal": "x",
+        "reflective_questions": ["a", "b", "c"],
+        "experiments": [
+            {"action": "a", "metric": "m", "success_criteria": "s"},
+            {"action": "a", "metric": "m", "success_criteria": "s"},
+            {"action": "a", "metric": "m", "success_criteria": "s"},
+        ],
+    }
+    with pytest.raises(ValueError, match="raw channel code"):
+        hd_logic._normalize_synthesis_response(payload)
+
+
+def test_openrouter_model_cascades() -> None:
+    assert hd_logic._openrouter_models_for_premium() == [
+        "anthropic/claude-3.5-sonnet",
+        "deepseek/deepseek-r1",
+        "google/gemini-2.5-pro",
+    ]
+    assert hd_logic._openrouter_models_for_premium_upgrade() == ["deepseek/deepseek-chat"]
+    assert hd_logic._openrouter_models_for_welcome_hook() == [
+        "openai/gpt-4o",
+        "deepseek/deepseek-chat",
+    ]
+
+
+def test_normalize_synthesis_response_rejects_raw_profile_code() -> None:
+    payload = {
+        "synthesis_anchor": "Ловушка для профиля 3/5",
+        "client_pain": "x",
+        "false_self_pattern": "x",
+        "body_signal": "x",
+        "reflective_questions": ["a", "b", "c"],
+        "experiments": [
+            {"action": "a", "metric": "m", "success_criteria": "s"},
+            {"action": "a", "metric": "m", "success_criteria": "s"},
+            {"action": "a", "metric": "m", "success_criteria": "s"},
+        ],
+    }
+    with pytest.raises(ValueError, match="raw profile code"):
+        hd_logic._normalize_synthesis_response(payload)
+
+
 def test_normalize_synthesis_response_valid_payload() -> None:
     payload = {
-        "synthesis_anchor": "Открытое Эго × Сакрал, money.",
+        "synthesis_anchor": "Открытое Эго × Сакрал — финансовая сфера.",
         "client_pain": "Боль в сфере денег.",
         "false_self_pattern": "Компенсация через перегруз.",
         "body_signal": "Напряжение в плечах.",
@@ -395,6 +467,11 @@ def test_derive_hd_chart_from_birth_returns_strategy_for_type() -> None:
 def test_generate_instagram_stories_writes_two_cards(tmp_path, monkeypatch) -> None:
     if hd_logic.Image is None:
         pytest.skip("Pillow not installed")
+    assert hd_logic._STORY_FONT_REGULAR_PATH.is_file()
+    assert hd_logic._STORY_FONT_BOLD_PATH.is_file()
+    font = hd_logic._load_story_font(24)
+    assert font is not None
+    assert font.getbbox("Кириллица")[2] > font.getbbox("A")[2]
     out_dir = tmp_path / "tmp"
     monkeypatch.setattr(hd_logic, "_HD_BODYGRAPH_OUTPUT_DIR", out_dir)
     math_data = {
@@ -410,3 +487,42 @@ def test_generate_instagram_stories_writes_two_cards(tmp_path, monkeypatch) -> N
     assert len(paths) == 2
     assert (out_dir / "story_999_1.png").is_file()
     assert (out_dir / "story_999_2.png").is_file()
+
+
+def test_ensure_story_fonts_available_ok() -> None:
+    hd_logic.ensure_story_fonts_available()
+
+
+def test_ensure_story_fonts_available_raises_when_missing(tmp_path, monkeypatch) -> None:
+    missing_dir = tmp_path / "fonts"
+    missing_dir.mkdir()
+    monkeypatch.setattr(hd_logic, "_STORY_FONT_DIR", missing_dir)
+    monkeypatch.setattr(hd_logic, "_STORY_FONT_BOLD_PATH", missing_dir / "Roboto-Bold.ttf")
+    monkeypatch.setattr(hd_logic, "_STORY_FONT_REGULAR_PATH", missing_dir / "Roboto-Regular.ttf")
+    with pytest.raises(RuntimeError, match="HD story fonts missing"):
+        hd_logic.ensure_story_fonts_available()
+
+
+@pytest.mark.asyncio
+async def test_hd_llm_semaphore_limits_parallel_calls(monkeypatch) -> None:
+    import asyncio
+
+    monkeypatch.setattr(hd_logic, "_HD_LLM_PARALLEL_LIMIT", 2)
+    monkeypatch.setattr(hd_logic, "_HD_LLM_SEMAPHORE", None)
+    sem = hd_logic._hd_llm_semaphore()
+    active = 0
+    peak = 0
+    lock = asyncio.Lock()
+
+    async def worker() -> None:
+        nonlocal active, peak
+        async with sem:
+            async with lock:
+                active += 1
+                peak = max(peak, active)
+            await asyncio.sleep(0.03)
+            async with lock:
+                active -= 1
+
+    await asyncio.gather(*[worker() for _ in range(6)])
+    assert peak <= 2

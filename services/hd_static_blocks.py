@@ -128,14 +128,21 @@ def channel_block_text(channel: str) -> str:
 
 
 def profile_block_text(profile: str) -> str:
+    from services.hd_profile_archetypes import format_profile_archetype_for_user, profile_archetype_label
+
     index = _load_profiles_index()
-    block = index.get(profile.strip())
+    code = profile.strip()
+    archetype = profile_archetype_label(profile)
+    block = index.get(code)
+    title = format_profile_archetype_for_user(profile)
     if block:
-        return _format_block_section(f"Профиль {profile}", block)
+        body = _format_block_section(title, block)
+        return body.replace(f"Профиль {code}", title)
     return (
-        f"Профиль {profile}\n"
-        "Сочетание сознательной и бессознательной линии: стиль обучения, ошибок и зрелости.\n"
-        "Используй профиль как фильтр темпа — не как оправдание избегания действий."
+        f"{title}\n"
+        f"Архетип: {archetype}\n"
+        "Сочетание сознательной и бессознательной линии — стиль обучения, ошибок и зрелости.\n"
+        "Используй архетип как фильтр темпа — не как оправдание избегания действий."
     )
 
 

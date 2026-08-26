@@ -307,6 +307,8 @@ async def _post_chat_completion(
     temperature: float | None = None,
     tools: list[dict[str, Any]] | None = None,
     tool_choice: str | dict[str, Any] | None = None,
+    log_context: str | None = None,
+    next_model: str | None = None,
 ) -> ChatCompletionResult | None:
     """Один нестриминговый запрос; при HTTP≠200 или пустом content возвращает ``None``."""
     payload = _chat_payload(
@@ -336,9 +338,11 @@ async def _post_chat_completion(
             except Exception:
                 logger.debug("openrouter key rotate on 429 skipped", exc_info=True)
         logger.warning(
-            "Модель %s недоступна (код %s). Мгновенный переход к следующей.",
+            "Модель %s недоступна (код %s). Мгновенный переход к %s.%s",
             model,
             response.status_code,
+            next_model or "следующей",
+            f" context={log_context}" if log_context else "",
         )
         return None
     if response.status_code != 200:
@@ -546,6 +550,7 @@ async def ask_ai_messages(
     temperature: float | None = None,
     tools: list[dict[str, Any]] | None = None,
     tool_choice: str | dict[str, Any] | None = None,
+    log_context: str | None = None,
 ) -> ChatCompletionResult:
     """
     Отправляет ``messages`` в OpenRouter; перебирает ``free_models`` до успеха.
@@ -595,11 +600,30 @@ async def ask_ai_messages(
     if stream_callback is not None and not use_stream:
         logger.debug("OpenRouter: multimodal request — streaming disabled")
 
+    if tools:
+        stream_callback = None
+    if log_context:
+        chain_display = " → ".join(
+            _sanitize_openrouter_model_id(m)
+            for m in model_chain
+            if str(m).strip()
+        )
+        logger.info(
+            "OpenRouter chain start context=%s cascade=%s",
+            log_context,
+            chain_display,
+        )
+
     async with _http_client_scope(http_client, settings) as client:
-        for raw_model in model_chain:
+        for idx, raw_model in enumerate(model_chain):
             model = _sanitize_openrouter_model_id(raw_model)
             if not model:
                 continue
+            next_model: str | None = None
+            for nxt in model_chain[idx + 1 :]:
+                next_model = _sanitize_openrouter_model_id(nxt)
+                if next_model:
+                    break
             try:
                 if use_stream:
                     result = await _post_chat_completion_stream(
@@ -614,6 +638,12 @@ async def ask_ai_messages(
                         temperature=temperature,
                     )
                     if result is not None and result.get("content"):
+                        if log_context:
+                            logger.info(
+                                "OpenRouter ok context=%s model=%s",
+                                log_context,
+                                model,
+                            )
                         return result
                     # SSE пустой/упал — обязательный non-stream на той же модели
                     # (иначе при поломке стрима весь каскад молчит).
@@ -632,20 +662,34 @@ async def ask_ai_messages(
                     temperature=temperature,
                     tools=tools,
                     tool_choice=tool_choice,
+                    log_context=log_context,
+                    next_model=next_model,
                 )
                 if result is not None and (result.get("content") or result.get("tool_calls")):
                     if stream_callback is not None and result.get("content"):
                         await stream_callback(result["content"], True)
+                    if log_context:
+                        logger.info(
+                            "OpenRouter ok context=%s model=%s",
+                            log_context,
+                            model,
+                        )
                     return result
             except (httpx.TimeoutException, httpx.NetworkError) as exc:
                 logger.error(
-                    "Таймаут или сетевая ошибка на модели %s (%s). Переключаемся.",
+                    "Таймаут или сетевая ошибка на модели %s (%s). Переключаемся на %s.%s",
                     model,
                     type(exc).__name__,
+                    next_model or "следующую",
+                    f" context={log_context}" if log_context else "",
                 )
                 continue
             except Exception:
-                logger.exception("OpenRouter model=%s request failed", model)
+                logger.exception(
+                    "OpenRouter model=%s request failed%s",
+                    model,
+                    f" context={log_context}" if log_context else "",
+                )
                 continue
 
     raise RuntimeError("openrouter_unavailable")

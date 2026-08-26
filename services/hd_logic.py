@@ -17,6 +17,19 @@ from typing import Any
 import aiosqlite
 
 from config import settings as _app_settings
+from services.hd_channel_archetypes import (
+    CHANNEL_ARCHETYPE_PROMPT_RULE,
+    channels_llm_context_block,
+    format_channel_superpower_for_user,
+    text_contains_raw_channel_code,
+)
+from services.hd_profile_archetypes import (
+    PROFILE_ARCHETYPE_PROMPT_RULE,
+    format_profile_archetype_for_user,
+    profile_archetype_label,
+    profile_llm_context_lines,
+    text_contains_raw_profile_code,
+)
 
 try:
     from google import genai
@@ -132,7 +145,10 @@ _OPENROUTER_DAILY_MAX_TOKENS = 900
 _GEMINI_PREMIUM_TIMEOUT_SEC = 90.0
 _OPENROUTER_PREMIUM_TIMEOUT_SEC = 120.0
 _OPENROUTER_PREMIUM_UPGRADE_TIMEOUT_SEC = 120.0
+_OPENROUTER_WELCOME_HOOK_TIMEOUT_SEC = 12.0
+_WELCOME_HOOK_MAX_TOKENS = 420
 _HD_UPGRADE_LLM_TIMEOUT_SEC = 480.0
+_HD_LLM_PARALLEL_LIMIT = 5
 _HD_PREMIUM_MAX_OUTPUT_TOKENS = 8192
 _PDF_FONT_NAME = "HDReportFont"
 _PDF_COVER_BG = "#0D0E12"
@@ -147,6 +163,17 @@ _PDF_CHAPTER_SPECS: tuple[tuple[str, str, str], ...] = (
     ("plan", "📅 Раздел: План на 30 дней", "hd_ch_plan"),
 )
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_HD_LLM_SEMAPHORE: asyncio.Semaphore | None = None
+
+
+def _hd_llm_semaphore() -> asyncio.Semaphore:
+    """Ограничивает параллельные OpenRouter/Gemini вызовы HD (anti-429 на новых тирах)."""
+    global _HD_LLM_SEMAPHORE
+    if _HD_LLM_SEMAPHORE is None:
+        _HD_LLM_SEMAPHORE = asyncio.Semaphore(_HD_LLM_PARALLEL_LIMIT)
+    return _HD_LLM_SEMAPHORE
+
+
 _PREMIUM_REPORT_KEYS = ("fast_facts", "money", "love", "energy", "plan")
 _HD_REPORT_SCHEMA_VERSION = 3
 _HD_REPORT_SCHEMA_VERSION_SYNTHESIS = 3
@@ -568,39 +595,97 @@ def _extract_gemini_text(response: object) -> str:
 
 
 def _openrouter_models_for_premium() -> list[str]:
-    """OpenRouter fallback для премиум HD и совместимости."""
-    models: list[str] = []
-    seen: set[str] = set()
-
-    def _add(mid: str) -> None:
-        m = (mid or "").strip()
-        if m and m not in seen:
-            seen.add(m)
-            models.append(m)
-
-    _add("anthropic/claude-3.5-sonnet")
-    _add("google/gemini-2.5-pro")
-    _add("google/gemini-2.0-pro-exp-02-05:free")
-    return models
+    """OpenRouter-конвейер premium HD: Claude → DeepSeek R1 → Gemini Pro."""
+    return [
+        "anthropic/claude-3.5-sonnet",
+        "deepseek/deepseek-r1",
+        "google/gemini-2.5-pro",
+    ]
 
 
 def _openrouter_models_for_premium_upgrade() -> list[str]:
-    """Быстрый каскад для апгрейда legacy: без Claude, короткие таймауты."""
-    models: list[str] = []
-    seen: set[str] = set()
+    """Быстрый апгрейд legacy → v3: DeepSeek-V3 (скорость + цена)."""
+    return ["deepseek/deepseek-chat"]
 
-    def _add(mid: str) -> None:
-        m = (mid or "").strip()
-        if m and m not in seen:
-            seen.add(m)
-            models.append(m)
 
-    _add("google/gemini-2.5-pro")
-    _add("google/gemini-2.0-pro-exp-02-05:free")
-    from business_catalog import PAID_CHAT_MODEL
+def _openrouter_models_for_welcome_hook() -> list[str]:
+    """Welcome-пакет: хлёсткий AI-хук уязвимости за ~1–2 сек."""
+    return [
+        "openai/gpt-4o",
+        "deepseek/deepseek-chat",
+    ]
 
-    _add(PAID_CHAT_MODEL)
-    return models
+
+def _build_welcome_vulnerability_hook_prompt(
+    user_name: str,
+    math_data: dict[str, object],
+) -> tuple[str, str]:
+    """Промпт Welcome-пакета: один абзац «хук уязвимости» на первом экране."""
+    name = (user_name or "").strip() or "друг"
+    data = math_data if isinstance(math_data, dict) else {}
+    hd_type = str(data.get("hd_type") or "не указан")
+    profile_code_line, profile_archetype_line = profile_llm_context_lines(str(data.get("profile") or ""))
+    defined, open_centers = _centers_from_math_data(data)
+    channels_block = channels_llm_context_block(data.get("active_channels"))
+
+    system_prompt = (
+        "Ты — NeuroMule HD Welcome Engine. Задача: за 1–2 секунды выдать один абзац "
+        "«хук уязвимости» — хлёсткий, узнаваемый, без воды.\n\n"
+        f"{_HD_PREMIUM_TOV_BLOCK}\n\n"
+        "ФОРМАТ: один JSON {\"hook\": \"...\"}. hook — 350–600 символов plain text, "
+        "начинается с Эффекта Зеркала (живая бытовая сцена). Без #, без сухих кодов профилей/каналов. "
+        f"{PROFILE_ARCHETYPE_PROMPT_RULE} {CHANNEL_ARCHETYPE_PROMPT_RULE}"
+    )
+    user_prompt = (
+        f"Клиент: {name}. Тип: {hd_type}.\n"
+        f"{profile_code_line}\n"
+        f"{profile_archetype_line}\n"
+        f"Определённые центры: {', '.join(defined) or 'не переданы'}.\n"
+        f"Открытые центры: {', '.join(open_centers) or 'не переданы'}.\n"
+        f"{channels_block}\n"
+        "Сгенерируй hook — одну ударную правду, от которой невозможно отвести взгляд."
+    )
+    return system_prompt, user_prompt
+
+
+async def generate_hd_welcome_vulnerability_hook(
+    user_name: str,
+    math_data: dict[str, object],
+) -> str:
+    """
+    Welcome-пакет: AI-хук уязвимости для первого экрана (OpenRouter GPT-4o → DeepSeek-V3).
+    """
+    if not _openrouter_configured():
+        raise RuntimeError("hd_welcome_hook_unavailable: задайте OPENROUTER_API_KEY")
+    from services.ai_text import ask_ai_messages
+
+    system_prompt, user_prompt = _build_welcome_vulnerability_hook_prompt(user_name, math_data)
+    async with _hd_llm_semaphore():
+        completion = await ask_ai_messages(
+            _app_settings,
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            timeout=_OPENROUTER_WELCOME_HOOK_TIMEOUT_SEC,
+            models=_openrouter_models_for_welcome_hook(),
+            max_tokens=_WELCOME_HOOK_MAX_TOKENS,
+            temperature=0.35,
+            response_format={"type": "json_object"},
+            log_context="hd_welcome_hook",
+        )
+    text = (completion.get("content") or "").strip()
+    if not text:
+        raise RuntimeError("hd_welcome_hook_empty")
+    parsed = _parse_json_object(text)
+    hook = parsed.get("hook")
+    if not isinstance(hook, str) or not hook.strip():
+        raise ValueError("welcome hook JSON missing non-empty hook")
+    cleaned = hook.strip()
+    _validate_hd_user_facing_text(cleaned, field="welcome hook")
+    if _synthesis_text_has_markdown_headers(cleaned):
+        raise ValueError("welcome hook contains markdown headers")
+    return cleaned
 
 
 def _openrouter_models_for_daily_advice() -> list[str]:
@@ -789,7 +874,11 @@ def _normalize_premium_report(parsed: dict[str, object]) -> dict[str, Any]:
         value = parsed.get(key)
         if not isinstance(value, str) or not value.strip():
             raise ValueError(f"Gemini JSON response is missing non-empty {key!r}")
-        report[key] = value.strip()
+        cleaned = value.strip()
+        if text_contains_raw_profile_code(cleaned):
+            raise ValueError(f"premium report field {key!r} contains raw profile code (use archetype)")
+        _validate_hd_user_facing_text(cleaned, field=f"premium report field {key!r}")
+        report[key] = cleaned
     if len(report["fast_facts"]) > _FAST_FACTS_MAX_LEN:
         report["fast_facts"] = report["fast_facts"][: _FAST_FACTS_MAX_LEN - 1].rstrip() + "…"
     report["energy_scales"] = _normalize_energy_scales(parsed.get("energy_scales"))
@@ -883,6 +972,7 @@ def hd_profile_metadata(math_data: dict[str, object]) -> dict[str, str | list[st
         "strategy": str(math_data.get("strategy") or ""),
         "authority": str(math_data.get("authority") or ""),
         "profile": str(math_data.get("profile") or ""),
+        "profile_archetype": profile_archetype_label(str(math_data.get("profile") or "")),
         "definition": str(math_data.get("definition") or ""),
     }
 
@@ -1151,39 +1241,34 @@ async def generate_premium_report(
         else _OPENROUTER_PREMIUM_TIMEOUT_SEC
     )
 
+    if _openrouter_configured():
+        try:
+            report = await _generate_premium_via_openrouter(
+                system_prompt,
+                user_prompt,
+                models=or_models,
+                timeout=or_timeout,
+            )
+            report["energy_scales"] = compute_energy_scales_from_math(math_data)
+            logger.info("HD premium report served via OpenRouter (legacy primary)")
+            return report
+        except Exception as or_exc:  # noqa: BLE001
+            logger.warning("OpenRouter premium report failed, trying Gemini: %s", or_exc)
+            errors.append(f"openrouter: {or_exc!r}")
+    elif not _gemini_configured():
+        raise RuntimeError("hd_premium_unavailable: задайте OPENROUTER_API_KEY или GEMINI_API_KEY")
+
     if _gemini_configured() and not upgrade_mode:
         try:
             report = await _generate_premium_via_gemini(system_prompt, user_prompt)
             report["energy_scales"] = compute_energy_scales_from_math(math_data)
-            logger.info("HD premium report served via Gemini Pro chain (legacy)")
+            logger.info("HD premium report served via Gemini Pro chain (legacy fallback)")
             return report
         except Exception as gemini_exc:  # noqa: BLE001
-            logger.warning("Gemini premium report failed, trying OpenRouter: %s", gemini_exc)
+            logger.exception("Gemini premium report fallback failed")
             errors.append(f"gemini: {gemini_exc!r}")
     elif genai is None:
-        logger.info(
-            "Пакет google-genai не установлен — полный разбор через OpenRouter. "
-            "На VDS: pip install 'google-genai>=1.0'"
-        )
         errors.append("google-genai_missing")
-    elif not _openrouter_configured():
-        raise RuntimeError("hd_premium_unavailable: задайте GEMINI_API_KEY или OPENROUTER_API_KEY")
-    else:
-        logger.info("GEMINI_API_KEY не задан — полный разбор сразу через OpenRouter Pro chain")
-
-    try:
-        report = await _generate_premium_via_openrouter(
-            system_prompt,
-            user_prompt,
-            models=or_models,
-            timeout=or_timeout,
-        )
-        report["energy_scales"] = compute_energy_scales_from_math(math_data)
-        logger.info("HD premium report served via OpenRouter (legacy)")
-        return report
-    except Exception as or_exc:  # noqa: BLE001
-        logger.exception("OpenRouter premium report fallback failed")
-        errors.append(f"openrouter: {or_exc!r}")
 
     raise RuntimeError("hd_premium_unavailable: " + "; ".join(errors))
 
@@ -1256,15 +1341,17 @@ async def _generate_premium_via_openrouter(
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
     ]
-    completion = await ask_ai_messages(
-        _app_settings,
-        messages,
-        timeout=timeout if timeout is not None else _OPENROUTER_PREMIUM_TIMEOUT_SEC,
-        models=models or _openrouter_models_for_premium(),
-        max_tokens=_HD_PREMIUM_MAX_OUTPUT_TOKENS,
-        temperature=0.7,
-        response_format={"type": "json_object"},
-    )
+    async with _hd_llm_semaphore():
+        completion = await ask_ai_messages(
+            _app_settings,
+            messages,
+            timeout=timeout if timeout is not None else _OPENROUTER_PREMIUM_TIMEOUT_SEC,
+            models=models or _openrouter_models_for_premium(),
+            max_tokens=_HD_PREMIUM_MAX_OUTPUT_TOKENS,
+            temperature=0.7,
+            response_format={"type": "json_object"},
+            log_context="hd_premium_report",
+        )
     text = (completion.get("content") or "").strip()
     if not text:
         raise RuntimeError("openrouter_premium_report_empty")
@@ -1904,7 +1991,129 @@ _ELITE_HD_BANNED_MARKERS: tuple[str, ...] = (
     "karm",
 )
 
+_ELITE_HD_BANNED_COACHING_CLICHES: tuple[str, ...] = (
+    "слушай себя",
+    "слушай тело",
+    "слушай своё тело",
+    "ставь границы",
+    "уважай пространство",
+    "уважай своё пространство",
+    "верь в себя",
+    "просто верь",
+    "будь собой",
+    "отпусти контроль",
+    "позволь себе",
+    "ты достоин",
+    "ты достойна",
+    "работай над собой",
+)
+
+_HD_MIRROR_EFFECT_RULE = (
+    "ЭФФЕКТ ЗЕРКАЛА (обязательно): каждый раздел боли начинай с узнаваемой бытовой сцены — "
+    "конкретное место, время суток, телесное ощущение, микродействие. Пример: «Ты проверяешь "
+    "рабочую почту в 23:00 с гудящими от усталости ногами, потому что боишься показаться "
+    "некомпетентным». Без абстрактных формулировок боли."
+)
+
+_HD_PREMIUM_TOV_BLOCK = (
+    "TONE OF VOICE — NEUROMULE HD WORLD CLASS:\n"
+    "Ты — провокационный психоаналитик и бизнес-стратег в одном лице. Пишешь сочно, "
+    "кинематографично, местами жёстко и иронично по отношению к ментальным ловушкам ума. "
+    "Сильные русские глаголы, точные метафоры, ноль бюрократии и роботизированности.\n"
+    "ЗАПРЕЩЕНЫ плоские коучинговые штампы и клише: «слушай себя», «ставь границы», "
+    "«уважай пространство», «верь в себя», «слушай тело», «работай над собой» — "
+    "и любые их вариации.\n"
+    f"{_HD_MIRROR_EFFECT_RULE}"
+)
+
+_HD_BOLD_CHALLENGES_PLAN_RULE = (
+    "ПЛАН НА 30 ДНЕЙ = «ДЕРЗКИЕ ВЫЗОВЫ ДЛЯ УМА» (не сухой to-do list):\n"
+    "Три блока: дни 1–5 / 6–15 / 16–30. В каждом — 1–2 дерзких вызова по SMART "
+    "(Specific, Measurable, Achievable, Relevant, Time-bound): конкретное действие, "
+    "измеримая метрика, дедлайн. Обязателен соматический стоп-сигнал: какое телесное "
+    "ощущение = «стоп, это Ложное Я» (например: сжатие в диафрагме, ком в горле, "
+    "ускоренное дыхание). Без фраз «делай паузу» без контекста."
+)
+
+_HD_SYNTHESIS_EXPERIMENTS_RULE = (
+    "experiments[] — это «Дерзкие вызовы для ума», не скучные упражнения. "
+    "Каждый пункт SMART + соматический маркер стоп-сигнала в success_criteria или metric."
+)
+
 _GENETIC_SYNTHESIS_BANNED_MARKERS: tuple[str, ...] = _ELITE_HD_BANNED_MARKERS
+
+_GENETIC_SYNTHESIS_BANNED_ANGLICISMS: tuple[str, ...] = (
+    "struggle",
+    "willpower",
+    "correction",
+    "grace",
+    "manifestation",
+    "awareness",
+    "mutation",
+    "charisma",
+    "preservation",
+    "initiation",
+    "transitoriness",
+    "abstraction",
+    "maturation",
+    "surrender",
+    "brainwave",
+    "discovery",
+    "recognition",
+    "transformation",
+    "community",
+    "emoting",
+    "witness",
+    "talent",
+    "curiosity",
+    "openness",
+    "alpha",
+    "power",
+    "logic",
+    "rhythm",
+    "intimacy",
+    "leadership",
+    "concentration",
+    "awakening",
+    "exploration",
+    "money",
+    "structuring",
+    "judgment",
+    "risk taker",
+    "commitment",
+    "desire",
+    "retreat",
+    "progress",
+    "crisis",
+    "friendship",
+    "fighter",
+    "provocateur",
+    "aloneness",
+    "fantasy",
+    "growth",
+    "insight",
+    "alertness",
+    "gatherer",
+    "determination",
+    "realization",
+    "depth",
+    "principles",
+    "values",
+    "shock",
+    "stillness",
+    "beginnings",
+    "ambition",
+    "spirit",
+    "stimulation",
+    "intuitive clarity",
+    "joy of life",
+    "sexuality",
+    "limitation",
+    "mystery",
+    "detail",
+    "doubt",
+    "confusion",
+)
 
 
 def _centers_from_math_data(math_data: dict) -> tuple[list[str], list[str]]:
@@ -1953,17 +2162,15 @@ def _hd_tone_profile(hd_type: str) -> str:
     normalized = (hd_type or "").strip().lower()
     if any(token in normalized for token in ("манифест", "генератор", "мг", "м.г.")):
         return (
-            "СТИЛЬ РЕЧИ: жёсткий бизнес-ментор. Короткие императивы, операционка, делегирование, "
-            "скорость решений, KPI, дисциплина исполнения. Без сюсюканья — уважительная прямота."
+            "АКЦЕНТ ТИПА: жёсткий бизнес-стратег. Режь воду, бей в KPI и дисциплину исполнения — "
+            "но через живые сцены, не через корпоративный канцелярит."
         )
     if any(token in normalized for token in ("проектор", "рефлектор")):
         return (
-            "СТИЛЬ РЕЧИ: глубокий психоаналитик. Границы, распознавание паттернов, мудрость через "
-            "наблюдение, телесные сигналы, циклы ожидания. Мягкая точность без мистики."
+            "АКЦЕНТ ТИПА: глубокий психоаналитик. Границы, циклы ожидания, распознавание чужих "
+            "ожиданий — через зеркало быта и тело, без мистики."
         )
-    return (
-        "СТИЛЬ РЕЧИ: премиальный ICF-коуч — конкретика, ответственность клиента, измеримые шаги."
-    )
+    return "АКЦЕНТ ТИПА: премиальная терапевтическая прямота — конкретика, ответственность, измеримость."
 
 
 _ELITE_HD_FEW_SHOT = (
@@ -1971,11 +2178,13 @@ _ELITE_HD_FEW_SHOT = (
     '{"fast_facts": "⚡ Главный баг прошивки: доказываешь ценность через переработку. '
     '💼 Триггер больших денег: продавать только после телесного «да». '
     '🔋 Идеальная перезагрузка: сон без будильника + прогулка без цели.", '
-    '"money": "Боль\\nТы берёшь проекты из страха «останусь без денег».\\n\\n'
-    'Что делать\\n**Неделя 1:** веди список откликов тела перед каждым «да».", '
-    '"love": "Боль\\nТы читаешь ожидания партнёра и теряешь себя в роли «удобного».", '
-    '"energy": "Боль\\nЖмёшь газ, когда Сакрал уже пуст.", '
-    '"plan": "Дни 1–5\\nОтслеживай сигнал тела перед решениями."}'
+    '"money": "Боль\\nВ 23:07 ты снова открываешь почту — ноги гудят, а палец сам жмёт «отправить», '
+    'потому что тишина кажется доказательством некомпетентности.\\n\\n'
+    'Что делать\\n**Неделя 1:** перед каждым финансовым «да» записывай, где в теле сжимается.", '
+    '"love": "Боль\\nТы ловишь себя на том, что киваешь партнёру, уже не слыша вопрос.", '
+    '"energy": "Боль\\nЖмёшь газ, когда Сакрал уже пуст — как будто стыд сильнее усталости.", '
+    '"plan": "Дни 1–5 — Дерзкий вызов: 5 финансовых решений с записью телесного стоп-сигнала '
+    '(метрика: 5 записей, стоп = сжатие в диафрагме)."}'
 )
 
 _ELITE_HD_SERVER_MATH_MANDATE = (
@@ -2014,18 +2223,22 @@ def _build_elite_premium_hd_prompt(user_name: str, math_data: dict) -> tuple[str
     open_line = ", ".join(open_centers) if open_centers else "не переданы — не выдумывай"
     gates_block = _format_gates_block(data.get("gates"))
     tone_block = _hd_tone_profile(hd_type)
+    channels_block = channels_llm_context_block(data.get("active_channels"))
 
     banned = ", ".join(f"«{word}»" for word in _ELITE_HD_BANNED_MARKERS[:8])
+    cliches = ", ".join(f"«{word}»" for word in _ELITE_HD_BANNED_COACHING_CLICHES[:6])
 
     system_prompt = (
-        "Ты — сертифицированный коуч уровня ICF и практик Human Design для NeuroMule. "
-        "Пишешь премиальный персональный разбор: глубинная психология, прикладная механика тела и решений. "
-        "Без эзотерической воды — только поведение, паттерны, границы, деньги, отношения, энергия.\n\n"
+        "Ты — ведущий аналитик NeuroMule HD: провокационная глубинная психотерапия + "
+        "бизнес-консалтинг без эзотерики. Пишешь премиальный персональный разбор — "
+        "поведение, паттерны, деньги, отношения, энергия.\n\n"
+        f"{_HD_PREMIUM_TOV_BLOCK}\n\n"
         f"{tone_block}\n\n"
         f"{_ELITE_HD_SERVER_MATH_MANDATE}\n\n"
         "ЖЁСТКИЕ ЗАПРЕТЫ:\n"
         f"- Не используй: {banned}, «вибрации», «карма», «космос», «вселенная посылает», "
         "«астрал», «судьба», «предназначение-сверху», «нейтрино».\n"
+        f"- Запрещены коучинговые клише: {cliches} и их вариации.\n"
         "- Не выдумывай тип, стратегию, авторитет, профиль, ворота или центры — только факты из user-блока.\n"
         "- ЗАПРЕЩЕНО путать типы и менять списки определённых/открытых центров.\n"
         "- Определённые центры — устойчивые ресурсы; открытые — зоны обучаемости и риска «Ложного Я».\n"
@@ -2037,23 +2250,24 @@ def _build_elite_premium_hd_prompt(user_name: str, math_data: dict) -> tuple[str
         '"energy_scales": {"capacity": 72, "immunity": 55, "scale": 81}}\n'
         "- fast_facts: до 300 символов, три строки в одном поле: "
         "'⚡ Главный баг прошивки: …', '💼 Триггер больших денег: …', '🔋 Идеальная перезагрузка: …'. "
-        "Переводи номера каналов/ворот в понятные психологические суперсилы — БЕЗ сухих кодов "
-        "вида '34-20', '19-49', 'Gate 57'. Без ### и # — только plain text, эмодзи и **жирный**.\n"
+        "Каналы и ворота — только как «Суперсила: …», БЕЗ кодов вида '34-20', '19-49'. "
+        "Без ### и # — только plain text, эмодзи и **жирный**.\n"
         "- energy_scales: три целых числа 1–100 — capacity (ёмкость ауры по моторам), "
         "immunity (стойкость к чужому мнению по открытым центрам), scale (индекс харизмы/влияния).\n"
         "- money, love, energy: plain text с подзаголовками «Боль» и «Что делать». "
+        "«Боль» начинается с Эффекта Зеркала (живая сцена). "
         "Для **жирного акцента** используй только парные **звёздочки** (без ### и #). "
         "КАЖДЫЙ раздел начинается с честной психологической боли из-за Ложного Я этой механики. "
-        "Объём каждого раздела — от 2500 до 6000 символов; суммарно отчёт должен давать "
-        "30–40 страниц PDF при верстке.\n"
+        "Объём каждого раздела — от 2500 до 6000 символов.\n"
         "- ГЕНЕТИЧЕСКИЙ СИНТЕЗ (обязательно): каждый открытый центр описывай только в жёсткой "
-        "связке с определёнными моторами и каналами клиента — например, открытое Эго на фоне "
-        "определённого Сакрала, открытая Голова при определённом Корне. Никаких абстрактных "
-        "описаний центров «в вакууме» — только персональные паттерны этой карты.\n"
-        "- plan: plain text план на 30 дней (блоки 1–5 / 6–15 / 16–30) с действиями и метриками. "
-        "Допускается **жирный** через **звёздочки**, без ###.\n"
+        "связке с определёнными моторами и суперсилами каналов клиента.\n"
+        f"- {_HD_BOLD_CHALLENGES_PLAN_RULE}\n"
+        f"- {PROFILE_ARCHETYPE_PROMPT_RULE}\n"
+        f"- {CHANNEL_ARCHETYPE_PROMPT_RULE}\n"
         "Каждый раздел — плотный, без воды; в каждом есть ответ «что делать дальше»."
     )
+
+    profile_code_line, profile_archetype_line = profile_llm_context_lines(profile)
 
     user_prompt = (
         f"Клиент: {name}. Обращайся к {name} на «ты».\n\n"
@@ -2062,9 +2276,11 @@ def _build_elite_premium_hd_prompt(user_name: str, math_data: dict) -> tuple[str
         f"- Дата/время/место рождения: {birth_data}\n"
         f"- Стратегия: {strategy or 'не передана'}\n"
         f"- Авторитет: {authority or 'не передан'}\n"
-        f"- Профиль: {profile or 'не передан'}\n"
+        f"{profile_code_line}\n"
+        f"{profile_archetype_line}\n"
         f"- Определённые (закрашенные) центры: {defined_line}\n"
         f"- Открытые (незакрашенные) центры: {open_line}\n"
+        f"{channels_block}\n"
         f"- {gates_block}\n\n"
         "Сгенерируй JSON-разбор, ювелирно согласованный с определёнными и открытыми центрами выше. "
         "Если центр открыт — не описывай его как постоянный ресурс. "
@@ -2076,22 +2292,31 @@ def _build_elite_premium_hd_prompt(user_name: str, math_data: dict) -> tuple[str
 
 _GENETIC_SYNTHESIS_FEW_SHOT = (
     "ПРИМЕР ПЛОТНОСТИ JSON (few-shot — не копируй факты, только структуру и тон):\n"
-    '{"synthesis_anchor": "Открытое Эго × определённый Сакрал, профиль 3/5, сфера money.", '
-    '"client_pain": "Ты соглашаешься на сделки, чтобы доказать ценность, и выгораешь.", '
+    '{"synthesis_anchor": "Ловушка Доказывания (Открытое Эго × Определённый Сакрал × '
+    'архетип Экспериментатор-Спасатель × Суперсила влияния в моменте)", '
+    '"client_pain": "В 23:07 ты снова открываешь почту — ноги гудят, а палец жмёт «отправить», '
+    'потому что тишина кажется доказательством некомпетентности.", '
     '"false_self_pattern": "Ум подменяет уязвимость Эго перегрузкой Сакрала.", '
-    '"body_signal": "Сжатие в груди и ускоренное дыхание перед подписанием договора.", '
+    '"body_signal": "Сжатие в диафрагме и ускоренное дыхание перед подписанием договора.", '
     '"reflective_questions": ["Что меняется в теле, если отложить «да» на 24 часа?", '
-    '"Где я доказываю ценность вместо того, чтобы назвать цену?", '
-    '"Какой минимальный шаг даст мне данные без обязательства?"], '
-    '"experiments": [{"timeframe": "days_1-5", "action": "Перед каждым финансовым «да» '
-    'записывай телесный сигнал", "metric": "Количество решений и телесный отклик", '
-    '"success_criteria": "5 записей с различимым телесным паттерном"}]}'
+    '"Какую скрытую выгоду ты получаешь, доказывая ценность перегрузом?", '
+    '"Какой минимальный шаг вернёт тебе право выбора без самопредательства?"], '
+    '"experiments": [{"timeframe": "days_1-5", "action": "Дерзкий вызов: перед каждым финансовым «да» '
+    'записывай телесный стоп-сигнал", "metric": "5 решений + описание стоп-сигнала (сжатие в диафрагме)", '
+    '"success_criteria": "5 записей с различимым телесным паттерном до подписания"}]}'
 )
 
 
 def _format_active_channels_line(active_channels: object) -> str:
+    """Legacy one-liner; для промптов предпочтителен channels_llm_context_block()."""
     if isinstance(active_channels, list) and active_channels:
-        return ", ".join(str(ch).strip() for ch in active_channels if str(ch).strip())
+        labels = [
+            format_channel_superpower_for_user(str(ch))
+            for ch in active_channels
+            if str(ch).strip()
+        ]
+        if labels:
+            return ", ".join(labels)
     return "нет complete-каналов в переданных данных — не выдумывай"
 
 
@@ -2131,63 +2356,75 @@ def _build_genetic_synthesis_prompt(
     open_center = str(pair.get("open_center") or "").strip() or "не передан"
     anchors = _format_synthesis_anchors(pair.get("anchors"))
 
-    profile = str(data.get("profile") or "").strip() or "не передан"
+    profile = str(data.get("profile") or "").strip()
+    profile_code_line, profile_archetype_line = profile_llm_context_lines(profile)
     authority = str(data.get("authority") or "").strip() or "не передан"
     strategy = str(data.get("strategy") or "").strip() or "не передана"
     definition = str(data.get("definition") or "").strip() or "не передана"
     active_channels_line = _format_active_channels_line(data.get("active_channels"))
+    channels_block = channels_llm_context_block(data.get("active_channels"))
     scales_line = _format_energy_scales_line(energy_scales)
 
     banned = ", ".join(f"«{word}»" for word in _GENETIC_SYNTHESIS_BANNED_MARKERS[:10])
+    cliches = ", ".join(f"«{word}»" for word in _ELITE_HD_BANNED_COACHING_CLICHES[:6])
+    anglicisms = ", ".join(
+        term.title() for term in _GENETIC_SYNTHESIS_BANNED_ANGLICISMS[:12]
+    )
     domain_ru = {"money": "деньги", "love": "отношения", "energy": "энергия"}[normalized_domain]
 
     system_prompt = (
-        "Контекст: Ты — ИИ-генератор премиального движка «Генетического Синтеза» NeuroMule HD. "
-        "Твоя роль — аналитик Дизайна Человека высшей категории (IHDS-канон) и международный "
-        "сертифицированный коуч (ICF). Ты создаёшь глубокую, терапевтическую книгу-инструкцию, "
-        "которая сшивает параметры карты пользователя в единый жизненный нарратив.\n\n"
-        "ПРАВИЛА И ОГРАНИЧЕНИЯ:\n"
-        "1. ТОТАЛЬНЫЙ ЗАПРЕТ НА ГАЛЛЮЦИНАЦИИ КАНАЛОВ И ВОРОТ: Тебе запрещено упоминать, "
-        "придумывать или предполагать наличие любых ворот или каналов, которых нет в списках "
-        "active_channels и входных данных. Ты оперируешь только предоставленным контекстом.\n"
-        f"2. ЗАПРЕТ ЭЗОТЕРИЧЕСКОГО ЖАРГОНА: Полностью исключи слова-маркеры: {banned}. "
-        "Переводи терминологию IHDS на язык современной психологии и коучинга "
-        "(«Ложное Я» = «Компенсаторные паттерны психики», «Эксперимент» = "
-        "«Практическое наблюдение в жизни»).\n"
-        "3. ДИНАМИЧЕСКИЙ СИНТЕЗ ВМЕСТО ШАБЛОНОВ: Не описывай элементы изолированно. "
-        "Сшивай формулу: «Если у человека [Открытый центр] + [Определённый мотор] + [Профиль], "
-        "то в реальной жизни это приводит к боли [Х]».\n"
-        "4. ЗАПРЕТ MARKDOWN-ЗАГОЛОВКОВ В JSON: Внутри текстовых полей JSON строго запрещено "
+        "Контекст: Ты — ИИ-движок NeuroMule HD на OpenRouter-конвейере мирового уровня. "
+        "Создаёшь глубокое, трансформационное психологическое исследование — текст читается "
+        "взахлёб даже жёсткому скептику.\n\n"
+        f"{_HD_PREMIUM_TOV_BLOCK}\n\n"
+        "СТРОГИЕ АРХИТЕКТУРНЫЕ ЗАПРЕТЫ:\n"
+        "1. ЗАПРЕТ АНГЛИЦИЗМОВ И ЖАРГОНА: Категорически запрещено использовать сырые английские "
+        f"термины из старых баз ({anglicisms} и т.п.). Переводи ВСЁ на богатый, сильный русский язык.\n"
+        f"2. ЗАПРЕТ ЭЗОТЕРИЧЕСКОЙ ВОДЫ: Исключи слова-маркеры: {banned}. "
+        "Заменяй их на психологические понятия («компенсаторные стратегии», "
+        "«сценарии дефицитарности», «соматические маркеры»).\n"
+        f"3. ЗАПРЕТ КОУЧИНГОВЫХ КЛИШЕ: {cliches} и их вариации.\n"
+        "4. ТОТАЛЬНЫЙ ЗАПРЕТ НА ГАЛЛЮЦИНАЦИИ КАНАЛОВ: Тебе запрещено упоминать, придумывать "
+        "или предполагать наличие любых ворот или каналов, которых нет в списках active_channels.\n"
+        "5. ЗАПРЕТ MARKDOWN-ЗАГОЛОВКОВ В JSON: Внутри текстовых полей JSON строго запрещено "
         "использовать символы #, ##, ###. Для разделения абзацев используй только \\n.\n"
-        "5. ТЕМПЕРАТУРА ГЕНЕРАЦИИ: Будь максимально точен, ёмок, избегай «воды» и общих "
-        "коучинговых клише («просто верь в себя», «слушай тело»).\n\n"
-        "МЕТОДОЛОГИЯ ICF-КОУЧИНГА:\n"
-        "- Перейди от директивного тона («Ты должен») к исследовательской позиции.\n"
-        "- Подсвечивай соматические маркеры, по которым клиент отлавливает ментальную ловушку.\n"
-        "- Эксперименты формулируй по SMART: таймфреймы, микро-действия, критерии успеха.\n\n"
+        "6. ТЕМПЕРАТУРА 0.1: Будь точен, глубок, пиши короткими, бьющими в цель предложениями.\n"
+        f"7. {PROFILE_ARCHETYPE_PROMPT_RULE}\n"
+        f"8. {CHANNEL_ARCHETYPE_PROMPT_RULE}\n\n"
+        "МЕТОДОЛОГИЯ МИРОВОГО СИНТЕЗА:\n"
+        "- Фокусируйся на Фрактальном Конфликте. Показывай связку: "
+        "«Как твоё Открытое [центр] крадёт чистую энергию твоего Определённого [мотор], чтобы "
+        "доказать миру ценность, и почему твой архетип заставляет совершать цикличные ошибки».\n"
+        f"- {_HD_MIRROR_EFFECT_RULE}\n"
+        "- Телесный (соматический) интеллект: опиши физический маркер (ком в горле, зажим "
+        "в диафрагме), по которому человек поймает себя на Ложном Я.\n"
+        f"- {_HD_SYNTHESIS_EXPERIMENTS_RULE}\n\n"
         f"{_GENETIC_SYNTHESIS_FEW_SHOT}\n\n"
         "ВЫДАЧА: строго один JSON-объект без markdown-обёртки ```:\n"
-        '{"synthesis_anchor": "...", "client_pain": "...", "false_self_pattern": "...", '
-        '"body_signal": "...", "reflective_questions": ["...", "...", "..."], '
+        '{"synthesis_anchor": "Понятная формулировка связки с архетипом и суперсилой канала", '
+        '"client_pain": "...", "false_self_pattern": "...", "body_signal": "...", '
+        '"reflective_questions": ["...", "...", "..."], '
         '"experiments": [{"timeframe": "days_1-5", "action": "...", "metric": "...", '
         '"success_criteria": "..."}, {"timeframe": "days_6-15", ...}, '
         '{"timeframe": "days_16-30", ...}]}'
     )
 
     user_prompt = (
-        "Входные данные (Факты из Python-бэкенда — абсолютно точные, не подлежат сомнению):\n"
-        f"- Текущая сфера анализа (Domain): {normalized_domain} ({domain_ru})\n"
-        f"- Профиль: {profile}\n"
+        "Входные данные (Верифицированные факты с Python-сервера):\n"
+        f"- Сфера жизни: {normalized_domain} ({domain_ru})\n"
+        f"{profile_code_line}\n"
+        f"{profile_archetype_line}\n"
         f"- Внутренний Авторитет: {authority}\n"
         f"- Стратегия Типа: {strategy}\n"
         f"- Тип определенности (Definition): {definition}\n"
-        f"- Верифицированные активные каналы: {active_channels_line}\n"
-        f"- Текущая синтез-пара: Открытый центр [{open_center}] × "
+        f"{channels_block}\n"
+        f"- Сводка суперсил (read-only): {active_channels_line}\n"
+        f"- Синтез-пара для текущего анализа: Открытый центр [{open_center}] × "
         f"Определённые моторы/якоря {anchors}\n"
         f"- Серверные шкалы энергии (Read-Only): {scales_line}\n\n"
         "Сгенерируй JSON по схеме из system-инструкции. "
-        "Любое отклонение от структуры JSON, использование запрещённых слов "
-        "или символов # приведёт к ошибке валидации."
+        "Любое отклонение от структуры JSON, англицизмы, запрещённые слова, сырые коды профилей/каналов "
+        "или символы # приведёт к ошибке валидации."
     )
     return system_prompt, user_prompt
 
@@ -2198,7 +2435,26 @@ def _synthesis_text_has_markdown_headers(text: str) -> bool:
 
 def _synthesis_text_banned_hits(text: str) -> list[str]:
     lowered = (text or "").lower()
-    return [marker for marker in _GENETIC_SYNTHESIS_BANNED_MARKERS if marker in lowered]
+    hits = [marker for marker in _GENETIC_SYNTHESIS_BANNED_MARKERS if marker in lowered]
+    for term in _GENETIC_SYNTHESIS_BANNED_ANGLICISMS:
+        if re.search(rf"\b{re.escape(term.lower())}\b", lowered):
+            hits.append(term)
+    return hits
+
+
+def _hd_text_coaching_cliche_hits(text: str) -> list[str]:
+    lowered = (text or "").lower()
+    return [phrase for phrase in _ELITE_HD_BANNED_COACHING_CLICHES if phrase in lowered]
+
+
+def _validate_hd_user_facing_text(text: str, *, field: str) -> None:
+    if text_contains_raw_profile_code(text):
+        raise ValueError(f"{field} contains raw profile code (use archetype)")
+    if text_contains_raw_channel_code(text):
+        raise ValueError(f"{field} contains raw channel code (use superpower label)")
+    cliches = _hd_text_coaching_cliche_hits(text)
+    if cliches:
+        raise ValueError(f"{field} contains banned coaching cliches: {cliches[:2]}")
 
 
 def _normalize_synthesis_experiment(raw: object, timeframe: str) -> dict[str, str]:
@@ -2222,6 +2478,7 @@ def _normalize_synthesis_response(parsed: dict[str, object]) -> dict[str, Any]:
         cleaned = value.strip()
         if _synthesis_text_has_markdown_headers(cleaned):
             raise ValueError(f"synthesis field {key!r} contains markdown headers")
+        _validate_hd_user_facing_text(cleaned, field=f"synthesis field {key!r}")
         hits = _synthesis_text_banned_hits(cleaned)
         if hits:
             raise ValueError(f"synthesis field {key!r} contains banned markers: {hits[:3]}")
@@ -2237,6 +2494,7 @@ def _normalize_synthesis_response(parsed: dict[str, object]) -> dict[str, Any]:
         q = item.strip()
         if _synthesis_text_has_markdown_headers(q):
             raise ValueError(f"synthesis reflective_questions[{idx}] contains markdown headers")
+        _validate_hd_user_facing_text(q, field=f"synthesis reflective_questions[{idx}]")
         questions.append(q)
     report["reflective_questions"] = questions
 
@@ -2249,6 +2507,7 @@ def _normalize_synthesis_response(parsed: dict[str, object]) -> dict[str, Any]:
         for field in ("action", "metric", "success_criteria"):
             if _synthesis_text_banned_hits(exp[field]):
                 raise ValueError(f"synthesis experiment[{idx}] contains banned markers")
+            _validate_hd_user_facing_text(exp[field], field=f"synthesis experiment[{idx}].{field}")
         experiments.append(exp)
     report["experiments"] = experiments
     return report
@@ -2308,6 +2567,7 @@ async def _generate_synthesis_via_openrouter(
         max_tokens=_GENETIC_SYNTHESIS_MAX_TOKENS,
         temperature=_GENETIC_SYNTHESIS_TEMPERATURE,
         response_format={"type": "json_object"},
+        log_context="hd_genetic_synthesis",
     )
     text = (completion.get("content") or "").strip()
     if not text:
@@ -2377,25 +2637,37 @@ async def generate_genetic_synthesis(
         else _OPENROUTER_PREMIUM_TIMEOUT_SEC
     )
 
+    if _openrouter_configured():
+        try:
+            async with _hd_llm_semaphore():
+                return await _generate_synthesis_via_openrouter(
+                    system_prompt,
+                    user_prompt,
+                    models=or_models,
+                    timeout=or_timeout,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "HD genetic synthesis OpenRouter exhausted domain=%s pair=%s — Gemini fallback: %s",
+                domain,
+                synthesis_pair.get("open_center"),
+                exc,
+            )
+            errors.append(f"openrouter: {exc!r}")
+    elif not _gemini_configured():
+        raise RuntimeError("hd_synthesis_unavailable: задайте OPENROUTER_API_KEY или GEMINI_API_KEY")
+
     if _gemini_configured() and not upgrade_mode:
         try:
-            return await _generate_synthesis_via_gemini(system_prompt, user_prompt)
+            async with _hd_llm_semaphore():
+                return await _generate_synthesis_via_gemini(system_prompt, user_prompt)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Gemini genetic synthesis failed, trying OpenRouter: %s", exc)
+            logger.exception(
+                "HD genetic synthesis Gemini fallback failed domain=%s pair=%s",
+                domain,
+                synthesis_pair.get("open_center"),
+            )
             errors.append(f"gemini: {exc!r}")
-    elif not _openrouter_configured() and not _gemini_configured():
-        raise RuntimeError("hd_synthesis_unavailable: задайте GEMINI_API_KEY или OPENROUTER_API_KEY")
-
-    try:
-        return await _generate_synthesis_via_openrouter(
-            system_prompt,
-            user_prompt,
-            models=or_models,
-            timeout=or_timeout,
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("OpenRouter genetic synthesis failed")
-        errors.append(f"openrouter: {exc!r}")
 
     raise RuntimeError("hd_synthesis_unavailable: " + "; ".join(errors))
 
@@ -2454,15 +2726,21 @@ def _build_premium_summary_prompt(
     excerpts = "\n\n".join(excerpt_parts) or "Главы синтеза не переданы."
 
     system_prompt = (
-        "Ты — ICF-коуч NeuroMule HD. На основе готовых глав Genetic Synthesis сформируй JSON:\n"
+        "Ты — ведущий аналитик NeuroMule HD. На основе готовых глав Genetic Synthesis сформируй JSON:\n"
         '{"fast_facts": "...", "plan": "..."}\n'
+        f"{_HD_PREMIUM_TOV_BLOCK}\n"
         f"- fast_facts: до {_FAST_FACTS_MAX_LEN} символов, три строки в одном поле: "
         "'⚡ Главный баг прошивки: …', '💼 Триггер больших денег: …', '🔋 Идеальная перезагрузка: …'.\n"
-        "- plan: plain text план на 30 дней (блоки 1–5 / 6–15 / 16–30) с SMART-действиями.\n"
+        f"- {_HD_BOLD_CHALLENGES_PLAN_RULE}\n"
+        f"- {PROFILE_ARCHETYPE_PROMPT_RULE}\n"
+        f"- {CHANNEL_ARCHETYPE_PROMPT_RULE}\n"
         "Без символов # в тексте. Без эзотерического жаргона. Только факты карты из user-блока."
     )
+    profile_code_line, profile_archetype_line = profile_llm_context_lines(profile)
     user_prompt = (
-        f"Клиент: {name}. Тип: {hd_type}. Профиль: {profile}. "
+        f"Клиент: {name}. Тип: {hd_type}.\n"
+        f"{profile_code_line}\n"
+        f"{profile_archetype_line}\n"
         f"Авторитет: {authority}. Стратегия: {strategy}.\n"
         f"Шкалы (read-only): {scales_line}\n\n"
         f"Выдержки из глав синтеза:\n{excerpts}\n\n"
@@ -2477,7 +2755,11 @@ def _normalize_premium_summary(parsed: dict[str, object]) -> dict[str, str]:
         value = parsed.get(key)
         if not isinstance(value, str) or not value.strip():
             raise ValueError(f"premium summary missing non-empty {key!r}")
-        out[key] = value.strip()
+        cleaned = value.strip()
+        if text_contains_raw_profile_code(cleaned):
+            raise ValueError(f"premium summary field {key!r} contains raw profile code (use archetype)")
+        _validate_hd_user_facing_text(cleaned, field=f"premium summary field {key!r}")
+        out[key] = cleaned
     if len(out["fast_facts"]) > _FAST_FACTS_MAX_LEN:
         out["fast_facts"] = out["fast_facts"][: _FAST_FACTS_MAX_LEN - 1].rstrip() + "…"
     return out
@@ -2492,18 +2774,20 @@ async def _generate_premium_summary_via_openrouter(
 ) -> dict[str, str]:
     from services.ai_text import ask_ai_messages
 
-    completion = await ask_ai_messages(
-        _app_settings,
-        [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        timeout=timeout if timeout is not None else _OPENROUTER_PREMIUM_TIMEOUT_SEC,
-        models=models or _openrouter_models_for_premium(),
-        max_tokens=_PREMIUM_SUMMARY_MAX_TOKENS,
-        temperature=_PREMIUM_SUMMARY_TEMPERATURE,
-        response_format={"type": "json_object"},
-    )
+    async with _hd_llm_semaphore():
+        completion = await ask_ai_messages(
+            _app_settings,
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            timeout=timeout if timeout is not None else _OPENROUTER_PREMIUM_TIMEOUT_SEC,
+            models=models or _openrouter_models_for_premium(),
+            max_tokens=_PREMIUM_SUMMARY_MAX_TOKENS,
+            temperature=_PREMIUM_SUMMARY_TEMPERATURE,
+            response_format={"type": "json_object"},
+            log_context="hd_premium_summary",
+        )
     text = (completion.get("content") or "").strip()
     if not text:
         raise RuntimeError("openrouter_premium_summary_empty")
@@ -2551,29 +2835,32 @@ async def _generate_premium_summary(
         domain_excerpts=domain_excerpts,
         energy_scales=energy_scales,
     )
+    if _openrouter_configured():
+        models = (
+            _openrouter_models_for_premium_upgrade()
+            if upgrade_mode
+            else _openrouter_models_for_premium()
+        )
+        timeout = (
+            _OPENROUTER_PREMIUM_UPGRADE_TIMEOUT_SEC
+            if upgrade_mode
+            else _OPENROUTER_PREMIUM_TIMEOUT_SEC
+        )
+        try:
+            return await _generate_premium_summary_via_openrouter(
+                system_prompt,
+                user_prompt,
+                models=models,
+                timeout=timeout,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("OpenRouter premium summary failed: %s", exc)
     if _gemini_configured() and not upgrade_mode:
         try:
             return await _generate_premium_summary_via_gemini(system_prompt, user_prompt)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Gemini premium summary failed: %s", exc)
-    if not _openrouter_configured():
-        raise RuntimeError("hd_summary_unavailable")
-    models = (
-        _openrouter_models_for_premium_upgrade()
-        if upgrade_mode
-        else _openrouter_models_for_premium()
-    )
-    timeout = (
-        _OPENROUTER_PREMIUM_UPGRADE_TIMEOUT_SEC
-        if upgrade_mode
-        else _OPENROUTER_PREMIUM_TIMEOUT_SEC
-    )
-    return await _generate_premium_summary_via_openrouter(
-        system_prompt,
-        user_prompt,
-        models=models,
-        timeout=timeout,
-    )
+            logger.warning("Gemini premium summary fallback failed: %s", exc)
+    raise RuntimeError("hd_summary_unavailable")
 
 
 async def _generate_premium_report_upgrade_fast(
@@ -2976,7 +3263,7 @@ def _build_chart_overview_table(
     rows: list[list[str]] = []
     for label, raw in (
         ("Истинный Тип", meta.get("hd_type")),
-        ("Профиль", meta.get("profile")),
+        ("Профиль", meta.get("profile_archetype") or format_profile_archetype_for_user(str(meta.get("profile") or ""))),
         ("Внутренний Авторитет", meta.get("authority")),
         ("Стратегия", meta.get("strategy")),
         ("Определённость", meta.get("definition")),
@@ -3253,20 +3540,43 @@ def parse_hd_request(raw: str) -> tuple[str, str]:
 
 
 _STORY_CANVAS_SIZE = (1080, 1920)
+_STORY_FONT_DIR = _PROJECT_ROOT / "assets" / "fonts"
+_STORY_FONT_BOLD_PATH = _STORY_FONT_DIR / "Roboto-Bold.ttf"
+_STORY_FONT_REGULAR_PATH = _STORY_FONT_DIR / "Roboto-Regular.ttf"
 
 
-def _load_story_font(size: int) -> Any:
+def ensure_story_fonts_available() -> None:
+    """Pre-flight: кириллические TTF для Instagram Stories должны лежать в assets/fonts/."""
+    missing = [
+        path for path in (_STORY_FONT_BOLD_PATH, _STORY_FONT_REGULAR_PATH) if not path.is_file()
+    ]
+    if missing:
+        raise RuntimeError(
+            "HD story fonts missing on disk: " + ", ".join(str(p) for p in missing)
+        )
+
+
+def _load_story_font(size: int, *, bold: bool = False) -> Any:
+    """TTF с кириллицей для Instagram Stories (без load_default fallback)."""
     if ImageFont is None:
         return None
-    for name in ("Montserrat-Bold.ttf", "Montserrat.ttf", "Inter-Bold.ttf", "Inter.ttf", "arial.ttf"):
-        for folder in (_PROJECT_ROOT / "assets", Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts"):
-            candidate = folder / name
-            if candidate.is_file():
-                try:
-                    return ImageFont.truetype(str(candidate), size=size)
-                except OSError:
-                    continue
-    return ImageFont.load_default()
+    primary = _STORY_FONT_BOLD_PATH if bold else _STORY_FONT_REGULAR_PATH
+    secondary = _STORY_FONT_REGULAR_PATH if bold else _STORY_FONT_BOLD_PATH
+    for candidate in (
+        primary,
+        secondary,
+        _PROJECT_ROOT / "fonts" / "Roboto-Regular.ttf",
+    ):
+        if not candidate.is_file():
+            continue
+        try:
+            return ImageFont.truetype(str(candidate), size=size)
+        except OSError:
+            logger.warning("story font load failed path=%s", candidate, exc_info=True)
+    raise RuntimeError(
+        "Cyrillic story fonts missing: expected "
+        f"{_STORY_FONT_BOLD_PATH} and {_STORY_FONT_REGULAR_PATH}"
+    )
 
 
 def _draw_story_watermark(draw: Any, width: int, height: int, font: Any) -> None:
@@ -3319,7 +3629,7 @@ def _draw_story_meta_panel(
     meta = hd_profile_metadata(math_data)
     rows = (
         ("Тип", str(meta.get("hd_type") or "—")),
-        ("Профиль", str(meta.get("profile") or "—")),
+        ("Профиль", format_profile_archetype_for_user(str(meta.get("profile") or ""))),
         ("Авторитет", str(meta.get("authority") or "—")),
         ("Стратегия", str(meta.get("strategy") or "—")),
     )
@@ -3354,18 +3664,21 @@ def generate_instagram_stories(
     if Image is None or ImageDraw is None or ImageFilter is None:
         raise RuntimeError("Установите пакет Pillow для Instagram Stories.")
 
+    ensure_story_fonts_available()
+
     if math_data is None:
         math_data = build_hd_math_data(hd_type or "не указан", birth_data or "")
 
     os.makedirs(str(_HD_BODYGRAPH_OUTPUT_DIR), exist_ok=True)
     bodygraph_path = _HD_BODYGRAPH_OUTPUT_DIR / f"ready_hd_{uid}.png"
     paths: list[str] = []
-    title_font = _load_story_font(44)
-    subtitle_font = _load_story_font(24)
-    label_font = _load_story_font(28)
-    value_font = _load_story_font(24)
-    section_font = _load_story_font(30)
-    body_font = _load_story_font(24)
+    title_font = _load_story_font(44, bold=True)
+    subtitle_font = _load_story_font(24, bold=False)
+    label_font = _load_story_font(28, bold=True)
+    value_font = _load_story_font(24, bold=False)
+    section_font = _load_story_font(30, bold=True)
+    body_font = _load_story_font(24, bold=False)
+    watermark_font = _load_story_font(22, bold=False)
     meta = hd_profile_metadata(math_data)
     display_type = str(meta.get("hd_type") or hd_type or "Human Design")
 
@@ -3396,7 +3709,7 @@ def generate_instagram_stories(
         label_font=label_font,
         value_font=value_font,
     )
-    _draw_story_watermark(draw1, _STORY_CANVAS_SIZE[0], _STORY_CANVAS_SIZE[1], _load_story_font(22))
+    _draw_story_watermark(draw1, _STORY_CANVAS_SIZE[0], _STORY_CANVAS_SIZE[1], watermark_font)
     out1 = _HD_BODYGRAPH_OUTPUT_DIR / f"story_{uid}_1.png"
     card1.convert("RGB").save(out1, format="PNG")
     paths.append(f"tmp/story_{uid}_1.png")
@@ -3440,7 +3753,7 @@ def generate_instagram_stories(
                 draw2.text((72, ty), line, fill=(235, 235, 245, 255), font=body_font)
                 ty += 32
 
-    _draw_story_watermark(draw2, _STORY_CANVAS_SIZE[0], _STORY_CANVAS_SIZE[1], _load_story_font(22))
+    _draw_story_watermark(draw2, _STORY_CANVAS_SIZE[0], _STORY_CANVAS_SIZE[1], watermark_font)
     out2 = _HD_BODYGRAPH_OUTPUT_DIR / f"story_{uid}_2.png"
     card2.convert("RGB").save(out2, format="PNG")
     paths.append(f"tmp/story_{uid}_2.png")
@@ -3568,17 +3881,20 @@ async def generate_compatibility_report(
         partner_math,
         composite,
     )
+    if _openrouter_configured():
+        try:
+            return await _generate_compat_via_openrouter(system_prompt, user_prompt)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("OpenRouter compatibility failed, trying Gemini: %s", exc)
+    elif not _gemini_configured():
+        raise RuntimeError("hd_compat_unavailable: задайте OPENROUTER_API_KEY или GEMINI_API_KEY")
     if _gemini_configured():
         try:
-            report = await _generate_compat_via_gemini(system_prompt, user_prompt)
-            return report
+            return await _generate_compat_via_gemini(system_prompt, user_prompt)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Gemini compatibility failed, OpenRouter fallback: %s", exc)
-    elif not _openrouter_configured():
-        raise RuntimeError("hd_compat_unavailable: задайте GEMINI_API_KEY или OPENROUTER_API_KEY")
-    else:
-        logger.info("GEMINI_API_KEY не задан — совместимость сразу через OpenRouter Pro chain")
-    return await _generate_compat_via_openrouter(system_prompt, user_prompt)
+            logger.exception("Gemini compatibility fallback failed")
+            raise RuntimeError("hd_compat_unavailable") from exc
+    raise RuntimeError("hd_compat_unavailable")
 
 
 def compatibility_report_to_json(report: dict[str, str]) -> str:

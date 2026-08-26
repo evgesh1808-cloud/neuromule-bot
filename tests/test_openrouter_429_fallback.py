@@ -62,6 +62,33 @@ async def test_429_logs_warning_and_returns_none(
 
 
 @pytest.mark.asyncio
+async def test_429_log_includes_next_model_and_context(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.WARNING, logger="services.ai_text")
+    settings = SimpleNamespace(
+        openrouter_chat_url="https://x",
+        openrouter_key="k",
+        bot_name="NeuroMule",
+        openrouter_timeout_sec=10,
+        openrouter_max_output_tokens=512,
+    )
+    client = _StubClient()
+    await ai_text._post_chat_completion(
+        client,  # type: ignore[arg-type]
+        settings,
+        "free-model-a",
+        [{"role": "user", "content": "hi"}],
+        timeout=10.0,
+        log_context="hd_genetic_synthesis",
+        next_model="deepseek/deepseek-r1",
+    )
+    joined = " ".join(r.message for r in caplog.records)
+    assert "deepseek/deepseek-r1" in joined
+    assert "hd_genetic_synthesis" in joined
+
+
+@pytest.mark.asyncio
 async def test_404_and_503_failover_to_next_model() -> None:
     settings = SimpleNamespace(
         openrouter_chat_url="https://x",

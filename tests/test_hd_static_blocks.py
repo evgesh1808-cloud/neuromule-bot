@@ -39,6 +39,13 @@ def test_format_static_reference_full_orders_sections() -> None:
     assert full.index("Тип A") < full.index("Профиль B") < full.index("Ворота C")
 
 
+def test_profile_block_text_uses_archetype_not_raw_code() -> None:
+    text = hd_static_blocks.profile_block_text("3/5")
+    assert "Экспериментатор-Спасатель" in text
+    assert "Профиль 3/5" not in text
+    assert "3/5" not in text
+
+
 def test_gate_block_text_uses_library_or_fallback() -> None:
     text = hd_static_blocks.gate_block_text(34, center="Сакрал")
     assert "34" in text

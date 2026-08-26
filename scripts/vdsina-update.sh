@@ -66,6 +66,14 @@ else
   fi
 fi
 
+echo "==> HD story fonts (Cyrillic pre-flight)"
+for font_file in assets/fonts/Roboto-Bold.ttf assets/fonts/Roboto-Regular.ttf; do
+  if [ ! -f "${font_file}" ]; then
+    echo "ERROR: missing ${font_file} — Instagram Stories упадут на сервере без кириллицы"
+    exit 1
+  fi
+done
+
 for svc in neuromule-bot neuromule_bot; do
   systemctl stop "${svc}" 2>/dev/null || true
 done

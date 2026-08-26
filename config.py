@@ -15,6 +15,7 @@ _ENV_FILE = Path(__file__).resolve().with_name(".env")
 
 # OpenRouter: FREE-тариф на ``:free``; платные — Gemini 2.5 Flash.
 _DEFAULT_GEMINI_FLASH = "google/gemini-2.5-flash"
+_DEFAULT_PAID_CHAT_MODEL = "anthropic/claude-3.5-sonnet"
 _DEFAULT_GEMINI_FLASH_LITE = "google/gemini-2.5-flash-lite"
 # Не openrouter/free: роутер часто отдаёт content-safety / мёртвые ID → «бот молчит».
 _DEFAULT_FREE_CHAT_MODEL = "deepseek/deepseek-r1-distill-llama-8b:free"
@@ -535,8 +536,8 @@ class Settings(BaseSettings):
     ] = _DEFAULT_FREE_CHAT_MODEL
     paid_text_model: Annotated[
         str,
-        _openrouter_model_id(_DEFAULT_GEMINI_FLASH),
-    ] = _DEFAULT_GEMINI_FLASH
+        _openrouter_model_id(_DEFAULT_PAID_CHAT_MODEL),
+    ] = _DEFAULT_PAID_CHAT_MODEL
     free_image_model: Annotated[str, _nonempty_str("flux_free")] = "flux_free"
     # Скрытый суточный предохранитель FREE Nano Banana на весь бот (.env).
     global_free_image_daily_cap: Annotated[int, _coerce_int(1500)] = Field(
