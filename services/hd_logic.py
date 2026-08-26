@@ -144,10 +144,10 @@ _OPENROUTER_DAILY_TIMEOUT_SEC = 45.0
 _OPENROUTER_DAILY_MAX_TOKENS = 900
 _GEMINI_PREMIUM_TIMEOUT_SEC = 90.0
 _OPENROUTER_PREMIUM_TIMEOUT_SEC = 120.0
-_OPENROUTER_PREMIUM_UPGRADE_TIMEOUT_SEC = 180.0
+_OPENROUTER_PREMIUM_UPGRADE_TIMEOUT_SEC = 75.0
 _OPENROUTER_WELCOME_HOOK_TIMEOUT_SEC = 12.0
 _WELCOME_HOOK_MAX_TOKENS = 420
-_HD_UPGRADE_LLM_TIMEOUT_SEC = 480.0
+_HD_UPGRADE_LLM_TIMEOUT_SEC = 540.0
 _HD_LLM_PARALLEL_LIMIT = 5
 _HD_PREMIUM_MAX_OUTPUT_TOKENS = 8192
 _PDF_FONT_NAME = "HDReportFont"
@@ -604,10 +604,9 @@ def _openrouter_models_for_premium() -> list[str]:
 
 
 def _openrouter_models_for_premium_upgrade() -> list[str]:
-    """Быстрый апгрейд legacy → v3: DeepSeek-V3, затем полный premium-каскад."""
+    """Быстрый апгрейд legacy → v3: короткий каскад (укладывается в общий upgrade-timeout)."""
     return [
         "deepseek/deepseek-chat",
-        "anthropic/claude-3.5-sonnet",
         "deepseek/deepseek-r1",
         "google/gemini-2.5-pro",
     ]
@@ -1145,11 +1144,26 @@ async def ensure_modern_hd_report(
             timeout=_HD_UPGRADE_LLM_TIMEOUT_SEC,
         )
     except asyncio.TimeoutError:
-        logger.error("HD report upgrade LLM timeout uid=%s", user_id)
-        raise RuntimeError("hd_upgrade_timeout") from None
-    except Exception:
+        logger.error("HD report upgrade LLM timeout uid=%s — offline legacy wrap", user_id)
+        math_data = build_hd_math_data(hd_type, birth_data)
+        report = _wrap_legacy_report_as_v3(raw, math_data)
+    except Exception as exc:
         logger.exception("HD report upgrade LLM failed uid=%s", user_id)
-        raise
+        math_data = build_hd_math_data(hd_type, birth_data)
+        try:
+            report = _wrap_legacy_report_as_v3(raw, math_data)
+        except Exception as wrap_exc:  # noqa: BLE001
+            logger.exception(
+                "HD offline legacy wrap failed uid=%s after %s",
+                user_id,
+                exc,
+            )
+            raise exc from wrap_exc
+        logger.warning(
+            "HD report upgrade uid=%s served via offline legacy wrap after LLM failure: %s",
+            user_id,
+            exc,
+        )
 
     math_data = build_hd_math_data(hd_type, birth_data)
     resolved_type = str(math_data.get("hd_type") or hd_type)
@@ -1203,44 +1217,16 @@ async def try_consume_crystals(user_id: int, amount: int) -> bool:
     return await _repo_spend(user_id, amount)
 
 
-async def generate_premium_report(
-    hd_type: str,
-    birth_data: str,
+async def _generate_premium_report_legacy_single_prompt(
+    user_name: str,
+    math_data: dict[str, object],
     *,
-    user_name: str = "друг",
-    upgrade_mode: bool = False,
+    upgrade_mode: bool,
+    prior_errors: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Полный HD-разбор: multi-pass Genetic Synthesis → legacy single-prompt fallback."""
-    math_data = build_hd_math_data(hd_type, birth_data)
-    multipass_error: Exception | None = None
-    if upgrade_mode:
-        try:
-            report = await _generate_premium_report_upgrade_fast(
-                user_name,
-                math_data,
-            )
-            logger.info("HD premium report served via upgrade-fast path")
-            return report
-        except Exception as exc:  # noqa: BLE001
-            multipass_error = exc
-            logger.warning("HD upgrade-fast failed, trying multipass/legacy: %s", exc)
-    try:
-        report = await _generate_premium_report_multipass(
-            user_name,
-            math_data,
-            upgrade_mode=upgrade_mode,
-        )
-        logger.info("HD premium report served via multi-pass Genetic Synthesis")
-        return report
-    except Exception as exc:  # noqa: BLE001
-        if multipass_error is None:
-            multipass_error = exc
-        logger.warning("Multi-pass premium report failed, legacy single-prompt: %s", exc)
-
+    """Один LLM-вызов (OpenRouter → Gemini) без multi-pass synthesis."""
     system_prompt, user_prompt = _build_elite_premium_hd_prompt(user_name, math_data)
-    errors: list[str] = []
-    if multipass_error is not None:
-        errors.append(f"multipass: {multipass_error!r}")
+    errors: list[str] = list(prior_errors or [])
     or_models = (
         _openrouter_models_for_premium_upgrade()
         if upgrade_mode
@@ -1262,7 +1248,10 @@ async def generate_premium_report(
                 relax_cliches=upgrade_mode,
             )
             report["energy_scales"] = compute_energy_scales_from_math(math_data)
-            logger.info("HD premium report served via OpenRouter (legacy primary)")
+            logger.info(
+                "HD premium report served via OpenRouter legacy single-prompt upgrade_mode=%s",
+                upgrade_mode,
+            )
             return report
         except Exception as or_exc:  # noqa: BLE001
             logger.warning("OpenRouter premium report failed, trying Gemini: %s", or_exc)
@@ -1279,7 +1268,7 @@ async def generate_premium_report(
             )
             report["energy_scales"] = compute_energy_scales_from_math(math_data)
             logger.info(
-                "HD premium report served via Gemini Pro chain (legacy fallback upgrade_mode=%s)",
+                "HD premium report served via Gemini legacy single-prompt upgrade_mode=%s",
                 upgrade_mode,
             )
             return report
@@ -1290,6 +1279,87 @@ async def generate_premium_report(
         errors.append("google-genai_missing")
 
     raise RuntimeError("hd_premium_unavailable: " + "; ".join(errors))
+
+
+def _wrap_legacy_report_as_v3(
+    raw: str,
+    math_data: dict[str, object],
+) -> dict[str, Any]:
+    """
+    Последний резерв: сохраняем текст legacy-отчёта, добавляем schema v3 + static-блоки без LLM.
+    """
+    from services.hd_static_blocks import assemble_static_reference
+
+    parsed = _parse_json_object(raw)
+    if not isinstance(parsed, dict):
+        raise ValueError("legacy_hd_report_not_object")
+
+    report: dict[str, Any] = {}
+    for key in _PREMIUM_REPORT_KEYS:
+        value = parsed.get(key)
+        if isinstance(value, str) and value.strip():
+            report[key] = _sanitize_hd_user_facing_text(value.strip())
+        elif key == "fast_facts":
+            report[key] = _LEGACY_HD_REPORT_PLACEHOLDER
+        else:
+            report[key] = "Раздел будет доступен после повторной генерации."
+
+    report["energy_scales"] = compute_energy_scales_from_math(math_data)
+    static_sections = assemble_static_reference(math_data, gate_to_center=_GATE_TO_CENTER)
+    if static_sections:
+        report["static_reference"] = static_sections
+    report["synthesis_meta"] = {
+        "pairs_requested": 0,
+        "blocks_ok": 0,
+        "blocks_failed": 0,
+        "upgrade_offline": True,
+    }
+    return report
+
+
+async def generate_premium_report(
+    hd_type: str,
+    birth_data: str,
+    *,
+    user_name: str = "друг",
+    upgrade_mode: bool = False,
+) -> dict[str, Any]:
+    """Полный HD-разбор: multi-pass Genetic Synthesis → legacy single-prompt fallback."""
+    math_data = build_hd_math_data(hd_type, birth_data)
+    upgrade_errors: list[str] = []
+    if upgrade_mode:
+        try:
+            report = await _generate_premium_report_upgrade_fast(
+                user_name,
+                math_data,
+            )
+            logger.info("HD premium report served via upgrade-fast path")
+            return report
+        except Exception as exc:  # noqa: BLE001
+            upgrade_errors.append(f"upgrade_fast: {exc!r}")
+            logger.warning("HD upgrade-fast failed, legacy single-prompt fallback: %s", exc)
+        return await _generate_premium_report_legacy_single_prompt(
+            user_name,
+            math_data,
+            upgrade_mode=True,
+            prior_errors=upgrade_errors,
+        )
+    try:
+        report = await _generate_premium_report_multipass(
+            user_name,
+            math_data,
+            upgrade_mode=upgrade_mode,
+        )
+        logger.info("HD premium report served via multi-pass Genetic Synthesis")
+        return report
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Multi-pass premium report failed, legacy single-prompt: %s", exc)
+        return await _generate_premium_report_legacy_single_prompt(
+            user_name,
+            math_data,
+            upgrade_mode=False,
+            prior_errors=[f"multipass: {exc!r}"],
+        )
 
 
 def _parse_premium_report_from_llm(raw: str, *, relax_cliches: bool = False) -> dict[str, Any]:

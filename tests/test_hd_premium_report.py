@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock, patch
 
 from pathlib import Path
@@ -285,10 +286,57 @@ def test_openrouter_model_cascades() -> None:
     ]
     assert hd_logic._openrouter_models_for_premium_upgrade() == [
         "deepseek/deepseek-chat",
-        "anthropic/claude-3.5-sonnet",
         "deepseek/deepseek-r1",
         "google/gemini-2.5-pro",
     ]
+
+
+@pytest.mark.asyncio
+async def test_premium_report_upgrade_mode_skips_multipass_on_fast_failure() -> None:
+    legacy_report = dict(_SAMPLE_REPORT)
+    with (
+        patch.object(
+            hd_logic,
+            "_generate_premium_report_upgrade_fast",
+            new=AsyncMock(side_effect=RuntimeError("upgrade_fast_llm_unavailable")),
+        ),
+        patch.object(
+            hd_logic,
+            "_generate_premium_report_multipass",
+            new=AsyncMock(),
+        ) as mp_mock,
+        patch.object(
+            hd_logic,
+            "_generate_premium_report_legacy_single_prompt",
+            new=AsyncMock(return_value=legacy_report),
+        ) as legacy_mock,
+    ):
+        report = await hd_logic.generate_premium_report(
+            "Генератор",
+            "15.03.1990 14:30 Москва",
+            upgrade_mode=True,
+        )
+    assert report == legacy_report
+    mp_mock.assert_not_awaited()
+    legacy_mock.assert_awaited_once()
+
+
+def test_wrap_legacy_report_as_v3_preserves_sections() -> None:
+    raw = json.dumps(
+        {
+            "schema_version": 1,
+            "money": "Старый блок про деньги",
+            "love": "Старый блок про любовь",
+            "energy": "Старый блок про энергию",
+            "plan": "Старый план",
+        },
+        ensure_ascii=False,
+    )
+    math_data = hd_logic.build_hd_math_data("Генератор", "15.03.1990 14:30 Москва")
+    report = hd_logic._wrap_legacy_report_as_v3(raw, math_data)
+    assert report["money"] == "Старый блок про деньги"
+    assert report["synthesis_meta"]["upgrade_offline"] is True
+    assert "energy_scales" in report
 
 
 def test_sanitize_hd_user_facing_text_replaces_profile_code() -> None:
