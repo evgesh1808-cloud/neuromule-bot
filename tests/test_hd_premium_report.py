@@ -343,8 +343,8 @@ def test_openrouter_model_cascades() -> None:
         "google/gemini-2.5-pro",
     ]
     assert hd_logic._openrouter_models_for_premium_upgrade() == [
+        "anthropic/claude-3.5-sonnet",
         "deepseek/deepseek-chat",
-        "deepseek/deepseek-r1",
         "google/gemini-2.5-pro",
     ]
 

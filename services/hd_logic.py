@@ -23,6 +23,7 @@ from services.hd_channel_archetypes import (
     format_channel_superpower_for_user,
     text_contains_raw_channel_code,
 )
+from services import hd_chart
 from services.hd_profile_archetypes import (
     PROFILE_ARCHETYPE_PROMPT_RULE,
     format_profile_archetype_for_user,
@@ -30,6 +31,7 @@ from services.hd_profile_archetypes import (
     profile_llm_context_lines,
     text_contains_raw_profile_code,
 )
+from utils.sanitize import sanitize_hd_user_facing_text
 
 try:
     from google import genai
@@ -156,7 +158,6 @@ _PDF_CONTENT_BG = "#FAFAFA"
 _PDF_BODYGRAPH_WIDTH_PX = 430
 _PDF_BODYGRAPH_MAX_BYTES = 300 * 1024
 _PDF_CHAPTER_SPECS: tuple[tuple[str, str, str], ...] = (
-    ("static_reference", "📚 Справочник карты (IHDS)", "hd_ch_static"),
     ("money", "💼 Раздел: Финансовый Аудит", "hd_ch_money"),
     ("love", "❤️ Раздел: Отношения и Партнёрство", "hd_ch_love"),
     ("energy", "⚡ Раздел: Энергетическая Архитектура", "hd_ch_energy"),
@@ -604,10 +605,10 @@ def _openrouter_models_for_premium() -> list[str]:
 
 
 def _openrouter_models_for_premium_upgrade() -> list[str]:
-    """Быстрый апгрейд legacy → v3: короткий каскад (укладывается в общий upgrade-timeout)."""
+    """Быстрый апгрейд legacy → v3: Claude Sonnet первым (temperature=0.1)."""
     return [
+        "anthropic/claude-3.5-sonnet",
         "deepseek/deepseek-chat",
-        "deepseek/deepseek-r1",
         "google/gemini-2.5-pro",
     ]
 
@@ -876,13 +877,17 @@ def _normalize_premium_report(
     parsed: dict[str, object],
     *,
     relax_cliches: bool = False,
+    active_channels: object = None,
 ) -> dict[str, Any]:
     report: dict[str, Any] = {}
     for key in _PREMIUM_REPORT_KEYS:
         value = parsed.get(key)
         if not isinstance(value, str) or not value.strip():
             raise ValueError(f"Gemini JSON response is missing non-empty {key!r}")
-        cleaned = _sanitize_hd_user_facing_text(value.strip())
+        cleaned = sanitize_hd_user_facing_text(
+            value.strip(),
+            active_channels=active_channels,
+        )
         _validate_hd_user_facing_text(
             cleaned,
             field=f"premium report field {key!r}",
@@ -928,21 +933,23 @@ def build_hd_math_data(hd_type: str, birth_data: str) -> dict[str, object]:
     defined_set: set[str] = set()
     derived: dict[str, str] = {}
     active_channels: list[str] = []
+    chart: dict[str, object] = {}
     try:
-        gates_payload = get_calculated_gates(birth_data)
-        raw_gates = gates_payload.get("gates")
-        if isinstance(raw_gates, dict):
-            gates = raw_gates
-        gate_numbers = _collect_gate_numbers(gates)
-        if gate_numbers:
-            active_channels = derive_active_channels(gate_numbers)
-            defined_set = derive_defined_centers_from_gates(gate_numbers)
-        else:
-            defined_set, _ = _defined_centers_from_birth_data(birth_data)
         if birth_data.strip():
-            derived = derive_hd_chart_from_birth(birth_data)
+            chart = hd_chart.build_pure_hd_chart(birth_data)
+            raw_gates = chart.get("gates")
+            if isinstance(raw_gates, dict):
+                gates = raw_gates
+            defined_set = set(chart.get("defined_centers") or [])
+            active_channels = list(chart.get("active_channels") or [])
+            derived = {
+                "hd_type": str(chart.get("hd_type") or ""),
+                "profile": str(chart.get("profile") or ""),
+                "authority": str(chart.get("authority") or ""),
+                "strategy": str(chart.get("strategy") or ""),
+            }
     except Exception:
-        logger.debug("build_hd_math_data: ephemeris/gates unavailable", exc_info=True)
+        logger.debug("build_hd_math_data: ephemeris/chart unavailable", exc_info=True)
     defined_centers = sorted(defined_set)
     open_centers = [name for name in _ALL_HD_CENTER_NAMES if name not in defined_set]
     resolved_type = hd_type
@@ -956,6 +963,14 @@ def build_hd_math_data(hd_type: str, birth_data: str) -> dict[str, object]:
             "active_channels": active_channels,
         }
     )
+    domain_synthesis_pairs = hd_chart.build_domain_synthesis_pairs(
+        {
+            "defined_centers": defined_centers,
+            "open_centers": open_centers,
+            "active_channels": active_channels,
+            "definition": definition,
+        }
+    )
     return {
         "hd_type": resolved_type,
         "birth_data": birth_data,
@@ -963,11 +978,16 @@ def build_hd_math_data(hd_type: str, birth_data: str) -> dict[str, object]:
         "open_centers": open_centers,
         "gates": gates,
         "profile": derived.get("profile", ""),
+        "profile_archetype": str(chart.get("profile_archetype") or ""),
         "authority": derived.get("authority", ""),
         "strategy": derived.get("strategy", ""),
         "definition": definition,
         "active_channels": active_channels,
         "synthesis_pairs": synthesis_pairs,
+        "domain_synthesis_pairs": domain_synthesis_pairs,
+        "key_activations": chart.get("key_activations") or {},
+        "birth_place": chart.get("birth_place") or "",
+        "timezone": chart.get("timezone") or "",
     }
 
 
@@ -982,7 +1002,10 @@ def hd_profile_metadata(math_data: dict[str, object]) -> dict[str, str | list[st
         "strategy": str(math_data.get("strategy") or ""),
         "authority": str(math_data.get("authority") or ""),
         "profile": str(math_data.get("profile") or ""),
-        "profile_archetype": profile_archetype_label(str(math_data.get("profile") or "")),
+        "profile_archetype": str(
+            math_data.get("profile_archetype")
+            or profile_archetype_label(str(math_data.get("profile") or ""))
+        ),
         "definition": str(math_data.get("definition") or ""),
     }
 
@@ -1263,9 +1286,14 @@ async def _generate_premium_report_legacy_single_prompt(
     *,
     upgrade_mode: bool,
     prior_errors: list[str] | None = None,
+    user_gender: str = "",
 ) -> dict[str, Any]:
     """Один LLM-вызов (OpenRouter → Gemini) без multi-pass synthesis."""
-    system_prompt, user_prompt = _build_elite_premium_hd_prompt(user_name, math_data)
+    system_prompt, user_prompt = _build_elite_premium_hd_prompt(
+        user_name,
+        math_data,
+        user_gender=user_gender,
+    )
     errors: list[str] = list(prior_errors or [])
     or_models = (
         _openrouter_models_for_premium_upgrade()
@@ -1286,6 +1314,7 @@ async def _generate_premium_report_legacy_single_prompt(
                 models=or_models,
                 timeout=or_timeout,
                 relax_cliches=upgrade_mode,
+                active_channels=math_data.get("active_channels"),
             )
             report["energy_scales"] = compute_energy_scales_from_math(math_data)
             logger.info(
@@ -1336,7 +1365,10 @@ def _wrap_legacy_report_as_v3(
     for key in _PREMIUM_REPORT_KEYS:
         value = parsed.get(key)
         if isinstance(value, str) and value.strip():
-            report[key] = _sanitize_hd_user_facing_text(value.strip())
+            report[key] = _sanitize_hd_user_facing_text(
+                value.strip(),
+                active_channels=math_data.get("active_channels"),
+            )
         elif key == "fast_facts":
             report[key] = _LEGACY_HD_REPORT_PLACEHOLDER
         else:
@@ -1383,6 +1415,7 @@ async def generate_premium_report(
     birth_data: str,
     *,
     user_name: str = "друг",
+    user_gender: str = "",
     upgrade_mode: bool = False,
 ) -> dict[str, Any]:
     """Полный HD-разбор: multi-pass Genetic Synthesis → legacy single-prompt fallback."""
@@ -1393,6 +1426,7 @@ async def generate_premium_report(
             report = await _generate_premium_report_upgrade_fast(
                 user_name,
                 math_data,
+                user_gender=user_gender,
             )
             logger.info("HD premium report served via upgrade-fast path")
             return report
@@ -1404,12 +1438,14 @@ async def generate_premium_report(
             math_data,
             upgrade_mode=True,
             prior_errors=upgrade_errors,
+            user_gender=user_gender,
         )
     try:
         report = await _generate_premium_report_multipass(
             user_name,
             math_data,
             upgrade_mode=upgrade_mode,
+            user_gender=user_gender,
         )
         logger.info("HD premium report served via multi-pass Genetic Synthesis")
         return report
@@ -1420,12 +1456,22 @@ async def generate_premium_report(
             math_data,
             upgrade_mode=False,
             prior_errors=[f"multipass: {exc!r}"],
+            user_gender=user_gender,
         )
 
 
-def _parse_premium_report_from_llm(raw: str, *, relax_cliches: bool = False) -> dict[str, Any]:
+def _parse_premium_report_from_llm(
+    raw: str,
+    *,
+    relax_cliches: bool = False,
+    active_channels: object = None,
+) -> dict[str, Any]:
     parsed = _parse_json_object(raw)
-    return _normalize_premium_report(parsed, relax_cliches=relax_cliches)
+    return _normalize_premium_report(
+        parsed,
+        relax_cliches=relax_cliches,
+        active_channels=active_channels,
+    )
 
 
 def _parse_compat_report_from_llm(raw: str) -> dict[str, str]:
@@ -1496,6 +1542,7 @@ async def _generate_premium_via_openrouter(
     models: list[str] | None = None,
     timeout: float | None = None,
     relax_cliches: bool = False,
+    active_channels: object = None,
 ) -> dict[str, Any]:
     from services.ai_text import ask_ai_messages
 
@@ -1510,14 +1557,18 @@ async def _generate_premium_via_openrouter(
             timeout=timeout if timeout is not None else _OPENROUTER_PREMIUM_TIMEOUT_SEC,
             models=models or _openrouter_models_for_premium(),
             max_tokens=_HD_PREMIUM_MAX_OUTPUT_TOKENS,
-            temperature=0.7,
+            temperature=_GENETIC_SYNTHESIS_TEMPERATURE,
             response_format={"type": "json_object"},
             log_context="hd_premium_report",
         )
     text = (completion.get("content") or "").strip()
     if not text:
         raise RuntimeError("openrouter_premium_report_empty")
-    return _parse_premium_report_from_llm(text, relax_cliches=relax_cliches)
+    return _parse_premium_report_from_llm(
+        text,
+        relax_cliches=relax_cliches,
+        active_channels=active_channels,
+    )
 
 
 async def generate_hd_report(hd_type: str, birth_data: str) -> str:
@@ -1539,155 +1590,62 @@ def parse_match_request(raw: str) -> tuple[str | None, str]:
 
 
 def _extract_birth_numbers(raw: str) -> tuple[int, int, int, int, int] | None:
-    import re
-
-    match = re.search(
-        r"(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{4})(?:\D+(\d{1,2})[:.](\d{2}))?",
-        raw or "",
-    )
-    if not match:
-        return None
-    day, month, year = (int(match.group(i)) for i in (1, 2, 3))
-    hour = int(match.group(4) or 12)
-    minute = int(match.group(5) or 0)
-    return year, month, day, hour, minute
+    return hd_chart.extract_birth_numbers(raw)
 
 
 def calculate_bodygraph_snapshot(birth_data: str) -> dict[str, float | str]:
-    sw = _require_swe()
-    parts = _extract_birth_numbers(birth_data)
-    if parts is None:
-        raise ValueError("Не удалось найти дату рождения в формате ДД.ММ.ГГГГ и время ЧЧ:ММ.")
-    year, month, day, hour, minute = parts
-    jd = sw.julday(year, month, day, hour + minute / 60.0)
-    bodies = {
-        "sun": sw.SUN,
-        "moon": sw.MOON,
-        "mercury": sw.MERCURY,
-        "venus": sw.VENUS,
-        "mars": sw.MARS,
-        "jupiter": sw.JUPITER,
-        "saturn": sw.SATURN,
-        "uranus": sw.URANUS,
-        "neptune": sw.NEPTUNE,
-        "pluto": sw.PLUTO,
+    chart = hd_chart.build_pure_hd_chart(birth_data)
+    personality = chart.get("personality_gates")
+    snapshot: dict[str, float | str] = {
+        "birth_data": birth_data.strip(),
+        "julian_day": float(chart.get("personality_jd") or 0.0),
     }
-    snapshot: dict[str, float | str] = {"birth_data": birth_data.strip(), "julian_day": jd}
-    for name, planet in bodies.items():
-        pos, _flags = sw.calc_ut(jd, planet)
-        snapshot[name] = round(float(pos[0]), 6)
+    if isinstance(personality, dict):
+        for name, payload in personality.items():
+            if isinstance(payload, dict):
+                lon = payload.get("longitude")
+                if isinstance(lon, (int, float)):
+                    snapshot[name] = round(float(lon), 6)
     return snapshot
 
 
 def _longitude_to_gate(longitude: float) -> dict[str, int | float]:
-    gate_width = 360.0 / 64.0
-    line_width = gate_width / 6.0
-    normalized = longitude % 360.0
-    gate_index = int(normalized // gate_width)
-    position_in_gate = normalized - gate_index * gate_width
-    line = int(position_in_gate // line_width) + 1
-    return {
-        "gate": _HD_GATE_SEQUENCE[gate_index],
-        "line": min(line, 6),
-        "longitude": round(normalized, 6),
-    }
+    return hd_chart.longitude_to_gate(longitude)
 
 
 def get_calculated_gates(birth_data: str) -> dict[str, object]:
-    snapshot = calculate_bodygraph_snapshot(birth_data)
-    gates: dict[str, object] = {}
-    for key, value in snapshot.items():
-        if key in {"birth_data", "julian_day"} or not isinstance(value, float):
-            continue
-        gates[key] = _longitude_to_gate(value)
+    chart = hd_chart.build_pure_hd_chart(birth_data)
+    gates = chart.get("gates")
     return {
-        "birth_data": snapshot["birth_data"],
-        "julian_day": snapshot["julian_day"],
-        "gates": gates,
+        "birth_data": chart.get("birth_data") or birth_data.strip(),
+        "julian_day": chart.get("personality_jd"),
+        "gates": gates if isinstance(gates, dict) else {},
     }
-
-
-_HD_DESIGN_DAYS_OFFSET = 88.0
-
-_HD_TYPE_STRATEGIES: dict[str, str] = {
-    "генератор": "Ждать отклик и отвечать телом",
-    "манифестирующий генератор": "Ждать отклик, затем информировать и действовать",
-    "манифестор": "Информировать окружающих перед действием",
-    "проектор": "Ждать приглашения и признания",
-    "рефлектор": "Ждать лунный цикл (28 дней) для важных решений",
-}
-
-
-def _infer_hd_type_from_centers(defined: set[str]) -> str:
-    if not defined:
-        return "Рефлектор"
-    motors_throat = {"Эго", "Солнечное сплетение", "Корень"}
-    if "Сакрал" in defined:
-        if "Горло" in defined and defined & motors_throat:
-            return "Манифестирующий Генератор"
-        return "Генератор"
-    if "Горло" in defined and defined & motors_throat:
-        return "Манифестор"
-    return "Проектор"
-
-
-def _infer_authority_from_centers(defined: set[str]) -> str:
-    if not defined:
-        return "Лунный"
-    if "Солнечное сплетение" in defined:
-        return "Эмоциональный"
-    if "Сакрал" in defined:
-        return "Сакральный"
-    if "Селезенка" in defined:
-        return "Селезеночный"
-    if "Эго" in defined:
-        return "Эго"
-    if "G-центр" in defined:
-        return "Самопроецируемый"
-    return "Внутренний (уточняется по каналам)"
-
-
-def _strategy_for_hd_type(hd_type: str) -> str:
-    key = (hd_type or "").strip().lower()
-    for pattern, strategy in _HD_TYPE_STRATEGIES.items():
-        if pattern in key:
-            return strategy
-    return "Следовать стратегии своего типа"
-
-
-def _sun_line_for_birth_data(birth_data: str, *, design: bool = False) -> int:
-    sw = _require_swe()
-    parts = _extract_birth_numbers(birth_data)
-    if parts is None:
-        raise ValueError("invalid_birth_data")
-    year, month, day, hour, minute = parts
-    jd = sw.julday(year, month, day, hour + minute / 60.0)
-    if design:
-        jd -= _HD_DESIGN_DAYS_OFFSET
-    pos, _flags = sw.calc_ut(jd, sw.SUN)
-    line = _longitude_to_gate(float(pos[0])).get("line", 1)
-    return int(line) if isinstance(line, int) else 1
 
 
 def derive_hd_chart_from_birth(birth_data: str) -> dict[str, str]:
     """Swiss Ephemeris: тип, профиль, авторитет, стратегия для легенды PDF и Stories."""
-    defined, _warn = _defined_centers_from_birth_data(birth_data)
-    hd_type = _infer_hd_type_from_centers(defined)
-    authority = _infer_authority_from_centers(defined)
-    strategy = _strategy_for_hd_type(hd_type)
-    profile = ""
-    try:
-        line_p = _sun_line_for_birth_data(birth_data, design=False)
-        line_d = _sun_line_for_birth_data(birth_data, design=True)
-        profile = f"{line_p}/{line_d}"
-    except Exception:
-        logger.debug("HD profile lines unavailable", exc_info=True)
+    chart = hd_chart.build_pure_hd_chart(birth_data)
     return {
-        "hd_type": hd_type,
-        "profile": profile,
-        "authority": authority,
-        "strategy": strategy,
+        "hd_type": str(chart.get("hd_type") or ""),
+        "profile": str(chart.get("profile") or ""),
+        "authority": str(chart.get("authority") or ""),
+        "strategy": str(chart.get("strategy") or ""),
     }
+
+_HD_TYPE_STRATEGIES: dict[str, str] = hd_chart.HD_TYPE_STRATEGIES
+
+
+def _infer_hd_type_from_centers(defined: set[str]) -> str:
+    return hd_chart.infer_hd_type_from_centers(defined)
+
+
+def _infer_authority_from_centers(defined: set[str]) -> str:
+    return hd_chart.infer_authority_from_centers(defined)
+
+
+def _strategy_for_hd_type(hd_type: str) -> str:
+    return hd_chart.strategy_for_hd_type(hd_type)
 
 
 def resolve_hd_math_data(hd_type: str, birth_data: str) -> dict[str, object]:
@@ -1910,67 +1868,15 @@ def _collect_gate_numbers(gates: object) -> set[int]:
 
 
 def derive_active_channels(gate_numbers: set[int]) -> list[str]:
-    """Верифицированные complete-каналы по набору активных ворот."""
-    if not gate_numbers:
-        return []
-    active: list[str] = []
-    seen: set[str] = set()
-    for g1, g2 in _HD_CHANNELS_RAW:
-        if g1 in gate_numbers and g2 in gate_numbers:
-            label = _format_hd_channel(g1, g2)
-            if label not in seen:
-                seen.add(label)
-                active.append(label)
-    return sorted(active)
+    return hd_chart.derive_active_channels(gate_numbers)
 
 
 def derive_defined_centers_from_gates(gate_numbers: set[int]) -> set[str]:
-    """IHDS: центр defined только если в нём замкнут хотя бы один complete-канал."""
-    defined: set[str] = set()
-    for ch in derive_active_channels(gate_numbers):
-        g1, g2 = (int(part) for part in ch.split("-", 1))
-        for gate in (g1, g2):
-            center = _GATE_TO_CENTER.get(gate)
-            if center:
-                defined.add(center)
-    return defined
+    return hd_chart.derive_defined_centers_from_gates(gate_numbers)
 
 
 def derive_definition_type(defined_centers: set[str], active_channels: list[str]) -> str:
-    """Single / Split / Triple / Quad по числу связных компонент defined-графа."""
-    if not defined_centers:
-        return "None"
-    adjacency: dict[str, set[str]] = {center: set() for center in defined_centers}
-    for ch in active_channels:
-        parts = ch.split("-", 1)
-        if len(parts) != 2:
-            continue
-        g1, g2 = int(parts[0]), int(parts[1])
-        c1 = _GATE_TO_CENTER.get(g1)
-        c2 = _GATE_TO_CENTER.get(g2)
-        if c1 in defined_centers and c2 in defined_centers:
-            adjacency[c1].add(c2)
-            adjacency[c2].add(c1)
-    visited: set[str] = set()
-    components = 0
-    for center in defined_centers:
-        if center in visited:
-            continue
-        components += 1
-        stack = [center]
-        while stack:
-            node = stack.pop()
-            if node in visited:
-                continue
-            visited.add(node)
-            stack.extend(adjacency[node] - visited)
-    if components <= 1:
-        return "Single"
-    if components == 2:
-        return "Split"
-    if components == 3:
-        return "Triple"
-    return "Quad"
+    return hd_chart.derive_definition_type(defined_centers, active_channels)
 
 
 def build_synthesis_pairs(math_data: dict[str, object]) -> list[dict[str, object]]:
@@ -2117,20 +2023,10 @@ def _defined_centers_from_birth_data(birth_data: str | None) -> tuple[set[str], 
     if not birth_data:
         return set(), "Данные рождения не переданы для схемы."
     try:
-        gates = get_calculated_gates(birth_data)["gates"]
+        chart = hd_chart.build_pure_hd_chart(birth_data)
+        return set(chart.get("defined_centers") or []), None
     except Exception as exc:
         return set(), f"Схема не рассчитана: {exc}"
-    gate_numbers = _collect_gate_numbers(gates)
-    if gate_numbers:
-        return derive_defined_centers_from_gates(gate_numbers), None
-    defined: set[str] = set()
-    if isinstance(gates, dict):
-        for value in gates.values():
-            if isinstance(value, dict):
-                gate = value.get("gate")
-                if isinstance(gate, int) and gate in _GATE_TO_CENTER:
-                    defined.add(_GATE_TO_CENTER[gate])
-    return defined, None
 
 
 _ALL_HD_CENTER_NAMES: tuple[str, ...] = tuple(center_coordinates.keys())
@@ -2357,7 +2253,12 @@ _ELITE_HD_SERVER_MATH_MANDATE = (
 )
 
 
-def _build_elite_premium_hd_prompt(user_name: str, math_data: dict) -> tuple[str, str]:
+def _build_elite_premium_hd_prompt(
+    user_name: str,
+    math_data: dict,
+    *,
+    user_gender: str = "",
+) -> tuple[str, str]:
     """
     Элитный промпт полного HD-разбора: ICF-коучинг без эзотерики, строго по math_data.
 
@@ -2390,10 +2291,13 @@ def _build_elite_premium_hd_prompt(user_name: str, math_data: dict) -> tuple[str
     banned = ", ".join(f"«{word}»" for word in _ELITE_HD_BANNED_MARKERS[:8])
     cliches = ", ".join(f"«{word}»" for word in _ELITE_HD_BANNED_COACHING_CLICHES[:6])
 
+    gender_block = _hd_gender_prompt_block(user_gender)
+
     system_prompt = (
         "Ты — ведущий аналитик NeuroMule HD: провокационная глубинная психотерапия + "
         "бизнес-консалтинг без эзотерики. Пишешь премиальный персональный разбор — "
         "поведение, паттерны, деньги, отношения, энергия.\n\n"
+        f"{gender_block}\n\n"
         f"{_HD_PREMIUM_TOV_BLOCK}\n\n"
         f"{tone_block}\n\n"
         f"{_ELITE_HD_SERVER_MATH_MANDATE}\n\n"
@@ -2429,10 +2333,14 @@ def _build_elite_premium_hd_prompt(user_name: str, math_data: dict) -> tuple[str
         "Каждый раздел — плотный, без воды; в каждом есть ответ «что делать дальше»."
     )
 
+    profile_archetype = str(data.get("profile_archetype") or profile_archetype_label(profile))
     profile_code_line, profile_archetype_line = profile_llm_context_lines(profile)
+    if profile_archetype and profile_archetype not in profile:
+        profile_archetype_line = f"- Архетип (человеческий язык): {profile_archetype}"
 
     user_prompt = (
-        f"Клиент: {name}. Обращайся к {name} на «ты».\n\n"
+        f"Клиент: {name}. Обращайся к {name} на «ты».\n"
+        f"{gender_block}\n\n"
         "МАТЕМАТИЧЕСКИ ЗАФИКСИРОВАННЫЕ ФАКТЫ (истина, не оспаривай и не дополняй):\n"
         f"- Тип HD: {hd_type}\n"
         f"- Дата/время/место рождения: {birth_data}\n"
@@ -2502,6 +2410,7 @@ def _build_genetic_synthesis_prompt(
     math_data: dict[str, object],
     synthesis_pair: dict[str, object],
     energy_scales: dict[str, int],
+    user_gender: str = "",
 ) -> tuple[str, str]:
     """
     Промпт модульного Genetic Synthesis: одна open×defined пара × domain.
@@ -2533,11 +2442,13 @@ def _build_genetic_synthesis_prompt(
         term.title() for term in _GENETIC_SYNTHESIS_BANNED_ANGLICISMS[:12]
     )
     domain_ru = {"money": "деньги", "love": "отношения", "energy": "энергия"}[normalized_domain]
+    gender_block = _hd_gender_prompt_block(user_gender)
 
     system_prompt = (
         "Контекст: Ты — ИИ-движок NeuroMule HD на OpenRouter-конвейере мирового уровня. "
         "Создаёшь глубокое, трансформационное психологическое исследование — текст читается "
         "взахлёб даже жёсткому скептику.\n\n"
+        f"{gender_block}\n\n"
         f"{_HD_PREMIUM_TOV_BLOCK}\n\n"
         "СТРОГИЕ АРХИТЕКТУРНЫЕ ЗАПРЕТЫ:\n"
         "1. ЗАПРЕТ АНГЛИЦИЗМОВ И ЖАРГОНА: Категорически запрещено использовать сырые английские "
@@ -2574,6 +2485,7 @@ def _build_genetic_synthesis_prompt(
     user_prompt = (
         "Входные данные (Верифицированные факты с Python-сервера):\n"
         f"- Сфера жизни: {normalized_domain} ({domain_ru})\n"
+        f"{gender_block}\n"
         f"{profile_code_line}\n"
         f"{profile_archetype_line}\n"
         f"- Внутренний Авторитет: {authority}\n"
@@ -2609,24 +2521,30 @@ def _hd_text_coaching_cliche_hits(text: str) -> list[str]:
     return [phrase for phrase in _ELITE_HD_BANNED_COACHING_CLICHES if phrase in lowered]
 
 
-def _sanitize_hd_user_facing_text(text: str) -> str:
-    """Подменяет сухие коды профилей/каналов на архетипы — не роняем апгрейд из-за 3/5 в ответе LLM."""
-    from services.hd_channel_archetypes import (
-        format_channel_superpower_for_user,
-        normalize_channel_code,
+def _sanitize_hd_user_facing_text(
+    text: str,
+    *,
+    active_channels: object = None,
+) -> str:
+    return sanitize_hd_user_facing_text(text, active_channels=active_channels)
+
+
+def _hd_gender_prompt_block(user_gender: str) -> str:
+    normalized = (user_gender or "").strip().lower()
+    if normalized in {"f", "female", "жен", "женский", "ж", "woman", "w"}:
+        return (
+            "ПОЛ КЛИЕНТА: женский. Строго соблюдай женский род во всём тексте "
+            "(устала, одна, готова, сделала, уверена)."
+        )
+    if normalized in {"m", "male", "муж", "мужской", "м", "man"}:
+        return (
+            "ПОЛ КЛИЕНТА: мужской. Строго соблюдай мужской род во всём тексте "
+            "(устал, один, готов, сделал, уверен)."
+        )
+    return (
+        "ПОЛ КЛИЕНТА: не указан. Используй нейтральные формулировки на «ты» "
+        "без явного рода там, где это возможно."
     )
-
-    channel_re = re.compile(r"\b(\d{1,2})\s*[-–]\s*(\d{1,2})\b")
-
-    def _profile_repl(match: re.Match[str]) -> str:
-        return profile_archetype_label(match.group(0))
-
-    out = re.sub(r"\b[1-6]/[1-6]\b", _profile_repl, text)
-
-    def _channel_repl(match: re.Match[str]) -> str:
-        return format_channel_superpower_for_user(normalize_channel_code(match.group(0)))
-
-    return channel_re.sub(_channel_repl, out)
 
 
 def _validate_hd_user_facing_text(text: str, *, field: str, strict_cliches: bool = True) -> None:
@@ -2795,6 +2713,7 @@ async def generate_genetic_synthesis(
     synthesis_pair: dict[str, object],
     energy_scales: dict[str, int] | None = None,
     upgrade_mode: bool = False,
+    user_gender: str = "",
 ) -> dict[str, Any]:
     """
     Один модуль Genetic Synthesis: open_center × anchors × domain → JSON v3.
@@ -2809,6 +2728,7 @@ async def generate_genetic_synthesis(
         math_data=math_data,
         synthesis_pair=synthesis_pair,
         energy_scales=scales,
+        user_gender=user_gender,
     )
     errors: list[str] = []
     or_models = (
@@ -3051,6 +2971,8 @@ async def _generate_premium_summary(
 async def _generate_premium_report_upgrade_fast(
     user_name: str,
     math_data: dict[str, object],
+    *,
+    user_gender: str = "",
 ) -> dict[str, Any]:
     """
     Быстрый апгрейд legacy → v3: static IHDS-блоки + один LLM-вызов (без N× synthesis).
@@ -3063,7 +2985,11 @@ async def _generate_premium_report_upgrade_fast(
     static_sections = assemble_static_reference(math_data, gate_to_center=_GATE_TO_CENTER)
     static_full = format_static_reference_full(static_sections)
 
-    system_prompt, user_prompt = _build_elite_premium_hd_prompt(user_name, math_data)
+    system_prompt, user_prompt = _build_elite_premium_hd_prompt(
+        user_name,
+        math_data,
+        user_gender=user_gender,
+    )
     or_models = _openrouter_models_for_premium_upgrade()
     or_timeout = _OPENROUTER_PREMIUM_UPGRADE_TIMEOUT_SEC
 
@@ -3076,6 +3002,7 @@ async def _generate_premium_report_upgrade_fast(
                 models=or_models,
                 timeout=or_timeout,
                 relax_cliches=True,
+                active_channels=math_data.get("active_channels"),
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("upgrade-fast OpenRouter failed: %s", exc)
@@ -3155,6 +3082,7 @@ async def _generate_premium_report_multipass(
     math_data: dict[str, object],
     *,
     upgrade_mode: bool = False,
+    user_gender: str = "",
 ) -> dict[str, Any]:
     from services.hd_static_blocks import (
         assemble_static_reference,
@@ -3166,11 +3094,9 @@ async def _generate_premium_report_multipass(
     static_sections = assemble_static_reference(math_data, gate_to_center=_GATE_TO_CENTER)
     static_full = format_static_reference_full(static_sections)
 
-    pairs_raw = list(math_data.get("synthesis_pairs") or [])
-    if not pairs_raw:
-        pairs_raw = build_synthesis_pairs(math_data)
-    max_pairs = _MAX_SYNTHESIS_PAIRS_UPGRADE if upgrade_mode else _MAX_SYNTHESIS_PAIRS_FULL
-    pairs = pairs_raw[:max_pairs]
+    domain_pairs_raw = math_data.get("domain_synthesis_pairs")
+    if not isinstance(domain_pairs_raw, dict):
+        domain_pairs_raw = hd_chart.build_domain_synthesis_pairs(math_data)
 
     synthesis_by_domain: dict[str, list[dict[str, Any]]] = {
         "money": [],
@@ -3179,18 +3105,33 @@ async def _generate_premium_report_multipass(
     }
     failed_pairs = 0
 
-    for pair in pairs:
+    for domain in ("money", "love", "energy"):
+        pair = domain_pairs_raw.get(domain)
         if not isinstance(pair, dict):
+            failed_pairs += 1
             continue
-        outcomes, failed = await _synthesize_pair_domains_parallel(
-            pair,
-            math_data=math_data,
-            energy_scales=energy_scales,
-            upgrade_mode=upgrade_mode,
-        )
-        failed_pairs += failed
-        for domain, block in outcomes:
+        try:
+            block = await generate_genetic_synthesis(
+                domain=domain,
+                math_data=math_data,
+                synthesis_pair=pair,
+                energy_scales=energy_scales,
+                upgrade_mode=upgrade_mode,
+                user_gender=user_gender,
+            )
+            block["_pair"] = {
+                "open_center": pair.get("open_center"),
+                "anchors": pair.get("anchors"),
+            }
             synthesis_by_domain[domain].append(block)
+        except Exception as exc:  # noqa: BLE001
+            failed_pairs += 1
+            logger.warning(
+                "genetic synthesis failed domain=%s open=%s: %s",
+                domain,
+                pair.get("open_center"),
+                exc,
+            )
 
     successful = sum(len(v) for v in synthesis_by_domain.values())
     if successful == 0:
@@ -3225,10 +3166,11 @@ async def _generate_premium_report_multipass(
         "energy_scales": energy_scales,
         "static_reference": static_sections,
         "synthesis_meta": {
-            "pairs_requested": len(pairs),
+            "pairs_requested": 3,
             "blocks_ok": successful,
             "blocks_failed": failed_pairs,
             "static_pages_est": max(1, len(static_full) // 2200),
+            "domain_pairs": True,
         },
     }
 
@@ -3394,17 +3336,19 @@ class _HdPremiumPdfDoc(BaseDocTemplate):
         canv.saveState()
         canv.setFillColor(colors.HexColor(_PDF_COVER_BG))
         canv.rect(0, 0, w, h, fill=1, stroke=0)
-        name = self.hd_user_name.strip() or "друг"
-        title = f"{name.upper()}. ПЕРСОНАЛЬНЫЙ НАВИГАТОР ЛИЧНОСТИ"
+        name = _sanitize_pdf_display_name(self.hd_user_name)
         canv.setFillColor(colors.HexColor(_HD_NEON_HEX))
-        canv.setFont(self.hd_font_name, 20)
-        canv.drawCentredString(w / 2, h * 0.58, title[:72])
-        canv.setFillColor(colors.HexColor("#C8C8D8"))
+        canv.setFont(self.hd_font_name, 22)
+        canv.drawCentredString(w / 2, h * 0.62, "NEUROMULE HD PREMIUM")
+        canv.setFont(self.hd_font_name, 16)
+        canv.drawCentredString(w / 2, h * 0.56, "ПЕРСОНАЛЬНЫЙ НАВИГАТОР ЛИЧНОСТИ")
+        canv.setFillColor(colors.HexColor("#E8E8F0"))
         canv.setFont(self.hd_font_name, 13)
-        canv.drawCentredString(w / 2, h * 0.50, "Квантовый аудит энергетической архитектуры")
+        canv.drawCentredString(w / 2, h * 0.48, name[:72])
         if self.hd_birth_data:
+            canv.setFillColor(colors.HexColor("#C8C8D8"))
             canv.setFont(self.hd_font_name, 11)
-            canv.drawCentredString(w / 2, h * 0.44, self.hd_birth_data[:90])
+            canv.drawCentredString(w / 2, h * 0.42, self.hd_birth_data[:90])
         canv.setFillColor(colors.HexColor("#888899"))
         canv.setFont(self.hd_font_name, 9)
         canv.drawCentredString(w / 2, 72, _HD_WATERMARK)
@@ -3447,6 +3391,93 @@ def _prepare_bodygraph_for_pdf(user_id: int, birth_data: str | None) -> str | No
     except Exception:
         logger.warning("bodygraph pdf optimize failed uid=%s", user_id, exc_info=True)
         return None
+
+
+def _sanitize_pdf_display_name(name: str) -> str:
+    """Убирает эмодзи и мусорные AI-ники из Telegram display_name."""
+    ai_blocklist = re.compile(
+        r"(chatgpt|sora|suno|deepseek|gpt|openai|claude|gemini)",
+        re.IGNORECASE,
+    )
+    emoji_re = re.compile(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]+", flags=re.UNICODE)
+    text = emoji_re.sub("", (name or "").strip())
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text or ai_blocklist.search(text):
+        return "Клиент NeuroMule"
+    return text[:64].rstrip()
+
+
+def _build_key_activations_table(
+    math_data: dict[str, object],
+    font_name: str,
+) -> Table:
+    activations = math_data.get("key_activations")
+    rows: list[list[str]] = [["Активация", "Ворота", "Линия", "Центр"]]
+    labels = (
+        ("personality_sun", "Солнце Личности"),
+        ("personality_earth", "Земля Личности"),
+        ("design_sun", "Солнце Дизайна"),
+        ("design_earth", "Земля Дизайна"),
+    )
+    if isinstance(activations, dict):
+        for key, label in labels:
+            payload = activations.get(key)
+            if not isinstance(payload, dict):
+                continue
+            gate = payload.get("gate")
+            line = payload.get("line")
+            center = _GATE_TO_CENTER.get(int(gate), "—") if isinstance(gate, int) else "—"
+            rows.append([label, str(gate or "—"), str(line or "—"), center])
+    table = Table(rows, colWidths=[150, 70, 60, 200])
+    if colors is not None and TableStyle is not None:
+        table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#EDE9FE")),
+                    ("FONTNAME", (0, 0), (-1, -1), font_name),
+                    ("FONTSIZE", (0, 0), (-1, -1), 9),
+                    ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#D4D4DC")),
+                    ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#E8E8EE")),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("TOPPADDING", (0, 0), (-1, -1), 6),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                ]
+            )
+        )
+    return table
+
+
+def _build_gates_appendix_table(
+    math_data: dict[str, object],
+    font_name: str,
+) -> Table:
+    gates = math_data.get("gates")
+    rows: list[list[str]] = [["Планета", "Ворота", "Линия", "Центр"]]
+    if isinstance(gates, dict):
+        for planet, payload in sorted(gates.items(), key=lambda item: str(item[0])):
+            if not isinstance(payload, dict):
+                continue
+            gate = payload.get("gate")
+            line = payload.get("line")
+            if gate is None:
+                continue
+            center = _GATE_TO_CENTER.get(int(gate), "—") if isinstance(gate, int) else "—"
+            rows.append([str(planet), str(gate), str(line or "—"), center])
+    table = Table(rows, colWidths=[130, 60, 50, 240])
+    if colors is not None and TableStyle is not None and len(rows) > 1:
+        table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F3F4F6")),
+                    ("FONTNAME", (0, 0), (-1, -1), font_name),
+                    ("FONTSIZE", (0, 0), (-1, -1), 8),
+                    ("BOX", (0, 0), (-1, -1), 0.4, colors.HexColor("#D4D4DC")),
+                    ("INNERGRID", (0, 0), (-1, -1), 0.2, colors.HexColor("#E8E8EE")),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ]
+            )
+        )
+    return table
 
 
 def _build_chart_overview_table(
@@ -3501,6 +3532,7 @@ def _build_hd_premium_pdf_story(
     user_name: str,
     birth_data: str | None,
     meta: dict[str, object],
+    math_data: dict[str, object],
     font_name: str,
 ) -> list[Any]:
     if (
@@ -3542,8 +3574,19 @@ def _build_hd_premium_pdf_story(
     story.append(NextPageTemplate("Content"))
     story.append(PageBreak())
 
-    story.append(_HdPdfBookmark("Chart Overview", "hd_overview"))
-    story.append(Paragraph("Chart Overview", overview_style))
+    fast_facts = str(report.get("fast_facts") or "").strip()
+    if fast_facts:
+        story.append(_HdPdfBookmark("Экспресс-анализ", "hd_fast_facts"))
+        story.append(Paragraph("⚡ Экспресс-анализ", overview_style))
+        story.append(_HdAccentBarFlowable(width=480))
+        story.append(Spacer(1, 10))
+        fast_html = _md_to_reportlab_html(fast_facts)
+        if fast_html:
+            story.append(Paragraph(fast_html, body_style))
+        story.append(PageBreak())
+
+    story.append(_HdPdfBookmark("Обзор карты", "hd_overview"))
+    story.append(Paragraph("Обзор карты", overview_style))
     story.append(Spacer(1, 8))
     story.append(_build_chart_overview_table(meta, font_name))
     story.append(Spacer(1, 16))
@@ -3558,7 +3601,7 @@ def _build_hd_premium_pdf_story(
 
     scales = report.get("energy_scales")
     if isinstance(scales, dict):
-        story.append(Paragraph("<b>Energy Scales</b>", body_style))
+        story.append(Paragraph("<b>Шкалы энергии</b>", body_style))
         story.append(_HdEnergyScalesFlowable(scales, font_name=font_name))
     story.append(PageBreak())
 
@@ -3578,6 +3621,16 @@ def _build_hd_premium_pdf_story(
             story.append(Paragraph(html_body, body_style))
         if idx < len(chapter_blocks) - 1:
             story.append(PageBreak())
+
+    story.append(PageBreak())
+    story.append(_HdPdfBookmark("Приложение", "hd_appendix"))
+    story.append(Paragraph("Ключевые активации карты", title_style))
+    story.append(Spacer(1, 8))
+    story.append(_build_key_activations_table(math_data, font_name))
+    story.append(Spacer(1, 16))
+    story.append(Paragraph("Полная таблица ворот", title_style))
+    story.append(Spacer(1, 8))
+    story.append(_build_gates_appendix_table(math_data, font_name))
 
     return story
 
@@ -3610,7 +3663,7 @@ def create_hd_premium_pdf(
     font_name = _register_pdf_font()
     doc = _HdPremiumPdfDoc(
         str(path),
-        user_name=user_name,
+        user_name=_sanitize_pdf_display_name(user_name),
         birth_data=str(meta.get("birth_data") or birth_data or ""),
         font_name=font_name,
     )
@@ -3620,6 +3673,7 @@ def create_hd_premium_pdf(
         user_name=user_name,
         birth_data=birth_data,
         meta=meta,
+        math_data=math_data,
         font_name=font_name,
     )
     doc.build(story)
