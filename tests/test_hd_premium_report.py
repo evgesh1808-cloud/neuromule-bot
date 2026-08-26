@@ -689,3 +689,20 @@ async def test_premium_report_resilient_offline_when_llm_fails() -> None:
     assert llm_ok is False
     assert report.get("money")
     assert report.get("static_reference") is not None or report.get("synthesis_meta", {}).get("upgrade_offline")
+
+
+@pytest.mark.asyncio
+async def test_premium_report_resilient_never_raises_on_empty_raw() -> None:
+    with patch.object(
+        hd_logic,
+        "generate_premium_report",
+        new=AsyncMock(side_effect=RuntimeError("all llm down")),
+    ):
+        report, llm_ok = await hd_logic.generate_premium_report_resilient(
+            "Генератор",
+            "18.08.1986 03:40 Чебоксары",
+            existing_raw="",
+            timeout_sec=1.0,
+        )
+    assert llm_ok is False
+    assert report.get("plan")

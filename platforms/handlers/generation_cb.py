@@ -186,6 +186,18 @@ async def open_hd_section(callback: CallbackQuery) -> None:
 @router.callback_query(F.data == msg.CB_HD_REPORT_OPEN)
 async def open_existing_hd_report(callback: CallbackQuery) -> None:
     uid = callback.from_user.id
+    if callback.message is None:
+        await callback.answer()
+        return
+    try:
+        await _open_existing_hd_report_impl(callback, uid)
+    except Exception:
+        logger.exception("open_existing_hd_report failed uid=%s", uid)
+        await callback.answer(msg.TXT_HD_UPGRADE_FAILED, show_alert=True)
+        await callback.message.answer(msg.TXT_HD_UPGRADE_FAILED, parse_mode=ParseMode.HTML)
+
+
+async def _open_existing_hd_report_impl(callback: CallbackQuery, uid: int) -> None:
     user = await get_user(uid)
     raw = user["hd_report_json"] if "hd_report_json" in user.keys() else None
 

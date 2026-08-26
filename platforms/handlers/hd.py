@@ -610,7 +610,10 @@ async def hd_free_advice(callback: CallbackQuery, state: FSMContext) -> None:
     await _send_daily_advice(callback.message, uid, state, callback=callback)
 
 def _hd_section_html(title: str, body: str) -> str:
-    return f"<b>{html.escape(title)}</b>\n\n{md_to_telegram_html(body)}"
+    text = (body or "").strip()
+    if len(text) > 12000:
+        text = text[:11900].rstrip() + "\n\n… Продолжение — в PDF-журнале (кнопка ниже)."
+    return f"<b>{html.escape(title)}</b>\n\n{md_to_telegram_html(text)}"
 
 
 async def _answer_hd_html(
@@ -618,24 +621,27 @@ async def _answer_hd_html(
     text: str,
     uid: int,
 ) -> None:
-    """Текст HD + клавиатура разделов; без WebApp при ошибке Telegram."""
-    markups: list[InlineKeyboardMarkup | None] = [
-        hd_report_sections_markup(uid, include_webapp=True),
-        hd_report_sections_markup(uid, include_webapp=False),
-        None,
-    ]
-    for markup in markups:
+    """Текст HD отдельно, клавиатура — вторым коротким сообщением (лимит Telegram)."""
+    try:
+        await answer_chat_text(message, text, settings, reply_markup=None)
+    except TelegramBadRequest:
+        logger.warning("hd answer html chunks failed uid=%s, plain fallback", uid, exc_info=True)
+        plain = sanitize_telegram_plain_text(text)
+        await answer_chat_text(message, plain, settings, reply_markup=None)
+    for include_webapp in (True, False):
         try:
-            await answer_chat_text(message, text, settings, reply_markup=markup)
+            await message.answer(
+                "👇 Разделы отчёта:",
+                reply_markup=hd_report_sections_markup(uid, include_webapp=include_webapp),
+            )
             return
         except TelegramBadRequest:
             logger.warning(
-                "hd answer markup rejected uid=%s include_webapp=%s",
+                "hd sections keyboard rejected uid=%s include_webapp=%s",
                 uid,
-                markup is markups[0],
+                include_webapp,
                 exc_info=True,
             )
-    await answer_chat_text(message, text, settings, reply_markup=None)
 
 
 async def _send_hd_section_message(
@@ -643,7 +649,7 @@ async def _send_hd_section_message(
     uid: int,
     body_text: str,
 ) -> None:
-    """Раздел отчёта — только новые сообщения (chunked), без edit_text."""
+    """Раздел отчёта — текст отдельно, клавиатура следом."""
     await _answer_hd_html(message, body_text, uid)
 
 
@@ -744,24 +750,27 @@ async def _send_hd_instagram_stories_album(
 
 
 async def _send_hd_congrats_to_chat(bot, chat_id: int, text: str, uid: int) -> None:
+    try:
+        await send_chat_html(bot, chat_id, text, settings, reply_markup=None)
+    except TelegramBadRequest:
+        logger.warning("hd congrats text failed uid=%s, plain", uid, exc_info=True)
+        plain = sanitize_telegram_plain_text(text)
+        await bot.send_message(chat_id=chat_id, text=plain)
     for include_webapp in (True, False):
         try:
-            await send_chat_html(
-                bot,
-                chat_id,
-                text,
-                settings,
+            await bot.send_message(
+                chat_id=chat_id,
+                text="👇 Разделы отчёта:",
                 reply_markup=hd_report_sections_markup(uid, include_webapp=include_webapp),
             )
             return
         except TelegramBadRequest:
             logger.warning(
-                "hd congrats markup rejected uid=%s include_webapp=%s",
+                "hd congrats keyboard rejected uid=%s include_webapp=%s",
                 uid,
                 include_webapp,
                 exc_info=True,
             )
-    await send_chat_html(bot, chat_id, text, settings, reply_markup=None)
 
 
 async def _deliver_hd_premium_bundle(
@@ -861,17 +870,25 @@ async def _run_free_hd_regenerate(
         has_pro_analysis=1,
     )
     intro = msg.TXT_HD_UPGRADED_REPORT if llm_ok else msg.TXT_HD_UPGRADED_OFFLINE
-    await _deliver_hd_premium_bundle(
-        message,
-        uid,
-        user_row,
-        report,
-        birth_data=birth_data,
-        hd_type=resolved_type,
-        intro=intro,
-        deliver_to_chat_id=deliver_to_chat_id,
-        user_display_name=user_name,
-    )
+    try:
+        await _deliver_hd_premium_bundle(
+            message,
+            uid,
+            user_row,
+            report,
+            birth_data=birth_data,
+            hd_type=resolved_type,
+            intro=intro,
+            deliver_to_chat_id=deliver_to_chat_id,
+            user_display_name=user_name,
+        )
+    except Exception:
+        logger.exception("hd_regenerate_delivery_failed uid=%s", uid)
+        await _answer_hd_html(
+            message,
+            intro + "\n\nPDF или Stories не отправились — нажми 📄 Скачать PDF или 🔄 Обновить снова.",
+            uid,
+        )
 
 
 def _parse_admin_hd_command(text: str, *, default_uid: int) -> tuple[int, str]:

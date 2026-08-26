@@ -1406,7 +1406,7 @@ def _wrap_legacy_report_as_v3(
     """
     from services.hd_static_blocks import assemble_static_reference
 
-    parsed = _parse_hd_report_storage(raw)
+    parsed = _parse_hd_report_storage(raw) if (raw or "").strip() else {}
 
     report: dict[str, Any] = {}
     for key in _PREMIUM_REPORT_KEYS:
@@ -1536,7 +1536,9 @@ async def generate_premium_report_resilient(
             return wrapped, False
         except Exception:
             logger.exception("HD premium resilient %s failed", label)
-    raise RuntimeError("hd_premium_unavailable: offline fallback exhausted")
+    wrapped = _minimal_hd_report_fallback(raw, math_data)
+    logger.warning("HD premium report served via resilient minimal_fallback (guaranteed)")
+    return wrapped, False
 
 
 def _parse_premium_report_from_llm(
