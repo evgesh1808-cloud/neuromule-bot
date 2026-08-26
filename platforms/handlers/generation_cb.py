@@ -83,6 +83,7 @@ from services.hd_logic import (
     get_calculated_gates,
     get_dynamic_cta_for_today,
     get_user,
+    is_legacy_hd_report_raw,
     parse_birth_for_daily_advice,
     parse_hd_request,
     parse_match_request,
@@ -187,7 +188,6 @@ async def open_existing_hd_report(callback: CallbackQuery) -> None:
     uid = callback.from_user.id
     user = await get_user(uid)
     raw = user["hd_report_json"] if "hd_report_json" in user.keys() else None
-    from services.hd_logic import is_legacy_hd_report_raw, ensure_modern_hd_report
 
     legacy = is_legacy_hd_report_raw(raw)
     if legacy:
@@ -198,7 +198,14 @@ async def open_existing_hd_report(callback: CallbackQuery) -> None:
     user_name = (callback.from_user.first_name or "").strip() if callback.from_user else "друг"
     try:
         if legacy:
-            report, upgraded = await ensure_modern_hd_report(uid, user_name=user_name or "друг")
+            from platforms.handlers.hd import _resolve_hd_report
+
+            report, upgraded = await _resolve_hd_report(
+                uid,
+                user,
+                actor=callback,
+                chat_id=callback.message.chat.id,
+            )
         else:
             report = premium_report_from_json(raw)
             upgraded = False

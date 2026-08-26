@@ -189,12 +189,12 @@ async def _resolve_hd_report(
     raw = user_row["hd_report_json"] if "hd_report_json" in user_row.keys() else None
     if not is_legacy_hd_report_raw(raw):
         return premium_report_from_json(raw), False
-    await deps.bot().send_chat_action(chat_id, "typing")
-    try:
-        report, upgraded = await ensure_modern_hd_report(uid, user_name=user_name)
-    except Exception:
-        logger.exception("HD legacy upgrade failed uid=%s", uid)
-        raise
+    async with chat_action_loop(deps.bot(), chat_id, "typing"):
+        try:
+            report, upgraded = await ensure_modern_hd_report(uid, user_name=user_name)
+        except Exception:
+            logger.exception("HD legacy upgrade failed uid=%s", uid)
+            raise
     return report, upgraded
 
 
@@ -844,6 +844,11 @@ async def match_need_text(message: Message) -> None:
 async def hd_report_section(callback: CallbackQuery) -> None:
     uid = callback.from_user.id
     user = await get_user(uid)
+    raw = user["hd_report_json"] if "hd_report_json" in user.keys() else None
+    legacy = is_legacy_hd_report_raw(raw)
+    if legacy:
+        await callback.answer(msg.TXT_HD_UPGRADING_REPORT_ALERT, show_alert=True)
+        await callback.message.answer(msg.TXT_HD_UPGRADING_REPORT, parse_mode=ParseMode.HTML)
     try:
         report, upgraded = await _resolve_hd_report(
             uid,
@@ -860,7 +865,6 @@ async def hd_report_section(callback: CallbackQuery) -> None:
         await callback.answer(msg.TXT_HD_REPORT_NOT_FOUND_ALERT, show_alert=True)
         return
     if upgraded:
-        await callback.message.answer(msg.TXT_HD_UPGRADING_REPORT, parse_mode=ParseMode.HTML)
         await _deliver_upgraded_hd_report(callback.message, uid, user, report, upgraded=True)
         await callback.answer()
         return
