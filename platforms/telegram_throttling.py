@@ -162,7 +162,13 @@ def _is_whitelisted_callback(event: TelegramObject) -> bool:
         msg.CB_BACK_CREATE,
         msg.CB_BACK_TO_TOOLS,
         msg.CB_HD_SECTION,
+        msg.CB_HD_REPORT_OPEN,
+        msg.CB_HD_REGENERATE,
+        msg.CB_HD_PREMIUM_BUY,
+        msg.CB_HD_COMPATIBILITY_START,
     ):
+        return True
+    if data.startswith(msg.CB_HD_REPORT_PREFIX):
         return True
     if data.startswith(msg.CB_SET_ROLE_PREFIX) or data.startswith(msg.CB_TEXT_ROLE_PREFIX):
         return True

@@ -209,7 +209,7 @@ async def _resolve_hd_report(
 
 
 async def _deliver_upgraded_hd_report(
-    target: Message,
+    target: Message | CallbackQuery,
     uid: int,
     user_row,
     report: dict,
@@ -285,7 +285,7 @@ async def hd_premium_buy(callback: CallbackQuery, state: FSMContext) -> None:
                     return
                 if report and upgraded:
                     await _deliver_upgraded_hd_report(
-                        callback.message,
+                        callback,
                         uid,
                         user,
                         report,
@@ -309,7 +309,12 @@ async def hd_premium_buy(callback: CallbackQuery, state: FSMContext) -> None:
             await callback.answer()
             return
         await callback.answer(msg.TXT_HD_UPGRADING_REPORT_ALERT, show_alert=True)
-        await _start_hd_regenerate_for_user(callback.message, uid, state=state)
+        await _start_hd_regenerate_for_user(
+            callback,
+            uid,
+            state=state,
+            show_upgrading_notice=False,
+        )
         return
     if not billing_bypass(uid) and not await is_subscribed(uid):
         await callback.message.answer(
@@ -609,6 +614,32 @@ async def hd_free_advice(callback: CallbackQuery, state: FSMContext) -> None:
     # Повторный клик в тот же день обрабатывает _send_daily_advice (edit/resend).
     await _send_daily_advice(callback.message, uid, state, callback=callback)
 
+def _hd_chat_id(actor: Message | CallbackQuery) -> int:
+    if isinstance(actor, CallbackQuery):
+        if actor.message is not None:
+            return actor.message.chat.id
+        if actor.from_user is not None:
+            return actor.from_user.id
+        raise ValueError("hd chat id unavailable")
+    return actor.chat.id
+
+
+async def _hd_notify(
+    actor: Message | CallbackQuery,
+    text: str,
+    *,
+    reply_markup: InlineKeyboardMarkup | None = None,
+    parse_mode: str = ParseMode.HTML,
+) -> None:
+    """Отправка в чат через bot.send_message — работает и для CallbackQuery без message."""
+    await deps.bot().send_message(
+        chat_id=_hd_chat_id(actor),
+        text=text,
+        parse_mode=parse_mode,
+        reply_markup=reply_markup,
+    )
+
+
 def _hd_section_html(title: str, body: str) -> str:
     text = (body or "").strip()
     if len(text) > 12000:
@@ -617,47 +648,59 @@ def _hd_section_html(title: str, body: str) -> str:
 
 
 async def _answer_hd_html(
-    message: Message,
+    actor: Message | CallbackQuery,
     text: str,
     uid: int,
 ) -> None:
-    """Текст HD отдельно, клавиатура — вторым коротким сообщением (лимит Telegram)."""
+    """Текст HD + клавиатура через bot.send_message (работает с любым callback.message)."""
+    bot = deps.bot()
+    chat_id = _hd_chat_id(actor)
     try:
-        await answer_chat_text(message, text, settings, reply_markup=None)
+        await send_chat_html(bot, chat_id, text, settings, reply_markup=None)
     except TelegramBadRequest:
         logger.warning("hd answer html chunks failed uid=%s, plain fallback", uid, exc_info=True)
         plain = sanitize_telegram_plain_text(text)
-        await answer_chat_text(message, plain, settings, reply_markup=None)
-    for include_webapp in (True, False):
+        await bot.send_message(chat_id=chat_id, text=plain)
+    markups = [
+        hd_report_sections_markup(uid, include_webapp=True),
+        hd_report_sections_markup(uid, include_webapp=False),
+        InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text=msg.TXT_HD_BTN_REPORT_PDF, callback_data=msg.CB_HD_REPORT_PDF)],
+                [
+                    InlineKeyboardButton(
+                        text=msg.TXT_HD_BTN_REGENERATE,
+                        callback_data=msg.CB_HD_REGENERATE,
+                    )
+                ],
+            ]
+        ),
+    ]
+    for markup in markups:
         try:
-            await message.answer(
-                "👇 Разделы отчёта:",
-                reply_markup=hd_report_sections_markup(uid, include_webapp=include_webapp),
+            await bot.send_message(
+                chat_id=chat_id,
+                text="👇 Разделы отчёта:",
+                reply_markup=markup,
             )
             return
         except TelegramBadRequest:
-            logger.warning(
-                "hd sections keyboard rejected uid=%s include_webapp=%s",
-                uid,
-                include_webapp,
-                exc_info=True,
-            )
+            logger.warning("hd sections keyboard rejected uid=%s", uid, exc_info=True)
 
 
 async def _send_hd_section_message(
-    message: Message,
+    actor: Message | CallbackQuery,
     uid: int,
     body_text: str,
 ) -> None:
-    """Раздел отчёта — текст отдельно, клавиатура следом."""
-    await _answer_hd_html(message, body_text, uid)
+    await _answer_hd_html(actor, body_text, uid)
 
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 async def _send_hd_premium_pdf(
-    message: Message,
+    actor: Message | CallbackQuery,
     uid: int,
     report: dict,
     birth_data: str,
@@ -668,11 +711,9 @@ async def _send_hd_premium_pdf(
     deliver_to_chat_id: int | None = None,
 ) -> None:
     pdf_path: str | None = None
-    chat_id = deliver_to_chat_id if deliver_to_chat_id is not None else message.chat.id
+    chat_id = deliver_to_chat_id if deliver_to_chat_id is not None else _hd_chat_id(actor)
     bot = deps.bot()
-    pdf_user_name = user_display_name or (
-        (message.from_user.first_name or "").strip() if message.from_user else ""
-    )
+    pdf_user_name = user_display_name or _hd_user_display_name(actor, {})
     try:
         async with chat_action_loop(bot, chat_id, "upload_document"):
             pdf_path = create_hd_premium_pdf(
@@ -714,7 +755,7 @@ async def _send_hd_premium_pdf(
 
 
 async def _send_hd_instagram_stories_album(
-    message: Message,
+    actor: Message | CallbackQuery,
     uid: int,
     user_name: str,
     story_relpaths: list[str],
@@ -726,7 +767,7 @@ async def _send_hd_instagram_stories_album(
         logger.warning("instagram stories album skipped uid=%s files=%s", uid, len(files))
         return
 
-    chat_id = deliver_to_chat_id if deliver_to_chat_id is not None else message.chat.id
+    chat_id = deliver_to_chat_id if deliver_to_chat_id is not None else _hd_chat_id(actor)
     bot = deps.bot()
     display_name = html.escape((user_name or "друг").strip() or "друг")
     caption = msg.TXT_HD_INSTAGRAM_ALBUM_CAPTION.format(name=display_name)
@@ -774,7 +815,7 @@ async def _send_hd_congrats_to_chat(bot, chat_id: int, text: str, uid: int) -> N
 
 
 async def _deliver_hd_premium_bundle(
-    message: Message,
+    actor: Message | CallbackQuery,
     uid: int,
     user_row: Any,
     report: dict,
@@ -785,9 +826,9 @@ async def _deliver_hd_premium_bundle(
     deliver_to_chat_id: int | None = None,
     user_display_name: str | None = None,
 ) -> None:
-    chat_id = deliver_to_chat_id if deliver_to_chat_id is not None else message.chat.id
+    chat_id = deliver_to_chat_id if deliver_to_chat_id is not None else _hd_chat_id(actor)
     bot = deps.bot()
-    resolved_display_name = user_display_name or _hd_user_display_name(message, user_row)
+    resolved_display_name = user_display_name or _hd_user_display_name(actor, user_row)
     math_data = build_hd_math_data(hd_type, birth_data)
     resolved_type = str(math_data.get("hd_type") or hd_type)
     defined = math_data.get("defined_centers") or []
@@ -817,7 +858,7 @@ async def _deliver_hd_premium_bundle(
         uid,
     )
     await _send_hd_premium_pdf(
-        message,
+        actor,
         uid,
         report,
         birth_data,
@@ -827,7 +868,7 @@ async def _deliver_hd_premium_bundle(
         deliver_to_chat_id=chat_id,
     )
     await _send_hd_instagram_stories_album(
-        message,
+        actor,
         uid,
         resolved_display_name,
         story_relpaths,
@@ -836,7 +877,7 @@ async def _deliver_hd_premium_bundle(
 
 
 async def _run_free_hd_regenerate(
-    message: Message,
+    actor: Message | CallbackQuery,
     uid: int,
     user_row: Any,
     *,
@@ -845,8 +886,8 @@ async def _run_free_hd_regenerate(
     deliver_to_chat_id: int | None = None,
     user_display_name: str | None = None,
 ) -> None:
-    chat_id = deliver_to_chat_id if deliver_to_chat_id is not None else message.chat.id
-    user_name = user_display_name or _hd_user_display_name(message, user_row)
+    chat_id = deliver_to_chat_id if deliver_to_chat_id is not None else _hd_chat_id(actor)
+    user_name = user_display_name or _hd_user_display_name(actor, user_row)
     user_gender = _hd_user_gender(user_row)
     keys = user_row.keys() if hasattr(user_row, "keys") else ()
     existing_raw = user_row["hd_report_json"] if "hd_report_json" in keys else None
@@ -872,7 +913,7 @@ async def _run_free_hd_regenerate(
     intro = msg.TXT_HD_UPGRADED_REPORT if llm_ok else msg.TXT_HD_UPGRADED_OFFLINE
     try:
         await _deliver_hd_premium_bundle(
-            message,
+            actor,
             uid,
             user_row,
             report,
@@ -885,7 +926,7 @@ async def _run_free_hd_regenerate(
     except Exception:
         logger.exception("hd_regenerate_delivery_failed uid=%s", uid)
         await _answer_hd_html(
-            message,
+            actor,
             intro + "\n\nPDF или Stories не отправились — нажми 📄 Скачать PDF или 🔄 Обновить снова.",
             uid,
         )
@@ -903,7 +944,7 @@ def _parse_admin_hd_command(text: str, *, default_uid: int) -> tuple[int, str]:
 
 
 async def _start_hd_regenerate_for_user(
-    message: Message,
+    actor: Message | CallbackQuery,
     uid: int,
     *,
     birth_data_override: str | None = None,
@@ -915,7 +956,7 @@ async def _start_hd_regenerate_for_user(
     user = await get_user(uid)
     has_pro = bool(user["has_pro_analysis"]) if "has_pro_analysis" in user.keys() else False
     if not has_pro and not (birth_data_override or "").strip():
-        await message.answer(msg.TXT_HD_REPORT_NOT_FOUND, parse_mode=ParseMode.HTML)
+        await _hd_notify(actor, msg.TXT_HD_REPORT_NOT_FOUND)
         return False
 
     birth_data = (birth_data_override or "").strip()
@@ -927,7 +968,7 @@ async def _start_hd_regenerate_for_user(
         if state is not None:
             await state.set_state(UserFlow.waiting_hd_birth_data)
             await state.update_data(hd_regenerate=True)
-        await message.answer(msg.TXT_HD_REGENERATE_NEED_BIRTH, parse_mode=ParseMode.HTML)
+        await _hd_notify(actor, msg.TXT_HD_REGENERATE_NEED_BIRTH)
         return False
 
     if (birth_data_override or "").strip():
@@ -935,14 +976,14 @@ async def _start_hd_regenerate_for_user(
         user = await get_user(uid)
 
     if show_upgrading_notice:
-        await message.answer(msg.TXT_HD_UPGRADING_REPORT, parse_mode=ParseMode.HTML)
+        await _hd_notify(actor, msg.TXT_HD_UPGRADING_REPORT)
 
-    delivery_chat = deliver_to_chat_id if deliver_to_chat_id is not None else uid
+    delivery_chat = deliver_to_chat_id if deliver_to_chat_id is not None else _hd_chat_id(actor)
 
     async def _regenerate_job() -> None:
         try:
             await _run_free_hd_regenerate(
-                message,
+                actor,
                 uid,
                 user,
                 hd_type=hd_type,
@@ -952,7 +993,7 @@ async def _start_hd_regenerate_for_user(
         except Exception:
             logger.exception("hd_regenerate_failed uid=%s", uid)
             try:
-                await message.answer(msg.TXT_HD_UPGRADE_FAILED, parse_mode=ParseMode.HTML)
+                await _hd_notify(actor, msg.TXT_HD_UPGRADE_FAILED)
             except Exception:
                 logger.exception("hd_regenerate_failed_notify uid=%s", uid)
 
@@ -1041,20 +1082,45 @@ async def cmd_hd_menu(message: Message) -> None:
 @router.callback_query(F.data == msg.CB_HD_REGENERATE)
 async def hd_regenerate_callback(callback: CallbackQuery, state: FSMContext) -> None:
     uid = callback.from_user.id
-    user = await get_user(uid)
-    has_pro = bool(user["has_pro_analysis"]) if "has_pro_analysis" in user.keys() else False
-    if not has_pro:
-        await callback.answer(msg.TXT_HD_REPORT_NOT_FOUND_ALERT, show_alert=True)
-        return
-    birth_data = (user["hd_birth_data"] or "").strip() if "hd_birth_data" in user.keys() else ""
-    if not birth_data:
-        await state.set_state(UserFlow.waiting_hd_birth_data)
-        await state.update_data(hd_regenerate=True)
-        await callback.message.answer(msg.TXT_HD_REGENERATE_NEED_BIRTH, parse_mode=ParseMode.HTML)
+    if callback.message is None and callback.from_user is None:
         await callback.answer()
         return
-    await callback.answer(msg.TXT_HD_UPGRADING_REPORT_ALERT, show_alert=True)
-    await _start_hd_regenerate_for_user(callback.message, uid, state=state)
+    try:
+        user = await get_user(uid)
+        has_pro = bool(user["has_pro_analysis"]) if "has_pro_analysis" in user.keys() else False
+        if not has_pro:
+            await callback.answer(msg.TXT_HD_REPORT_NOT_FOUND_ALERT, show_alert=True)
+            return
+        birth_data = (user["hd_birth_data"] or "").strip() if "hd_birth_data" in user.keys() else ""
+        if not birth_data:
+            await state.set_state(UserFlow.waiting_hd_birth_data)
+            await state.update_data(hd_regenerate=True)
+            bot = deps.bot()
+            await bot.send_message(
+                chat_id=_hd_chat_id(callback),
+                text=msg.TXT_HD_REGENERATE_NEED_BIRTH,
+                parse_mode=ParseMode.HTML,
+            )
+            await callback.answer()
+            return
+        await callback.answer(msg.TXT_HD_UPGRADING_REPORT_ALERT, show_alert=True)
+        await _start_hd_regenerate_for_user(
+            callback,
+            uid,
+            state=state,
+            show_upgrading_notice=False,
+        )
+    except Exception:
+        logger.exception("hd_regenerate_callback failed uid=%s", uid)
+        await callback.answer(msg.TXT_HD_UPGRADE_FAILED, show_alert=True)
+        try:
+            await deps.bot().send_message(
+                chat_id=_hd_chat_id(callback),
+                text=msg.TXT_HD_UPGRADE_FAILED,
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception:
+            logger.exception("hd_regenerate_callback notify failed uid=%s", uid)
 
 
 @router.message(UserFlow.waiting_hd_birth_data, F.text)
@@ -1222,7 +1288,7 @@ async def match_need_text(message: Message) -> None:
 @router.callback_query(F.data.startswith(msg.CB_HD_REPORT_PREFIX))
 async def hd_report_section(callback: CallbackQuery) -> None:
     uid = callback.from_user.id
-    if callback.message is None:
+    if callback.from_user is None:
         await callback.answer()
         return
     try:
@@ -1230,8 +1296,10 @@ async def hd_report_section(callback: CallbackQuery) -> None:
     except Exception:
         logger.exception("hd_report_section failed uid=%s data=%s", uid, callback.data)
         await callback.answer(msg.TXT_HD_UPGRADE_FAILED, show_alert=True)
-        if callback.message is not None:
-            await callback.message.answer(msg.TXT_HD_UPGRADE_FAILED, parse_mode=ParseMode.HTML)
+        try:
+            await _hd_notify(callback, msg.TXT_HD_UPGRADE_FAILED)
+        except Exception:
+            logger.exception("hd_report_section notify failed uid=%s", uid)
 
 
 async def _hd_report_section_impl(callback: CallbackQuery, uid: int) -> None:
@@ -1240,24 +1308,24 @@ async def _hd_report_section_impl(callback: CallbackQuery, uid: int) -> None:
     legacy = is_legacy_hd_report_raw(raw)
     if legacy:
         await callback.answer(msg.TXT_HD_UPGRADING_REPORT_ALERT, show_alert=True)
-        await callback.message.answer(msg.TXT_HD_UPGRADING_REPORT, parse_mode=ParseMode.HTML)
+        await _hd_notify(callback, msg.TXT_HD_UPGRADING_REPORT)
     try:
         report, upgraded = await _resolve_hd_report(
             uid,
             user,
             actor=callback,
-            chat_id=callback.message.chat.id,
+            chat_id=_hd_chat_id(callback),
         )
     except Exception:
         logger.exception("hd_report_section upgrade failed uid=%s", uid)
         await callback.answer()
-        await callback.message.answer(msg.TXT_HD_UPGRADE_FAILED, parse_mode=ParseMode.HTML)
+        await _hd_notify(callback, msg.TXT_HD_UPGRADE_FAILED)
         return
     if report is None:
         await callback.answer(msg.TXT_HD_REPORT_NOT_FOUND_ALERT, show_alert=True)
         return
     if upgraded:
-        await _deliver_upgraded_hd_report(callback.message, uid, user, report, upgraded=True)
+        await _deliver_upgraded_hd_report(callback, uid, user, report, upgraded=True)
         await callback.answer()
         return
 
@@ -1270,10 +1338,12 @@ async def _hd_report_section_impl(callback: CallbackQuery, uid: int) -> None:
     }
     if section == "pdf":
         pdf_path: str | None = None
+        chat_id = _hd_chat_id(callback)
+        bot = deps.bot()
         try:
             birth_data = (user["hd_birth_data"] or "").strip() if "hd_birth_data" in user.keys() else None
             hd_type_val = (user["hd_type"] or "") if "hd_type" in user.keys() else ""
-            async with chat_action_loop(deps.bot(), callback.message.chat.id, "upload_document"):
+            async with chat_action_loop(bot, chat_id, "upload_document"):
                 pdf_path = create_hd_premium_pdf(
                     uid,
                     report,
@@ -1281,14 +1351,15 @@ async def _hd_report_section_impl(callback: CallbackQuery, uid: int) -> None:
                     hd_type=hd_type_val,
                     user_name=_hd_user_display_name(callback, user),
                 )
-                await callback.message.answer_document(
-                    FSInputFile(pdf_path),
+                await bot.send_document(
+                    chat_id=chat_id,
+                    document=FSInputFile(pdf_path),
                     caption=msg.TXT_HD_PDF_CAPTION,
                     parse_mode=ParseMode.HTML,
                 )
         except Exception:
             logger.exception("hd pdf on demand failed uid=%s", uid)
-            await callback.message.answer(msg.TXT_HD_UPGRADE_FAILED, parse_mode=ParseMode.HTML)
+            await _hd_notify(callback, msg.TXT_HD_UPGRADE_FAILED)
         finally:
             if pdf_path:
                 try:
@@ -1314,7 +1385,7 @@ async def _hd_report_section_impl(callback: CallbackQuery, uid: int) -> None:
         except Exception:
             logger.warning("instagram stories on demand failed uid=%s", uid, exc_info=True)
         await _send_hd_instagram_stories_album(
-            callback.message,
+            callback,
             uid,
             _hd_user_display_name(callback, user),
             story_relpaths,
@@ -1330,7 +1401,7 @@ async def _hd_report_section_impl(callback: CallbackQuery, uid: int) -> None:
         report.get(section) or "Раздел пока пуст — нажми 🔄 Обновить отчёт ещё раз."
     ).strip()
     body_text = _hd_section_html(title, section_body)
-    await _send_hd_section_message(callback.message, uid, body_text)
+    await _send_hd_section_message(callback, uid, body_text)
     await callback.answer()
 
 @router.callback_query(F.data == msg.CB_HD_COMPATIBILITY_START)

@@ -186,7 +186,7 @@ async def open_hd_section(callback: CallbackQuery) -> None:
 @router.callback_query(F.data == msg.CB_HD_REPORT_OPEN)
 async def open_existing_hd_report(callback: CallbackQuery) -> None:
     uid = callback.from_user.id
-    if callback.message is None:
+    if callback.from_user is None:
         await callback.answer()
         return
     try:
@@ -194,7 +194,12 @@ async def open_existing_hd_report(callback: CallbackQuery) -> None:
     except Exception:
         logger.exception("open_existing_hd_report failed uid=%s", uid)
         await callback.answer(msg.TXT_HD_UPGRADE_FAILED, show_alert=True)
-        await callback.message.answer(msg.TXT_HD_UPGRADE_FAILED, parse_mode=ParseMode.HTML)
+        try:
+            from platforms.handlers.hd import _hd_notify
+
+            await _hd_notify(callback, msg.TXT_HD_UPGRADE_FAILED)
+        except Exception:
+            logger.exception("open_existing_hd_report notify failed uid=%s", uid)
 
 
 async def _open_existing_hd_report_impl(callback: CallbackQuery, uid: int) -> None:
@@ -204,26 +209,30 @@ async def _open_existing_hd_report_impl(callback: CallbackQuery, uid: int) -> No
     legacy = is_legacy_hd_report_raw(raw)
     if legacy:
         await callback.answer(msg.TXT_HD_UPGRADING_REPORT_ALERT, show_alert=True)
-        await callback.message.answer(msg.TXT_HD_UPGRADING_REPORT, parse_mode=ParseMode.HTML)
+        from platforms.handlers.hd import _hd_notify
+
+        await _hd_notify(callback, msg.TXT_HD_UPGRADING_REPORT)
     else:
         await callback.answer()
     user_name = (callback.from_user.first_name or "").strip() if callback.from_user else "друг"
     try:
         if legacy:
-            from platforms.handlers.hd import _resolve_hd_report
+            from platforms.handlers.hd import _hd_chat_id, _resolve_hd_report
 
             report, upgraded = await _resolve_hd_report(
                 uid,
                 user,
                 actor=callback,
-                chat_id=callback.message.chat.id,
+                chat_id=_hd_chat_id(callback),
             )
         else:
             report = premium_report_from_json(raw)
             upgraded = False
     except Exception:
         logger.exception("open_existing_hd_report upgrade failed uid=%s", uid)
-        await callback.message.answer(msg.TXT_HD_UPGRADE_FAILED, parse_mode=ParseMode.HTML)
+        from platforms.handlers.hd import _hd_notify
+
+        await _hd_notify(callback, msg.TXT_HD_UPGRADE_FAILED)
         return
     if report is None:
         if not legacy:
@@ -233,7 +242,7 @@ async def _open_existing_hd_report_impl(callback: CallbackQuery, uid: int) -> No
         from platforms.handlers.hd import _deliver_upgraded_hd_report
 
         await _deliver_upgraded_hd_report(
-            callback.message,
+            callback,
             uid,
             user,
             report,
@@ -243,7 +252,7 @@ async def _open_existing_hd_report_impl(callback: CallbackQuery, uid: int) -> No
     from platforms.handlers.hd import _answer_hd_html
 
     await _answer_hd_html(
-        callback.message,
+        callback,
         format_hd_congrats_html(
             report,
             (user["hd_type"] or "") if "hd_type" in user.keys() else "",
