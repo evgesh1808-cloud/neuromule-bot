@@ -1803,6 +1803,7 @@ def today_iso() -> str:
 
 def _find_pdf_font() -> str | None:
     candidates = [
+        str(_PROJECT_ROOT / "assets" / "fonts" / "Roboto-Regular.ttf"),
         str(_PROJECT_ROOT / "fonts" / "Roboto-Regular.ttf"),
         os.getenv("HD_PDF_FONT_PATH", "").strip(),
         str(_PROJECT_ROOT / "fonts" / "DejaVuSans.ttf"),
@@ -1814,6 +1815,15 @@ def _find_pdf_font() -> str | None:
         if item and Path(item).exists():
             return item
     return None
+
+
+def ensure_pdf_fonts_available() -> None:
+    """Pre-flight: кириллические TTF для PDF (как assets/fonts для Stories)."""
+    if _find_pdf_font() is None:
+        raise RuntimeError(
+            "HD PDF fonts missing on disk: expected "
+            f"{_PROJECT_ROOT / 'assets' / 'fonts' / 'Roboto-Regular.ttf'}"
+        )
 
 
 def _find_pdf_font_bold(regular_path: str | None) -> str | None:
@@ -1834,14 +1844,15 @@ def _find_pdf_font_bold(regular_path: str | None) -> str | None:
 def _register_pdf_font() -> str:
     if pdfmetrics is None or TTFont is None:
         raise RuntimeError("Установите пакет reportlab для PDF-отчетов.")
+    ensure_pdf_fonts_available()
     font_path = _find_pdf_font()
     if not font_path:
-        return "Helvetica"
+        raise RuntimeError("HD PDF font path unresolved after pre-flight")
     registered = pdfmetrics.getRegisteredFontNames()
     if _PDF_FONT_NAME not in registered:
         pdfmetrics.registerFont(TTFont(_PDF_FONT_NAME, font_path))
     bold_path = _find_pdf_font_bold(font_path)
-    if bold_path and _PDF_FONT_BOLD_NAME not in registered:
+    if bold_path and _PDF_FONT_BOLD_NAME not in pdfmetrics.getRegisteredFontNames():
         pdfmetrics.registerFont(TTFont(_PDF_FONT_BOLD_NAME, bold_path))
     return _PDF_FONT_NAME
 
@@ -3485,6 +3496,8 @@ def _md_to_reportlab_html(text: object) -> str:
     raw = str(text or "").strip()
     if not raw:
         return ""
+    emoji_re = re.compile(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]+", flags=re.UNICODE)
+    raw = emoji_re.sub("", raw)
     chunks: list[str] = []
     for line in raw.splitlines():
         stripped = line.strip()
@@ -3926,7 +3939,7 @@ def _build_hd_premium_pdf_story(
     fast_facts = str(report.get("fast_facts") or "").strip()
     if fast_facts:
         story.append(_HdPdfBookmark("Экспресс-анализ", "hd_fast_facts"))
-        story.append(Paragraph("⚡ Экспресс-анализ", overview_style))
+        story.append(Paragraph("Экспресс-анализ", overview_style))
         story.append(_HdAccentBarFlowable(width=480))
         story.append(Spacer(1, 10))
         for line in fast_facts.splitlines():
@@ -4194,11 +4207,32 @@ _STORY_FONT_REGULAR_PATH = _STORY_FONT_DIR / "Roboto-Regular.ttf"
 _STORY_COLOR_BG = (14, 10, 26, 255)
 _STORY_COLOR_WHITE = (255, 255, 255, 255)
 _STORY_COLOR_LAVENDER = (196, 188, 224, 255)
+_STORY_COLOR_LAVENDER_BRIGHT = (215, 208, 240, 255)
 _STORY_COLOR_GRAY = (130, 128, 142, 255)
 _STORY_COLOR_LINE = (255, 255, 255, 25)
+_STORY_COLOR_TRIGGER_LINE = (255, 255, 255, 51)
 _STORY_COLOR_FOOTER = (130, 128, 142, 90)
 _STORY_MARGIN_X = 80
 _STORY_CONTENT_W = 920
+_STORY_PANEL_PAD_X = 40
+_STORY_WRAP_MAX_CHARS = 43
+_STORY_CHANNEL_COPY_OVERRIDES: tuple[tuple[str, str, str], ...] = (
+    (
+        "сакральной самонаправленности",
+        "Абсолютная верность своему пути. Деньги приходят, когда делаешь то, от чего кайфуешь сам.",
+        "Пахать на чужие цели и пытаться угодить другим.",
+    ),
+    (
+        "эмоциональной выразительности",
+        "Сумасшедший магнетизм и глубина. Ты влюбляешь в себя людей, просто транслируя свои настоящие чувства.",
+        "Накручивать драму на пустом месте ради чужого внимания.",
+    ),
+    (
+        "стойкости в борьбе за смысл",
+        "Невероятное упрямство и азарт. Способность преодолеть любой кризис, если видишь в этом большой смысл.",
+        "Сливать силы на пустые споры и бессмысленную борьбу.",
+    ),
+)
 
 
 def ensure_story_fonts_available() -> None:
@@ -4236,7 +4270,7 @@ def _load_story_font(size: int, *, bold: bool = False) -> Any:
 
 
 def _create_story_minimal_background() -> Any:
-    """Чистый тёмный фон с мягким фиолетовым свечением в центре."""
+    """Чистый тёмный фон + одна центральная фиолетово-синяя туманность."""
     if Image is None or ImageDraw is None or ImageFilter is None:
         raise RuntimeError("Pillow required")
     size = _STORY_CANVAS_SIZE
@@ -4246,10 +4280,10 @@ def _create_story_minimal_background() -> Any:
     gl_draw = ImageDraw.Draw(glow_layer)
     cx, cy = w // 2, h // 2
     gl_draw.ellipse(
-        (cx - 420, cy - 520, cx + 420, cy + 520),
-        fill=(90, 60, 140, 28),
+        (cx - 520, cy - 620, cx + 520, cy + 620),
+        fill=(48, 36, 120, 89),
     )
-    glow_layer = glow_layer.filter(ImageFilter.GaussianBlur(120))
+    glow_layer = glow_layer.filter(ImageFilter.GaussianBlur(150))
     return Image.alpha_composite(bg, glow_layer)
 
 
@@ -4322,7 +4356,8 @@ def _story_wrap_words(text: str, max_len: int) -> tuple[str, str]:
     return line1, line2
 
 
-def _story_wrap_lines(text: str, max_len: int, *, max_lines: int = 4) -> list[str]:
+def _story_wrap_lines(text: str, max_len: int, *, max_lines: int = 2) -> list[str]:
+    """Word-wrap для Stories: до max_lines строк по max_len символов."""
     words = (text or "").split()
     if not words:
         return [""]
@@ -4346,11 +4381,24 @@ def _story_wrap_lines(text: str, max_len: int, *, max_lines: int = 4) -> list[st
         lines.append(current)
     if idx < len(words) and lines:
         tail = lines[-1]
-        if len(tail) >= max_len - 1:
-            lines[-1] = tail[: max_len - 1].rstrip() + "…"
-        elif not tail.endswith("…"):
-            lines[-1] = tail + "…"
+        if not tail.endswith("…"):
+            lines[-1] = (tail[: max_len - 1].rstrip() + "…") if len(tail) >= max_len else tail + "…"
     return lines or [""]
+
+
+def _story_humanize_channel_copy(superpower: str, trigger: str) -> tuple[str, str]:
+    """Заменяет заумные HD-термины на понятный язык для Stories."""
+    needle = superpower.lower()
+    for marker, plain_text, plain_trigger in _STORY_CHANNEL_COPY_OVERRIDES:
+        if marker in needle:
+            return plain_text, plain_trigger
+    cleaned = (superpower or "").strip()
+    lowered = cleaned.lower()
+    if lowered.startswith("суперсила:"):
+        cleaned = cleaned.split(":", 1)[1].strip()
+    elif lowered.startswith("суперсила "):
+        cleaned = cleaned[len("Суперсила ") :].strip()
+    return cleaned or superpower, trigger
 
 
 def _story_draw_hrule(draw: Any, y: int) -> None:
@@ -4393,25 +4441,28 @@ def _story_draw_channel_panel(
     body_font: Any,
     meta_font: Any,
 ) -> None:
-    pad_x = _STORY_MARGIN_X + 40
-    inner_w = _STORY_CONTENT_W - 80
+    pad_x = _STORY_MARGIN_X + _STORY_PANEL_PAD_X
+    pad_right = _STORY_MARGIN_X + _STORY_CONTENT_W - _STORY_PANEL_PAD_X
+    inner_w = pad_right - pad_x
     header = f"{domain.upper()} // КАНАЛ {channel_id}"
-    draw.text((pad_x, panel_y + 36), header, fill=_STORY_COLOR_LAVENDER, font=label_font)
+    draw.text((pad_x, panel_y + 36), header, fill=_STORY_COLOR_LAVENDER_BRIGHT, font=label_font)
     text_y = panel_y + 88
-    for line in _story_wrap_lines(superpower, 46, max_lines=3):
+    line_height = 36
+    for line in _story_wrap_lines(superpower, _STORY_WRAP_MAX_CHARS, max_lines=2):
         draw.text((pad_x, text_y), line, fill=_STORY_COLOR_WHITE, font=body_font)
-        text_y += 40
+        text_y += line_height
     divider_y = panel_y + panel_h - 72
     draw.line(
         [(pad_x, divider_y), (pad_x + inner_w, divider_y)],
-        fill=_STORY_COLOR_LINE,
+        fill=_STORY_COLOR_TRIGGER_LINE,
         width=1,
     )
-    trigger_line = f"Триггер: {trigger.rstrip('.')}"
-    if len(trigger_line) > 58:
-        trigger_line = trigger_line[:55].rstrip() + "…"
+    trigger_body = trigger.rstrip(".")
+    trigger_line = f"ТРИГГЕР: {trigger_body}".upper()
+    if len(trigger_line) > 54:
+        trigger_line = trigger_line[:51].rstrip() + "…"
     draw.text(
-        (pad_x, divider_y + 18),
+        (pad_x, divider_y + 16),
         trigger_line,
         fill=_STORY_COLOR_GRAY,
         font=meta_font,
@@ -4443,12 +4494,15 @@ def _build_story_active_channels_info(math_data: dict[str, object]) -> list[dict
         from services.hd_channel_archetypes import normalize_channel_code
 
         code = normalize_channel_code(channel) or f"0{idx + 1}"
+        raw_text = format_channel_superpower_for_user(channel)
+        raw_trigger = _story_channel_trigger(channel)
+        text, trigger = _story_humanize_channel_copy(raw_text, raw_trigger)
         items.append(
             {
                 "domain": domain,
                 "channel_num": code,
-                "text": format_channel_superpower_for_user(channel),
-                "trigger": _story_channel_trigger(channel),
+                "text": text,
+                "trigger": trigger,
             }
         )
     return items
@@ -4465,6 +4519,7 @@ def _story_channel_card_line(channel_code: str) -> str:
         block.get("shadow") or block.get("gift") or block.get("theme") or "точка роста в решениях"
     ).strip()
     trigger = trigger.rstrip(".")
+    superpower, trigger = _story_humanize_channel_copy(superpower, trigger)
     if len(trigger) > 56:
         trigger = trigger[:56].rsplit(" ", 1)[0] + "…"
     line = f"{superpower}. Триггер: {trigger}"
@@ -4535,8 +4590,8 @@ def generate_instagram_stories(
 
     font_title = _load_story_font(52, bold=True)
     font_label = _load_story_font(22, bold=True)
-    font_body = _load_story_font(28, bold=False)
-    font_meta = _load_story_font(22, bold=False)
+    font_body = _load_story_font(23, bold=False)
+    font_meta = _load_story_font(20, bold=False)
     font_footer = _load_story_font(18, bold=False)
     footer_label = _story_footer_label()
     mx = _STORY_MARGIN_X
@@ -4546,18 +4601,18 @@ def generate_instagram_stories(
     draw1 = ImageDraw.Draw(card1)
     draw1.text((mx, 120), "Human Design", fill=_STORY_COLOR_WHITE, font=font_title)
     draw1.text(
-        (mx, 195),
+        (mx, 168),
         f"Premium ID {str(uid)[:8]} · {birth_meta}",
         fill=_STORY_COLOR_GRAY,
         font=font_meta,
     )
-    _story_draw_hrule(draw1, 250)
+    _story_draw_hrule(draw1, 228)
 
     body_img = _load_story_bodygraph_neon(bodygraph_path)
     if body_img is not None:
-        body_img.thumbnail((620, 620), Image.Resampling.LANCZOS)
+        body_img.thumbnail((600, 600), Image.Resampling.LANCZOS)
         x_pos = (_STORY_CANVAS_SIZE[0] - body_img.size[0]) // 2
-        y_pos = 320
+        y_pos = 400
         glow_under = _create_story_bodygraph_glow(body_img, radius=38)
         card1.paste(glow_under, (x_pos, y_pos), glow_under)
         card1.paste(body_img, (x_pos, y_pos), body_img)

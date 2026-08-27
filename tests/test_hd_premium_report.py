@@ -613,8 +613,33 @@ def test_generate_instagram_stories_writes_two_cards(tmp_path, monkeypatch) -> N
     assert (out_dir / "story_999_2.jpg").is_file()
     sections = hd_logic._build_story_card2_sections(math_data)
     assert len(sections) >= 1
-    assert "Суперсила" in sections[0][1]
+    assert "Триггер:" in sections[0][1]
     assert "Боль" not in sections[0][1]
+
+
+def test_story_humanize_channel_copy_overrides() -> None:
+    text, trigger = hd_logic._story_humanize_channel_copy(
+        "Суперсила сакральной самонаправленности",
+        "старый триггер",
+    )
+    assert "кайфуешь" in text
+    assert "чужие цели" in trigger
+
+
+def test_story_wrap_lines_two_rows() -> None:
+    lines = hd_logic._story_wrap_lines(
+        "Абсолютная верность своему пути и деньги приходят когда делаешь то от чего кайфуешь сам",
+        43,
+        max_lines=2,
+    )
+    assert len(lines) <= 2
+    assert all(len(line) <= 44 for line in lines)
+
+
+def test_ensure_pdf_fonts_available_ok() -> None:
+    if hd_logic.pdfmetrics is None:
+        pytest.skip("reportlab not installed")
+    hd_logic.ensure_pdf_fonts_available()
 
 
 def test_load_static_block_reads_channels_index() -> None:
@@ -627,10 +652,9 @@ def test_load_static_block_reads_channels_index() -> None:
 def test_story_channel_card_line_max_150_chars() -> None:
     line = hd_logic._story_channel_card_line("10-34")
     assert len(line) <= 150
-    assert "Суперсила" in line
+    assert "кайфуешь" in line
     assert "Триггер:" in line
     assert "💼" not in line
-    assert "Деньги" not in line
 
 
 def test_ensure_story_fonts_available_ok() -> None:

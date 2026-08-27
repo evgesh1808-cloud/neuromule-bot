@@ -66,10 +66,10 @@ else
   fi
 fi
 
-echo "==> HD story fonts (Cyrillic pre-flight)"
+echo "==> HD fonts pre-flight (Stories + PDF Cyrillic)"
 for font_file in assets/fonts/Roboto-Bold.ttf assets/fonts/Roboto-Regular.ttf; do
   if [ ! -f "${font_file}" ]; then
-    echo "ERROR: missing ${font_file} — Instagram Stories упадут на сервере без кириллицы"
+    echo "ERROR: missing ${font_file} — Stories/PDF упадут на сервере без кириллицы"
     exit 1
   fi
 done
