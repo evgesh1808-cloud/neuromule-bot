@@ -567,6 +567,14 @@ def test_md_to_reportlab_html_bold() -> None:
     assert "**" not in html
 
 
+def test_pdf_luxury_callout_split_and_trigger() -> None:
+    header, body = hd_logic._split_pdf_callout_line("**Боль:** спешка и компромиссы")
+    assert header == "БОЛЬ"
+    assert "спешка" in body
+    assert hd_logic._is_pdf_dark_callout_line("**Боль:** текст")
+    assert not hd_logic._is_pdf_dark_callout_line("Обычный абзац без маркера")
+
+
 def test_create_hd_premium_pdf_multipage(tmp_path, monkeypatch) -> None:
     if hd_logic.BaseDocTemplate is None:
         pytest.skip("reportlab not installed")

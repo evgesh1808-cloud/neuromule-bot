@@ -67,6 +67,7 @@ try:
         BaseDocTemplate,
         Frame,
         Image as RLImage,
+        KeepTogether,
         PageBreak,
         PageTemplate,
         Paragraph,
@@ -90,6 +91,7 @@ except ImportError:  # pragma: no cover - surfaced at runtime in the handler.
     Frame = None
     RLImage = None
     PageBreak = None
+    KeepTogether = None
     PageTemplate = None
     Paragraph = None
     Spacer = None
@@ -157,9 +159,25 @@ _HD_LLM_PARALLEL_LIMIT = 5
 _HD_PREMIUM_MAX_OUTPUT_TOKENS = 8192
 _PDF_FONT_NAME = "HDReportFont"
 _PDF_FONT_BOLD_NAME = "HDReportFontBold"
-_PDF_COVER_BG = "#0D0E12"
-_PDF_CONTENT_BG = "#FAFAFA"
-_PDF_ACCENT_HEX = _HD_NEON_HEX
+# Luxury Tech palette (reference ultimate PDF)
+_PDF_COVER_BG = "#07070A"
+_PDF_CONTENT_BG = "#F8F9FA"
+_PDF_ACCENT_CYAN_HEX = "#00E5FF"
+_PDF_ACCENT_PURPLE_HEX = "#7000FF"
+_PDF_TEXT_DARK_HEX = "#111116"
+_PDF_TEXT_MUTED_HEX = "#6C7A89"
+_PDF_SURFACE_CARD_HEX = "#12121A"
+_PDF_SURFACE_LIGHT_HEX = "#EEF2F5"
+_PDF_INNER_RULE_HEX = "#EAEAEA"
+_PDF_TABLE_RULE_HEX = "#F0F2F5"
+_PDF_CALLOUT_BODY_HEX = "#E2E2EC"
+_PDF_COVER_GRID_HEX = "#161622"
+_PDF_COVER_META_HEX = "#8E8E9F"
+_PDF_ACCENT_HEX = _PDF_ACCENT_CYAN_HEX
+_PDF_MARGIN_LR = 45
+_PDF_MARGIN_TOP = 60
+_PDF_MARGIN_BOTTOM = 55
+_PDF_FRAME_WIDTH = 505
 _PDF_BODYGRAPH_WIDTH_PX = 430
 _PDF_BODYGRAPH_MAX_BYTES = 300 * 1024
 _PDF_CHAPTER_SPECS: tuple[tuple[str, str, str], ...] = (
@@ -3620,6 +3638,128 @@ def _pdf_bold_font_name(font_name: str) -> str:
     return font_name
 
 
+def _build_pdf_luxury_styles(font_name: str) -> dict[str, Any]:
+    """ParagraphStyle набор Luxury Tech для premium PDF."""
+    bold_font = _pdf_bold_font_name(font_name)
+    if ParagraphStyle is None or colors is None:
+        return {}
+    return {
+        "h1": ParagraphStyle(
+            "HdLuxH1",
+            fontName=bold_font,
+            fontSize=24,
+            leading=30,
+            textColor=colors.HexColor(_PDF_TEXT_DARK_HEX),
+            spaceBefore=25,
+            spaceAfter=14,
+            keepWithNext=True,
+        ),
+        "chapter": ParagraphStyle(
+            "HdLuxChapter",
+            fontName=bold_font,
+            fontSize=20,
+            leading=26,
+            textColor=colors.HexColor(_PDF_TEXT_DARK_HEX),
+            spaceAfter=6,
+            keepWithNext=True,
+        ),
+        "body": ParagraphStyle(
+            "HdLuxBody",
+            fontName=font_name,
+            fontSize=10.5,
+            leading=17.5,
+            textColor=colors.HexColor(_PDF_TEXT_DARK_HEX),
+            spaceAfter=14,
+        ),
+        "label": ParagraphStyle(
+            "HdLuxLabel",
+            fontName=font_name,
+            fontSize=10,
+            leading=14,
+            textColor=colors.HexColor(_PDF_TEXT_MUTED_HEX),
+        ),
+        "value": ParagraphStyle(
+            "HdLuxValue",
+            fontName=bold_font,
+            fontSize=11,
+            leading=15,
+            textColor=colors.HexColor(_PDF_TEXT_DARK_HEX),
+        ),
+        "callout_header": ParagraphStyle(
+            "HdLuxCalloutHeader",
+            fontName=bold_font,
+            fontSize=11,
+            leading=16,
+            textColor=colors.HexColor(_PDF_ACCENT_CYAN_HEX),
+            spaceAfter=6,
+        ),
+        "callout_body": ParagraphStyle(
+            "HdLuxCalloutBody",
+            fontName=font_name,
+            fontSize=10,
+            leading=15,
+            textColor=colors.HexColor(_PDF_CALLOUT_BODY_HEX),
+        ),
+    }
+
+
+def _split_pdf_callout_line(line: str) -> tuple[str, str]:
+    """``**Заголовок:** текст`` → header + body для тёмной neon-плашки."""
+    cleaned = (line or "").strip()
+    match = re.match(r"\*\*(.+?)\*\*:?\s*(.*)", cleaned, flags=re.DOTALL)
+    if match:
+        header = match.group(1).strip().rstrip(":").upper()
+        body = match.group(2).strip() or cleaned
+        return header, body
+    return "ЭКСПРЕСС-ИНСАЙТ", cleaned
+
+
+def _is_pdf_dark_callout_line(line: str) -> bool:
+    lowered = (line or "").lower()
+    if "**" in line and any(token in lowered for token in ("боль", "триггер", "ложн")):
+        return True
+    return "триггер деструкции" in lowered or "критический триггер" in lowered
+
+
+def _build_pdf_dark_callout(
+    header_html: str,
+    body_html: str,
+    styles: dict[str, Any],
+    *,
+    width: float = _PDF_FRAME_WIDTH,
+) -> Any:
+    """Тёмная журнальная плашка с лазерной cyan-чертой слева."""
+    if (
+        Paragraph is None
+        or Table is None
+        or TableStyle is None
+        or KeepTogether is None
+        or colors is None
+    ):
+        return Spacer(1, 1) if Spacer is not None else None
+    header_style = styles.get("callout_header")
+    body_style = styles.get("callout_body")
+    rows = [
+        [Paragraph(header_html, header_style)],
+        [Paragraph(body_html, body_style)],
+    ]
+    table = Table(rows, colWidths=[width])
+    table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(_PDF_SURFACE_CARD_HEX)),
+                ("TOPPADDING", (0, 0), (-1, -1), 16),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 16),
+                ("LEFTPADDING", (0, 0), (-1, -1), 18),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 18),
+                ("LINELEFT", (0, 0), (0, -1), 3, colors.HexColor(_PDF_ACCENT_CYAN_HEX)),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ]
+        )
+    )
+    return KeepTogether([table])
+
+
 def _strip_chapter_static_preamble(body: str) -> str:
     """Убирает дублирующую статику из LLM-глав — она уже есть в static-секциях PDF."""
     text = str(body or "").strip()
@@ -3698,7 +3838,7 @@ class _HdAccentBarFlowable(_PdfFlowableBase):
     def draw(self) -> None:
         if colors is None:
             return
-        self.canv.setFillColor(colors.HexColor(_HD_NEON_HEX))
+        self.canv.setFillColor(colors.HexColor(_PDF_ACCENT_CYAN_HEX))
         self.canv.roundRect(0, 4, self.width, self.bar_height, 2, fill=1, stroke=0)
 
 
@@ -3764,14 +3904,14 @@ class _HdEnergyScalesFlowable(_PdfFlowableBase):
             pct = _clamp_scale(self.scales.get(key), default=50)
             fill_w = max(2.0, bar_max_w * pct / 100.0)
             self.canv.setFont(self.font_name, 9)
-            self.canv.setFillColor(colors.HexColor("#555566"))
+            self.canv.setFillColor(colors.HexColor(_PDF_TEXT_MUTED_HEX))
             self.canv.drawString(0, y + 2, label)
             bx = 130
-            self.canv.setFillColor(colors.HexColor("#D8D8E0"))
+            self.canv.setFillColor(colors.HexColor(_PDF_SURFACE_LIGHT_HEX))
             self.canv.roundRect(bx, y, bar_max_w, self.bar_h, 3, fill=1, stroke=0)
-            self.canv.setFillColor(colors.HexColor(_HD_NEON_HEX))
+            self.canv.setFillColor(colors.HexColor(_PDF_ACCENT_CYAN_HEX))
             self.canv.roundRect(bx, y, fill_w, self.bar_h, 3, fill=1, stroke=0)
-            self.canv.setFillColor(colors.HexColor("#1A1A24"))
+            self.canv.setFillColor(colors.HexColor(_PDF_TEXT_DARK_HEX))
             self.canv.drawRightString(bx + bar_max_w + 36, y + 2, f"{pct}%")
             y -= self.row_gap
 
@@ -3797,10 +3937,10 @@ class _HdPremiumPdfDoc(BaseDocTemplate):
         super().__init__(
             filename,
             pagesize=A4,
-            leftMargin=48,
-            rightMargin=48,
-            topMargin=56,
-            bottomMargin=56,
+            leftMargin=_PDF_MARGIN_LR,
+            rightMargin=_PDF_MARGIN_LR,
+            topMargin=_PDF_MARGIN_TOP,
+            bottomMargin=_PDF_MARGIN_BOTTOM,
         )
         frame = Frame(
             self.leftMargin,
@@ -3820,51 +3960,59 @@ class _HdPremiumPdfDoc(BaseDocTemplate):
         if colors is None or A4 is None:
             return
         w, h = A4
+        bold_font = _pdf_bold_font_name(self.hd_font_name)
         canv.saveState()
         canv.setFillColor(colors.HexColor(_PDF_COVER_BG))
         canv.rect(0, 0, w, h, fill=1, stroke=0)
-        try:
-            canv.setFillColor(colors.HexColor("#8B5CF6"))
-            canv.setFillAlpha(0.07)
-            canv.circle(w * 0.18, h * 0.78, 130, fill=1, stroke=0)
-            canv.circle(w * 0.82, h * 0.22, 160, fill=1, stroke=0)
-            canv.circle(w * 0.55, h * 0.55, 90, fill=1, stroke=0)
-            canv.setFillAlpha(1)
-        except Exception:
-            pass
+        canv.setStrokeColor(colors.HexColor(_PDF_COVER_GRID_HEX))
+        canv.setLineWidth(1)
+        center_x = w / 2
+        center_y = h / 2
+        for radius in range(100, 600, 80):
+            canv.circle(center_x, center_y - 50, radius, stroke=1, fill=0)
+        canv.setStrokeColor(colors.HexColor(_PDF_ACCENT_CYAN_HEX))
+        canv.setLineWidth(2)
+        canv.line(center_x - 40, h - 120, center_x + 40, h - 120)
+        canv.setFillColor(colors.HexColor(_PDF_ACCENT_CYAN_HEX))
+        canv.setFont(self.hd_font_name, 11)
+        canv.drawCentredString(center_x, h * 0.72, "ARCHETYPE EVOLUTION")
+        canv.setFillColor(colors.white)
+        canv.setFont(bold_font, 38)
+        canv.drawCentredString(center_x, h * 0.64, "АРХИТЕКТУРА ТВОЕЙ")
+        canv.drawCentredString(center_x, h * 0.58, "ЛИЧНОСТИ")
         name = _sanitize_pdf_display_name(self.hd_user_name)
-        canv.setFillColor(colors.HexColor(_HD_NEON_HEX))
-        canv.setFont(self.hd_font_name, 24)
-        canv.drawCentredString(w / 2, h * 0.64, "NEUROMULE HD PREMIUM")
-        canv.setFont(self.hd_font_name, 15)
-        canv.drawCentredString(w / 2, h * 0.58, "ПЕРСОНАЛЬНЫЙ НАВИГАТОР ЛИЧНОСТИ")
-        canv.setFillColor(colors.HexColor("#E8E8F0"))
-        canv.setFont(self.hd_font_name, 14)
-        canv.drawCentredString(w / 2, h * 0.50, name[:72])
+        canv.setFillColor(colors.HexColor(_PDF_COVER_META_HEX))
+        canv.setFont(self.hd_font_name, 11)
+        canv.drawCentredString(center_x, h * 0.46, f"АНАЛИЗ СИСТЕМЫ ДЛЯ: {name.upper()}")
+        birth_line = (self.hd_birth_data or "—").upper()
+        canv.drawCentredString(center_x, h * 0.42, f"МАТРИЦА РОЖДЕНИЯ: {birth_line[:72]}")
         if self.hd_type:
-            canv.setFillColor(colors.HexColor("#C4B5FD"))
-            canv.setFont(self.hd_font_name, 12)
-            canv.drawCentredString(w / 2, h * 0.44, self.hd_type[:64])
-        if self.hd_birth_data:
-            canv.setFillColor(colors.HexColor("#C8C8D8"))
-            canv.setFont(self.hd_font_name, 11)
-            canv.drawCentredString(w / 2, h * 0.38, self.hd_birth_data[:90])
-        canv.setFillColor(colors.HexColor("#888899"))
-        canv.setFont(self.hd_font_name, 9)
-        canv.drawCentredString(w / 2, 72, _HD_WATERMARK)
+            canv.setFillColor(colors.HexColor(_PDF_ACCENT_PURPLE_HEX))
+            canv.setFont(self.hd_font_name, 10)
+            canv.drawCentredString(center_x, h * 0.36, self.hd_type.upper()[:64])
+        canv.setFillColor(colors.HexColor(_PDF_COVER_META_HEX))
+        canv.setFont(self.hd_font_name, 8)
+        canv.drawCentredString(center_x, 36, _HD_WATERMARK_PLAIN.upper())
         canv.restoreState()
 
     def _on_content_page(self, canv: Any, doc: Any) -> None:
         if colors is None or A4 is None:
             return
-        w, _h = A4
+        w, h = A4
+        mx = _PDF_MARGIN_LR
         canv.saveState()
         canv.setFillColor(colors.HexColor(_PDF_CONTENT_BG))
-        canv.rect(0, 0, w, A4[1], fill=1, stroke=0)
-        canv.setFont(self.hd_font_name, 8)
-        canv.setFillColor(colors.HexColor("#888899"))
-        canv.drawString(48, 24, _HD_WATERMARK)
-        canv.drawRightString(w - 48, 24, str(canv.getPageNumber()))
+        canv.rect(0, 0, w, h, fill=1, stroke=0)
+        canv.setFont(self.hd_font_name, 7.5)
+        canv.setFillColor(colors.HexColor(_PDF_TEXT_MUTED_HEX))
+        canv.drawString(mx, h - 30, "SYSTEMATIC CORE // HUMAN DESIGN ANALYSIS")
+        page_num = canv.getPageNumber()
+        canv.drawRightString(w - mx, h - 30, f"PAGE {page_num:02d}")
+        canv.setStrokeColor(colors.HexColor(_PDF_INNER_RULE_HEX))
+        canv.setLineWidth(0.6)
+        canv.line(mx, h - 36, w - mx, h - 36)
+        canv.drawString(mx, 25, "POWERED BY NEUROMULE COGNITIVE ENGINE")
+        canv.drawRightString(w - mx, 25, "SECURE PDF VERSION")
         canv.restoreState()
 
 
@@ -4006,42 +4154,54 @@ def _build_gates_appendix_table(
 def _build_chart_overview_table(
     meta: dict[str, object],
     font_name: str,
+    *,
+    luxury_styles: dict[str, Any] | None = None,
 ) -> Table:
-    rows: list[list[str]] = []
+    lbl_style = (luxury_styles or {}).get("label")
+    val_style = (luxury_styles or {}).get("value")
+    rows: list[list[Any]] = []
     for label, raw in (
-        ("Истинный Тип", meta.get("hd_type")),
-        ("Профиль", meta.get("profile_archetype") or format_profile_archetype_for_user(str(meta.get("profile") or ""))),
-        ("Внутренний Авторитет", meta.get("authority")),
-        ("Стратегия", meta.get("strategy")),
+        ("Генетический тип личности", meta.get("hd_type")),
+        ("Профиль конфигурации", meta.get("profile_archetype") or format_profile_archetype_for_user(str(meta.get("profile") or ""))),
+        ("Внутренний навигатор (Авторитет)", meta.get("authority")),
+        ("Глобальная стратегия жизни", meta.get("strategy")),
         ("Определённость", meta.get("definition")),
     ):
         value = _pdf_clean_meta_value(raw)
         if value:
-            rows.append([label, value])
+            if Paragraph is not None and lbl_style is not None and val_style is not None:
+                rows.append([Paragraph(label, lbl_style), Paragraph(value, val_style)])
+            else:
+                rows.append([label, value])
     defined = meta.get("defined_centers")
     if isinstance(defined, list) and defined:
-        rows.append(["Определённые центры", ", ".join(str(c) for c in defined[:9])])
+        centers_val = ", ".join(str(c) for c in defined[:9])
+        if Paragraph is not None and lbl_style is not None and val_style is not None:
+            rows.append(
+                [
+                    Paragraph("Определённые центры", lbl_style),
+                    Paragraph(centers_val, val_style),
+                ]
+            )
+        else:
+            rows.append(["Определённые центры", centers_val])
     if not rows:
-        rows.append(["Карта", "Параметры рассчитаны по дате рождения"])
-    table = Table(rows, colWidths=[150, 330])
+        fallback = "Параметры рассчитаны по дате рождения"
+        if Paragraph is not None and lbl_style is not None and val_style is not None:
+            rows.append([Paragraph("Карта", lbl_style), Paragraph(fallback, val_style)])
+        else:
+            rows.append(["Карта", fallback])
+    table = Table(rows, colWidths=[280, 225])
     if colors is not None and TableStyle is not None:
         table.setStyle(
             TableStyle(
                 [
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#EDE9FE")),
-                    ("BACKGROUND", (0, 0), (-1, -1), colors.white),
-                    ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#D4D4DC")),
-                    ("INNERGRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#E8E8EE")),
+                    ("LINEBELOW", (0, 0), (-1, -1), 0.7, colors.HexColor(_PDF_TABLE_RULE_HEX)),
                     ("FONTNAME", (0, 0), (-1, -1), font_name),
                     ("FONTSIZE", (0, 0), (-1, -1), 10),
-                    ("FONTNAME", (0, 0), (0, -1), font_name),
-                    ("TEXTCOLOR", (0, 0), (0, -1), colors.HexColor("#555566")),
-                    ("TEXTCOLOR", (1, 0), (1, -1), colors.HexColor("#1A1A24")),
                     ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 10),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 10),
-                    ("TOPPADDING", (0, 0), (-1, -1), 8),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+                    ("TOPPADDING", (0, 0), (-1, -1), 12),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 12),
                 ]
             )
         )
@@ -4070,37 +4230,23 @@ def _build_hd_premium_pdf_story(
         raise RuntimeError("Установите пакет reportlab для PDF-отчетов.")
 
     bold_font = _pdf_bold_font_name(font_name)
-    title_style = ParagraphStyle(
+    lux = _build_pdf_luxury_styles(font_name)
+    title_style = lux.get("chapter") or ParagraphStyle(
         "HdChapterTitle",
         fontName=bold_font,
-        fontSize=17,
-        leading=21,
-        textColor=colors.HexColor("#1A1A24") if colors else None,
-        spaceAfter=4,
-    )
-    overview_style = ParagraphStyle(
-        "HdOverviewTitle",
-        fontName=bold_font,
         fontSize=20,
-        leading=24,
-        textColor=colors.HexColor(_HD_NEON_HEX) if colors else None,
-        spaceAfter=10,
+        leading=26,
+        textColor=colors.HexColor(_PDF_TEXT_DARK_HEX) if colors else None,
+        spaceAfter=6,
     )
-    body_style = ParagraphStyle(
+    overview_style = lux.get("h1") or title_style
+    body_style = lux.get("body") or ParagraphStyle(
         "HdBody",
         fontName=font_name,
-        fontSize=12,
-        leading=18,
-        textColor=colors.HexColor("#1A1A24") if colors else None,
-        spaceAfter=8,
-    )
-    callout_style = ParagraphStyle(
-        "HdCallout",
-        fontName=font_name,
         fontSize=10.5,
-        leading=15,
-        textColor=colors.HexColor("#1A1A24") if colors else None,
-        spaceAfter=4,
+        leading=17.5,
+        textColor=colors.HexColor(_PDF_TEXT_DARK_HEX) if colors else None,
+        spaceAfter=14,
     )
 
     story: list[Any] = [Spacer(1, 1)]
@@ -4111,23 +4257,28 @@ def _build_hd_premium_pdf_story(
     if fast_facts:
         story.append(_HdPdfBookmark("Экспресс-анализ", "hd_fast_facts"))
         story.append(Paragraph("Экспресс-анализ", overview_style))
-        story.append(_HdAccentBarFlowable(width=480))
+        story.append(_HdAccentBarFlowable(width=_PDF_FRAME_WIDTH))
         story.append(Spacer(1, 10))
         for line in fast_facts.splitlines():
             chunk = line.strip()
             if not chunk:
                 continue
-            html = _md_to_reportlab_html(chunk)
-            if html:
-                story.append(_HdCalloutBoxFlowable(html, body_style=callout_style))
-                story.append(Spacer(1, 6))
+            header, body = _split_pdf_callout_line(chunk)
+            story.append(
+                _build_pdf_dark_callout(
+                    html_module.escape(header),
+                    _md_to_reportlab_html(body),
+                    lux,
+                )
+            )
+            story.append(Spacer(1, 10))
         story.append(PageBreak())
 
     story.append(_HdPdfBookmark("Обзор карты", "hd_overview"))
-    story.append(Paragraph("Обзор карты", overview_style))
-    story.append(_HdAccentBarFlowable(width=480))
-    story.append(Spacer(1, 10))
-    story.append(_build_chart_overview_table(meta, font_name))
+    story.append(Paragraph("Фундаментальные параметры кода", overview_style))
+    story.append(_HdAccentBarFlowable(width=_PDF_FRAME_WIDTH))
+    story.append(Spacer(1, 8))
+    story.append(_build_chart_overview_table(meta, font_name, luxury_styles=lux))
     story.append(Spacer(1, 16))
 
     bg_path = _prepare_bodygraph_for_pdf(user_id, birth_data)
@@ -4158,10 +4309,16 @@ def _build_hd_premium_pdf_story(
     for idx, (_key, chapter_title, bookmark_key, body) in enumerate(chapter_blocks):
         story.append(_HdPdfBookmark(chapter_title, bookmark_key))
         story.append(Paragraph(html_module.escape(chapter_title), title_style))
-        story.append(_HdAccentBarFlowable(width=480))
+        story.append(_HdAccentBarFlowable(width=_PDF_FRAME_WIDTH))
         story.append(Spacer(1, 10))
         chapter_text = _strip_chapter_static_preamble(body)
-        _append_pdf_markdown_paragraphs(story, chapter_text, body_style, line_spacer=8)
+        _append_pdf_markdown_paragraphs(
+            story,
+            chapter_text,
+            body_style,
+            line_spacer=8,
+            luxury_styles=lux,
+        )
         if idx < len(chapter_blocks) - 1:
             story.append(PageBreak())
 
@@ -4181,13 +4338,25 @@ def _append_pdf_markdown_paragraphs(
     body_style: Any,
     *,
     line_spacer: int = 6,
+    luxury_styles: dict[str, Any] | None = None,
 ) -> None:
-    """Безопасный вывод markdown-текста через Paragraph (без callout-box)."""
+    """Безопасный вывод markdown-текста через Paragraph; триггеры — тёмная neon-плашка."""
     if Paragraph is None or Spacer is None:
         return
     for line in (text or "").splitlines():
         chunk = line.strip()
         if not chunk:
+            continue
+        if luxury_styles and _is_pdf_dark_callout_line(chunk):
+            header, body = _split_pdf_callout_line(chunk)
+            story.append(
+                _build_pdf_dark_callout(
+                    html_module.escape(header),
+                    _md_to_reportlab_html(body),
+                    luxury_styles,
+                )
+            )
+            story.append(Spacer(1, line_spacer + 4))
             continue
         html = _md_to_reportlab_html(chunk)
         if html:
@@ -4208,40 +4377,34 @@ def _build_hd_minimal_pdf_story(
     if Paragraph is None or Spacer is None or PageBreak is None or ParagraphStyle is None:
         raise RuntimeError("Установите пакет reportlab для PDF-отчетов.")
     bold_font = _pdf_bold_font_name(font_name)
-    body_style = ParagraphStyle(
+    lux = _build_pdf_luxury_styles(font_name)
+    body_style = lux.get("body") or ParagraphStyle(
         "HdMinimalBody",
         fontName=font_name,
-        fontSize=12,
-        leading=18,
-        textColor=colors.HexColor("#1A1A24") if colors else None,
-        spaceAfter=8,
+        fontSize=10.5,
+        leading=17.5,
+        textColor=colors.HexColor(_PDF_TEXT_DARK_HEX) if colors else None,
+        spaceAfter=14,
     )
-    title_style = ParagraphStyle(
+    title_style = lux.get("chapter") or ParagraphStyle(
         "HdMinimalTitle",
         fontName=bold_font,
-        fontSize=16,
-        leading=22,
-        textColor=colors.HexColor("#1A1A24") if colors else None,
+        fontSize=20,
+        leading=26,
+        textColor=colors.HexColor(_PDF_TEXT_DARK_HEX) if colors else None,
         spaceAfter=8,
     )
-    overview_style = ParagraphStyle(
-        "HdMinimalOverview",
-        fontName=bold_font,
-        fontSize=18,
-        leading=22,
-        textColor=colors.HexColor(_HD_NEON_HEX) if colors else None,
-        spaceAfter=10,
-    )
+    overview_style = lux.get("h1") or title_style
     story: list[Any] = [Spacer(1, 1), PageBreak()]
 
     fast_facts = str(report.get("fast_facts") or "").strip()
     if fast_facts:
         story.append(Paragraph("Экспресс-анализ", overview_style))
-        _append_pdf_markdown_paragraphs(story, fast_facts, body_style)
+        _append_pdf_markdown_paragraphs(story, fast_facts, body_style, luxury_styles=lux)
         story.append(PageBreak())
 
-    story.append(Paragraph("Обзор карты", overview_style))
-    story.append(_build_chart_overview_table(meta, font_name))
+    story.append(Paragraph("Фундаментальные параметры кода", overview_style))
+    story.append(_build_chart_overview_table(meta, font_name, luxury_styles=lux))
     story.append(Spacer(1, 16))
 
     if user_id and RLImage is not None:
@@ -4273,7 +4436,13 @@ def _build_hd_minimal_pdf_story(
             continue
         story.append(Paragraph(html_module.escape(title), title_style))
         chapter_text = _strip_chapter_static_preamble(body)
-        _append_pdf_markdown_paragraphs(story, chapter_text, body_style, line_spacer=8)
+        _append_pdf_markdown_paragraphs(
+            story,
+            chapter_text,
+            body_style,
+            line_spacer=8,
+            luxury_styles=lux,
+        )
         story.append(Spacer(1, 12))
     return story
 
@@ -4481,7 +4650,10 @@ _STORY_JPG_QUALITY = 98
 _STORY_FONT_DIR = _PROJECT_ROOT / "assets" / "fonts"
 _STORY_FONT_BOLD_PATH = _STORY_FONT_DIR / "Roboto-Bold.ttf"
 _STORY_FONT_REGULAR_PATH = _STORY_FONT_DIR / "Roboto-Regular.ttf"
-_STORY_COLOR_BG = (14, 10, 26, 255)
+_STORY_COLOR_BG = (13, 13, 17, 255)
+_STORY_NEON_RGB = (138, 43, 226)
+_STORY_OPAQUE_PANEL_RGBA = (25, 25, 35, 255)
+_STORY_SUBTITLE_RGB = (150, 150, 150)
 _STORY_COLOR_WHITE = (255, 255, 255, 255)
 _STORY_COLOR_LAVENDER = (196, 188, 224, 255)
 _STORY_COLOR_LAVENDER_BRIGHT = (215, 208, 240, 255)
@@ -4538,6 +4710,8 @@ def _load_story_font(size: int, *, bold: bool = False) -> Any:
     for candidate in (
         primary,
         secondary,
+        _PROJECT_ROOT / "fonts" / "Inter-Bold.ttf",
+        _PROJECT_ROOT / "fonts" / "Inter-Medium.ttf",
         _PROJECT_ROOT / "fonts" / "Roboto-Regular.ttf",
     ):
         if not candidate.is_file():
@@ -4585,6 +4759,20 @@ def _story_rgba_fill_on_dark(
         int(g * t + bg[1] * (1.0 - t)),
         int(b * t + bg[2] * (1.0 - t)),
     )
+
+
+def _draw_story_opaque_panel(
+    base_img: Any,
+    coords: tuple[int, int, int, int],
+    *,
+    radius: int = 20,
+    fill: tuple[int, int, int, int] = _STORY_OPAQUE_PANEL_RGBA,
+) -> Any:
+    """Плотная тёмная плашка — буквы не сливаются с фоном (reference premium card)."""
+    overlay = Image.new("RGBA", base_img.size, (0, 0, 0, 0))
+    draw_overlay = ImageDraw.Draw(overlay)
+    draw_overlay.rounded_rectangle(coords, radius=radius, fill=fill)
+    return Image.alpha_composite(base_img, overlay)
 
 
 def _draw_story_glass_panel(
@@ -4646,6 +4834,14 @@ def _extract_bodygraph_layers(bodygraph_path: Path) -> tuple[Any | None, Any | N
     return clean_body, glow
 
 
+def _story_format_archetype_value(text: str) -> str:
+    """Длинный профиль «Спасатель-Исследователь» — перенос по дефису."""
+    cleaned = (text or "").strip()
+    if len(cleaned) > 18 and "-" in cleaned:
+        return cleaned.replace("-", "-\n", 1)
+    return cleaned
+
+
 def _draw_story_multiline_text(
     draw_obj: Any,
     text: str,
@@ -4657,8 +4853,18 @@ def _draw_story_multiline_text(
     line_spacing: int = _STORY_LINE_SPACING,
     max_lines: int = 2,
 ) -> int:
-    """Перенос по ширине в пикселях; без обрезки троеточием (только на RGB-холсте)."""
-    words = (text or "").split()
+    """Перенос по ширине в пикселях; поддерживает явные \\n (без обрезки троеточием)."""
+    raw = (text or "").strip()
+    if not raw:
+        return position[1]
+    if "\n" in raw:
+        lines = [ln.strip() for ln in raw.splitlines() if ln.strip()][:max_lines]
+        x, y = position
+        for line in lines:
+            draw_obj.text((x, y), line, fill=fill, font=font)
+            y += line_spacing
+        return y
+    words = raw.split()
     if not words:
         return position[1]
     lines: list[str] = []
@@ -5012,6 +5218,11 @@ def generate_instagram_stories(
         y_pos = 380
         card1.paste(body_glow, (x_pos, y_pos), body_glow)
         card1.paste(body_img, (x_pos, y_pos), body_img)
+    card1 = _draw_story_opaque_panel(
+        card1,
+        (mx, 1120, mx + _STORY_CONTENT_W, 1680),
+        radius=20,
+    )
     card1 = _draw_story_glass_panel(card1, (mx, 1120, mx + _STORY_CONTENT_W, 1680), radius=30)
     card1 = card1.convert("RGB")
     draw1 = ImageDraw.Draw(card1)
@@ -5019,17 +5230,21 @@ def generate_instagram_stories(
     draw1.text(
         (mx, 190),
         f"PREMIUM ID: {str(uid)[:8].upper()}  //  {birth_meta.upper()}",
-        fill=(160, 150, 180),
+        fill=_STORY_SUBTITLE_RGB,
         font=font_meta,
     )
-    draw1.line([(mx, 245), (mx + _STORY_CONTENT_W, 245)], fill=(255, 255, 255), width=1)
+    draw1.line(
+        [(mx, 245), (mx + _STORY_CONTENT_W, 245)],
+        fill=_STORY_NEON_RGB,
+        width=3,
+    )
     for label, val, x, y in (
         ("ТИП ЛИЧНОСТИ", hd_data["type"], param_left_x, 1160),
-        ("ПРОФИЛЬ", hd_data["profile"], param_right_x, 1160),
+        ("ПРОФИЛЬ", _story_format_archetype_value(hd_data["profile"]), param_right_x, 1160),
         ("ВНУТРЕННИЙ АВТОРИТЕТ", hd_data["authority"], param_left_x, 1420),
         ("СТРАТЕГИЯ ЖИЗНИ", hd_data["strategy"], param_right_x, 1420),
     ):
-        draw1.text((x, y), label, fill=_STORY_COLOR_LABEL_RGB, font=font_param_label)
+        draw1.text((x, y), label, fill=_STORY_SUBTITLE_RGB, font=font_param_label)
         col_width = 400 if x == param_left_x else mx + _STORY_CONTENT_W - x - _STORY_PANEL_PAD_X
         _draw_story_multiline_text(
             draw1,
@@ -5075,7 +5290,11 @@ def generate_instagram_stories(
         fill=(160, 150, 180),
         font=font_meta,
     )
-    draw2.line([(mx, 245), (mx + _STORY_CONTENT_W, 245)], fill=(255, 255, 255), width=1)
+    draw2.line(
+        [(mx, 245), (mx + _STORY_CONTENT_W, 245)],
+        fill=_STORY_NEON_RGB,
+        width=3,
+    )
     for py, item in channel_panels:
         _story_draw_channel_panel(
             draw2,
