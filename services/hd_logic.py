@@ -1258,23 +1258,8 @@ async def ensure_modern_hd_report(
         logger.exception("HD report upgrade LLM failed uid=%s: %s", user_id, exc)
 
     if report is None:
-        for factory, label in (
-            (_wrap_legacy_report_as_v3, "offline_wrap"),
-            (_minimal_hd_report_fallback, "minimal_fallback"),
-        ):
-            try:
-                report = factory(raw, math_data)
-                logger.warning(
-                    "HD report upgrade uid=%s served via %s",
-                    user_id,
-                    label,
-                )
-                break
-            except Exception:
-                logger.exception("HD report upgrade %s failed uid=%s", label, user_id)
-
-    if report is None:
-        raise RuntimeError("hd_upgrade_wrap_exhausted")
+        report = _offline_hd_premium_report(raw, math_data)
+        logger.warning("HD report upgrade uid=%s served via offline fallback", user_id)
 
     resolved_type = str(math_data.get("hd_type") or hd_type)
     await update_user(
@@ -1434,6 +1419,26 @@ def _wrap_legacy_report_as_v3(
     return report
 
 
+def _offline_hd_premium_report(
+    raw: str | None,
+    math_data: dict[str, object],
+) -> dict[str, Any]:
+    """Офлайн-отчёт без LLM: wrap legacy → minimal (не бросает наружу)."""
+    existing = (raw or "").strip()
+    for factory, label in (
+        (_wrap_legacy_report_as_v3, "offline_wrap"),
+        (_minimal_hd_report_fallback, "minimal_fallback"),
+    ):
+        try:
+            wrapped = factory(existing, math_data)
+            logger.warning("HD offline report served via %s", label)
+            return wrapped
+        except Exception:
+            logger.exception("HD offline report %s failed", label)
+    logger.warning("HD offline report served via minimal_fallback (guaranteed)")
+    return _minimal_hd_report_fallback(existing, math_data)
+
+
 def _minimal_hd_report_fallback(
     raw: str,
     math_data: dict[str, object],
@@ -1503,6 +1508,12 @@ async def generate_premium_report_resilient(
         (report, llm_ok) — llm_ok=False, если отдан wrap/minimal без живого LLM.
     """
     math_data = build_hd_math_data(hd_type, birth_data)
+    raw = (existing_raw or "").strip()
+
+    if not _openrouter_configured() and not _gemini_configured():
+        logger.warning("HD resilient: LLM keys missing — immediate offline report")
+        return _offline_hd_premium_report(raw, math_data), False
+
     report: dict[str, Any] | None = None
     try:
         report = await asyncio.wait_for(
@@ -1525,20 +1536,7 @@ async def generate_premium_report_resilient(
     except Exception:
         logger.exception("HD premium report resilient primary path failed")
 
-    raw = (existing_raw or "").strip()
-    for factory, label in (
-        (_wrap_legacy_report_as_v3, "offline_wrap"),
-        (_minimal_hd_report_fallback, "minimal_fallback"),
-    ):
-        try:
-            wrapped = factory(raw, math_data)
-            logger.warning("HD premium report served via resilient %s", label)
-            return wrapped, False
-        except Exception:
-            logger.exception("HD premium resilient %s failed", label)
-    wrapped = _minimal_hd_report_fallback(raw, math_data)
-    logger.warning("HD premium report served via resilient minimal_fallback (guaranteed)")
-    return wrapped, False
+    return _offline_hd_premium_report(raw, math_data), False
 
 
 def _parse_premium_report_from_llm(

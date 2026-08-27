@@ -706,3 +706,27 @@ async def test_premium_report_resilient_never_raises_on_empty_raw() -> None:
         )
     assert llm_ok is False
     assert report.get("plan")
+
+
+@pytest.mark.asyncio
+async def test_premium_report_resilient_offline_immediately_without_llm_keys() -> None:
+    with (
+        patch.object(hd_logic, "_openrouter_configured", return_value=False),
+        patch.object(hd_logic, "_gemini_configured", return_value=False),
+        patch.object(
+            hd_logic,
+            "generate_premium_report",
+            new=AsyncMock(side_effect=AssertionError("LLM must not be called")),
+        ),
+    ):
+        report, llm_ok = await hd_logic.generate_premium_report_resilient(
+            "Генератор",
+            "18.08.1986 03:40 Чебоксары",
+            existing_raw="",
+            timeout_sec=1.0,
+        )
+    assert llm_ok is False
+    assert report.get("money")
+    assert report.get("static_reference") is not None or report.get("synthesis_meta", {}).get(
+        "upgrade_minimal"
+    )

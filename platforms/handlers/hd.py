@@ -97,6 +97,7 @@ from services.hd_logic import (
     get_dynamic_cta_for_today,
     get_user,
     md_to_telegram_html,
+    _offline_hd_premium_report,
     parse_birth_for_daily_advice,
     parse_hd_request,
     premium_report_from_json,
@@ -891,25 +892,42 @@ async def _run_free_hd_regenerate(
     user_gender = _hd_user_gender(user_row)
     keys = user_row.keys() if hasattr(user_row, "keys") else ()
     existing_raw = user_row["hd_report_json"] if "hd_report_json" in keys else None
-    async with chat_action_loop(deps.bot(), chat_id, "typing"):
-        report, llm_ok = await generate_premium_report_resilient(
-            hd_type,
-            birth_data,
-            user_name=user_name,
-            user_gender=user_gender,
-            existing_raw=existing_raw,
-        )
-    if not report:
-        raise RuntimeError("Gemini returned empty HD report")
     math_data = build_hd_math_data(hd_type, birth_data)
-    resolved_type = str(math_data.get("hd_type") or hd_type)
-    await update_user(
-        uid,
-        hd_report_json=premium_report_to_json(report),
-        hd_type=resolved_type,
-        hd_birth_data=birth_data,
-        has_pro_analysis=1,
-    )
+    report: dict
+    llm_ok: bool
+    try:
+        async with chat_action_loop(deps.bot(), chat_id, "typing"):
+            report, llm_ok = await generate_premium_report_resilient(
+                hd_type,
+                birth_data,
+                user_name=user_name,
+                user_gender=user_gender,
+                existing_raw=existing_raw,
+            )
+        if not report:
+            report = _offline_hd_premium_report(existing_raw, math_data)
+            llm_ok = False
+        resolved_type = str(math_data.get("hd_type") or hd_type)
+        await update_user(
+            uid,
+            hd_report_json=premium_report_to_json(report),
+            hd_type=resolved_type,
+            hd_birth_data=birth_data,
+            has_pro_analysis=1,
+        )
+    except Exception:
+        logger.exception("hd_regenerate_core_failed uid=%s — last-resort offline", uid)
+        report = _offline_hd_premium_report(existing_raw, math_data)
+        llm_ok = False
+        resolved_type = str(math_data.get("hd_type") or hd_type)
+        await update_user(
+            uid,
+            hd_report_json=premium_report_to_json(report),
+            hd_type=resolved_type,
+            hd_birth_data=birth_data,
+            has_pro_analysis=1,
+        )
+
     intro = msg.TXT_HD_UPGRADED_REPORT if llm_ok else msg.TXT_HD_UPGRADED_OFFLINE
     try:
         await _deliver_hd_premium_bundle(
