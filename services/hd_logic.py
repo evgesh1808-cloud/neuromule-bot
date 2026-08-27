@@ -45,9 +45,10 @@ except ImportError:  # pragma: no cover - surfaced at runtime in the handler.
     swe = None
 
 try:
-    from PIL import Image, ImageDraw, ImageFilter, ImageFont
+    from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 except ImportError:  # pragma: no cover - surfaced at runtime in the handler.
     Image = None  # type: ignore[misc, assignment]
+    ImageChops = None  # type: ignore[misc, assignment]
     ImageDraw = None  # type: ignore[misc, assignment]
     ImageFilter = None  # type: ignore[misc, assignment]
     ImageFont = None  # type: ignore[misc, assignment]
@@ -4186,9 +4187,15 @@ def parse_hd_request(raw: str) -> tuple[str, str]:
 
 
 _STORY_CANVAS_SIZE = (1080, 1920)
+_STORY_JPG_QUALITY = 98
 _STORY_FONT_DIR = _PROJECT_ROOT / "assets" / "fonts"
 _STORY_FONT_BOLD_PATH = _STORY_FONT_DIR / "Roboto-Bold.ttf"
 _STORY_FONT_REGULAR_PATH = _STORY_FONT_DIR / "Roboto-Regular.ttf"
+_STORY_DOMAIN_COLORS: tuple[tuple[int, int, int], ...] = (
+    (0, 240, 255),
+    (255, 0, 128),
+    (200, 255, 0),
+)
 
 
 def ensure_story_fonts_available() -> None:
@@ -4225,39 +4232,152 @@ def _load_story_font(size: int, *, bold: bool = False) -> Any:
     )
 
 
-def _create_story_premium_background(size: tuple[int, int] = _STORY_CANVAS_SIZE) -> Any:
-    """Фон Stories: неоновые туманности + плёночное зерно."""
+def _create_story_ultra_background(*, seed: int) -> Any:
+    """Sci-Fi фон: туманности + grain + координатная сетка + звёзды."""
     if Image is None or ImageDraw is None or ImageFilter is None:
         raise RuntimeError("Pillow required")
+    size = _STORY_CANVAS_SIZE
     w, h = size
-    bg = Image.new("RGBA", size, (10, 6, 22, 255))
+    bg = Image.new("RGBA", size, (11, 7, 24, 255))
     glow_layer = Image.new("RGBA", size, (0, 0, 0, 0))
     gl_draw = ImageDraw.Draw(glow_layer)
-    gl_draw.ellipse((-400, -200, 1000, 1200), fill=(130, 0, 255, 35))
-    gl_draw.ellipse((300, 400, 1200, 1300), fill=(0, 180, 255, 25))
-    gl_draw.ellipse((-200, 1200, 900, 2100), fill=(255, 0, 128, 20))
-    glow_layer = glow_layer.filter(ImageFilter.GaussianBlur(140))
+    gl_draw.ellipse((-300, -100, 900, 1100), fill=(110, 0, 255, 30))
+    gl_draw.ellipse((400, 500, 1200, 1400), fill=(0, 200, 255, 20))
+    gl_draw.ellipse((100, 1200, 1000, 2100), fill=(255, 0, 128, 15))
+    glow_layer = glow_layer.filter(ImageFilter.GaussianBlur(150))
     base_bg = Image.alpha_composite(bg, glow_layer)
     noise = Image.effect_noise(size, 15).convert("RGBA")
     nr, ng, nb, na = noise.split()
     na = na.point(lambda p: int(p * (15 / 255.0)))
     noise = Image.merge("RGBA", (nr, ng, nb, na))
-    return Image.alpha_composite(base_bg, noise)
+    base_bg = Image.alpha_composite(base_bg, noise)
+    return _draw_story_advanced_cosmos(base_bg, seed=seed)
 
 
-def _draw_story_cyber_glass(draw_obj: Any, coords: tuple[int, int, int, int], *, radius: int = 24) -> None:
-    """Стеклянная панель с кибер-углами."""
-    x1, y1, x2, y2 = coords
-    draw_obj.rounded_rectangle(coords, radius=radius, fill=(255, 255, 255, 12))
-    draw_obj.rounded_rectangle(coords, radius=radius, outline=(255, 255, 255, 25), width=1)
-    draw_obj.rounded_rectangle(
-        (x1 + 1, y1 + 1, x2 - 1, y2 - 1),
-        radius=max(radius - 1, 0),
-        outline=(255, 255, 255, 10),
+def _draw_story_advanced_cosmos(base_img: Any, *, seed: int) -> Any:
+    """Звёздная пыль, координатная сетка и сакральные окружности."""
+    draw = ImageDraw.Draw(base_img)
+    width, height = base_img.size
+    grid_space = 120
+    for x in range(0, width, grid_space):
+        draw.line([(x, 0), (x, height)], fill=(255, 255, 255, 12), width=1)
+    for y in range(0, height, grid_space):
+        draw.line([(0, y), (width, y)], fill=(255, 255, 255, 12), width=1)
+    cx, cy = width // 2, height // 2
+    draw.ellipse(
+        (cx - 400, cy - 400, cx + 400, cy + 400),
+        outline=(255, 255, 255, 15),
         width=1,
     )
-    draw_obj.line([(x1, y1 + radius), (x1, y1), (x1 + radius, y1)], fill=(0, 240, 255, 200), width=2)
-    draw_obj.line([(x2, y2 - radius), (x2, y2), (x2 - radius, y2)], fill=(255, 0, 128, 200), width=2)
+    draw.ellipse(
+        (cx - 600, cy - 600, cx + 600, cy + 600),
+        outline=(255, 255, 255, 8),
+        width=1,
+    )
+    rng = random.Random(seed)
+    for _ in range(50):
+        x = rng.randint(0, width - 1)
+        y = rng.randint(0, height - 1)
+        star_size = rng.choice((1, 2, 3))
+        opacity = rng.randint(50, 200)
+        draw.ellipse(
+            (x, y, x + star_size, y + star_size),
+            fill=(255, 255, 255, opacity),
+        )
+    return base_img
+
+
+def _composite_story_chroma_title(
+    base_img: Any,
+    text: str,
+    position: tuple[int, int],
+    font: Any,
+) -> Any:
+    """Голографический градиент заголовка через маску текста."""
+    if ImageChops is None:
+        raise RuntimeError("Pillow ImageChops required")
+    text_layer = Image.new("RGBA", base_img.size, (0, 0, 0, 0))
+    text_draw = ImageDraw.Draw(text_layer)
+    text_draw.text(position, text, fill=(255, 255, 255, 255), font=font)
+    bbox = text_draw.textbbox(position, text, font=font)
+    y0 = max(bbox[1], 0)
+    y1 = min(bbox[3] + 1, base_img.size[1])
+    gradient = Image.new("RGBA", base_img.size, (0, 0, 0, 0))
+    g_draw = ImageDraw.Draw(gradient)
+    span = max(y1 - y0, 1)
+    for y in range(y0, y1):
+        blend = (y - y0) / span
+        r = int(255 * blend)
+        g = int(240 * (1.0 - blend))
+        b = int(255 * (1.0 - blend) + 128 * blend)
+        g_draw.line([(0, y), (base_img.size[0], y)], fill=(r, g, b, 255), width=1)
+    transparent = Image.new("RGBA", base_img.size, (0, 0, 0, 0))
+    chroma_text = ImageChops.composite(gradient, transparent, text_layer)
+    return Image.alpha_composite(base_img, chroma_text)
+
+
+def _composite_story_cyber_glass(
+    base_img: Any,
+    coords: tuple[int, int, int, int],
+    *,
+    radius: int = 24,
+) -> Any:
+    """Матовое стекло на отдельном RGBA-слое (без потери яркости текста)."""
+    overlay = Image.new("RGBA", base_img.size, (0, 0, 0, 0))
+    draw_overlay = ImageDraw.Draw(overlay)
+    x1, y1, x2, y2 = coords
+    draw_overlay.rounded_rectangle(coords, radius=radius, fill=(255, 255, 255, 10))
+    draw_overlay.rounded_rectangle(coords, radius=radius, outline=(255, 255, 255, 30), width=1)
+    for corner_x, corner_y in ((x1, y1), (x2, y1), (x1, y2), (x2, y2)):
+        draw_overlay.line(
+            [(corner_x - 10, corner_y), (corner_x + 10, corner_y)],
+            fill=(0, 240, 255, 150),
+            width=1,
+        )
+        draw_overlay.line(
+            [(corner_x, corner_y - 10), (corner_x, corner_y + 10)],
+            fill=(0, 240, 255, 150),
+            width=1,
+        )
+    return Image.alpha_composite(base_img, overlay)
+
+
+def _story_power_bar_width(channel_id: str, idx: int) -> int:
+    """Deterministic sci-fi power bar (70–150 px)."""
+    seed = sum(ord(ch) for ch in channel_id) + idx * 17
+    return 70 + (seed % 81)
+
+
+def _story_draw_param_cell(
+    draw: Any,
+    *,
+    label: str,
+    value: str,
+    x: int,
+    y: int,
+    label_font: Any,
+    body_font: Any,
+) -> None:
+    draw.text((x, y), label, fill=(0, 240, 255, 255), font=label_font)
+    line1, line2 = _story_wrap_words(value.upper(), 22)
+    draw.text((x, y + 45), line1, fill=(255, 255, 255, 255), font=body_font)
+    if line2:
+        draw.text((x, y + 85), line2, fill=(255, 255, 255, 255), font=body_font)
+
+
+def _story_footer_label() -> str:
+    return "GENERATED BY NEUROMULE CO. // @NEUROMULE_BOT"
+
+
+def _save_story_jpg(card: Any, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    card.convert("RGB").save(path, format="JPEG", quality=_STORY_JPG_QUALITY, optimize=True)
+
+
+def _create_story_premium_background(size: tuple[int, int] = _STORY_CANVAS_SIZE) -> Any:
+    """Backward-compatible alias для тестов."""
+    _ = size
+    return _create_story_ultra_background(seed=0)
 
 
 def _load_story_bodygraph_neon(bodygraph_path: Path) -> Any | None:
@@ -4382,13 +4502,13 @@ def generate_instagram_stories(
     birth_data: str = "",
 ) -> list[str]:
     """
-    Instagram Stories premium: бодиграф + параметры; card 2 — суперсилы каналов (0 LLM).
+    Instagram Stories ultra Sci-Fi: бодиграф + параметры; card 2 — суперсилы каналов (0 LLM).
 
     Returns:
-        ``tmp/story_{uid}_1.png``, ``tmp/story_{uid}_2.png``.
+        ``tmp/story_{uid}_1.jpg``, ``tmp/story_{uid}_2.jpg``.
     """
     _ = report  # AI-текст разбора в Stories не используется — только карта и static blocks.
-    if Image is None or ImageDraw is None or ImageFilter is None:
+    if Image is None or ImageDraw is None or ImageFilter is None or ImageChops is None:
         raise RuntimeError("Установите пакет Pillow для Instagram Stories.")
 
     ensure_story_fonts_available()
@@ -4410,28 +4530,28 @@ def generate_instagram_stories(
     birth_line = strip_hd_markdown_for_plain(
         str(meta.get("birth_data") or birth_data or "").strip()
     )
+    birth_meta = birth_line[:64].upper() if birth_line else "—"
     active_channels_info = _build_story_active_channels_info(math_data)
-    final_background = _create_story_premium_background()
+    final_background = _create_story_ultra_background(seed=int(uid))
 
-    font_super_huge = _load_story_font(140, bold=True)
-    font_main_title = _load_story_font(56, bold=True)
-    font_section_title = _load_story_font(36, bold=True)
+    font_super_huge = _load_story_font(150, bold=True)
+    font_main_title = _load_story_font(58, bold=True)
+    font_section_title = _load_story_font(34, bold=True)
     font_body = _load_story_font(28, bold=False)
     font_meta = _load_story_font(24, bold=False)
-    footer_label = _HD_WATERMARK_PLAIN.upper()
+    footer_label = _story_footer_label()
 
+    # --- Карточка 1: визитка ---
     card1 = final_background.copy()
+    card1 = _composite_story_chroma_title(card1, "HUMAN DESIGN", (80, 110), font_main_title)
     draw1 = ImageDraw.Draw(card1)
-    draw1.text((80, 110), "HUMAN DESIGN", fill=(255, 255, 255, 255), font=font_main_title)
-    draw1.text((80, 185), "PREMIUM ANALYSIS", fill=(0, 240, 255, 255), font=font_meta)
-    draw1.line([(80, 240), (1000, 240)], fill=(255, 255, 255, 30), width=1)
-    birth_meta = birth_line[:64].upper() if birth_line else "—"
     draw1.text(
-        (80, 260),
-        f"ID: {str(uid)[:8].upper()}  //  {birth_meta}",
-        fill=(150, 140, 170, 255),
+        (80, 185),
+        f"PREMIUM ID: {str(uid)[:8].upper()} // {birth_meta}",
+        fill=(140, 135, 160, 255),
         font=font_meta,
     )
+    draw1.line([(80, 235), (1000, 235)], fill=(255, 255, 255, 40), width=1)
 
     body_img = _load_story_bodygraph_neon(bodygraph_path)
     if body_img is not None:
@@ -4442,70 +4562,108 @@ def generate_instagram_stories(
         card1.paste(glow_under, (x_pos, y_pos), glow_under)
         card1.paste(body_img, (x_pos, y_pos), body_img)
 
-    _draw_story_cyber_glass(draw1, (80, 1100, 1000, 1680), radius=30)
-    params = (
-        ("ТИП ЛИЧНОСТИ", hd_data["type"], 120, 1140),
-        ("ПРОФИЛЬ", hd_data["profile"], 560, 1140),
-        ("ВНУТРЕННИЙ АВТОРИТЕТ", hd_data["authority"], 120, 1400),
-        ("СТРАТЕГИЯ ЖИЗНИ", hd_data["strategy"], 560, 1400),
+    card1 = _composite_story_cyber_glass(card1, (80, 1100, 1000, 1680), radius=30)
+    draw1 = ImageDraw.Draw(card1)
+    _story_draw_param_cell(
+        draw1,
+        label="ТИП ЛИЧНОСТИ",
+        value=hd_data["type"],
+        x=120,
+        y=1140,
+        label_font=font_meta,
+        body_font=font_body,
     )
-    for label, value, x, y in params:
-        draw1.text((x, y), label, fill=(0, 240, 255, 255), font=font_meta)
-        line1, line2 = _story_wrap_words(value, 22)
-        draw1.text((x, y + 40), line1, fill=(255, 255, 255, 255), font=font_body)
-        if line2:
-            draw1.text((x, y + 80), line2, fill=(255, 255, 255, 255), font=font_body)
+    _story_draw_param_cell(
+        draw1,
+        label="ПРОФИЛЬ",
+        value=hd_data["profile"],
+        x=560,
+        y=1140,
+        label_font=font_meta,
+        body_font=font_body,
+    )
+    _story_draw_param_cell(
+        draw1,
+        label="ВНУТРЕННИЙ АВТОРИТЕТ",
+        value=hd_data["authority"],
+        x=120,
+        y=1410,
+        label_font=font_meta,
+        body_font=font_body,
+    )
+    _story_draw_param_cell(
+        draw1,
+        label="СТРАТЕГИЯ ЖИЗНИ",
+        value=hd_data["strategy"],
+        x=560,
+        y=1410,
+        label_font=font_meta,
+        body_font=font_body,
+    )
+    draw1.text((540, 1835), footer_label, fill=(255, 255, 255, 35), font=font_meta, anchor="mm")
+    out1 = _HD_BODYGRAPH_OUTPUT_DIR / f"story_{uid}_1.jpg"
+    _save_story_jpg(card1, out1)
+    paths.append(f"tmp/story_{uid}_1.jpg")
 
-    draw1.text((540, 1830), footer_label, fill=(255, 255, 255, 40), font=font_meta, anchor="mm")
-    out1 = _HD_BODYGRAPH_OUTPUT_DIR / f"story_{uid}_1.png"
-    card1.convert("RGB").save(out1, format="PNG")
-    paths.append(f"tmp/story_{uid}_1.png")
-
+    # --- Карточка 2: активные коды ---
     card2 = final_background.copy()
+    card2 = _composite_story_chroma_title(card2, "АКТИВНЫЕ КОДЫ", (80, 110), font_main_title)
     draw2 = ImageDraw.Draw(card2)
-    draw2.text((80, 110), "АКТИВНЫЕ КОДЫ", fill=(255, 255, 255, 255), font=font_main_title)
     draw2.text(
         (80, 185),
         f"АРХЕТИПЫ СУПЕРСИЛ ДЛЯ: {hd_data['type'].upper()}",
-        fill=(255, 0, 128, 255),
+        fill=(140, 135, 160, 255),
         font=font_meta,
     )
-    draw2.line([(80, 240), (1000, 240)], fill=(255, 255, 255, 30), width=1)
+    draw2.line([(80, 235), (1000, 235)], fill=(255, 255, 255, 40), width=1)
 
     panel_y = 280
-    domain_colors = ((0, 240, 255), (255, 0, 128), (200, 255, 0))
     for idx, item in enumerate(active_channels_info[:3]):
-        _draw_story_cyber_glass(draw2, (80, panel_y, 1000, panel_y + 270), radius=24)
+        card2 = _composite_story_cyber_glass(card2, (80, panel_y, 1000, panel_y + 275), radius=24)
+        draw2 = ImageDraw.Draw(card2)
         channel_id = item["channel_num"]
+        color_theme = _STORY_DOMAIN_COLORS[idx % len(_STORY_DOMAIN_COLORS)]
         draw2.text(
-            (680, panel_y + 40),
+            (660, panel_y + 35),
             channel_id,
-            fill=(255, 255, 255, 8),
+            fill=(255, 255, 255, 7),
             font=font_super_huge,
         )
-        color_theme = domain_colors[idx % len(domain_colors)]
-        draw2.rectangle((120, panel_y + 42, 135, panel_y + 57), fill=color_theme)
         draw2.text(
-            (160, panel_y + 32),
-            f"{item['domain'].upper()} // КАНАЛ {channel_id}",
-            fill=(255, 255, 255, 220),
+            (120, panel_y + 32),
+            item["domain"].upper(),
+            fill=(255, 255, 255, 240),
             font=font_section_title,
         )
-        line1, line2 = _story_wrap_words(item["text"], 45)
-        draw2.text((120, panel_y + 95), line1, fill=(240, 240, 250, 255), font=font_body)
+        bar_x0, bar_x1 = 400, 550
+        bar_fill = min(bar_x0 + _story_power_bar_width(channel_id, idx), bar_x1)
+        draw2.rectangle(
+            (bar_x0, panel_y + 48, bar_x1, panel_y + 54),
+            fill=(255, 255, 255, 30),
+        )
+        draw2.rectangle(
+            (bar_x0, panel_y + 48, bar_fill, panel_y + 54),
+            fill=color_theme,
+        )
+        line1, line2 = _story_wrap_words(item["text"], 48)
+        draw2.text((120, panel_y + 95), line1, fill=(255, 255, 255, 255), font=font_body)
         if line2:
-            draw2.text((120, panel_y + 135), line2, fill=(240, 240, 250, 255), font=font_body)
-        draw2.line((120, panel_y + 195, 400, panel_y + 195), fill=(255, 255, 255, 20), width=1)
+            draw2.text((120, panel_y + 135), line2, fill=(255, 255, 255, 255), font=font_body)
+        draw2.line(
+            (120, panel_y + 200, 350, panel_y + 200),
+            fill=(255, 255, 255, 25),
+            width=1,
+        )
         trigger_text = f"ТРИГГЕР: {item['trigger'].upper()}"
         if len(trigger_text) > 52:
             trigger_text = trigger_text[:49] + "..."
-        draw2.text((120, panel_y + 210), trigger_text, fill=color_theme, font=font_meta)
-        panel_y += 310
+        draw2.text((120, panel_y + 215), trigger_text, fill=color_theme, font=font_meta)
+        panel_y += 315
 
-    draw2.text((540, 1830), footer_label, fill=(255, 255, 255, 40), font=font_meta, anchor="mm")
-    out2 = _HD_BODYGRAPH_OUTPUT_DIR / f"story_{uid}_2.png"
-    card2.convert("RGB").save(out2, format="PNG")
-    paths.append(f"tmp/story_{uid}_2.png")
+    draw2.text((540, 1835), footer_label, fill=(255, 255, 255, 35), font=font_meta, anchor="mm")
+    out2 = _HD_BODYGRAPH_OUTPUT_DIR / f"story_{uid}_2.jpg"
+    _save_story_jpg(card2, out2)
+    paths.append(f"tmp/story_{uid}_2.jpg")
     return paths
 
 

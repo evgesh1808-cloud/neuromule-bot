@@ -609,8 +609,8 @@ def test_generate_instagram_stories_writes_two_cards(tmp_path, monkeypatch) -> N
     report = dict(_SAMPLE_REPORT)
     paths = hd_logic.generate_instagram_stories(999, report, math_data=math_data)
     assert len(paths) == 2
-    assert (out_dir / "story_999_1.png").is_file()
-    assert (out_dir / "story_999_2.png").is_file()
+    assert (out_dir / "story_999_1.jpg").is_file()
+    assert (out_dir / "story_999_2.jpg").is_file()
     sections = hd_logic._build_story_card2_sections(math_data)
     assert len(sections) >= 1
     assert "Суперсила" in sections[0][1]

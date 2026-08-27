@@ -194,17 +194,18 @@ async def _resolve_hd_report(
     *,
     actor: Message | CallbackQuery,
     chat_id: int,
+    prefer_offline: bool = False,
 ) -> tuple[dict | None, bool]:
     """Загружает отчёт; legacy v1 апгрейдит через Pro-движок без повторной оплаты."""
     user_name = _hd_user_display_name(actor, user_row)
     raw = user_row["hd_report_json"] if "hd_report_json" in user_row.keys() else None
+    if not raw:
+        return None, False
     if not is_legacy_hd_report_raw(raw):
-        return premium_report_from_json(raw), False
-    async with chat_action_loop(deps.bot(), chat_id, "typing"):
         try:
-            report, upgraded = await ensure_modern_hd_report(uid, user_name=user_name)
+            return premium_report_from_json(raw), False
         except Exception:
-            logger.exception("HD legacy upgrade failed uid=%s", uid)
+            logger.exception("HD report json parse failed uid=%s", uid)
             birth_data = (
                 (user_row["hd_birth_data"] or "").strip()
                 if "hd_birth_data" in user_row.keys()
@@ -212,8 +213,47 @@ async def _resolve_hd_report(
             )
             hd_type = (user_row["hd_type"] or "не указан") if "hd_type" in user_row.keys() else "не указан"
             math_data = build_hd_math_data(hd_type, birth_data)
+            return _offline_hd_premium_report(raw, math_data), False
+
+    birth_data = (
+        (user_row["hd_birth_data"] or "").strip()
+        if "hd_birth_data" in user_row.keys()
+        else ""
+    )
+    hd_type = (user_row["hd_type"] or "не указан") if "hd_type" in user_row.keys() else "не указан"
+    if not birth_data:
+        return premium_report_from_json(raw), False
+
+    if prefer_offline:
+        math_data = build_hd_math_data(hd_type, birth_data)
+        report = _offline_hd_premium_report(raw, math_data)
+        resolved_type = str(math_data.get("hd_type") or hd_type)
+        try:
+            await update_user(
+                uid,
+                hd_report_json=premium_report_to_json(report),
+                hd_type=resolved_type,
+                hd_birth_data=birth_data,
+                has_pro_analysis=1,
+            )
+        except Exception:
+            logger.exception("HD offline wrap persist failed uid=%s", uid)
+        return report, True
+
+    report: dict[str, Any] | None = None
+    upgraded = False
+    async with chat_action_loop(deps.bot(), chat_id, "typing"):
+        try:
+            report, upgraded = await ensure_modern_hd_report(uid, user_name=user_name)
+        except Exception:
+            logger.exception("HD legacy upgrade failed uid=%s", uid)
+            math_data = build_hd_math_data(hd_type, birth_data)
             report = _offline_hd_premium_report(raw, math_data)
             upgraded = True
+    if report is None:
+        math_data = build_hd_math_data(hd_type, birth_data)
+        report = _offline_hd_premium_report(raw, math_data)
+        upgraded = True
     return report, upgraded
 
 
@@ -722,13 +762,17 @@ async def _send_hd_premium_pdf(
     bot = deps.bot()
     pdf_user_name = user_display_name or _hd_user_display_name(actor, {})
     try:
+        loop = asyncio.get_running_loop()
         async with chat_action_loop(bot, chat_id, "upload_document"):
-            pdf_path = create_hd_premium_pdf(
-                uid,
-                report,
-                birth_data,
-                hd_type=hd_type,
-                user_name=pdf_user_name,
+            pdf_path = await loop.run_in_executor(
+                None,
+                lambda: create_hd_premium_pdf(
+                    uid,
+                    report,
+                    birth_data,
+                    hd_type=hd_type,
+                    user_name=pdf_user_name,
+                ),
             )
             await bot.send_document(
                 chat_id=chat_id,
@@ -1127,22 +1171,26 @@ async def hd_regenerate_callback(callback: CallbackQuery, state: FSMContext) -> 
             )
             await callback.answer()
             return
-        await callback.answer(msg.TXT_HD_UPGRADING_REPORT_ALERT, show_alert=True)
-        await _start_hd_regenerate_for_user(
+        try:
+            await callback.answer(msg.TXT_HD_UPGRADING_REPORT_ALERT, show_alert=True)
+        except TelegramBadRequest:
+            logger.warning("hd_regenerate_callback answer failed uid=%s", uid, exc_info=True)
+        started = await _start_hd_regenerate_for_user(
             callback,
             uid,
             state=state,
             show_upgrading_notice=False,
         )
+        if not started:
+            return
     except Exception:
         logger.exception("hd_regenerate_callback failed uid=%s", uid)
-        await callback.answer(msg.TXT_HD_UPGRADE_FAILED, show_alert=True)
         try:
-            await deps.bot().send_message(
-                chat_id=_hd_chat_id(callback),
-                text=msg.TXT_HD_UPGRADE_FAILED,
-                parse_mode=ParseMode.HTML,
-            )
+            await callback.answer(msg.TXT_HD_UPGRADE_FAILED, show_alert=True)
+        except TelegramBadRequest:
+            pass
+        try:
+            await _hd_notify(callback, msg.TXT_HD_UPGRADE_FAILED)
         except Exception:
             logger.exception("hd_regenerate_callback notify failed uid=%s", uid)
 
@@ -1329,8 +1377,9 @@ async def hd_report_section(callback: CallbackQuery) -> None:
 async def _hd_report_section_impl(callback: CallbackQuery, uid: int) -> None:
     user = await get_user(uid)
     raw = user["hd_report_json"] if "hd_report_json" in user.keys() else None
+    section = (callback.data or "").removeprefix(msg.CB_HD_REPORT_PREFIX)
     legacy = is_legacy_hd_report_raw(raw)
-    if legacy:
+    if legacy and section != "pdf":
         await callback.answer(msg.TXT_HD_UPGRADING_REPORT_ALERT, show_alert=True)
         await _hd_notify(callback, msg.TXT_HD_UPGRADING_REPORT)
     try:
@@ -1339,6 +1388,7 @@ async def _hd_report_section_impl(callback: CallbackQuery, uid: int) -> None:
             user,
             actor=callback,
             chat_id=_hd_chat_id(callback),
+            prefer_offline=legacy and section == "pdf",
         )
     except Exception:
         logger.exception("hd_report_section upgrade failed uid=%s", uid)
@@ -1348,12 +1398,10 @@ async def _hd_report_section_impl(callback: CallbackQuery, uid: int) -> None:
     if report is None:
         await callback.answer(msg.TXT_HD_REPORT_NOT_FOUND_ALERT, show_alert=True)
         return
-    if upgraded:
+    if upgraded and section != "pdf":
         await _deliver_upgraded_hd_report(callback, uid, user, report, upgraded=True)
         await callback.answer()
         return
-
-    section = (callback.data or "").removeprefix(msg.CB_HD_REPORT_PREFIX)
     titles = {
         "money": msg.TXT_HD_BTN_REPORT_MONEY,
         "love": msg.TXT_HD_BTN_REPORT_LOVE,
@@ -1367,13 +1415,17 @@ async def _hd_report_section_impl(callback: CallbackQuery, uid: int) -> None:
         try:
             birth_data = (user["hd_birth_data"] or "").strip() if "hd_birth_data" in user.keys() else None
             hd_type_val = (user["hd_type"] or "") if "hd_type" in user.keys() else ""
+            loop = asyncio.get_running_loop()
             async with chat_action_loop(bot, chat_id, "upload_document"):
-                pdf_path = create_hd_premium_pdf(
-                    uid,
-                    report,
-                    birth_data,
-                    hd_type=hd_type_val,
-                    user_name=_hd_user_display_name(callback, user),
+                pdf_path = await loop.run_in_executor(
+                    None,
+                    lambda: create_hd_premium_pdf(
+                        uid,
+                        report,
+                        birth_data,
+                        hd_type=hd_type_val,
+                        user_name=_hd_user_display_name(callback, user),
+                    ),
                 )
                 await bot.send_document(
                     chat_id=chat_id,
@@ -1383,7 +1435,7 @@ async def _hd_report_section_impl(callback: CallbackQuery, uid: int) -> None:
                 )
         except Exception:
             logger.exception("hd pdf on demand failed uid=%s", uid)
-            await _hd_notify(callback, msg.TXT_HD_UPGRADE_FAILED)
+            await _hd_notify(callback, msg.TXT_HD_PDF_FAILED)
         finally:
             if pdf_path:
                 try:

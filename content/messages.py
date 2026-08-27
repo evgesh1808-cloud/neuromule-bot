@@ -586,6 +586,12 @@ TXT_HD_UPGRADE_FAILED = (
     "<code>HD_PREMIUM_LLM_TIER=production</code> в .env, затем "
     "<code>pm2 logs neuromule-tg | grep hd_regenerate</code>."
 )
+TXT_HD_PDF_FAILED = (
+    "<b>Не удалось собрать PDF-журнал.</b>\n"
+    "Попробуй ещё раз через минуту. Если ошибка повторится — нажми <b>🔄 Обновить отчёт</b> "
+    "или напиши в поддержку.\n\n"
+    "Админ: <code>pm2 logs neuromule-tg | grep hd_premium_pdf</code>."
+)
 TXT_HD_REGENERATE_NEED_BIRTH = (
     "<b>Нужно обновить разбор до новой версии.</b>\n\n"
     "Пришли <b>дату</b>, <b>точное время</b> и <b>город</b> рождения одним сообщением — "
