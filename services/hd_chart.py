@@ -282,6 +282,33 @@ def longitude_to_gate(longitude: float) -> dict[str, int | float]:
     }
 
 
+def longitude_to_substructure(longitude: float) -> dict[str, int | float]:
+    """Gate → Line → Color → Tone → Base (IHDS substructure)."""
+    gate_width = 360.0 / 64.0
+    line_width = gate_width / 6.0
+    color_width = line_width / 6.0
+    tone_width = color_width / 6.0
+    base_width = tone_width / 6.0
+    normalized = longitude % 360.0
+    gate_index = int(normalized // gate_width)
+    position_in_gate = normalized - gate_index * gate_width
+    line = min(int(position_in_gate // line_width) + 1, 6)
+    pos_in_line = position_in_gate - (line - 1) * line_width
+    color = min(int(pos_in_line // color_width) + 1, 6)
+    pos_in_color = pos_in_line - (color - 1) * color_width
+    tone = min(int(pos_in_color // tone_width) + 1, 6)
+    pos_in_tone = pos_in_color - (tone - 1) * tone_width
+    base = min(int(pos_in_tone // base_width) + 1, 6)
+    return {
+        "gate": HD_GATE_SEQUENCE[gate_index],
+        "line": line,
+        "color": color,
+        "tone": tone,
+        "base": base,
+        "longitude": round(normalized, 6),
+    }
+
+
 def sun_longitude(jd: float) -> float:
     sw = require_swe()
     pos, _flags = sw.calc_ut(jd, sw.SUN)

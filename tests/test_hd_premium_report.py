@@ -30,6 +30,11 @@ async def test_premium_report_falls_back_to_openrouter_when_gemini_missing() -> 
             "_generate_premium_report_multipass",
             new=AsyncMock(side_effect=RuntimeError("multipass_synthesis_empty")),
         ),
+        patch.object(
+            hd_logic,
+            "_generate_premium_report_multipass_legacy",
+            new=AsyncMock(side_effect=RuntimeError("legacy_skip")),
+        ),
         patch.object(hd_logic, "genai", None),
         patch.object(hd_logic, "_openrouter_configured", return_value=True),
         patch.object(
@@ -50,6 +55,11 @@ async def test_premium_report_skips_gemini_when_key_missing() -> None:
             hd_logic,
             "_generate_premium_report_multipass",
             new=AsyncMock(side_effect=RuntimeError("multipass_synthesis_empty")),
+        ),
+        patch.object(
+            hd_logic,
+            "_generate_premium_report_multipass_legacy",
+            new=AsyncMock(side_effect=RuntimeError("legacy_skip")),
         ),
         patch.object(hd_logic, "genai", object()),
         patch.object(hd_logic, "_gemini_configured", return_value=False),
@@ -78,6 +88,11 @@ async def test_premium_report_falls_back_when_gemini_raises() -> None:
             hd_logic,
             "_generate_premium_report_multipass",
             new=AsyncMock(side_effect=RuntimeError("multipass_synthesis_empty")),
+        ),
+        patch.object(
+            hd_logic,
+            "_generate_premium_report_multipass_legacy",
+            new=AsyncMock(side_effect=RuntimeError("legacy_skip")),
         ),
         patch.object(hd_logic, "_openrouter_configured", return_value=True),
         patch.object(
@@ -372,6 +387,11 @@ async def test_premium_report_multipass_failure_falls_back_to_legacy() -> None:
         ),
         patch.object(
             hd_logic,
+            "_generate_premium_report_multipass_legacy",
+            new=AsyncMock(side_effect=RuntimeError("legacy_skip")),
+        ),
+        patch.object(
+            hd_logic,
             "_generate_premium_report_legacy_single_prompt",
             new=AsyncMock(return_value=legacy_report),
         ) as legacy_mock,
@@ -537,7 +557,7 @@ def test_premium_report_json_includes_static_reference() -> None:
     import json
 
     payload = json.loads(raw)
-    assert payload["schema_version"] == 3
+    assert payload["schema_version"] == 4
     assert payload["static_reference"]["type"] == "Тип: Генератор"
 
 

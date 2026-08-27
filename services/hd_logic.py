@@ -191,7 +191,16 @@ def _hd_llm_semaphore() -> asyncio.Semaphore:
 
 
 _PREMIUM_REPORT_KEYS = ("fast_facts", "money", "love", "energy", "plan")
-_HD_REPORT_SCHEMA_VERSION = 3
+_PREMIUM_EXTENDED_REPORT_KEYS = (
+    "genius_light",
+    "mars_trauma",
+    "false_self_masks",
+    "phs_motivation",
+    "incarnation_mission",
+    "maturity_cycles",
+    "dream_rave",
+)
+_HD_REPORT_SCHEMA_VERSION = 4
 _HD_REPORT_SCHEMA_VERSION_SYNTHESIS = 3
 _LEGACY_HD_REPORT_PLACEHOLDER = "⚡ Экспресс-анализ доступен в интерактивном разборе."
 _FAST_FACTS_MAX_LEN = 2000
@@ -920,6 +929,10 @@ def _normalize_premium_report(
     if len(report["fast_facts"]) > _FAST_FACTS_MAX_LEN:
         report["fast_facts"] = report["fast_facts"][: _FAST_FACTS_MAX_LEN - 1].rstrip() + "…"
     report["energy_scales"] = _normalize_energy_scales(parsed.get("energy_scales"))
+    for key in _PREMIUM_EXTENDED_REPORT_KEYS:
+        val = parsed.get(key)
+        if isinstance(val, str) and val.strip():
+            report[key] = sanitize_hd_user_facing_text(val.strip(), active_channels=active_channels)
     return report
 
 
@@ -1111,6 +1124,10 @@ def premium_report_to_json(report: dict[str, Any]) -> str:
     synthesis_meta = report.get("synthesis_meta")
     if isinstance(synthesis_meta, dict) and synthesis_meta:
         payload["synthesis_meta"] = synthesis_meta
+    for key in _PREMIUM_EXTENDED_REPORT_KEYS:
+        val = report.get(key)
+        if isinstance(val, str) and val.strip():
+            payload[key] = val.strip()
     payload["schema_version"] = _HD_REPORT_SCHEMA_VERSION
     return json.dumps(payload, ensure_ascii=False)
 
@@ -1147,6 +1164,10 @@ def premium_report_from_json(raw: str | None) -> dict[str, Any] | None:
             else:
                 report[key] = "Раздел временно недоступен — нажми 🔄 Обновить отчёт."
         report["energy_scales"] = _normalize_energy_scales(parsed.get("energy_scales"))
+        for key in _PREMIUM_EXTENDED_REPORT_KEYS:
+            val = parsed.get(key)
+            if isinstance(val, str) and val.strip():
+                report[key] = _sanitize_hd_user_facing_text(val.strip())
         return report
     except Exception:
         logger.exception("premium_report_from_json soft load failed")
@@ -1477,21 +1498,33 @@ async def generate_premium_report(
     """Полный HD-разбор: parallel multi-pass Genetic Synthesis → legacy fallback."""
     _ = upgrade_mode  # upgrade-fast снят; legacy апгрейды идут через multipass
     math_data = build_hd_math_data(hd_type, birth_data)
+    ql_exc: BaseException | None = None
     try:
         report = await _generate_premium_report_multipass(
             user_name,
             math_data,
             user_gender=user_gender,
         )
-        logger.info("HD premium report served via parallel multi-pass Genetic Synthesis")
+        logger.info("HD premium report served via Quiet Luxury multipass")
         return report
     except Exception as exc:  # noqa: BLE001
-        logger.warning("Multi-pass premium report failed, legacy single-prompt: %s", exc)
+        ql_exc = exc
+        logger.warning("Quiet Luxury multipass failed, legacy synthesis fallback: %s", ql_exc)
+    try:
+        report = await _generate_premium_report_multipass_legacy(
+            user_name,
+            math_data,
+            user_gender=user_gender,
+        )
+        logger.info("HD premium report served via legacy Genetic Synthesis multipass")
+        return report
+    except Exception as legacy_exc:  # noqa: BLE001
+        logger.warning("Legacy multipass failed, single-prompt fallback: %s", legacy_exc)
         return await _generate_premium_report_legacy_single_prompt(
             user_name,
             math_data,
             upgrade_mode=False,
-            prior_errors=[f"multipass: {exc!r}"],
+            prior_errors=[f"quiet_luxury: {ql_exc!r}", f"legacy: {legacy_exc!r}"],
             user_gender=user_gender,
         )
 
@@ -2861,6 +2894,46 @@ def render_synthesis_block(synthesis: dict[str, Any]) -> str:
     return "\n".join(parts).strip()
 
 
+async def _premium_llm_markdown_call(system_prompt: str, user_prompt: str) -> str:
+    """Markdown-глава premium-отчёта (Quiet Luxury, без JSON mode)."""
+    from services.ai_text import ask_ai_messages
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+    completion = await ask_ai_messages(
+        _app_settings,
+        messages,
+        timeout=_OPENROUTER_PREMIUM_TIMEOUT_SEC,
+        models=_openrouter_models_for_premium(),
+        max_tokens=_GENETIC_SYNTHESIS_MAX_TOKENS,
+        temperature=0.15,
+        log_context="hd_premium_chapter",
+    )
+    return (completion.get("content") or "").strip()
+
+
+async def _premium_llm_json_call(system_prompt: str, user_prompt: str) -> str:
+    from services.ai_text import ask_ai_messages
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+    completion = await ask_ai_messages(
+        _app_settings,
+        messages,
+        timeout=_OPENROUTER_PREMIUM_TIMEOUT_SEC,
+        models=_openrouter_models_for_premium(),
+        max_tokens=_PREMIUM_SUMMARY_MAX_TOKENS,
+        temperature=_PREMIUM_SUMMARY_TEMPERATURE,
+        response_format={"type": "json_object"},
+        log_context="hd_premium_fast_facts",
+    )
+    return (completion.get("content") or "").strip()
+
+
 async def _generate_synthesis_via_openrouter(
     system_prompt: str,
     user_prompt: str,
@@ -3342,10 +3415,86 @@ async def _generate_premium_report_multipass(
     user_gender: str = "",
 ) -> dict[str, Any]:
     """
-    Гибридный premium HD: static blocks с диска + parallel Genetic Synthesis × 3 + summary.
-
-    LLM: money, love, energy — параллельно (Claude → DeepSeek R1); затем fast_facts + plan.
+    Quiet Luxury premium HD: parallel markdown-главы + fast_facts + static blocks.
     """
+    from services.hd_premium_chapters import generate_premium_report_quiet_luxury
+    from services.hd_static_blocks import assemble_static_reference, format_static_reference_full
+
+    energy_scales = compute_energy_scales_from_math(math_data)
+    static_sections = assemble_static_reference(math_data, gate_to_center=_GATE_TO_CENTER)
+    static_full = format_static_reference_full(static_sections)
+
+    if not _openrouter_configured() and not _gemini_configured():
+        raise RuntimeError("hd_premium_llm_unavailable")
+
+    async def _markdown_wrapped(system_prompt: str, user_prompt: str) -> str:
+        async with _hd_llm_semaphore():
+            if _openrouter_configured():
+                try:
+                    return await _premium_llm_markdown_call(system_prompt, user_prompt)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("premium chapter OpenRouter failed: %s", exc)
+            if _gemini_configured():
+                client = _configure_genai()
+                response = await asyncio.wait_for(
+                    client.aio.models.generate_content(
+                        model=_GEMINI_PREMIUM_MODEL_CHAIN[0],
+                        contents=user_prompt,
+                        config={
+                            "max_output_tokens": _GENETIC_SYNTHESIS_MAX_TOKENS,
+                            "system_instruction": system_prompt,
+                            "temperature": 0.15,
+                        },
+                    ),
+                    timeout=_GEMINI_PREMIUM_TIMEOUT_SEC,
+                )
+                return _extract_gemini_text(response).strip()
+            raise RuntimeError("hd_premium_llm_unavailable")
+
+    async def _json_wrapped(system_prompt: str, user_prompt: str) -> str:
+        async with _hd_llm_semaphore():
+            if _openrouter_configured():
+                return await _premium_llm_json_call(system_prompt, user_prompt)
+            client = _configure_genai()
+            response = await asyncio.wait_for(
+                client.aio.models.generate_content(
+                    model=_GEMINI_PREMIUM_MODEL_CHAIN[0],
+                    contents=user_prompt,
+                    config={
+                        "response_mime_type": "application/json",
+                        "max_output_tokens": _PREMIUM_SUMMARY_MAX_TOKENS,
+                        "system_instruction": system_prompt,
+                        "temperature": _PREMIUM_SUMMARY_TEMPERATURE,
+                    },
+                ),
+                timeout=_GEMINI_PREMIUM_TIMEOUT_SEC,
+            )
+            return _extract_gemini_text(response)
+
+    report = await generate_premium_report_quiet_luxury(
+        user_name,
+        math_data,
+        user_gender=user_gender,
+        llm_markdown_call=_markdown_wrapped,
+        llm_json_call=_json_wrapped,
+        energy_scales=energy_scales,
+        static_sections=static_sections,
+    )
+    meta = report.get("synthesis_meta")
+    if isinstance(meta, dict):
+        meta["static_pages_est"] = max(1, len(static_full) // 2200)
+        meta["llm_calls"] = meta.get("chapters_ok", 0) + 1
+    logger.info("HD premium report served via Quiet Luxury multipass")
+    return report
+
+
+async def _generate_premium_report_multipass_legacy(
+    user_name: str,
+    math_data: dict[str, object],
+    *,
+    user_gender: str = "",
+) -> dict[str, Any]:
+    """Legacy Genetic Synthesis multipass (fallback)."""
     from services.hd_static_blocks import (
         assemble_static_reference,
         format_static_reference_for_domain,
@@ -3998,41 +4147,12 @@ def _build_hd_premium_pdf_story(
         story.append(_HdEnergyScalesFlowable(scales, font_name=font_name))
     story.append(PageBreak())
 
-    static_sections = _resolve_static_sections_for_pdf(report, math_data)
-    for section_key, section_title, bookmark_key in _STATIC_PDF_SECTION_SPECS:
-        body = str(static_sections.get(section_key) or "").strip()
-        if not body:
-            continue
-        story.append(_HdPdfBookmark(section_title, bookmark_key))
-        story.append(Paragraph(html_module.escape(section_title), title_style))
-        story.append(_HdAccentBarFlowable(width=480))
-        story.append(Spacer(1, 10))
-        if section_key in {"centers_defined", "centers_open"}:
-            blocks = _split_static_blocks(body, marker_prefix="Центр «")
-            for block in blocks:
-                html_block = _md_to_reportlab_html(block)
-                if html_block:
-                    story.append(_HdCalloutBoxFlowable(html_block, body_style=callout_style))
-                    story.append(Spacer(1, 8))
-        elif section_key == "channels":
-            blocks = _split_static_blocks(body, marker_prefix="Канал ")
-            if not blocks:
-                blocks = [part.strip() for part in body.split("\n\n") if part.strip()]
-            for block in blocks:
-                html_block = _md_to_reportlab_html(block)
-                if html_block:
-                    story.append(_HdCalloutBoxFlowable(html_block, body_style=callout_style))
-                    story.append(Spacer(1, 8))
-        else:
-            html_body = _md_to_reportlab_html(body)
-            if html_body:
-                story.append(_HdCalloutBoxFlowable(html_body, body_style=callout_style))
-        story.append(PageBreak())
+    from services.hd_premium_prompts import PREMIUM_PDF_CHAPTER_SPECS
 
     chapter_blocks: list[tuple[str, str, str, str]] = []
-    for key, chapter_title, bookmark_key in _PDF_CHAPTER_SPECS:
+    for key, chapter_title, bookmark_key in PREMIUM_PDF_CHAPTER_SPECS:
         body = report.get(key)
-        if body:
+        if body and str(body).strip():
             chapter_blocks.append((key, chapter_title, bookmark_key, str(body)))
 
     for idx, (_key, chapter_title, bookmark_key, body) in enumerate(chapter_blocks):
@@ -4041,27 +4161,7 @@ def _build_hd_premium_pdf_story(
         story.append(_HdAccentBarFlowable(width=480))
         story.append(Spacer(1, 10))
         chapter_text = _strip_chapter_static_preamble(body)
-        current_block: list[str] = []
-        for line in chapter_text.splitlines():
-            stripped = line.strip()
-            if stripped.startswith("Синтез ") and current_block:
-                html_chunk = _md_to_reportlab_html("\n".join(current_block))
-                if html_chunk:
-                    story.append(_HdCalloutBoxFlowable(html_chunk, body_style=callout_style))
-                    story.append(Spacer(1, 8))
-                current_block = [line]
-            elif re.fullmatch(r"\*\*.+\*\*", stripped) and current_block:
-                html_chunk = _md_to_reportlab_html("\n".join(current_block))
-                if html_chunk:
-                    story.append(_HdCalloutBoxFlowable(html_chunk, body_style=callout_style))
-                    story.append(Spacer(1, 8))
-                current_block = [line]
-            else:
-                current_block.append(line)
-        if current_block:
-            html_chunk = _md_to_reportlab_html("\n".join(current_block))
-            if html_chunk:
-                story.append(_HdCalloutBoxFlowable(html_chunk, body_style=callout_style))
+        _append_pdf_markdown_paragraphs(story, chapter_text, body_style, line_spacer=8)
         if idx < len(chapter_blocks) - 1:
             story.append(PageBreak())
 
@@ -4163,21 +4263,11 @@ def _build_hd_minimal_pdf_story(
     story.append(PageBreak())
 
     if math_data is not None:
-        static_sections = _resolve_static_sections_for_pdf(report, math_data)
-        for section_key, section_title, _bookmark_key in _STATIC_PDF_SECTION_SPECS:
-            body = str(static_sections.get(section_key) or "").strip()
-            if not body:
-                continue
-            story.append(Paragraph(html_module.escape(section_title), title_style))
-            _append_pdf_markdown_paragraphs(story, body, body_style, line_spacer=8)
-            story.append(PageBreak())
+        _ = _resolve_static_sections_for_pdf(report, math_data)
 
-    for key, title in (
-        ("money", "Деньги"),
-        ("love", "Отношения"),
-        ("energy", "Энергия"),
-        ("plan", "План на 30 дней"),
-    ):
+    from services.hd_premium_prompts import PREMIUM_PDF_CHAPTER_SPECS
+
+    for key, title, _bookmark in PREMIUM_PDF_CHAPTER_SPECS:
         body = str(report.get(key) or "").strip()
         if not body:
             continue
@@ -4400,9 +4490,12 @@ _STORY_COLOR_LINE = (255, 255, 255, 25)
 _STORY_COLOR_TRIGGER_LINE = (255, 255, 255, 51)
 _STORY_COLOR_FOOTER_RGB = (110, 105, 125)
 _STORY_COLOR_WHITE_RGB = (255, 255, 255)
-_STORY_COLOR_LAVENDER_TRIGGER_RGB = (220, 200, 255)
+_STORY_COLOR_LABEL_RGB = (210, 200, 240)
+_STORY_COLOR_WATERMARK_RGB = (70, 67, 80)
 _STORY_PANEL_INNER_WIDTH = 760
 _STORY_MARGIN_X = 80
+_STORY_PARAM_RIGHT_COL_X = 620
+_STORY_LINE_SPACING = 44
 _STORY_CONTENT_W = 920
 _STORY_PANEL_PAD_X = 40
 _STORY_WRAP_MAX_CHARS = 43
@@ -4477,17 +4570,45 @@ def _create_story_minimal_background() -> Any:
     return Image.alpha_composite(bg, glow_layer)
 
 
+def _story_rgba_fill_on_dark(
+    r: int,
+    g: int,
+    b: int,
+    a: int,
+    *,
+    bg: tuple[int, int, int] = (14, 10, 26),
+) -> tuple[int, int, int]:
+    """Приближение RGBA-заливки на тёмном фоне для RGB-холста."""
+    t = max(0, min(255, a)) / 255.0
+    return (
+        int(r * t + bg[0] * (1.0 - t)),
+        int(g * t + bg[1] * (1.0 - t)),
+        int(b * t + bg[2] * (1.0 - t)),
+    )
+
+
 def _draw_story_glass_panel(
     base_img: Any,
     coords: tuple[int, int, int, int],
     *,
     radius: int = 24,
 ) -> Any:
+    """Матовое стекло: плотная светлая заливка для контраста текста."""
     overlay = Image.new("RGBA", base_img.size, (0, 0, 0, 0))
     draw_overlay = ImageDraw.Draw(overlay)
-    draw_overlay.rounded_rectangle(coords, radius=radius, fill=(255, 255, 255, 12))
-    draw_overlay.rounded_rectangle(coords, radius=radius, outline=(255, 255, 255, 25), width=1)
+    draw_overlay.rounded_rectangle(coords, radius=radius, fill=(255, 255, 255, 45))
+    draw_overlay.rounded_rectangle(coords, radius=radius, outline=(255, 255, 255, 60), width=1)
     return Image.alpha_composite(base_img, overlay)
+
+
+def draw_premium_glass_panel(
+    base_img: Any,
+    coords: tuple[int, int, int, int],
+    *,
+    radius: int = 24,
+) -> Any:
+    """Публичный alias для premium glass panel в Stories."""
+    return _draw_story_glass_panel(base_img, coords, radius=radius)
 
 
 def _draw_story_panel(
@@ -4533,7 +4654,7 @@ def _draw_story_multiline_text(
     *,
     max_width: int = _STORY_PANEL_INNER_WIDTH,
     fill: tuple[int, ...] = _STORY_COLOR_WHITE_RGB,
-    line_spacing: int = 36,
+    line_spacing: int = _STORY_LINE_SPACING,
     max_lines: int = 2,
 ) -> int:
     """Перенос по ширине в пикселях; без обрезки троеточием (только на RGB-холсте)."""
@@ -4566,8 +4687,19 @@ def _draw_story_multiline_text(
     return y
 
 
+def draw_multiline_text(
+    draw_obj: Any,
+    text: str,
+    position: tuple[int, int],
+    font: Any,
+    **kwargs: Any,
+) -> int:
+    """Публичный alias для переноса текста в Stories."""
+    return _draw_story_multiline_text(draw_obj, text, position, font, **kwargs)
+
+
 def _story_footer_label() -> str:
-    return "✦  N E U R O M U L E _ B O T  ✦"
+    return "//  NEUROMULE_BOT  //"
 
 
 def _save_story_jpg(card: Any, path: Path) -> None:
@@ -4702,40 +4834,40 @@ def _story_draw_channel_panel(
     channel_id: str,
     superpower: str,
     trigger: str,
-    label_font: Any,
+    header_font: Any,
     superpower_font: Any,
     trigger_font: Any,
 ) -> None:
     pad_x = _STORY_MARGIN_X + _STORY_PANEL_PAD_X
     inner_w = _STORY_PANEL_INNER_WIDTH
     header = f"{domain.upper()} // КАНАЛ {channel_id}"
-    draw.text((pad_x, panel_y + 30), header, fill=(215, 208, 240), font=label_font)
+    draw.text((pad_x, panel_y + 28), header, fill=_STORY_COLOR_WHITE_RGB, font=header_font)
     _draw_story_multiline_text(
         draw,
         superpower,
-        (pad_x, panel_y + 90),
+        (pad_x, panel_y + 88),
         superpower_font,
         max_width=inner_w,
         fill=_STORY_COLOR_WHITE_RGB,
-        line_spacing=34,
-        max_lines=2,
+        line_spacing=_STORY_LINE_SPACING,
+        max_lines=3,
     )
-    divider_y = panel_y + panel_h - 58
+    divider_y = panel_y + panel_h - 72
     draw.line(
         [(pad_x, divider_y), (pad_x + inner_w, divider_y)],
-        fill=(255, 255, 255),
+        fill=_STORY_COLOR_WHITE_RGB,
         width=1,
     )
     trigger_text = f"ТРИГГЕР: {trigger.rstrip('.')}".upper()
     _draw_story_multiline_text(
         draw,
         trigger_text,
-        (pad_x, divider_y + 14),
+        (pad_x, divider_y + 16),
         trigger_font,
-        max_width=inner_w,
-        fill=_STORY_COLOR_LAVENDER_TRIGGER_RGB,
-        line_spacing=30,
-        max_lines=2,
+        max_width=720,
+        fill=_STORY_COLOR_WHITE_RGB,
+        line_spacing=_STORY_LINE_SPACING,
+        max_lines=3,
     )
 
 
@@ -4857,13 +4989,18 @@ def generate_instagram_stories(
     background = _create_story_minimal_background()
 
     font_title = _load_story_font(56, bold=True)
-    font_section = _load_story_font(32, bold=True)
-    font_body = _load_story_font(24, bold=False)
-    font_superpower = _load_story_font(26, bold=False)
     font_meta = _load_story_font(24, bold=False)
+    font_param_label = _load_story_font(24, bold=False)
+    font_param_value = _load_story_font(32, bold=True)
+    font_domain_header = _load_story_font(38, bold=True)
+    font_superpower = _load_story_font(32, bold=False)
+    font_trigger = _load_story_font(32, bold=True)
     font_footer = _load_story_font(18, bold=False)
     footer_label = _story_footer_label()
+    footer_fill = _story_rgba_fill_on_dark(255, 255, 255, 60)
     mx = _STORY_MARGIN_X
+    param_left_x = mx + 40
+    param_right_x = _STORY_PARAM_RIGHT_COL_X
 
     # --- Карточка 1: фон + бодиграф + стекло (RGBA), затем весь текст на RGB ---
     card1 = background.copy()
@@ -4887,26 +5024,27 @@ def generate_instagram_stories(
     )
     draw1.line([(mx, 245), (mx + _STORY_CONTENT_W, 245)], fill=(255, 255, 255), width=1)
     for label, val, x, y in (
-        ("ТИП ЛИЧНОСТИ", hd_data["type"], mx + 40, 1160),
-        ("ПРОФИЛЬ", hd_data["profile"], mx + 480, 1160),
-        ("ВНУТРЕННИЙ АВТОРИТЕТ", hd_data["authority"], mx + 40, 1420),
-        ("СТРАТЕГИЯ ЖИЗНИ", hd_data["strategy"], mx + 480, 1420),
+        ("ТИП ЛИЧНОСТИ", hd_data["type"], param_left_x, 1160),
+        ("ПРОФИЛЬ", hd_data["profile"], param_right_x, 1160),
+        ("ВНУТРЕННИЙ АВТОРИТЕТ", hd_data["authority"], param_left_x, 1420),
+        ("СТРАТЕГИЯ ЖИЗНИ", hd_data["strategy"], param_right_x, 1420),
     ):
-        draw1.text((x, y), label, fill=(180, 170, 210), font=font_meta)
+        draw1.text((x, y), label, fill=_STORY_COLOR_LABEL_RGB, font=font_param_label)
+        col_width = 400 if x == param_left_x else mx + _STORY_CONTENT_W - x - _STORY_PANEL_PAD_X
         _draw_story_multiline_text(
             draw1,
             str(val).upper(),
             (x, y + 42),
-            font_body,
-            max_width=400,
+            font_param_value,
+            max_width=col_width,
             fill=_STORY_COLOR_WHITE_RGB,
-            line_spacing=34,
+            line_spacing=_STORY_LINE_SPACING,
             max_lines=2,
         )
     draw1.text(
         (540, 1835),
         footer_label,
-        fill=_STORY_COLOR_FOOTER_RGB,
+        fill=footer_fill,
         font=font_footer,
         anchor="mm",
     )
@@ -4916,7 +5054,7 @@ def generate_instagram_stories(
 
     # --- Карточка 2: стеклянные плашки на RGBA, весь текст после convert("RGB") ---
     card2 = background.copy()
-    panel_h = 280
+    panel_h = 320
     panel_y = 280
     panel_x2 = mx + _STORY_CONTENT_W
     channel_panels: list[tuple[int, dict[str, str]]] = []
@@ -4927,7 +5065,7 @@ def generate_instagram_stories(
             radius=24,
         )
         channel_panels.append((panel_y, item))
-        panel_y += 315
+        panel_y += 335
     card2 = card2.convert("RGB")
     draw2 = ImageDraw.Draw(card2)
     draw2.text((mx, 110), "АКТИВНЫЕ КОДЫ", fill=_STORY_COLOR_WHITE_RGB, font=font_title)
@@ -4947,14 +5085,14 @@ def generate_instagram_stories(
             channel_id=item["channel_num"],
             superpower=item["text"],
             trigger=item["trigger"],
-            label_font=font_section,
+            header_font=font_domain_header,
             superpower_font=font_superpower,
-            trigger_font=font_meta,
+            trigger_font=font_trigger,
         )
     draw2.text(
         (540, 1835),
         footer_label,
-        fill=_STORY_COLOR_FOOTER_RGB,
+        fill=footer_fill,
         font=font_footer,
         anchor="mm",
     )
