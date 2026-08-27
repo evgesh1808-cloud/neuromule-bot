@@ -205,7 +205,15 @@ async def _resolve_hd_report(
             report, upgraded = await ensure_modern_hd_report(uid, user_name=user_name)
         except Exception:
             logger.exception("HD legacy upgrade failed uid=%s", uid)
-            raise
+            birth_data = (
+                (user_row["hd_birth_data"] or "").strip()
+                if "hd_birth_data" in user_row.keys()
+                else ""
+            )
+            hd_type = (user_row["hd_type"] or "не указан") if "hd_type" in user_row.keys() else "не указан"
+            math_data = build_hd_math_data(hd_type, birth_data)
+            report = _offline_hd_premium_report(raw, math_data)
+            upgraded = True
     return report, upgraded
 
 
@@ -270,19 +278,17 @@ async def hd_premium_buy(callback: CallbackQuery, state: FSMContext) -> None:
             birth_data = (user["hd_birth_data"] or "").strip() if "hd_birth_data" in user.keys() else ""
             if birth_data:
                 await callback.answer(msg.TXT_HD_UPGRADING_REPORT_ALERT, show_alert=True)
-                await callback.message.answer(msg.TXT_HD_UPGRADING_REPORT, parse_mode=ParseMode.HTML)
+                await _hd_notify(callback, msg.TXT_HD_UPGRADING_REPORT)
                 try:
                     report, upgraded = await _resolve_hd_report(
                         uid,
                         user,
                         actor=callback,
-                        chat_id=callback.message.chat.id,
+                        chat_id=_hd_chat_id(callback),
                     )
                 except Exception:
-                    await callback.message.answer(
-                        msg.TXT_HD_UPGRADE_FAILED,
-                        parse_mode=ParseMode.HTML,
-                    )
+                    logger.exception("hd_premium_buy legacy upgrade failed uid=%s", uid)
+                    await _hd_notify(callback, msg.TXT_HD_UPGRADED_OFFLINE)
                     return
                 if report and upgraded:
                     await _deliver_upgraded_hd_report(
@@ -293,19 +299,19 @@ async def hd_premium_buy(callback: CallbackQuery, state: FSMContext) -> None:
                         upgraded=True,
                     )
                 elif report:
-                    await callback.message.answer(
+                    await _hd_notify(
+                        callback,
                         msg.TXT_HD_ALREADY_PURCHASED,
                         reply_markup=hd_menu(True),
-                        parse_mode=ParseMode.HTML,
                     )
                 else:
-                    await callback.message.answer(msg.TXT_HD_REPORT_NOT_FOUND, parse_mode=ParseMode.HTML)
+                    await _hd_notify(callback, msg.TXT_HD_REPORT_NOT_FOUND)
                 return
             await state.set_state(UserFlow.waiting_hd_birth_data)
             await state.update_data(hd_regenerate=True)
-            await callback.message.answer(
+            await _hd_notify(
+                callback,
                 msg.TXT_HD_REGENERATE_NEED_BIRTH.format(cost=settings.cost_hd),
-                parse_mode=ParseMode.HTML,
             )
             await callback.answer()
             return
@@ -893,8 +899,10 @@ async def _run_free_hd_regenerate(
     keys = user_row.keys() if hasattr(user_row, "keys") else ()
     existing_raw = user_row["hd_report_json"] if "hd_report_json" in keys else None
     math_data = build_hd_math_data(hd_type, birth_data)
-    report: dict
-    llm_ok: bool
+    resolved_type = str(math_data.get("hd_type") or hd_type)
+    llm_ok = False
+    report: dict[str, Any] | None = None
+
     try:
         async with chat_action_loop(deps.bot(), chat_id, "typing"):
             report, llm_ok = await generate_premium_report_resilient(
@@ -904,10 +912,14 @@ async def _run_free_hd_regenerate(
                 user_gender=user_gender,
                 existing_raw=existing_raw,
             )
-        if not report:
-            report = _offline_hd_premium_report(existing_raw, math_data)
-            llm_ok = False
-        resolved_type = str(math_data.get("hd_type") or hd_type)
+    except Exception:
+        logger.exception("hd_regenerate_resilient_failed uid=%s", uid)
+
+    if not report:
+        report = _offline_hd_premium_report(existing_raw, math_data)
+        llm_ok = False
+
+    try:
         await update_user(
             uid,
             hd_report_json=premium_report_to_json(report),
@@ -916,17 +928,7 @@ async def _run_free_hd_regenerate(
             has_pro_analysis=1,
         )
     except Exception:
-        logger.exception("hd_regenerate_core_failed uid=%s — last-resort offline", uid)
-        report = _offline_hd_premium_report(existing_raw, math_data)
-        llm_ok = False
-        resolved_type = str(math_data.get("hd_type") or hd_type)
-        await update_user(
-            uid,
-            hd_report_json=premium_report_to_json(report),
-            hd_type=resolved_type,
-            hd_birth_data=birth_data,
-            has_pro_analysis=1,
-        )
+        logger.exception("hd_regenerate_update_user_failed uid=%s", uid)
 
     intro = msg.TXT_HD_UPGRADED_REPORT if llm_ok else msg.TXT_HD_UPGRADED_OFFLINE
     try:
@@ -1011,9 +1013,13 @@ async def _start_hd_regenerate_for_user(
         except Exception:
             logger.exception("hd_regenerate_failed uid=%s", uid)
             try:
-                await _hd_notify(actor, msg.TXT_HD_UPGRADE_FAILED)
+                await _answer_hd_html(actor, msg.TXT_HD_UPGRADED_OFFLINE, uid)
             except Exception:
-                logger.exception("hd_regenerate_failed_notify uid=%s", uid)
+                logger.exception("hd_regenerate_failed_offline_notify uid=%s", uid)
+                try:
+                    await _hd_notify(actor, msg.TXT_HD_UPGRADE_FAILED)
+                except Exception:
+                    logger.exception("hd_regenerate_failed_notify uid=%s", uid)
 
     asyncio.create_task(_regenerate_job(), name=f"hd_regenerate_{uid}")
     return True

@@ -151,7 +151,7 @@ _OPENROUTER_PREMIUM_UPGRADE_TIMEOUT_SEC = 75.0
 _OPENROUTER_WELCOME_HOOK_TIMEOUT_SEC = 12.0
 _WELCOME_HOOK_MAX_TOKENS = 420
 _HD_UPGRADE_LLM_TIMEOUT_SEC = 120.0
-_HD_REGENERATE_LLM_TIMEOUT_SEC = 480.0
+_HD_REGENERATE_LLM_TIMEOUT_SEC = 180.0
 _HD_LLM_PARALLEL_LIMIT = 5
 _HD_PREMIUM_MAX_OUTPUT_TOKENS = 8192
 _PDF_FONT_NAME = "HDReportFont"
@@ -1456,9 +1456,12 @@ def _minimal_hd_report_fallback(
         "energy_scales": compute_energy_scales_from_math(math_data),
         "synthesis_meta": {"upgrade_offline": True, "upgrade_minimal": True},
     }
-    static_sections = assemble_static_reference(math_data, gate_to_center=_GATE_TO_CENTER)
-    if static_sections:
-        report["static_reference"] = static_sections
+    try:
+        static_sections = assemble_static_reference(math_data, gate_to_center=_GATE_TO_CENTER)
+        if static_sections:
+            report["static_reference"] = static_sections
+    except Exception:
+        logger.exception("minimal_hd_report_fallback static_reference failed")
     return report
 
 
@@ -1509,34 +1512,37 @@ async def generate_premium_report_resilient(
     """
     math_data = build_hd_math_data(hd_type, birth_data)
     raw = (existing_raw or "").strip()
-
-    if not _openrouter_configured() and not _gemini_configured():
-        logger.warning("HD resilient: LLM keys missing — immediate offline report")
-        return _offline_hd_premium_report(raw, math_data), False
-
-    report: dict[str, Any] | None = None
     try:
-        report = await asyncio.wait_for(
-            generate_premium_report(
-                hd_type,
-                birth_data,
-                user_name=user_name,
-                user_gender=user_gender,
-            ),
-            timeout=timeout_sec,
-        )
-        if report:
-            return report, True
-    except asyncio.TimeoutError:
-        logger.error(
-            "HD premium report timeout uid_birth=%r timeout_sec=%s",
-            birth_data[:60],
-            timeout_sec,
-        )
-    except Exception:
-        logger.exception("HD premium report resilient primary path failed")
+        if not _openrouter_configured() and not _gemini_configured():
+            logger.warning("HD resilient: LLM keys missing — immediate offline report")
+            return _offline_hd_premium_report(raw, math_data), False
 
-    return _offline_hd_premium_report(raw, math_data), False
+        report: dict[str, Any] | None = None
+        try:
+            report = await asyncio.wait_for(
+                generate_premium_report(
+                    hd_type,
+                    birth_data,
+                    user_name=user_name,
+                    user_gender=user_gender,
+                ),
+                timeout=timeout_sec,
+            )
+            if report:
+                return report, True
+        except asyncio.TimeoutError:
+            logger.error(
+                "HD premium report timeout uid_birth=%r timeout_sec=%s",
+                birth_data[:60],
+                timeout_sec,
+            )
+        except Exception:
+            logger.exception("HD premium report resilient primary path failed")
+
+        return _offline_hd_premium_report(raw, math_data), False
+    except Exception:
+        logger.exception("HD premium report resilient catastrophic fallback")
+        return _offline_hd_premium_report(raw, math_data), False
 
 
 def _parse_premium_report_from_llm(
@@ -4219,33 +4225,114 @@ def _load_story_font(size: int, *, bold: bool = False) -> Any:
     )
 
 
-def _draw_story_watermark(draw: Any, width: int, height: int, font: Any) -> None:
-    if ImageDraw is None:
-        return
-    label = _HD_WATERMARK_PLAIN
-    bbox = draw.textbbox((0, 0), label, font=font)
-    tw = bbox[2] - bbox[0]
-    draw.text(((width - tw) // 2, height - 80), label, fill=(200, 200, 210, 220), font=font)
-
-
-def _create_story_gradient(size: tuple[int, int]) -> Any:
-    """Вертикальный неоновый градиент для Stories (фиолетовый → тёмно-синий)."""
-    if Image is None or ImageDraw is None:
+def _create_story_premium_background(size: tuple[int, int] = _STORY_CANVAS_SIZE) -> Any:
+    """Фон Stories: неоновые туманности + плёночное зерно."""
+    if Image is None or ImageDraw is None or ImageFilter is None:
         raise RuntimeError("Pillow required")
     w, h = size
-    base = Image.new("RGBA", size, (12, 8, 32, 255))
-    draw = ImageDraw.Draw(base)
-    for y in range(h):
-        t = y / max(h - 1, 1)
-        r = int(72 * (1 - t) + 10 * t)
-        g = int(18 * (1 - t) + 14 * t)
-        b = int(110 * (1 - t) + 36 * t)
-        draw.line([(0, y), (w, y)], fill=(r, g, b, 255))
-    glow = Image.new("RGBA", size, (0, 0, 0, 0))
-    glow_draw = ImageDraw.Draw(glow)
-    glow_draw.ellipse((w // 2 - 420, h // 3 - 280, w // 2 + 420, h // 3 + 280), fill=(139, 92, 246, 48))
-    glow_draw.ellipse((w // 4 - 200, h * 2 // 3 - 160, w // 4 + 200, h * 2 // 3 + 160), fill=(56, 189, 248, 32))
-    return Image.alpha_composite(base, glow)
+    bg = Image.new("RGBA", size, (10, 6, 22, 255))
+    glow_layer = Image.new("RGBA", size, (0, 0, 0, 0))
+    gl_draw = ImageDraw.Draw(glow_layer)
+    gl_draw.ellipse((-400, -200, 1000, 1200), fill=(130, 0, 255, 35))
+    gl_draw.ellipse((300, 400, 1200, 1300), fill=(0, 180, 255, 25))
+    gl_draw.ellipse((-200, 1200, 900, 2100), fill=(255, 0, 128, 20))
+    glow_layer = glow_layer.filter(ImageFilter.GaussianBlur(140))
+    base_bg = Image.alpha_composite(bg, glow_layer)
+    noise = Image.effect_noise(size, 15).convert("RGBA")
+    nr, ng, nb, na = noise.split()
+    na = na.point(lambda p: int(p * (15 / 255.0)))
+    noise = Image.merge("RGBA", (nr, ng, nb, na))
+    return Image.alpha_composite(base_bg, noise)
+
+
+def _draw_story_cyber_glass(draw_obj: Any, coords: tuple[int, int, int, int], *, radius: int = 24) -> None:
+    """Стеклянная панель с кибер-углами."""
+    x1, y1, x2, y2 = coords
+    draw_obj.rounded_rectangle(coords, radius=radius, fill=(255, 255, 255, 12))
+    draw_obj.rounded_rectangle(coords, radius=radius, outline=(255, 255, 255, 25), width=1)
+    draw_obj.rounded_rectangle(
+        (x1 + 1, y1 + 1, x2 - 1, y2 - 1),
+        radius=max(radius - 1, 0),
+        outline=(255, 255, 255, 10),
+        width=1,
+    )
+    draw_obj.line([(x1, y1 + radius), (x1, y1), (x1 + radius, y1)], fill=(0, 240, 255, 200), width=2)
+    draw_obj.line([(x2, y2 - radius), (x2, y2), (x2 - radius, y2)], fill=(255, 0, 128, 200), width=2)
+
+
+def _load_story_bodygraph_neon(bodygraph_path: Path) -> Any | None:
+    """Вырезает светлые линии бодиграфа на прозрачном фоне."""
+    if Image is None or not bodygraph_path.is_file():
+        return None
+    img = Image.open(bodygraph_path).convert("RGBA")
+    gray = img.convert("L")
+    white = Image.new("L", img.size, 255)
+    return Image.merge("RGBA", (white, white, white, gray))
+
+
+def _create_story_bodygraph_glow(source_img: Any, *, radius: int = 45) -> Any:
+    """Неоновое свечение вокруг бодиграфа."""
+    if Image is None or ImageFilter is None:
+        raise RuntimeError("Pillow required")
+    _r, _g, _b, alpha = source_img.split()
+    glow = Image.merge(
+        "RGBA",
+        (
+            Image.new("L", source_img.size, 120),
+            Image.new("L", source_img.size, 0),
+            Image.new("L", source_img.size, 255),
+            alpha,
+        ),
+    )
+    return glow.filter(ImageFilter.GaussianBlur(radius))
+
+
+def _story_wrap_words(text: str, max_len: int) -> tuple[str, str]:
+    words = (text or "").split()
+    line1, line2 = "", ""
+    for word in words:
+        candidate = f"{line1} {word}".strip() if line1 else word
+        if len(candidate) <= max_len:
+            line1 = candidate
+        else:
+            line2 = f"{line2} {word}".strip() if line2 else word
+    return line1, line2
+
+
+def _story_channel_trigger(channel_code: str) -> str:
+    from services.hd_channel_archetypes import normalize_channel_code
+
+    code = normalize_channel_code(channel_code)
+    block = load_static_block("channels", code) if code else {}
+    trigger = str(
+        block.get("shadow") or block.get("gift") or block.get("theme") or "точка роста в решениях"
+    ).strip().rstrip(".")
+    if len(trigger) > 56:
+        trigger = trigger[:56].rsplit(" ", 1)[0] + "…"
+    return trigger
+
+
+def _build_story_active_channels_info(math_data: dict[str, object]) -> list[dict[str, str]]:
+    channels_raw = math_data.get("active_channels") or []
+    channels = [str(ch).strip() for ch in channels_raw if str(ch).strip()]
+    domains = ("Деньги", "Отношения", "Энергия")
+    items: list[dict[str, str]] = []
+    for idx, domain in enumerate(domains):
+        if idx >= len(channels):
+            break
+        channel = channels[idx]
+        from services.hd_channel_archetypes import normalize_channel_code
+
+        code = normalize_channel_code(channel) or f"0{idx + 1}"
+        items.append(
+            {
+                "domain": domain,
+                "channel_num": code,
+                "text": format_channel_superpower_for_user(channel),
+                "trigger": _story_channel_trigger(channel),
+            }
+        )
+    return items
 
 
 def _story_channel_card_line(channel_code: str) -> str:
@@ -4286,46 +4373,6 @@ def _build_story_card2_sections(math_data: dict[str, object]) -> list[tuple[str,
     return sections
 
 
-def _draw_story_meta_panel(
-    draw: Any,
-    math_data: dict[str, object],
-    *,
-    y_top: int,
-    label_font: Any,
-    value_font: Any,
-) -> None:
-    meta = hd_profile_metadata(math_data)
-    profile_label = profile_archetype_label(str(meta.get("profile") or "")) or "—"
-    rows = (
-        ("Тип", str(meta.get("hd_type") or "—")),
-        ("Профиль", profile_label),
-        ("Авторитет", str(meta.get("authority") or "—")),
-        ("Стратегия", str(meta.get("strategy") or "—")),
-    )
-    panel_x, panel_w = 48, 984
-    value_x = panel_x + 200
-    y0 = y_top
-    layout: list[tuple[str, list[str], int]] = []
-    content_h = 48
-    for label, value in rows:
-        wrapped = textwrap.wrap(value, width=28) or [value]
-        row_lines = wrapped[:2]
-        row_h = 28 + len(row_lines) * 30
-        layout.append((label, row_lines, row_h))
-        content_h += row_h + 8
-    panel_h = content_h + 12
-    draw.rounded_rectangle((panel_x, y0, panel_x + panel_w, y0 + panel_h), radius=28, fill=(8, 8, 18, 210))
-    draw.text((panel_x + 24, y0 + 16), "Параметры карты", fill=_HD_NEON_HEX, font=label_font)
-    cy = y0 + 48
-    for label, row_lines, row_h in layout:
-        draw.text((panel_x + 24, cy), label, fill=(180, 180, 200, 255), font=label_font)
-        ty = cy
-        for line in row_lines:
-            draw.text((value_x, ty), line, fill=(245, 245, 252, 255), font=value_font)
-            ty += 30
-        cy += row_h + 8
-
-
 def generate_instagram_stories(
     uid: int,
     report: dict[str, Any],
@@ -4335,11 +4382,12 @@ def generate_instagram_stories(
     birth_data: str = "",
 ) -> list[str]:
     """
-    Instagram Stories: бодиграф + параметры; card 2 — суперсилы каналов (0 LLM).
+    Instagram Stories premium: бодиграф + параметры; card 2 — суперсилы каналов (0 LLM).
 
     Returns:
         ``tmp/story_{uid}_1.png``, ``tmp/story_{uid}_2.png``.
     """
+    _ = report  # AI-текст разбора в Stories не используется — только карта и static blocks.
     if Image is None or ImageDraw is None or ImageFilter is None:
         raise RuntimeError("Установите пакет Pillow для Instagram Stories.")
 
@@ -4351,72 +4399,110 @@ def generate_instagram_stories(
     os.makedirs(str(_HD_BODYGRAPH_OUTPUT_DIR), exist_ok=True)
     bodygraph_path = _HD_BODYGRAPH_OUTPUT_DIR / f"ready_hd_{uid}.png"
     paths: list[str] = []
-    title_font = _load_story_font(44, bold=True)
-    subtitle_font = _load_story_font(24, bold=False)
-    label_font = _load_story_font(28, bold=True)
-    value_font = _load_story_font(24, bold=False)
-    section_font = _load_story_font(30, bold=True)
-    body_font = _load_story_font(24, bold=False)
-    watermark_font = _load_story_font(22, bold=False)
     meta = hd_profile_metadata(math_data)
-    display_type = str(meta.get("hd_type") or hd_type or "Human Design")
-
-    # --- Карточка 1: градиент + бодиграф + параметры ---
-    card1 = _create_story_gradient(_STORY_CANVAS_SIZE)
-    if bodygraph_path.is_file():
-        bg_src = Image.open(bodygraph_path).convert("RGBA")
-        graph_w = min(760, _STORY_CANVAS_SIZE[0] - 160)
-        graph_h = int(graph_w * bg_src.height / max(bg_src.width, 1))
-        graph = bg_src.resize((graph_w, graph_h), Image.Resampling.LANCZOS)
-        glow_layer = graph.copy()
-        glow_layer = glow_layer.filter(ImageFilter.GaussianBlur(radius=18))
-        gx = (_STORY_CANVAS_SIZE[0] - graph_w) // 2
-        gy = 280
-        card1.paste(glow_layer, (gx - 8, gy - 8), glow_layer)
-        card1.paste(graph, (gx, gy), graph)
-
-    draw1 = ImageDraw.Draw(card1)
-    draw1.text((60, 100), "Human Design Premium", fill=_HD_NEON_HEX, font=title_font)
-    birth_line = strip_hd_markdown_for_plain(str(meta.get("birth_data") or birth_data or "").strip())
-    if birth_line:
-        draw1.text((60, 158), birth_line[:48], fill=(210, 210, 225, 230), font=subtitle_font)
-    draw1.text((60, 200), display_type, fill=(255, 255, 255, 255), font=label_font)
-    _draw_story_meta_panel(
-        draw1,
-        math_data,
-        y_top=1180,
-        label_font=label_font,
-        value_font=value_font,
+    profile_label = profile_archetype_label(str(meta.get("profile") or "")) or "—"
+    hd_data = {
+        "type": str(meta.get("hd_type") or hd_type or "Human Design"),
+        "profile": profile_label,
+        "authority": str(meta.get("authority") or "—"),
+        "strategy": str(meta.get("strategy") or "—"),
+    }
+    birth_line = strip_hd_markdown_for_plain(
+        str(meta.get("birth_data") or birth_data or "").strip()
     )
-    _draw_story_watermark(draw1, _STORY_CANVAS_SIZE[0], _STORY_CANVAS_SIZE[1], watermark_font)
+    active_channels_info = _build_story_active_channels_info(math_data)
+    final_background = _create_story_premium_background()
+
+    font_super_huge = _load_story_font(140, bold=True)
+    font_main_title = _load_story_font(56, bold=True)
+    font_section_title = _load_story_font(36, bold=True)
+    font_body = _load_story_font(28, bold=False)
+    font_meta = _load_story_font(24, bold=False)
+    footer_label = _HD_WATERMARK_PLAIN.upper()
+
+    card1 = final_background.copy()
+    draw1 = ImageDraw.Draw(card1)
+    draw1.text((80, 110), "HUMAN DESIGN", fill=(255, 255, 255, 255), font=font_main_title)
+    draw1.text((80, 185), "PREMIUM ANALYSIS", fill=(0, 240, 255, 255), font=font_meta)
+    draw1.line([(80, 240), (1000, 240)], fill=(255, 255, 255, 30), width=1)
+    birth_meta = birth_line[:64].upper() if birth_line else "—"
+    draw1.text(
+        (80, 260),
+        f"ID: {str(uid)[:8].upper()}  //  {birth_meta}",
+        fill=(150, 140, 170, 255),
+        font=font_meta,
+    )
+
+    body_img = _load_story_bodygraph_neon(bodygraph_path)
+    if body_img is not None:
+        body_img.thumbnail((650, 650), Image.Resampling.LANCZOS)
+        x_pos = (_STORY_CANVAS_SIZE[0] - body_img.size[0]) // 2
+        y_pos = 380
+        glow_under = _create_story_bodygraph_glow(body_img, radius=45)
+        card1.paste(glow_under, (x_pos, y_pos), glow_under)
+        card1.paste(body_img, (x_pos, y_pos), body_img)
+
+    _draw_story_cyber_glass(draw1, (80, 1100, 1000, 1680), radius=30)
+    params = (
+        ("ТИП ЛИЧНОСТИ", hd_data["type"], 120, 1140),
+        ("ПРОФИЛЬ", hd_data["profile"], 560, 1140),
+        ("ВНУТРЕННИЙ АВТОРИТЕТ", hd_data["authority"], 120, 1400),
+        ("СТРАТЕГИЯ ЖИЗНИ", hd_data["strategy"], 560, 1400),
+    )
+    for label, value, x, y in params:
+        draw1.text((x, y), label, fill=(0, 240, 255, 255), font=font_meta)
+        line1, line2 = _story_wrap_words(value, 22)
+        draw1.text((x, y + 40), line1, fill=(255, 255, 255, 255), font=font_body)
+        if line2:
+            draw1.text((x, y + 80), line2, fill=(255, 255, 255, 255), font=font_body)
+
+    draw1.text((540, 1830), footer_label, fill=(255, 255, 255, 40), font=font_meta, anchor="mm")
     out1 = _HD_BODYGRAPH_OUTPUT_DIR / f"story_{uid}_1.png"
     card1.convert("RGB").save(out1, format="PNG")
     paths.append(f"tmp/story_{uid}_1.png")
 
-    # --- Карточка 2: суперсилы каналов (0 LLM) ---
-    card2 = _create_story_gradient(_STORY_CANVAS_SIZE)
+    card2 = final_background.copy()
     draw2 = ImageDraw.Draw(card2)
-    draw2.text((60, 100), display_type, fill=_HD_NEON_HEX, font=title_font)
-    draw2.text((60, 158), "Суперсилы твоих каналов", fill=(210, 210, 225, 230), font=subtitle_font)
+    draw2.text((80, 110), "АКТИВНЫЕ КОДЫ", fill=(255, 255, 255, 255), font=font_main_title)
+    draw2.text(
+        (80, 185),
+        f"АРХЕТИПЫ СУПЕРСИЛ ДЛЯ: {hd_data['type'].upper()}",
+        fill=(255, 0, 128, 255),
+        font=font_meta,
+    )
+    draw2.line([(80, 240), (1000, 240)], fill=(255, 255, 255, 30), width=1)
 
-    sections = _build_story_card2_sections(math_data)
-    y_pos = 240
-    for title, body in sections:
-        if not body:
-            continue
-        lines = textwrap.wrap(body, width=38) or [body]
-        box_h = 56 + len(lines) * 32
-        if y_pos + box_h > _STORY_CANVAS_SIZE[1] - 120:
-            break
-        draw2.rounded_rectangle((48, y_pos, 1032, y_pos + box_h), radius=24, fill=(8, 8, 18, 215))
-        draw2.text((72, y_pos + 16), title, fill=_HD_NEON_HEX, font=section_font)
-        ty = y_pos + 56
-        for line in lines:
-            draw2.text((72, ty), line, fill=(235, 235, 245, 255), font=body_font)
-            ty += 32
-        y_pos += box_h + 20
+    panel_y = 280
+    domain_colors = ((0, 240, 255), (255, 0, 128), (200, 255, 0))
+    for idx, item in enumerate(active_channels_info[:3]):
+        _draw_story_cyber_glass(draw2, (80, panel_y, 1000, panel_y + 270), radius=24)
+        channel_id = item["channel_num"]
+        draw2.text(
+            (680, panel_y + 40),
+            channel_id,
+            fill=(255, 255, 255, 8),
+            font=font_super_huge,
+        )
+        color_theme = domain_colors[idx % len(domain_colors)]
+        draw2.rectangle((120, panel_y + 42, 135, panel_y + 57), fill=color_theme)
+        draw2.text(
+            (160, panel_y + 32),
+            f"{item['domain'].upper()} // КАНАЛ {channel_id}",
+            fill=(255, 255, 255, 220),
+            font=font_section_title,
+        )
+        line1, line2 = _story_wrap_words(item["text"], 45)
+        draw2.text((120, panel_y + 95), line1, fill=(240, 240, 250, 255), font=font_body)
+        if line2:
+            draw2.text((120, panel_y + 135), line2, fill=(240, 240, 250, 255), font=font_body)
+        draw2.line((120, panel_y + 195, 400, panel_y + 195), fill=(255, 255, 255, 20), width=1)
+        trigger_text = f"ТРИГГЕР: {item['trigger'].upper()}"
+        if len(trigger_text) > 52:
+            trigger_text = trigger_text[:49] + "..."
+        draw2.text((120, panel_y + 210), trigger_text, fill=color_theme, font=font_meta)
+        panel_y += 310
 
-    _draw_story_watermark(draw2, _STORY_CANVAS_SIZE[0], _STORY_CANVAS_SIZE[1], watermark_font)
+    draw2.text((540, 1830), footer_label, fill=(255, 255, 255, 40), font=font_meta, anchor="mm")
     out2 = _HD_BODYGRAPH_OUTPUT_DIR / f"story_{uid}_2.png"
     card2.convert("RGB").save(out2, format="PNG")
     paths.append(f"tmp/story_{uid}_2.png")
