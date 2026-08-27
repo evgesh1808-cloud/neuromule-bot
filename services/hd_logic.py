@@ -3493,11 +3493,9 @@ def _split_static_blocks(body: str, *, marker_prefix: str) -> list[str]:
 
 def _md_to_reportlab_html(text: object) -> str:
     """Конвертирует ограниченный markdown (**жирный**, переносы) в HTML для Paragraph."""
-    raw = str(text or "").strip()
+    raw = _sanitize_pdf_plain_text(text)
     if not raw:
         return ""
-    emoji_re = re.compile(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]+", flags=re.UNICODE)
-    raw = emoji_re.sub("", raw)
     chunks: list[str] = []
     for line in raw.splitlines():
         stripped = line.strip()
@@ -3746,14 +3744,37 @@ def _prepare_bodygraph_for_pdf(user_id: int, birth_data: str | None) -> str | No
         return None
 
 
+_PDF_EMOJI_RE = re.compile(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]+", flags=re.UNICODE)
+
+
+def _sanitize_pdf_plain_text(text: object) -> str:
+    cleaned = _PDF_EMOJI_RE.sub("", str(text or ""))
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _sanitize_report_for_pdf(report: dict[str, Any]) -> dict[str, Any]:
+    """Убирает эмодзи и управляющие символы — ReportLab/Roboto на Linux падают на emoji."""
+    sanitized: dict[str, Any] = dict(report)
+    for key in (*_PREMIUM_REPORT_KEYS, "fast_facts"):
+        val = sanitized.get(key)
+        if isinstance(val, str):
+            sanitized[key] = _sanitize_pdf_plain_text(val)
+    static_raw = sanitized.get("static_reference")
+    if isinstance(static_raw, dict):
+        sanitized["static_reference"] = {
+            k: _sanitize_pdf_plain_text(v) if isinstance(v, str) else v
+            for k, v in static_raw.items()
+        }
+    return sanitized
+
+
 def _sanitize_pdf_display_name(name: str) -> str:
     """Убирает эмодзи и мусорные AI-ники из Telegram display_name."""
     ai_blocklist = re.compile(
         r"(chatgpt|sora|suno|deepseek|gpt|openai|claude|gemini)",
         re.IGNORECASE,
     )
-    emoji_re = re.compile(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]+", flags=re.UNICODE)
-    text = emoji_re.sub("", (name or "").strip())
+    text = _PDF_EMOJI_RE.sub("", (name or "").strip())
     text = re.sub(r"\s+", " ", text).strip()
     if not text or ai_blocklist.search(text):
         return "Клиент NeuroMule"
@@ -3961,11 +3982,14 @@ def _build_hd_premium_pdf_story(
 
     bg_path = _prepare_bodygraph_for_pdf(user_id, birth_data)
     if bg_path:
-        display_w = _PDF_BODYGRAPH_WIDTH_PX * 0.72
-        img = RLImage(bg_path, width=display_w, height=display_w, kind="proportional")
-        img.hAlign = "CENTER"
-        story.append(img)
-        story.append(Spacer(1, 12))
+        try:
+            display_w = _PDF_BODYGRAPH_WIDTH_PX * 0.72
+            img = RLImage(bg_path, width=display_w, height=display_w, kind="proportional")
+            img.hAlign = "CENTER"
+            story.append(img)
+            story.append(Spacer(1, 12))
+        except Exception:
+            logger.warning("hd pdf bodygraph image skipped uid=%s", user_id, exc_info=True)
 
     scales = report.get("energy_scales")
     if isinstance(scales, dict):
@@ -4049,6 +4073,104 @@ def _build_hd_premium_pdf_story(
     return story
 
 
+def _build_hd_minimal_pdf_story(
+    report: dict[str, Any],
+    *,
+    meta: dict[str, object],
+    font_name: str,
+) -> list[Any]:
+    """Урезанный PDF при падении полной сборки (обложка + обзор + главы)."""
+    if Paragraph is None or Spacer is None or PageBreak is None or ParagraphStyle is None:
+        raise RuntimeError("Установите пакет reportlab для PDF-отчетов.")
+    bold_font = _pdf_bold_font_name(font_name)
+    body_style = ParagraphStyle(
+        "HdMinimalBody",
+        fontName=font_name,
+        fontSize=11,
+        leading=16,
+        textColor=colors.HexColor("#1A1A24") if colors else None,
+        spaceAfter=8,
+    )
+    title_style = ParagraphStyle(
+        "HdMinimalTitle",
+        fontName=bold_font,
+        fontSize=16,
+        leading=20,
+        textColor=colors.HexColor("#1A1A24") if colors else None,
+        spaceAfter=8,
+    )
+    story: list[Any] = [Spacer(1, 1), PageBreak()]
+    story.append(Paragraph("Обзор карты", title_style))
+    story.append(_build_chart_overview_table(meta, font_name))
+    story.append(Spacer(1, 16))
+    for key, title in (
+        ("money", "Деньги"),
+        ("love", "Отношения"),
+        ("energy", "Энергия"),
+        ("plan", "План на 30 дней"),
+    ):
+        body = str(report.get(key) or "").strip()
+        if not body:
+            continue
+        story.append(Paragraph(html_module.escape(title), title_style))
+        html_body = _md_to_reportlab_html(body)
+        if html_body:
+            story.append(Paragraph(html_body, body_style))
+        story.append(Spacer(1, 12))
+    return story
+
+
+def _write_hd_premium_pdf_file(
+    user_id: int,
+    report: dict[str, Any],
+    birth_data: str | None,
+    *,
+    hd_type: str = "",
+    user_name: str = "",
+    minimal: bool = False,
+) -> str:
+    if BaseDocTemplate is None or A4 is None:
+        raise RuntimeError("Установите пакет reportlab для PDF-отчетов.")
+    ensure_pdf_fonts_available()
+    math_data = build_hd_math_data(hd_type or "не указан", birth_data or "")
+    meta = hd_profile_metadata(math_data)
+    report_for_pdf = _sanitize_report_for_pdf(report)
+    static_raw = report_for_pdf.get("static_reference")
+    if not isinstance(static_raw, dict) or not static_raw:
+        from services.hd_static_blocks import assemble_static_reference
+
+        report_for_pdf["static_reference"] = assemble_static_reference(
+            math_data,
+            gate_to_center=_GATE_TO_CENTER,
+        )
+    os.makedirs(str(_HD_BODYGRAPH_OUTPUT_DIR), exist_ok=True)
+    path = _HD_BODYGRAPH_OUTPUT_DIR / f"report_{user_id}.pdf"
+    font_name = _register_pdf_font()
+    doc = _HdPremiumPdfDoc(
+        str(path),
+        user_name=_sanitize_pdf_display_name(user_name),
+        birth_data=str(meta.get("birth_data") or birth_data or ""),
+        font_name=font_name,
+        hd_type=str(meta.get("hd_type") or hd_type or ""),
+    )
+    if minimal:
+        story = _build_hd_minimal_pdf_story(report_for_pdf, meta=meta, font_name=font_name)
+    else:
+        story = _build_hd_premium_pdf_story(
+            user_id,
+            report_for_pdf,
+            user_name=user_name,
+            birth_data=birth_data,
+            meta=meta,
+            math_data=math_data,
+            font_name=font_name,
+        )
+    doc.build(story)
+    if not path.is_file() or path.stat().st_size < 512:
+        raise RuntimeError(f"HD PDF empty after build path={path}")
+    return str(path)
+
+
 def create_hd_premium_pdf(
     user_id: int,
     report: dict[str, Any],
@@ -4058,39 +4180,25 @@ def create_hd_premium_pdf(
     user_name: str = "",
 ) -> str:
     """Премиальный PDF: обложка, Chart Overview, energy scales, главы с закладками."""
-    if BaseDocTemplate is None or A4 is None:
-        raise RuntimeError("Установите пакет reportlab для PDF-отчетов.")
-    math_data = build_hd_math_data(hd_type or "не указан", birth_data or "")
-    meta = hd_profile_metadata(math_data)
-    report_for_pdf: dict[str, Any] = dict(report)
-    static_raw = report_for_pdf.get("static_reference")
-    if not isinstance(static_raw, dict) or not static_raw:
-        from services.hd_static_blocks import assemble_static_reference
-
-        report_for_pdf["static_reference"] = assemble_static_reference(
-            math_data,
-            gate_to_center=_GATE_TO_CENTER,
+    try:
+        return _write_hd_premium_pdf_file(
+            user_id,
+            report,
+            birth_data,
+            hd_type=hd_type,
+            user_name=user_name,
+            minimal=False,
         )
-    path = Path(tempfile.gettempdir()) / f"report_{user_id}.pdf"
-    font_name = _register_pdf_font()
-    doc = _HdPremiumPdfDoc(
-        str(path),
-        user_name=_sanitize_pdf_display_name(user_name),
-        birth_data=str(meta.get("birth_data") or birth_data or ""),
-        font_name=font_name,
-        hd_type=str(meta.get("hd_type") or hd_type or ""),
-    )
-    story = _build_hd_premium_pdf_story(
-        user_id,
-        report_for_pdf,
-        user_name=user_name,
-        birth_data=birth_data,
-        meta=meta,
-        math_data=math_data,
-        font_name=font_name,
-    )
-    doc.build(story)
-    return str(path)
+    except Exception:
+        logger.exception("HD premium PDF full build failed uid=%s — minimal fallback", user_id)
+        return _write_hd_premium_pdf_file(
+            user_id,
+            report,
+            birth_data,
+            hd_type=hd_type,
+            user_name=user_name,
+            minimal=True,
+        )
 
 
 def create_pdf(
@@ -4287,18 +4395,90 @@ def _create_story_minimal_background() -> Any:
     return Image.alpha_composite(bg, glow_layer)
 
 
+def _draw_story_glass_panel(
+    base_img: Any,
+    coords: tuple[int, int, int, int],
+    *,
+    radius: int = 24,
+) -> Any:
+    overlay = Image.new("RGBA", base_img.size, (0, 0, 0, 0))
+    draw_overlay = ImageDraw.Draw(overlay)
+    draw_overlay.rounded_rectangle(coords, radius=radius, fill=(255, 255, 255, 12))
+    draw_overlay.rounded_rectangle(coords, radius=radius, outline=(255, 255, 255, 25), width=1)
+    return Image.alpha_composite(base_img, overlay)
+
+
 def _draw_story_panel(
     base_img: Any,
     coords: tuple[int, int, int, int],
     *,
     radius: int = 16,
 ) -> Any:
-    """Тонкая полупрозрачная плашка на отдельном слое."""
-    overlay = Image.new("RGBA", base_img.size, (0, 0, 0, 0))
-    draw = ImageDraw.Draw(overlay)
-    draw.rounded_rectangle(coords, radius=radius, fill=(255, 255, 255, 8))
-    draw.rounded_rectangle(coords, radius=radius, outline=(255, 255, 255, 30), width=1)
-    return Image.alpha_composite(base_img, overlay)
+    return _draw_story_glass_panel(base_img, coords, radius=radius)
+
+
+def _extract_bodygraph_layers(bodygraph_path: Path) -> tuple[Any | None, Any | None]:
+    if Image is None or ImageFilter is None or not bodygraph_path.is_file():
+        return None, None
+    img = Image.open(bodygraph_path).convert("RGBA")
+    gray = img.convert("L")
+    clean_body = Image.merge(
+        "RGBA",
+        (
+            Image.new("L", img.size, 255),
+            Image.new("L", img.size, 255),
+            Image.new("L", img.size, 255),
+            gray,
+        ),
+    )
+    glow = Image.merge(
+        "RGBA",
+        (
+            Image.new("L", img.size, 140),
+            Image.new("L", img.size, 80),
+            Image.new("L", img.size, 255),
+            gray,
+        ),
+    ).filter(ImageFilter.GaussianBlur(35))
+    return clean_body, glow
+
+
+def _draw_story_multiline_text(
+    draw_obj: Any,
+    text: str,
+    position: tuple[int, int],
+    font: Any,
+    *,
+    max_width: int = 760,
+    fill: tuple[int, int, int, int] = _STORY_COLOR_WHITE,
+    line_spacing: int = 36,
+    max_lines: int = 2,
+) -> int:
+    words = (text or "").split()
+    if not words:
+        return position[1]
+    lines: list[str] = []
+    current = ""
+    for word in words:
+        candidate = f"{current} {word}".strip() if current else word
+        bbox = draw_obj.textbbox((0, 0), candidate, font=font)
+        if (bbox[2] - bbox[0]) <= max_width:
+            current = candidate
+            continue
+        if current:
+            lines.append(current)
+        current = word
+        if len(lines) >= max_lines:
+            break
+    if current and len(lines) < max_lines:
+        lines.append(current)
+    elif current and lines and not lines[-1].endswith("…"):
+        lines[-1] = lines[-1] + "…"
+    x, y = position
+    for line in lines[:max_lines]:
+        draw_obj.text((x, y), line, fill=fill, font=font)
+        y += line_spacing
+    return y
 
 
 def _story_footer_label() -> str:
@@ -4445,26 +4625,29 @@ def _story_draw_channel_panel(
     pad_right = _STORY_MARGIN_X + _STORY_CONTENT_W - _STORY_PANEL_PAD_X
     inner_w = pad_right - pad_x
     header = f"{domain.upper()} // КАНАЛ {channel_id}"
-    draw.text((pad_x, panel_y + 36), header, fill=_STORY_COLOR_LAVENDER_BRIGHT, font=label_font)
-    text_y = panel_y + 88
-    line_height = 36
-    for line in _story_wrap_lines(superpower, _STORY_WRAP_MAX_CHARS, max_lines=2):
-        draw.text((pad_x, text_y), line, fill=_STORY_COLOR_WHITE, font=body_font)
-        text_y += line_height
-    divider_y = panel_y + panel_h - 72
+    draw.text((pad_x, panel_y + 30), header, fill=_STORY_COLOR_LAVENDER_BRIGHT, font=label_font)
+    _draw_story_multiline_text(
+        draw,
+        superpower,
+        (pad_x, panel_y + 90),
+        body_font,
+        max_width=inner_w,
+        line_spacing=34,
+        max_lines=2,
+    )
+    divider_y = panel_y + panel_h - 58
     draw.line(
         [(pad_x, divider_y), (pad_x + inner_w, divider_y)],
         fill=_STORY_COLOR_TRIGGER_LINE,
         width=1,
     )
-    trigger_body = trigger.rstrip(".")
-    trigger_line = f"ТРИГГЕР: {trigger_body}".upper()
+    trigger_line = f"ТРИГГЕР: {trigger.rstrip('.')}".upper()
     if len(trigger_line) > 54:
         trigger_line = trigger_line[:51].rstrip() + "…"
     draw.text(
-        (pad_x, divider_y + 16),
+        (pad_x, divider_y + 14),
         trigger_line,
-        fill=_STORY_COLOR_GRAY,
+        fill=(255, 255, 255, 160),
         font=meta_font,
     )
 
@@ -4588,10 +4771,10 @@ def generate_instagram_stories(
     active_channels_info = _build_story_active_channels_info(math_data)
     background = _create_story_minimal_background()
 
-    font_title = _load_story_font(52, bold=True)
-    font_label = _load_story_font(22, bold=True)
-    font_body = _load_story_font(23, bold=False)
-    font_meta = _load_story_font(20, bold=False)
+    font_title = _load_story_font(56, bold=True)
+    font_section = _load_story_font(32, bold=True)
+    font_body = _load_story_font(24, bold=False)
+    font_meta = _load_story_font(24, bold=False)
     font_footer = _load_story_font(18, bold=False)
     footer_label = _story_footer_label()
     mx = _STORY_MARGIN_X
@@ -4599,101 +4782,67 @@ def generate_instagram_stories(
     # --- Карточка 1: визитка ---
     card1 = background.copy()
     draw1 = ImageDraw.Draw(card1)
-    draw1.text((mx, 120), "Human Design", fill=_STORY_COLOR_WHITE, font=font_title)
+    draw1.text((mx, 110), "HUMAN DESIGN", fill=_STORY_COLOR_WHITE, font=font_title)
     draw1.text(
-        (mx, 168),
-        f"Premium ID {str(uid)[:8]} · {birth_meta}",
-        fill=_STORY_COLOR_GRAY,
+        (mx, 190),
+        f"PREMIUM ID: {str(uid)[:8].upper()}  //  {birth_meta.upper()}",
+        fill=(160, 150, 180, 255),
         font=font_meta,
     )
-    _story_draw_hrule(draw1, 228)
+    draw1.line([(mx, 245), (mx + _STORY_CONTENT_W, 245)], fill=(255, 255, 255, 30), width=1)
 
-    body_img = _load_story_bodygraph_neon(bodygraph_path)
-    if body_img is not None:
-        body_img.thumbnail((600, 600), Image.Resampling.LANCZOS)
+    body_img, body_glow = _extract_bodygraph_layers(bodygraph_path)
+    if body_img is not None and body_glow is not None:
+        body_img.thumbnail((680, 680), Image.Resampling.LANCZOS)
+        body_glow.thumbnail((680, 680), Image.Resampling.LANCZOS)
         x_pos = (_STORY_CANVAS_SIZE[0] - body_img.size[0]) // 2
-        y_pos = 400
-        glow_under = _create_story_bodygraph_glow(body_img, radius=38)
-        card1.paste(glow_under, (x_pos, y_pos), glow_under)
+        y_pos = 380
+        card1.paste(body_glow, (x_pos, y_pos), body_glow)
         card1.paste(body_img, (x_pos, y_pos), body_img)
 
-    params_top = 1120
-    _story_draw_hrule(draw1, params_top)
-    col_left = mx + 20
-    col_right = mx + 500
-    _story_draw_param_block(
-        draw1,
-        label="Тип личности",
-        value=hd_data["type"],
-        x=col_left,
-        y=params_top + 36,
-        label_font=font_label,
-        body_font=font_body,
-    )
-    _story_draw_param_block(
-        draw1,
-        label="Профиль",
-        value=hd_data["profile"],
-        x=col_right,
-        y=params_top + 36,
-        label_font=font_label,
-        body_font=font_body,
-    )
-    row2_y = params_top + 180
-    _story_draw_hrule(draw1, row2_y)
-    _story_draw_param_block(
-        draw1,
-        label="Внутренний авторитет",
-        value=hd_data["authority"],
-        x=col_left,
-        y=row2_y + 36,
-        label_font=font_label,
-        body_font=font_body,
-        max_chars=22,
-    )
-    _story_draw_param_block(
-        draw1,
-        label="Стратегия жизни",
-        value=hd_data["strategy"],
-        x=col_right,
-        y=row2_y + 36,
-        label_font=font_label,
-        body_font=font_body,
-        max_chars=22,
-    )
-    _story_draw_hrule(draw1, row2_y + 180)
-    draw1.text(
-        (540, 1860),
-        footer_label,
-        fill=_STORY_COLOR_FOOTER,
-        font=font_footer,
-        anchor="mm",
-    )
+    card1 = _draw_story_glass_panel(card1, (mx, 1120, mx + _STORY_CONTENT_W, 1680), radius=30)
+    draw1 = ImageDraw.Draw(card1)
+    for label, val, x, y in (
+        ("ТИП ЛИЧНОСТИ", hd_data["type"], mx + 40, 1160),
+        ("ПРОФИЛЬ", hd_data["profile"], mx + 480, 1160),
+        ("ВНУТРЕННИЙ АВТОРИТЕТ", hd_data["authority"], mx + 40, 1420),
+        ("СТРАТЕГИЯ ЖИЗНИ", hd_data["strategy"], mx + 480, 1420),
+    ):
+        draw1.text((x, y), label, fill=(180, 170, 210, 255), font=font_meta)
+        _draw_story_multiline_text(
+            draw1,
+            str(val).upper(),
+            (x, y + 42),
+            font_body,
+            max_width=400,
+            line_spacing=34,
+            max_lines=2,
+        )
+    draw1.text((540, 1835), footer_label, fill=_STORY_COLOR_FOOTER, font=font_footer, anchor="mm")
     out1 = _HD_BODYGRAPH_OUTPUT_DIR / f"story_{uid}_1.jpg"
     _save_story_jpg(card1, out1)
     paths.append(f"tmp/story_{uid}_1.jpg")
 
-    # --- Карточка 2: каналы ---
+    # --- Карточка 2: суперсилы ---
     card2 = background.copy()
     draw2 = ImageDraw.Draw(card2)
-    draw2.text((mx, 120), "Активные коды", fill=_STORY_COLOR_WHITE, font=font_title)
+    draw2.text((mx, 110), "АКТИВНЫЕ КОДЫ", fill=_STORY_COLOR_WHITE, font=font_title)
     draw2.text(
-        (mx, 195),
-        f"Суперсилы для типа {hd_data['type']}",
-        fill=_STORY_COLOR_GRAY,
+        (mx, 190),
+        f"АРХЕТИПЫ СУПЕРСИЛ ДЛЯ ТИПА: {hd_data['type'].upper()}",
+        fill=(160, 150, 180, 255),
         font=font_meta,
     )
-    _story_draw_hrule(draw2, 250)
+    draw2.line([(mx, 245), (mx + _STORY_CONTENT_W, 245)], fill=(255, 255, 255, 30), width=1)
 
-    panel_h = 380
-    panel_gap = 28
-    panel_y = 290
+    panel_h = 280
+    panel_y = 280
     panel_x2 = mx + _STORY_CONTENT_W
     for item in active_channels_info[:3]:
-        card2 = _draw_story_panel(
+        card2 = _draw_story_glass_panel(
             card2,
             (mx, panel_y, panel_x2, panel_y + panel_h),
-            radius=16,
+            radius=24,
         )
         draw2 = ImageDraw.Draw(card2)
         _story_draw_channel_panel(
@@ -4704,19 +4853,13 @@ def generate_instagram_stories(
             channel_id=item["channel_num"],
             superpower=item["text"],
             trigger=item["trigger"],
-            label_font=font_label,
+            label_font=font_section,
             body_font=font_body,
             meta_font=font_meta,
         )
-        panel_y += panel_h + panel_gap
+        panel_y += 315
 
-    draw2.text(
-        (540, 1860),
-        footer_label,
-        fill=_STORY_COLOR_FOOTER,
-        font=font_footer,
-        anchor="mm",
-    )
+    draw2.text((540, 1835), footer_label, fill=_STORY_COLOR_FOOTER, font=font_footer, anchor="mm")
     out2 = _HD_BODYGRAPH_OUTPUT_DIR / f"story_{uid}_2.jpg"
     _save_story_jpg(card2, out2)
     paths.append(f"tmp/story_{uid}_2.jpg")

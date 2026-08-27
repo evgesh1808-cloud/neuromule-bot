@@ -774,6 +774,8 @@ async def _send_hd_premium_pdf(
                     user_name=pdf_user_name,
                 ),
             )
+            if not pdf_path or not Path(pdf_path).is_file():
+                raise RuntimeError(f"HD PDF file missing after build uid={uid}")
             await bot.send_document(
                 chat_id=chat_id,
                 document=FSInputFile(pdf_path),
@@ -1409,6 +1411,7 @@ async def _hd_report_section_impl(callback: CallbackQuery, uid: int) -> None:
         "plan": msg.TXT_HD_BTN_REPORT_PLAN,
     }
     if section == "pdf":
+        await callback.answer()
         pdf_path: str | None = None
         chat_id = _hd_chat_id(callback)
         bot = deps.bot()
@@ -1427,12 +1430,19 @@ async def _hd_report_section_impl(callback: CallbackQuery, uid: int) -> None:
                         user_name=_hd_user_display_name(callback, user),
                     ),
                 )
+                if not pdf_path or not Path(pdf_path).is_file():
+                    raise RuntimeError(f"HD PDF file missing after build uid={uid}")
                 await bot.send_document(
                     chat_id=chat_id,
                     document=FSInputFile(pdf_path),
                     caption=msg.TXT_HD_PDF_CAPTION,
                     parse_mode=ParseMode.HTML,
                 )
+        except TelegramForbiddenError:
+            logger.info("hd pdf forbidden uid=%s", uid)
+        except TelegramBadRequest as exc:
+            logger.warning("hd pdf send bad_request uid=%s: %s", uid, exc)
+            await _hd_notify(callback, msg.TXT_HD_PDF_FAILED)
         except Exception:
             logger.exception("hd pdf on demand failed uid=%s", uid)
             await _hd_notify(callback, msg.TXT_HD_PDF_FAILED)
@@ -1442,7 +1452,6 @@ async def _hd_report_section_impl(callback: CallbackQuery, uid: int) -> None:
                     Path(pdf_path).unlink(missing_ok=True)
                 except OSError:
                     logger.warning("failed_remove_hd_pdf path=%s", pdf_path)
-        await callback.answer()
         return
 
     if section == "instagram":

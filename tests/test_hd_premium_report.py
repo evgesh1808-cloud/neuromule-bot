@@ -565,7 +565,34 @@ def test_create_hd_premium_pdf_multipage(tmp_path, monkeypatch) -> None:
     )
     pdf_file = Path(path)
     assert pdf_file.is_file()
+    assert pdf_file.parent == out_dir
     assert pdf_file.stat().st_size > 1500
+
+
+def test_create_hd_premium_pdf_strips_emoji_and_fallback(tmp_path, monkeypatch) -> None:
+    if hd_logic.BaseDocTemplate is None:
+        pytest.skip("reportlab not installed")
+    out_dir = tmp_path / "tmp"
+    out_dir.mkdir()
+    monkeypatch.setattr(hd_logic, "_HD_BODYGRAPH_OUTPUT_DIR", out_dir)
+    monkeypatch.setattr(hd_logic, "_HD_BODYGRAPH_TEMPLATE_PATH", out_dir / "missing.png")
+    report = dict(_SAMPLE_REPORT)
+    report["fast_facts"] = "⚡ emoji " * 20
+    real_build = hd_logic._build_hd_premium_pdf_story
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("simulated full pdf failure")
+
+    monkeypatch.setattr(hd_logic, "_build_hd_premium_pdf_story", _boom)
+    path = hd_logic.create_hd_premium_pdf(
+        888,
+        report,
+        "15.03.1990 14:30 Москва",
+        hd_type="Генератор",
+        user_name="Тест",
+    )
+    assert Path(path).is_file()
+    _ = real_build
 
 
 @pytest.mark.skipif(hd_logic.swe is None, reason="pyswisseph not installed")
