@@ -545,29 +545,31 @@ async def _persist_task_photo_edit_session(
     message_id: int | None,
     chat_id: int,
 ) -> None:
-    group_refs = task.group_ref_file_ids if task.group_multi_ref else ()
-    group_base = (
-        (task.group_base_prompt or task.prompt or "").strip() or None
-        if task.group_multi_ref
-        else None
-    )
-    final_roles = _task_final_roles(task) if task.group_multi_ref else ()
+    # Только реальная group-задача хранит multi-ref контекст. Иначе group_refs
+    # «протекают» из прошлой сессии в одиночное фото → «Доработать текстом»
+    # ошибочно уходит в multi-ref regenerate вместо i2i-edit результата.
+    if task.group_multi_ref:
+        group_refs = task.group_ref_file_ids
+        group_base = (task.group_base_prompt or task.prompt or "").strip() or None
+        final_roles = _task_final_roles(task)
+        if not final_roles or len(group_refs) < 2:
+            from services.animate_motion import resolve_final_roles_from_session
+            from services.photo_edit_session import get_photo_edit_session
 
-    if not final_roles or len(group_refs) < 2:
-        from services.animate_motion import resolve_final_roles_from_session
-        from services.photo_edit_session import get_photo_edit_session
-
-        existing = get_photo_edit_session(task.user_id)
-        if existing is not None:
-            if len(group_refs) < 2 and len(existing.group_ref_file_ids) >= 2:
-                group_refs = existing.group_ref_file_ids
-            if not group_base:
-                group_base = existing.group_base_prompt
-            if not final_roles:
-                final_roles = tuple(resolve_final_roles_from_session(existing))
-
-    if not final_roles and len(group_refs) >= 2:
-        final_roles = _task_final_roles_from_refs(group_refs, group_base or task.prompt)
+            existing = get_photo_edit_session(task.user_id)
+            if existing is not None:
+                if len(group_refs) < 2 and len(existing.group_ref_file_ids) >= 2:
+                    group_refs = existing.group_ref_file_ids
+                if not group_base:
+                    group_base = existing.group_base_prompt
+                if not final_roles:
+                    final_roles = tuple(resolve_final_roles_from_session(existing))
+        if not final_roles and len(group_refs) >= 2:
+            final_roles = _task_final_roles_from_refs(group_refs, group_base or task.prompt)
+    else:
+        group_refs = ()
+        group_base = None
+        final_roles = ()
 
     await persist_photo_edit_session(
         task.user_id,
